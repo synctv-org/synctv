@@ -1,6 +1,6 @@
 ---
 title: Playback Model
-description: How playback state, playback snapshots, Realtime, direct URLs, proxying, Range seek, and livestreaming fit together.
+description: How playback state, playback info, Realtime, direct URLs, proxying, Range seek, and livestreaming fit together.
 ---
 
 Synchronized watching is driven by server-side room state. A client should not treat its local player state as the source of truth. It follows room playback state and submits control actions only when the user has permission.
@@ -10,19 +10,19 @@ Synchronized watching is driven by server-side room state. A client should not t
 | State | Owner | Used for |
 | --- | --- | --- |
 | Current playback state | SyncTV server | Current media, play/pause, position, speed, and version |
-| Playback snapshot | Provider and SyncTV | Playback URL, proxy URL, headers, subtitles, variants, and expiry |
+| Playback info | Provider and SyncTV | Playback URL, proxy URL, headers, subtitles, variants, and expiry |
 
-Current playback state answers “what is the room watching and where is it?”. A playback snapshot answers “how should this client play that media now?”.
+Current playback state answers “what is the room watching and where is it?”. A playback info answers “how should this client play that media now?”.
 
 ## Realtime Flow
 
 Room WebSocket connections carry playback controls, chat, WebRTC signaling, and resource observation events. After reconnecting, clients should fetch key resources again instead of assuming old subscriptions are still active.
 
 1. Enter a room.
-2. Fetch current playback state and a playback snapshot.
+2. Fetch current playback state and a playback info.
 3. Connect Realtime.
 4. Receive play, pause, seek, or media-change events.
-5. Refresh the playback snapshot when the media URL expires, Provider credentials change, or resource versions change.
+5. Refresh the playback info when the media URL expires, Provider credentials change, or resource versions change.
 
 ## Direct and Proxy Playback
 

@@ -34,7 +34,7 @@ SyncTV 的容量瓶颈通常来自六类资源：
 <Steps>
 1. 估算同时在线用户数和每用户连接数。浏览器多标签页会产生多个 WebSocket。
 2. 估算同时活跃房间数、每房间成员数和消息频率。
-3. 估算每分钟登录、刷新、Provider 浏览、播放快照刷新和列表读取量。
+3. 估算每分钟登录、刷新、Provider 浏览、播放信息刷新和列表读取量。
 4. 估算媒体播放模式：直连比例、代理比例、直播比例、平均码率。
 5. 计算代理带宽：代理用户数 × 平均码率 × 峰值系数。
 6. 计算数据库连接池：副本数 × `database.max_connections` 不能超过数据库上限。
@@ -108,7 +108,7 @@ proxy egress bandwidth = concurrent_proxy_viewers * average_bitrate * peak_facto
 
 <Tabs syncKey="capacity-tests">
   <TabItem label="API" icon="document">
-    用真实登录、房间列表、成员列表、播放快照和 Provider 浏览路径压测。不要只压 `/health/ready`。
+    用真实登录、房间列表、成员列表、播放信息和 Provider 浏览路径压测。不要只压 `/health/ready`。
   </TabItem>
   <TabItem label="WebSocket" icon="puzzle">
     模拟连接、心跳、聊天、播放状态和资源观察。关注连接建立速率、断开重连和每房间 fanout。

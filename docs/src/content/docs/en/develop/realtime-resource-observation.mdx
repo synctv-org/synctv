@@ -1,6 +1,6 @@
 ---
 title: Realtime Resource Observation
-description: Subscribe to playback state, playback snapshots, room settings, playlist items, and room members through Realtime.
+description: Subscribe to playback state, playbacks, room settings, playlist items, and room members through Realtime.
 ---
 
 import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
@@ -12,7 +12,7 @@ Resource observation subscribes to cacheable query results. The client submits i
 | Resource | `ObserveResource.resource` field | Version source | Typical use |
 | --- | --- | --- | --- |
 | Playback state | `playback_state` | `RoomPlaybackState.version` | Player UI and synchronized playback status |
-| Playback snapshot | `playback_snapshot` | `PlaybackSnapshot.version` | Current playback URL, headers, proxy policy, and expiry |
+| Playback | `playback` | Current value on every observe | Current playback URL, headers, proxy policy, and expiry |
 | Room settings | `room_settings` | Room settings version | Chat, playback permissions, and UI controls |
 | Playlist items | `playlist_items` | List snapshot version | Root lists, child playlists, provider browsing, and search results |
 | Room members | `room_members` | Member list snapshot version | Member pagination, search, role filtering, and status filtering |
@@ -33,10 +33,10 @@ Each connection can hold up to 64 observations. Over-limit requests return `Reso
 
 <Steps>
 1. The client connects to the room WebSocket.
-2. The client sends `ClientMessage.observe_resource` with `observe_id`, local cached `version`, `delivery_mode`, and the target resource.
+2. The client sends `ClientMessage.observe_resource` with `observe_id`, `delivery_mode`, and the target resource. Resources that support recovery can also carry a cached version or event sequence.
 3. The server loads the current resource and sends `ServerMessage.resource_observed`.
 4. If the server determines that the resource changed, it sends `ServerMessage.resource_changed` for the same `observe_id`.
-5. Later room events, cache invalidation, Provider credential changes, or playback snapshot expiry can trigger re-evaluation.
+5. Later room events, cache invalidation, Provider credential changes, or playback expiry can trigger re-evaluation.
 </Steps>
 
 `ResourceObserved` fields:
@@ -44,15 +44,15 @@ Each connection can hold up to 64 observations. Over-limit requests return `Reso
 | Field | Meaning |
 | --- | --- |
 | `observe_id` | The submitted subscription ID |
-| `version` | Current server-side version. Save it for reconnects or later subscriptions |
-| `changed` | Whether the server-side resource differs from the submitted version or playback snapshot identity |
+| `version` | Current server-side version; playback info does not expose a client cache version |
+| `changed` | Whether the server should send the current resource to the client |
 
 `ResourceChanged` fields:
 
 | Field | Meaning |
 | --- | --- |
 | `observe_id` | Which subscription changed |
-| `version` | New version. Update the local cached version |
+| `version` | New version; playback info does not use it for client cache recovery |
 | `payload` | Full snapshot or `changed_only`, depending on `delivery_mode` |
 
 ## Unsubscribe
@@ -90,25 +90,21 @@ sendClientMessage({
 When changed, the server returns `ResourceChanged.payload.playback_state`.
 
   </TabItem>
-  <TabItem label="Playback snapshot" icon="document">
+  <TabItem label="Playback" icon="document">
 
 ```ts
 sendClientMessage({
   observeResource: {
-    observeId: 'playback-snapshot',
-    version: cached.playbackSnapshotVersion ?? '',
+    observeId: 'playback',
     deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
-    playbackSnapshot: {
-      mediaId: cached.mediaId ?? '',
-      playlistId: cached.playlistId ?? '',
-      target: cached.target ?? new Uint8Array(),
+    playback: {
       playbackClientProfile: currentPlaybackClientProfile,
     },
   },
 });
 ```
 
-`media_id`, `playlist_id`, `target`, and `playback_client_profile` identify the locally cached playback source so the server can detect source changes even if the version string collides.
+Playback observation immediately returns the current playable URLs, headers, subtitles, and expiry, then re-evaluates after room events, expiry, or Provider credential changes.
 
   </TabItem>
   <TabItem label="Room members" icon="puzzle">
@@ -142,13 +138,13 @@ In notify-only mode, the server returns `ResourceChanged.payload.changed_only`, 
 
 | Event type | Refreshed resources |
 | --- | --- |
-| Playback state changed | `playback_state`, `playback_snapshot` |
-| Current playback media or playlist-related media updated | `playback_snapshot`, and sometimes `playlist_items` |
+| Playback state changed | `playback_state`, `playback` |
+| Current playback media or playlist-related media updated | `playback`, and sometimes `playlist_items` |
 | Playlist created, updated, deleted, reordered, or media added/removed | `playlist_items` |
 | Room settings changed | `room_settings`, `room_members` |
 | User joined, left, or permissions changed | `room_members` |
 | Cache invalidation hits the current room or user | Matching playback, settings, list, or member resources |
-| Provider credential changed | May affect the current user's playback snapshot and provider browsing results |
-| Playback snapshot expires | Automatically re-evaluates `playback_snapshot` observations |
+| Provider credential changed | May affect the current user's playback and provider browsing results |
+| Playback expires | Automatically re-evaluates `playback` observations |
 
 The server coalesces identical short-window queries in the same room. Clients do not need to rely on this optimization, but can safely create separate `observe_id` values for separate views.

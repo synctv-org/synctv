@@ -3,7 +3,7 @@ title: Watch Together
 description: How users follow room playback, use playback controls, handle seek, switch media, and diagnose drift.
 ---
 
-The SyncTV server owns room playback state. A client fetches the current state and playback snapshot, then receives changes through Realtime.
+The SyncTV server owns room playback state. A client fetches the current state and playback info, then receives changes through Realtime.
 
 ## What Happens in a Room
 
@@ -11,7 +11,7 @@ The SyncTV server owns room playback state. A client fetches the current state a
 | --- | --- |
 | Play or pause | A permitted user changes state for room members |
 | Seek | The room jumps to a new playback time |
-| Switch media | Clients fetch a new playback snapshot |
+| Switch media | Clients fetch a new playback info |
 | Change speed | A permitted user changes shared playback speed |
 | Reconnect | The client should refresh key state after network loss |
 

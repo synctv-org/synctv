@@ -12,7 +12,7 @@ pub mod email;
 pub mod messaging;
 pub mod notification;
 pub mod oauth2;
-mod playback_snapshot;
+mod playback;
 mod playlist_items_snapshot;
 pub mod providers;
 pub mod request_context;

@@ -17,13 +17,13 @@ For a minimal runnable call chain, see [SDK and API Examples](../sdk-and-api-exa
 | --- | --- | --- |
 | Sign in and keep a session | Login, handle MFA, store access/refresh tokens, refresh sessions, handle 401 | This page: “Token Usage” and “Local Login and MFA” |
 | Enter room realtime state | Fetch the room, create a WebSocket ticket, connect `/ws/rooms/{room_id}`, decode protobuf | [Realtime API](../realtime-api/) |
-| Show synchronized playback | Read current playback state, fetch playback snapshot, observe `playback_state` and `playback_snapshot` | [Playback Model](../../concepts/playback-model/) |
+| Show synchronized playback | Read current playback state, fetch playback, observe `playback_state` and `playback` | [Playback Model](../../concepts/playback-model/) |
 | Add media | Choose Provider, browse or search media, submit playlist item, handle Provider errors | [Media Sources](../../concepts/media-providers/) |
-| Handle URL expiry | Read `expires_at`, refresh playback snapshot before expiry, discard old URLs after media switch | [Playback and Proxy Model](../../use/playback-and-proxy/) |
+| Handle URL expiry | Read `expires_at`, refresh playback before expiry, discard old URLs after media switch | [Playback and Proxy Model](../../use/playback-and-proxy/) |
 | Reconnect | Request a new ticket, reconnect, observe resources with local versions | [Realtime API](../realtime-api/) |
 | Build unified errors | Classify by HTTP status, business code, `request_id`, and `Retry-After` | [Errors](../../reference/errors/) |
 
-Implement sign-in, room list, ticket creation, Realtime, and playback snapshots first. Then add Providers, chat, notifications, and WebRTC.
+Implement sign-in, room list, ticket creation, Realtime, and playbacks first. Then add Providers, chat, notifications, and WebRTC.
 
 ## Choose an Interface
 
@@ -293,7 +293,7 @@ WebSocket only handles binary protobuf frames. Clients send `synctv.client.Clien
 
 ## Realtime Resource Observation
 
-Realtime resource observation lets a room WebSocket subscribe to cacheable resources such as playback state, playback snapshots, room settings, playlist items, and room members. Clients send `ClientMessage.observe_resource`, and the server returns `resource_observed`, `resource_changed`, or `resource_observe_error`.
+Realtime resource observation lets a room WebSocket subscribe to cacheable resources such as playback state, playbacks, room settings, playlist items, and room members. Clients send `ClientMessage.observe_resource`, and the server returns `resource_observed`, `resource_changed`, or `resource_observe_error`.
 
 See [Realtime API](../realtime-api/) for the full protocol, delivery modes, version synchronization, examples for every resource type, reconnect behavior, and error handling.
 

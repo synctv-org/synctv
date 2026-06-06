@@ -739,7 +739,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.client.AddMediaRequest.source_config",
             ".synctv.client.ListPlaylistItemsRequest.target",
             ".synctv.client.RoomSettingsChanged.settings",
-            ".synctv.client.ObservePlaybackSnapshot.target",
             ".synctv.client.PlaylistItem.target",
             ".synctv.client.PlaylistBrowsePathNode.target",
             ".synctv.client.CreatePlaylistRequest.source_config",

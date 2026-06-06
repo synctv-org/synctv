@@ -34,7 +34,7 @@ use super::client::convert::{
     json_to_vec, playback_client_profile_from_proto, provider_playback_info_to_model,
     sign_local_bilibili_danmaku_urls, try_bilibili_live_danmaku_for_static_media,
     try_media_list_to_proto, try_media_to_proto, try_media_to_proto_with_availability,
-    try_members_to_proto, try_playback_snapshot_to_proto, try_playback_state_to_proto,
+    try_members_to_proto, try_playback_to_proto, try_playback_state_to_proto,
     try_playlist_list_to_proto, try_playlist_path_node_to_proto, try_playlist_to_proto,
     try_playlist_to_proto_with_availability, user_status_to_proto,
 };
@@ -62,11 +62,7 @@ fn required_room_settings<'a>(
 use crate::impls::client::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use crate::impls::client::proto_role_to_assignable_room_role;
 use crate::impls::client::{proto_role_filter_to_room_role, proto_role_to_room_role};
-use crate::impls::playback_snapshot::{
-    compose_playback_snapshot_version, dynamic_playback_snapshot_version,
-    playback_snapshot_expires_at, provider_credential_dependency_fingerprint,
-    static_playback_snapshot_version,
-};
+use crate::impls::playback::playback_expires_at;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor, RequestMetadata};
 use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
 use crate::membership_event_fanout::{
@@ -1187,7 +1183,7 @@ impl AdminApiImpl {
         room_id: &RoomId,
         media: synctv_core::models::Media,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
-    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
+    ) -> Result<crate::proto::client::Playback, ApiError> {
         let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
             self.config.jwt.secret.as_bytes(),
         )
@@ -1287,33 +1283,15 @@ impl AdminApiImpl {
             Some(&signing_key),
             default_mode_expires_at,
         );
-        let credential_dependencies = provider
-            .credential_dependencies(&ctx, &media.source_config)
-            .map_err(ApiError::from)?;
-        let credential_fingerprint = provider_credential_dependency_fingerprint(
-            self.room_service
-                .media_service()
-                .credential_repo()
-                .map(std::convert::AsRef::as_ref),
-            &credential_dependencies,
-        )
-        .await?;
-        let mut snapshot = try_playback_snapshot_to_proto(
-            &full_result,
-            compose_playback_snapshot_version(
-                static_playback_snapshot_version(&media),
-                credential_fingerprint.as_deref(),
-            ),
-            &self.public_id_codec,
-        )?;
-        snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
-        Ok(snapshot)
+        let mut playback = try_playback_to_proto(&full_result, &self.public_id_codec)?;
+        playback.expires_at = playback_expires_at(&playback);
+        Ok(playback)
     }
 
     async fn build_dynamic_playlist_playback_result(
         &self,
         request: DynamicPlaylistPlaybackRequest<'_>,
-    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
+    ) -> Result<crate::proto::client::Playback, ApiError> {
         let DynamicPlaylistPlaybackRequest {
             room_id_model,
             user_id_model,
@@ -1423,39 +1401,21 @@ impl AdminApiImpl {
             )
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-        let playlist_source_config = playlist.source_config.as_ref().ok_or_else(|| {
+        playlist.source_config.as_ref().ok_or_else(|| {
             ApiError::Internal("Dynamic playlist missing source_config".to_string())
         })?;
-        let credential_dependencies = provider
-            .credential_dependencies(&ctx, playlist_source_config)
-            .map_err(ApiError::from)?;
-        let credential_fingerprint = provider_credential_dependency_fingerprint(
-            self.room_service
-                .media_service()
-                .credential_repo()
-                .map(std::convert::AsRef::as_ref),
-            &credential_dependencies,
-        )
-        .await?;
-        let mut snapshot = try_playback_snapshot_to_proto(
-            &full_result,
-            compose_playback_snapshot_version(
-                dynamic_playback_snapshot_version(&playlist),
-                credential_fingerprint.as_deref(),
-            ),
-            &self.public_id_codec,
-        )?;
-        snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
-        Ok(snapshot)
+        let mut playback = try_playback_to_proto(&full_result, &self.public_id_codec)?;
+        playback.expires_at = playback_expires_at(&playback);
+        Ok(playback)
     }
 
-    async fn build_playback_snapshot_from_state(
+    async fn build_playback_from_state(
         &self,
         user_id: &UserId,
         room_id: &RoomId,
         state: &synctv_core::models::RoomPlaybackState,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
-    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
+    ) -> Result<crate::proto::client::Playback, ApiError> {
         if let Some(ref media_id) = state.playing_media_id {
             let media = self
                 .room_service
@@ -1486,7 +1446,7 @@ impl AdminApiImpl {
                 .await;
         }
 
-        Ok(crate::proto::client::PlaybackSnapshot {
+        Ok(crate::proto::client::Playback {
             media_id: String::new(),
             playlist_id: String::new(),
             room_id: self
@@ -1498,12 +1458,11 @@ impl AdminApiImpl {
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
-            version: state.version.to_string(),
             expires_at: None,
         })
     }
 
-    async fn resolve_management_playback_snapshot_user_id(
+    async fn resolve_management_playback_user_id(
         &self,
         room_id: &RoomId,
         state: &synctv_core::models::RoomPlaybackState,
@@ -1586,7 +1545,7 @@ impl AdminApiImpl {
         ))
     }
 
-    async fn resolve_playback_snapshot_user_id(
+    async fn resolve_playback_user_id(
         &self,
         admin_user_id: &UserId,
         room_id: &RoomId,
@@ -1594,7 +1553,7 @@ impl AdminApiImpl {
     ) -> Result<UserId, ApiError> {
         if *admin_user_id == LOCAL_MANAGEMENT_ACTOR_USER_ID {
             return self
-                .resolve_management_playback_snapshot_user_id(room_id, state)
+                .resolve_management_playback_user_id(room_id, state)
                 .await;
         }
 
@@ -4488,12 +4447,12 @@ impl AdminApiImpl {
             .get_playback_state(&rid)
             .await
             .map_err(ApiError::from)?;
-        let playback_snapshot = match self
-            .resolve_playback_snapshot_user_id(admin_user_id, &rid, &state)
+        let playback = match self
+            .resolve_playback_user_id(admin_user_id, &rid, &state)
             .await
         {
             Ok(snapshot_user_id) => match self
-                .build_playback_snapshot_from_state(
+                .build_playback_from_state(
                     &snapshot_user_id,
                     &rid,
                     &state,
@@ -4508,7 +4467,7 @@ impl AdminApiImpl {
                         admin_user_id = %admin_user_id,
                         signing_user_id = %snapshot_user_id,
                         error = %error,
-                        "Admin playback snapshot generation failed; returning playback state only"
+                        "Admin playback generation failed; returning playback state only"
                     );
                     None
                 }
@@ -4518,7 +4477,7 @@ impl AdminApiImpl {
                     room_id = %rid,
                     admin_user_id = %admin_user_id,
                     error = %error,
-                    "Admin playback snapshot generation failed; returning playback state only"
+                    "Admin playback generation failed; returning playback state only"
                 );
                 None
             }
@@ -4526,7 +4485,7 @@ impl AdminApiImpl {
 
         Ok(crate::proto::client::GetPlaybackResponse {
             playback_state: Some(try_playback_state_to_proto(&state, &self.public_id_codec)?),
-            playback_snapshot,
+            playback,
         })
     }
 
@@ -4588,7 +4547,7 @@ impl AdminApiImpl {
 
         Ok(crate::proto::client::GetPlaybackResponse {
             playback_state: Some(try_playback_state_to_proto(&state, &self.public_id_codec)?),
-            playback_snapshot: None,
+            playback: None,
         })
     }
 
@@ -10034,8 +9993,8 @@ mod tests {
         );
 
         let result = response
-            .playback_snapshot
-            .expect("playback snapshot should be present");
+            .playback
+            .expect("playback should be present");
         assert_eq!(result.media_id, public_media_id(&admin_api, media.id));
         assert_eq!(result.room_id, public_room_id(&admin_api, room.id));
         assert_eq!(result.name, media.name);
@@ -10106,7 +10065,7 @@ mod tests {
             public_media_id(&admin_api, media.id)
         );
         assert!(
-            response.playback_snapshot.is_none(),
+            response.playback.is_none(),
             "admin playback queries should degrade to state-only responses on snapshot failures"
         );
     }
@@ -10176,8 +10135,8 @@ mod tests {
             .expect("global admin should get signed provider playback");
 
         let result = response
-            .playback_snapshot
-            .expect("playback snapshot should be present");
+            .playback
+            .expect("playback should be present");
         let direct = result
             .playback_infos
             .get("direct")
@@ -10269,8 +10228,8 @@ mod tests {
             .expect("local management actor should get signed provider playback");
 
         let result = response
-            .playback_snapshot
-            .expect("playback snapshot should be present");
+            .playback
+            .expect("playback should be present");
         let direct = result
             .playback_infos
             .get("direct")

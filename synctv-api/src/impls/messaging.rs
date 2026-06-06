@@ -93,7 +93,7 @@ fn is_private_ice_candidate_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
-use crate::impls::playback_snapshot::PlaybackSnapshotService;
+use crate::impls::playback::PlaybackService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
 use crate::impls::room_members_snapshot::RoomMembersSnapshotService;
 use crate::impls::room_settings_snapshot::{
@@ -132,14 +132,14 @@ pub trait ObservedPlaybackLifecycleSubscriber: Send + Sync {
 }
 
 pub struct ProviderPlaybackProgressSubscriber {
-    playback_snapshot_service: Arc<dyn PlaybackSnapshotService>,
+    playback_service: Arc<dyn PlaybackService>,
 }
 
 impl ProviderPlaybackProgressSubscriber {
     #[must_use]
-    pub fn new(playback_snapshot_service: Arc<dyn PlaybackSnapshotService>) -> Self {
+    pub fn new(playback_service: Arc<dyn PlaybackService>) -> Self {
         Self {
-            playback_snapshot_service,
+            playback_service,
         }
     }
 }
@@ -154,11 +154,11 @@ impl ObservedPlaybackLifecycleSubscriber for ProviderPlaybackProgressSubscriber 
             return Ok(());
         }
 
-        if !ResourceObserver::room_has_playback_snapshot_observers(event.room_id).await {
+        if !ResourceObserver::room_has_playback_observers(event.room_id).await {
             return Ok(());
         }
 
-        self.playback_snapshot_service
+        self.playback_service
             .report_provider_playback_progress(
                 &event.state,
                 event.state.computed_position(),
@@ -171,7 +171,7 @@ impl ObservedPlaybackLifecycleSubscriber for ProviderPlaybackProgressSubscriber 
 }
 
 pub fn spawn_observed_playback_lifecycle_event_source(
-    playback_snapshot_service: Arc<dyn PlaybackSnapshotService>,
+    playback_service: Arc<dyn PlaybackService>,
     subscribers: Vec<Arc<dyn ObservedPlaybackLifecycleSubscriber>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
@@ -183,7 +183,7 @@ pub fn spawn_observed_playback_lifecycle_event_source(
             tokio::select! {
                 _ = ticker.tick() => {
                     publish_observed_playback_lifecycle_events(
-                        Arc::clone(&playback_snapshot_service),
+                        Arc::clone(&playback_service),
                         subscribers.as_slice(),
                     )
                     .await;
@@ -199,25 +199,25 @@ pub fn spawn_observed_playback_lifecycle_event_source(
 }
 
 async fn publish_observed_playback_lifecycle_events(
-    playback_snapshot_service: Arc<dyn PlaybackSnapshotService>,
+    playback_service: Arc<dyn PlaybackService>,
     subscribers: &[Arc<dyn ObservedPlaybackLifecycleSubscriber>],
 ) {
     if subscribers.is_empty() {
         return;
     }
 
-    let active_rooms = ResourceObserver::active_playback_snapshot_rooms().await;
+    let active_rooms = ResourceObserver::active_playback_rooms().await;
     if active_rooms.is_empty() {
         return;
     }
 
     tokio_stream::iter(active_rooms)
         .for_each_concurrent(OBSERVED_PLAYBACK_LIFECYCLE_CONCURRENCY, |room_id| {
-            let playback_snapshot_service = Arc::clone(&playback_snapshot_service);
+            let playback_service = Arc::clone(&playback_service);
             let subscribers = subscribers.to_vec();
             async move {
                 if let Err(error) = publish_observed_playback_lifecycle_event(
-                    playback_snapshot_service,
+                    playback_service,
                     subscribers,
                     room_id,
                 )
@@ -235,15 +235,15 @@ async fn publish_observed_playback_lifecycle_events(
 }
 
 async fn publish_observed_playback_lifecycle_event(
-    playback_snapshot_service: Arc<dyn PlaybackSnapshotService>,
+    playback_service: Arc<dyn PlaybackService>,
     subscribers: Vec<Arc<dyn ObservedPlaybackLifecycleSubscriber>>,
     room_id: RoomId,
 ) -> Result<(), String> {
-    if !ResourceObserver::room_has_playback_snapshot_observers(room_id).await {
+    if !ResourceObserver::room_has_playback_observers(room_id).await {
         return Ok(());
     }
 
-    let state = playback_snapshot_service
+    let state = playback_service
         .room_playback_state(&room_id)
         .await
         .map_err(|error| error.to_string())?;
@@ -251,7 +251,7 @@ async fn publish_observed_playback_lifecycle_event(
         return Ok(());
     }
 
-    if !ResourceObserver::room_has_playback_snapshot_observers(room_id).await {
+    if !ResourceObserver::room_has_playback_observers(room_id).await {
         return Ok(());
     }
 
@@ -668,7 +668,7 @@ pub trait MessageSender: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatchResourceKind {
     PlaybackState,
-    PlaybackSnapshot,
+    Playback,
     RoomSettings,
     PlaylistItems,
     RoomMembers,
@@ -679,7 +679,7 @@ impl WatchResourceKind {
     fn observe_id(self) -> &'static str {
         match self {
             Self::PlaybackState => "playback_state",
-            Self::PlaybackSnapshot => "playback_snapshot",
+            Self::Playback => "playback",
             Self::RoomSettings => "room_settings",
             Self::PlaylistItems => "playlist_items",
             Self::RoomMembers => "room_members",
@@ -698,7 +698,7 @@ pub struct ResourceWatchSessionConfig {
     pub connection_service: Arc<dyn RealtimeConnectionService>,
     pub public_id_codec: Arc<crate::PublicIdCodec>,
     pub sender: Arc<dyn MessageSender>,
-    pub playback_snapshot_service: Option<Arc<dyn PlaybackSnapshotService>>,
+    pub playback_service: Option<Arc<dyn PlaybackService>>,
     pub playlist_items_snapshot_service: Option<Arc<dyn PlaylistItemsSnapshotService>>,
     pub room_members_snapshot_service: Option<Arc<dyn RoomMembersSnapshotService>>,
     pub room_settings_snapshot_service: Option<Arc<dyn RoomSettingsSnapshotService>>,
@@ -733,7 +733,7 @@ impl ResourceWatchSession {
             connection_service,
             public_id_codec,
             sender,
-            playback_snapshot_service,
+            playback_service,
             playlist_items_snapshot_service,
             room_members_snapshot_service,
             room_settings_snapshot_service,
@@ -750,7 +750,7 @@ impl ResourceWatchSession {
             room_service: Arc::clone(&room_service),
             public_id_codec: Arc::clone(&public_id_codec),
             sender,
-            playback_snapshot_service,
+            playback_service,
             playlist_items_snapshot_service,
             room_members_snapshot_service,
             room_settings_snapshot_service,
@@ -1039,7 +1039,7 @@ impl PreparedResourceWatchSession {
                     () = async {
                         match session
                             .resource_observer
-                            .next_playback_snapshot_refresh_deadline()
+                            .next_playback_refresh_deadline()
                             .await {
                             Some(deadline) => tokio::time::sleep_until(deadline).await,
                             None => std::future::pending::<()>().await,
@@ -1047,7 +1047,7 @@ impl PreparedResourceWatchSession {
                     } => {
                         if let Err(error) = session
                             .resource_observer
-                            .refresh_expired_playback_snapshot_observations()
+                            .refresh_expired_playback_observations()
                             .await
                         {
                             break Err(error);
@@ -1165,10 +1165,10 @@ impl ResourceWatchSession {
                 self.check_realtime_permission(RoomPermission::VIEW_CHAT_HISTORY)
                     .await
             }
-            crate::proto::client::observe_resource::Resource::PlaybackSnapshot(_) => {
+            crate::proto::client::observe_resource::Resource::Playback(_) => {
                 if self.principal.is_guest() {
                     Err(
-                        "Guests cannot observe playback snapshots because playback snapshots may depend on signed-in provider credentials"
+                        "Guests cannot observe playbacks because playbacks may depend on signed-in provider credentials"
                             .to_string(),
                     )
                 } else {
@@ -1192,16 +1192,16 @@ pub fn watch_playback_state_observe(
     )
 }
 
-pub fn watch_playback_snapshot_observe(
-    req: crate::proto::client::WatchPlaybackSnapshotRequest,
+pub fn watch_playback_observe(
+    req: crate::proto::client::WatchPlaybackRequest,
 ) -> Result<ObserveResource, String> {
-    let playback_snapshot = req
-        .playback_snapshot
-        .ok_or_else(|| "playback_snapshot watch body is required".to_string())?;
+    let playback = req
+        .playback
+        .ok_or_else(|| "playback watch body is required".to_string())?;
     build_watch_observe(
-        WatchResourceKind::PlaybackSnapshot,
+        WatchResourceKind::Playback,
         req.delivery_mode,
-        crate::proto::client::observe_resource::Resource::PlaybackSnapshot(playback_snapshot),
+        crate::proto::client::observe_resource::Resource::Playback(playback),
     )
 }
 
@@ -1393,7 +1393,7 @@ pub struct StreamMessageHandler {
     content_filter: Arc<ContentFilter>,
     public_id_codec: Arc<crate::PublicIdCodec>,
     sender: Arc<dyn MessageSender>,
-    playback_snapshot_service: Option<Arc<dyn PlaybackSnapshotService>>,
+    playback_service: Option<Arc<dyn PlaybackService>>,
     playlist_items_snapshot_service: Option<Arc<dyn PlaylistItemsSnapshotService>>,
     room_members_snapshot_service: Option<Arc<dyn RoomMembersSnapshotService>>,
     room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
@@ -1452,7 +1452,7 @@ pub struct StreamMessageHandlerConfig {
 
 #[derive(Clone)]
 pub struct StreamMessageHandlerRuntime {
-    pub playback_snapshot_service: Option<Arc<dyn PlaybackSnapshotService>>,
+    pub playback_service: Option<Arc<dyn PlaybackService>>,
     pub playlist_items_snapshot_service: Option<Arc<dyn PlaylistItemsSnapshotService>>,
     pub room_members_snapshot_service: Option<Arc<dyn RoomMembersSnapshotService>>,
     pub room_settings_snapshot_service: Option<Arc<dyn RoomSettingsSnapshotService>>,
@@ -1469,7 +1469,7 @@ impl StreamMessageHandlerRuntime {
     #[allow(clippy::needless_pass_by_value)]
     pub fn local(event_service: Arc<dyn RealtimeEventService>) -> Self {
         Self {
-            playback_snapshot_service: None,
+            playback_service: None,
             playlist_items_snapshot_service: None,
             room_members_snapshot_service: None,
             room_settings_snapshot_service: None,
@@ -1507,7 +1507,7 @@ impl Clone for StreamMessageHandler {
             content_filter: Arc::clone(&self.content_filter),
             public_id_codec: Arc::clone(&self.public_id_codec),
             sender: Arc::clone(&self.sender),
-            playback_snapshot_service: self.playback_snapshot_service.clone(),
+            playback_service: self.playback_service.clone(),
             playlist_items_snapshot_service: self.playlist_items_snapshot_service.clone(),
             room_members_snapshot_service: self.room_members_snapshot_service.clone(),
             room_settings_snapshot_service: Arc::clone(&self.room_settings_snapshot_service),
@@ -1646,7 +1646,7 @@ impl StreamMessageHandler {
             room_service: Arc::clone(&room_service),
             public_id_codec: Arc::clone(&public_id_codec),
             sender: Arc::clone(&sender),
-            playback_snapshot_service: runtime.playback_snapshot_service.clone(),
+            playback_service: runtime.playback_service.clone(),
             playlist_items_snapshot_service: runtime.playlist_items_snapshot_service.clone(),
             room_members_snapshot_service: runtime.room_members_snapshot_service.clone(),
             room_settings_snapshot_service: Arc::clone(&room_settings_snapshot_service),
@@ -1670,7 +1670,7 @@ impl StreamMessageHandler {
             content_filter,
             public_id_codec,
             sender,
-            playback_snapshot_service: runtime.playback_snapshot_service,
+            playback_service: runtime.playback_service,
             playlist_items_snapshot_service: runtime.playlist_items_snapshot_service,
             room_members_snapshot_service: runtime.room_members_snapshot_service,
             room_settings_snapshot_service,
@@ -1788,10 +1788,10 @@ impl StreamMessageHandler {
                     .await
                     .map_err(|e| e.to_string())
             }
-            crate::proto::client::observe_resource::Resource::PlaybackSnapshot(_) => {
+            crate::proto::client::observe_resource::Resource::Playback(_) => {
                 if self.principal.is_guest() {
                     Err(
-                        "Guests cannot observe playback snapshots because playback snapshots may depend on signed-in provider credentials"
+                        "Guests cannot observe playbacks because playbacks may depend on signed-in provider credentials"
                             .to_string(),
                     )
                 } else {
@@ -2291,18 +2291,18 @@ impl StreamMessageHandler {
                 }
 
                 () = async {
-                    match self.resource_observer.next_playback_snapshot_refresh_deadline().await {
+                    match self.resource_observer.next_playback_refresh_deadline().await {
                         Some(deadline) => tokio::time::sleep_until(deadline).await,
                         None => std::future::pending::<()>().await,
                     }
                 } => {
                     if let Err(error) = self
                         .resource_observer
-                        .refresh_expired_playback_snapshot_observations()
+                        .refresh_expired_playback_observations()
                         .await
                     {
                         tracing::error!(
-                            "Failed to refresh observed playback snapshot after expiration: {}",
+                            "Failed to refresh observed playback after expiration: {}",
                             error
                         );
                         break;
@@ -3408,7 +3408,7 @@ impl StreamMessageHandler {
                     () = async {
                         match event_handler
                             .resource_observer
-                            .next_playback_snapshot_refresh_deadline()
+                            .next_playback_refresh_deadline()
                             .await {
                             Some(deadline) => tokio::time::sleep_until(deadline).await,
                             None => std::future::pending::<()>().await,
@@ -3416,11 +3416,11 @@ impl StreamMessageHandler {
                     } => {
                         if let Err(error) = event_handler
                             .resource_observer
-                            .refresh_expired_playback_snapshot_observations()
+                            .refresh_expired_playback_observations()
                             .await
                         {
                             tracing::error!(
-                                "Failed to refresh observed playback snapshot in start(): {}",
+                                "Failed to refresh observed playback in start(): {}",
                                 error
                             );
                             event_token.cancel();
@@ -4425,7 +4425,7 @@ impl StreamMessageHandler {
                     *guard = Some((report.position, tokio::time::Instant::now()));
                 }
 
-                if let Some(service) = &self.playback_snapshot_service {
+                if let Some(service) = &self.playback_service {
                     service
                         .report_provider_playback_progress(
                             &updated_state,
@@ -4493,7 +4493,7 @@ impl StreamMessageHandler {
             .await
             .map_err(|e| e.to_string())?;
         prepared_fanout.publish_after_outbox_commit();
-        if let Some(service) = &self.playback_snapshot_service {
+        if let Some(service) = &self.playback_service {
             service
                 .handle_provider_lifecycle_transition(Some(&previous_state), &state)
                 .await;

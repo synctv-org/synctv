@@ -496,21 +496,16 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         serde_json::json!({"relative_path":"/episode-1.mp4"})
     );
 
-    let playback_snapshot = response.playback_snapshot.unwrap();
-    assert_eq!(
-        playback_snapshot.version,
-        playlist.version.to_string(),
-        "dynamic playback snapshot version should use playlist version only"
-    );
-    assert_eq!(playback_snapshot.playlist_id, playlist_public_id);
-    assert_eq!(playback_snapshot.name, "episode-1.mp4");
-    let playback_target_meta = playback_snapshot.metadata.get("target").unwrap();
+    let playback = response.playback.unwrap();
+    assert_eq!(playback.playlist_id, playlist_public_id);
+    assert_eq!(playback.name, "episode-1.mp4");
+    let playback_target_meta = playback.metadata.get("target").unwrap();
     let playback_target_value: String = serde_json::from_str(playback_target_meta).unwrap();
     assert_eq!(
         playback_target_value,
         BASE64_STANDARD.encode(br#"{"relative_path":"/episode-1.mp4"}"#)
     );
-    let direct = playback_snapshot.playback_infos.get("direct").unwrap();
+    let direct = playback.playback_infos.get("direct").unwrap();
     assert_eq!(direct.urls.len(), 1);
     assert_eq!(
         direct.urls[0].url,
@@ -547,8 +542,8 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         "playing update response should not jump far beyond the requested seek position"
     );
     let update_snapshot = update_response
-        .playback_snapshot
-        .expect("update response should preserve read-after-write playback snapshot");
+        .playback
+        .expect("update response should preserve read-after-write playback");
     assert_eq!(update_snapshot.playlist_id, playlist_public_id);
     assert_eq!(update_snapshot.name, "episode-1.mp4");
     let update_direct = update_snapshot.playback_infos.get("direct").unwrap();
@@ -749,13 +744,8 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
         .await
         .unwrap();
 
-    let playback_snapshot = response.playback_snapshot.unwrap();
-    assert_eq!(
-        playback_snapshot.version,
-        playlist.version.to_string(),
-        "bound dynamic playback snapshot version should use playlist version only"
-    );
-    let direct = playback_snapshot.playback_infos.get("direct").unwrap();
+    let playback = response.playback.unwrap();
+    let direct = playback.playback_infos.get("direct").unwrap();
     assert_eq!(
         direct.urls[0].url,
         "https://alist_alt.example.com/bound-episode-1.mp4"
@@ -879,13 +869,8 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         .await
         .unwrap();
 
-    let playback_snapshot = response.playback_snapshot.unwrap();
-    assert_eq!(
-        playback_snapshot.version,
-        media.version.to_string(),
-        "static playback snapshot version should use media version only"
-    );
-    let direct = playback_snapshot.playback_infos.get("direct").unwrap();
+    let playback = response.playback.unwrap();
+    let direct = playback.playback_infos.get("direct").unwrap();
     assert_eq!(direct.urls.len(), 1);
     assert!(
         direct.urls[0]
@@ -964,22 +949,16 @@ async fn test_get_playback_without_active_media_returns_stable_non_empty_snapsho
         .await
         .unwrap();
 
-    let playback_state = response
+    let _playback_state = response
         .playback_state
         .expect("idle room should still expose playback state");
-    let playback_snapshot = response
-        .playback_snapshot
-        .expect("idle room should still expose playback snapshot");
+    let playback = response
+        .playback
+        .expect("idle room should still expose playback");
 
-    assert!(
-        !playback_snapshot.version.is_empty(),
-        "idle playback snapshots must return a real version so clients can watch from it"
-    );
-    assert_eq!(
-        playback_snapshot.version,
-        playback_state.version.to_string(),
-        "idle playback snapshot version should track the persisted playback state version"
-    );
+    assert_eq!(playback.room_id, room_public_id);
+    assert_eq!(playback.media_id, "");
+    assert_eq!(playback.playlist_id, "");
 }
 
 #[tokio::test]
@@ -1076,7 +1055,7 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
     assert_eq!(playback_state.playing_media_id, media_public_id);
     assert!(playback_state.is_playing);
     assert!(
-        response.playback_snapshot.is_none(),
+        response.playback.is_none(),
         "snapshot failures should degrade to state-only responses"
     );
 }

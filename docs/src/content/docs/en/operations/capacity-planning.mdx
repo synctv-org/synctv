@@ -32,7 +32,7 @@ Do not add replicas before database, Redis, secrets, and HLS storage boundaries 
 <Steps>
 1. Estimate concurrent users and connections per user.
 2. Estimate active rooms, members per room, and message frequency.
-3. Estimate login, refresh, Provider browse, playback snapshot, and list requests per minute.
+3. Estimate login, refresh, Provider browse, playback info, and list requests per minute.
 4. Estimate media mode: direct, proxy, livestream, average bitrate.
 5. Calculate proxy bandwidth: proxy viewers times average bitrate times peak factor.
 6. Calculate database pool total: replicas times `database.max_connections`.
@@ -106,7 +106,7 @@ Metric names are listed in [Metrics Catalog](../../reference/metrics-catalog/).
 
 <Tabs syncKey="capacity-tests-en">
   <TabItem label="API" icon="document">
-    Test real login, room lists, member lists, playback snapshots, and Provider browse paths. Do not only load test `/health/ready`.
+    Test real login, room lists, member lists, playback info, and Provider browse paths. Do not only load test `/health/ready`.
   </TabItem>
   <TabItem label="WebSocket" icon="puzzle">
     Simulate connections, heartbeat, chat, playback state, and resource observation.

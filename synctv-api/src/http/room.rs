@@ -60,7 +60,7 @@ use crate::proto::client::{
     StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
     TransferRoomOwnershipResponse, UpdatePlaybackRequest, UpdatePlaylistCoverRequest,
     UpdatePlaylistResponse, UpdateRoomCoverRequest, UpdateRoomSettingsResponse,
-    UpdateVideoCoverRequest, WatchChatEventsRequest, WatchPlaybackSnapshotRequest,
+    UpdateVideoCoverRequest, WatchChatEventsRequest, WatchPlaybackRequest,
     WatchPlaybackStateRequest, WatchPlaylistItemsRequest, WatchRoomMembersRequest,
     WatchRoomSettingsRequest,
 };
@@ -213,14 +213,9 @@ pub struct WatchQuery {
 
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WatchPlaybackSnapshotQuery {
+pub struct WatchPlaybackQuery {
     pub delivery_mode: Option<String>,
     pub format: Option<String>,
-    pub after_event_sequence: Option<i64>,
-    pub media_id: Option<String>,
-    pub playlist_id: Option<String>,
-    #[serde(default, with = "synctv_proto::http_serde::json_bytes")]
-    pub target: Vec<u8>,
     pub delivery_preference: Option<String>,
     pub max_streaming_bitrate: Option<i64>,
     pub max_audio_channels: Option<i32>,
@@ -455,7 +450,7 @@ fn build_get_playback_request(query: &GetPlaybackQuery) -> AppResult<GetPlayback
 }
 
 fn build_playback_client_profile_from_watch_query(
-    query: &WatchPlaybackSnapshotQuery,
+    query: &WatchPlaybackQuery,
 ) -> AppResult<Option<crate::proto::client::PlaybackClientProfile>> {
     build_get_playback_request(&GetPlaybackQuery {
         delivery_preference: query.delivery_preference.clone(),
@@ -607,7 +602,7 @@ async fn open_resource_watch_sse(
         connection_service: state.connection_manager.clone(),
         public_id_codec: state.shared_api_runtime.public_id_codec.clone(),
         sender,
-        playback_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
+        playback_service: Some(state.shared_api_runtime.client_api.clone()),
         playlist_items_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
         room_members_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
         room_settings_snapshot_service: None,
@@ -1485,28 +1480,24 @@ pub async fn watch_playback_state(
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
 }
 
-pub async fn watch_playback_snapshot(
+pub async fn watch_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     headers: HeaderMap,
-    Query(query): Query<WatchPlaybackSnapshotQuery>,
+    Query(query): Query<WatchPlaybackQuery>,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = extract_room_id(path);
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
-    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
+    let _ = headers;
     let playback_client_profile = build_playback_client_profile_from_watch_query(&query)?;
-    let request = WatchPlaybackSnapshotRequest {
+    let request = WatchPlaybackRequest {
         delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
-        playback_snapshot: Some(crate::proto::client::ObservePlaybackSnapshot {
-            media_id: query.media_id,
-            playlist_id: query.playlist_id,
-            target: query.target,
+        playback: Some(crate::proto::client::ObservePlayback {
             playback_client_profile,
-            after_event_sequence,
         }),
     };
-    let observe = crate::impls::messaging::watch_playback_snapshot_observe(request)
+    let observe = crate::impls::messaging::watch_playback_observe(request)
         .map_err(super::AppError::bad_request)?;
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
 }
@@ -3827,7 +3818,7 @@ mod tests {
         watch_after_event_sequence, AddMediaBatchBody, CancelOnDropStream, ChatImageObjectQuery,
         CreatePlaylistBody, DeleteEntriesBody, GetPlaybackQuery, PlaylistCoverObjectQuery,
         RoomCoverObjectQuery, UpdatePlaybackRequest, VideoCoverObjectQuery,
-        WatchPlaybackSnapshotQuery, WatchQuery,
+        WatchPlaybackQuery, WatchQuery,
     };
     use crate::proto::client::{
         DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetChatMessageContextRequest,
@@ -4012,7 +4003,7 @@ mod tests {
             "format=json&after_event_sequence=12&extra=true"
         )
         .is_err());
-        assert!(serde_urlencoded::from_str::<WatchPlaybackSnapshotQuery>(
+        assert!(serde_urlencoded::from_str::<WatchPlaybackQuery>(
             "format=json&media_id=media_1&extra=true"
         )
         .is_err());

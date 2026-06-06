@@ -1232,13 +1232,13 @@ impl SyncTvServer {
             self.management_handle = Some(management_handle);
         }
 
-        let playback_snapshot_service = shared_http_app_state.shared_api_runtime.client_api.clone();
+        let playback_service = shared_http_app_state.shared_api_runtime.client_api.clone();
         self.playback_lifecycle_event_source_handle = Some(
             synctv_api::impls::messaging::spawn_observed_playback_lifecycle_event_source(
-                playback_snapshot_service.clone(),
+                playback_service.clone(),
                 vec![Arc::new(
                     synctv_api::impls::messaging::ProviderPlaybackProgressSubscriber::new(
-                        playback_snapshot_service,
+                        playback_service,
                     ),
                 )],
                 shutdown_rx.clone(),

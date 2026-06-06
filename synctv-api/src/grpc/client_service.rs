@@ -88,7 +88,7 @@ use crate::proto::client::{
     UploadChatImageObjectResponse, UploadUserAvatarObjectRequest, UploadUserAvatarObjectResponse,
     UploadVideoCoverObjectRequest, UploadVideoCoverObjectResponse, UserAvatarObjectResponse,
     VerifyMfaEmailCodeRequest, VideoCoverObjectResponse, WatchChatEventsEvent,
-    WatchChatEventsRequest, WatchPlaybackSnapshotEvent, WatchPlaybackSnapshotRequest,
+    WatchChatEventsRequest, WatchPlaybackEvent, WatchPlaybackRequest,
     WatchPlaybackStateEvent, WatchPlaybackStateRequest, WatchPlaylistItemsEvent,
     WatchPlaylistItemsRequest, WatchRoomMembersEvent, WatchRoomMembersRequest,
     WatchRoomSettingsEvent, WatchRoomSettingsRequest,
@@ -474,7 +474,7 @@ impl ClientServiceImpl {
             connection_service: self.connection_service.clone(),
             public_id_codec: self.client_api.public_id_codec.clone(),
             sender: Arc::clone(&sender) as Arc<dyn MessageSender>,
-            playback_snapshot_service: Some(self.client_api.clone()),
+            playback_service: Some(self.client_api.clone()),
             playlist_items_snapshot_service: Some(self.client_api.clone()),
             room_members_snapshot_service: Some(self.client_api.clone()),
             room_settings_snapshot_service: None,
@@ -2195,9 +2195,9 @@ impl RoomService for ClientServiceImpl {
                 + 'static,
         >,
     >;
-    type WatchPlaybackSnapshotStream = std::pin::Pin<
+    type WatchPlaybackStream = std::pin::Pin<
         Box<
-            dyn tokio_stream::Stream<Item = Result<WatchPlaybackSnapshotEvent, Status>>
+            dyn tokio_stream::Stream<Item = Result<WatchPlaybackEvent, Status>>
                 + Send
                 + 'static,
         >,
@@ -2385,7 +2385,7 @@ impl RoomService for ClientServiceImpl {
                 concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
             },
             StreamMessageHandlerRuntime {
-                playback_snapshot_service: Some(self.client_api.clone()),
+                playback_service: Some(self.client_api.clone()),
                 playlist_items_snapshot_service: Some(self.client_api.clone()),
                 room_members_snapshot_service: Some(self.client_api.clone()),
                 room_settings_snapshot_service: None,
@@ -2471,15 +2471,15 @@ impl RoomService for ClientServiceImpl {
             .await
     }
 
-    async fn watch_playback_snapshot(
+    async fn watch_playback(
         &self,
-        request: Request<WatchPlaybackSnapshotRequest>,
-    ) -> Result<Response<Self::WatchPlaybackSnapshotStream>, Status> {
+        request: Request<WatchPlaybackRequest>,
+    ) -> Result<Response<Self::WatchPlaybackStream>, Status> {
         let (metadata, room_id) = self.internal_room_request_context(&request)?;
         let observe =
-            crate::impls::messaging::watch_playback_snapshot_observe(request.into_inner())
+            crate::impls::messaging::watch_playback_observe(request.into_inner())
                 .map_err(Status::invalid_argument)?;
-        self.open_watch_stream(metadata, room_id, observe, watch_playback_snapshot_event)
+        self.open_watch_stream(metadata, room_id, observe, watch_playback_event)
             .await
     }
 
@@ -3618,9 +3618,9 @@ fn watch_playback_state_event(message: ServerMessage) -> Option<WatchPlaybackSta
     })
 }
 
-fn watch_playback_snapshot_event(message: ServerMessage) -> Option<WatchPlaybackSnapshotEvent> {
-    use crate::proto::client::watch_playback_snapshot_event::Event;
-    watch_event_from_server_message(message, |event| WatchPlaybackSnapshotEvent {
+fn watch_playback_event(message: ServerMessage) -> Option<WatchPlaybackEvent> {
+    use crate::proto::client::watch_playback_event::Event;
+    watch_event_from_server_message(message, |event| WatchPlaybackEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
             GrpcWatchEvent::Changed(value) => Event::Changed(*value),

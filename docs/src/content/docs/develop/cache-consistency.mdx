@@ -252,7 +252,7 @@ Redis Streams、本地 broadcast 和 PostgreSQL notification 都是收敛机制�
 | [Calvin](https://dsf.berkeley.edu/cs286/papers/calvin-sigmod2012.pdf) | 先确定顺序再执行事务 | Redis 先预留版本再写 DB 的方向正确；失败后 fence 领先是可接受的安全降级 |
 | [RAMP transactions](https://people.eecs.berkeley.edu/~alig/papers/ramp.pdf) | 派生/多分区读需要 read atomic 元数据 | 权限缓存必须保存 member version 和 room settings version，不能只保存一个逻辑失效版本 |
 | [FaRM](https://www.usenix.org/conference/nsdi14/technical-sessions/dragojevi%C4%87) | 高性能事务仍依赖明确验证阶段 | L2 CAS 和 DB optimistic lock 都是必要验证点；不能用无条件 set |
-| [Kubernetes API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/) | `resourceVersion` 同时用于变更检测和一致性要求 | `RoomSettings.version`、`Playback.version`、`RoomMember.version` 应作为缓存源版本 |
+| [Kubernetes API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/) | `resourceVersion` 同时用于变更检测和一致性要求 | `RoomSettings.version`、`无客户端缓存版本`、`RoomMember.version` 应作为缓存源版本 |
 | [Kubernetes consistent reads from cache](https://v1-32.docs.kubernetes.io/blog/2024/08/15/consistent-read-from-cache-beta/) | 从 watch cache 提供一致读需要进度/版本证明 | SyncTV 的 L1/L2 只有在满足 Redis fence 时才能作为强读来源 |
 | [etcd API guarantees](https://etcd.io/docs/v3.5/learning/api_guarantees/) | linearizable read 与 serializable/stale read 明确分离 | Redis 故障时授权路径不能退化为 stale cache；必须 DB fallback 或 fail closed |
 | [Envoy xDS protocol](https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol.html) | version + nonce 避免 ACK/NACK 竞态 | SyncTV Realtime/缓存失效可以后续补“已观察版本”调试字段，但强一致性不依赖 ACK |

@@ -79,7 +79,7 @@ Provider 是 SyncTV 把外部媒体解析成播放结果的适配层。接入前
     - 只有客户端能访问该 URL 时才适合直连。
     - 如果 URL 只在服务端网络可访问，使用 proxy。
     - 尽量使用支持 Range 的上游，提升 seek 和 slice cache 效果。
-    - 带签名过期时间的 URL 需要刷新播放快照。
+    - 带签名过期时间的 URL 需要刷新播放信息。
 
     **验收**：客户端能 GET/Range，或 SyncTV proxy 能代表客户端访问。
   </TabItem>

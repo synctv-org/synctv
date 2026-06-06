@@ -23,7 +23,7 @@ After the first production deployment, use the launch validation workflow. For s
       3. Submit a password or join review if the room requires it.
       4. Add media or choose an existing playlist item.
       5. Start playback if you have permission, otherwise wait for a room administrator.
-      6. If playback fails, refresh the playback snapshot and check whether proxy playback is required.
+      6. If playback fails, refresh the playback info and check whether proxy playback is required.
     </Steps>
   </TabItem>
   <TabItem label="Enable 2FA" icon="seti:lock">
@@ -98,7 +98,7 @@ See [Add Media](../../use/media-sources/).
 3. Generate an SDK or write minimal requests.
 4. Implement login and refresh token handling.
 5. Create a WebSocket ticket and connect to `/ws/rooms/{room_id}`.
-6. Use [Realtime API](../../develop/realtime-api/) to observe playback state, playback snapshot, room settings, and members.
+6. Use [Realtime API](../../develop/realtime-api/) to observe playback state, playback info, room settings, and members.
 7. Handle `status`, `code`, `request_id`, and `Retry-After` using [Errors](../../reference/errors/).
 </Steps>
 

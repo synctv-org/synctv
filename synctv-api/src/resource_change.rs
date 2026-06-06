@@ -4,7 +4,7 @@ use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 #[derive(Debug, Clone)]
 pub enum ResourceInvalidation {
     PlaybackState,
-    PlaybackSnapshot(PlaybackSnapshotInvalidation),
+    Playback(PlaybackInvalidation),
     RoomSettings,
     PlaylistItems,
     RoomMembers,
@@ -25,7 +25,7 @@ impl PartialEq for ResourceInvalidation {
             | (Self::RoomSettings, Self::RoomSettings)
             | (Self::PlaylistItems, Self::PlaylistItems)
             | (Self::RoomMembers, Self::RoomMembers) => true,
-            (Self::PlaybackSnapshot(left), Self::PlaybackSnapshot(right)) => left == right,
+            (Self::Playback(left), Self::Playback(right)) => left == right,
             (Self::ChatEvents { event: left }, Self::ChatEvents { event: right }) => {
                 left.event_id == right.event_id
             }
@@ -53,7 +53,7 @@ impl PartialEq for ResourceInvalidation {
 impl Eq for ResourceInvalidation {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlaybackSnapshotInvalidation {
+pub enum PlaybackInvalidation {
     PlaybackStateChanged,
     MediaChanged { media_id: MediaId },
     PlaylistChanged { playlist_id: PlaylistId },
@@ -65,35 +65,35 @@ pub fn resource_invalidations_for_room_event(event: &RealtimeEvent) -> Vec<Resou
     match event {
         RealtimeEvent::PlaybackStateChanged { .. } => vec![
             ResourceInvalidation::PlaybackState,
-            ResourceInvalidation::PlaybackSnapshot(
-                PlaybackSnapshotInvalidation::PlaybackStateChanged,
+            ResourceInvalidation::Playback(
+                PlaybackInvalidation::PlaybackStateChanged,
             ),
         ],
         RealtimeEvent::MediaUpdated { media_id, .. }
         | RealtimeEvent::MediaRemoved { media_id, .. } => vec![
             ResourceInvalidation::PlaylistItems,
-            ResourceInvalidation::PlaybackSnapshot(PlaybackSnapshotInvalidation::MediaChanged {
+            ResourceInvalidation::Playback(PlaybackInvalidation::MediaChanged {
                 media_id: *media_id,
             }),
         ],
         RealtimeEvent::PlaylistUpdated { playlist, .. } => vec![
             ResourceInvalidation::PlaylistItems,
-            ResourceInvalidation::PlaybackSnapshot(PlaybackSnapshotInvalidation::PlaylistChanged {
+            ResourceInvalidation::Playback(PlaybackInvalidation::PlaylistChanged {
                 playlist_id: playlist.id,
             }),
         ],
         RealtimeEvent::MediaRemovedBatch { media_ids, .. }
         | RealtimeEvent::PlaylistReordered { media_ids, .. } => vec![
             ResourceInvalidation::PlaylistItems,
-            ResourceInvalidation::PlaybackSnapshot(
-                PlaybackSnapshotInvalidation::PlaylistItemsChanged {
+            ResourceInvalidation::Playback(
+                PlaybackInvalidation::PlaylistItemsChanged {
                     media_ids: media_ids.clone(),
                 },
             ),
         ],
         RealtimeEvent::PlaylistDeleted { playlist_id, .. } => vec![
             ResourceInvalidation::PlaylistItems,
-            ResourceInvalidation::PlaybackSnapshot(PlaybackSnapshotInvalidation::PlaylistChanged {
+            ResourceInvalidation::Playback(PlaybackInvalidation::PlaylistChanged {
                 playlist_id: *playlist_id,
             }),
         ],
@@ -145,7 +145,7 @@ pub fn resource_invalidations_for_cache_targets(
         push_unique(&mut invalidations, ResourceInvalidation::PlaybackState);
         push_unique(
             &mut invalidations,
-            ResourceInvalidation::PlaybackSnapshot(PlaybackSnapshotInvalidation::Cache),
+            ResourceInvalidation::Playback(PlaybackInvalidation::Cache),
         );
         push_unique(&mut invalidations, ResourceInvalidation::RoomSettings);
         push_unique(&mut invalidations, ResourceInvalidation::PlaylistItems);
@@ -154,7 +154,7 @@ pub fn resource_invalidations_for_cache_targets(
     if refresh_user {
         push_unique(
             &mut invalidations,
-            ResourceInvalidation::PlaybackSnapshot(PlaybackSnapshotInvalidation::Cache),
+            ResourceInvalidation::Playback(PlaybackInvalidation::Cache),
         );
         push_unique(&mut invalidations, ResourceInvalidation::RoomMembers);
     }
@@ -249,8 +249,8 @@ mod tests {
             resource_invalidations_for_room_event(&event),
             vec![
                 ResourceInvalidation::PlaybackState,
-                ResourceInvalidation::PlaybackSnapshot(
-                    PlaybackSnapshotInvalidation::PlaybackStateChanged
+                ResourceInvalidation::Playback(
+                    PlaybackInvalidation::PlaybackStateChanged
                 ),
             ]
         );
@@ -310,8 +310,8 @@ mod tests {
             resource_invalidations_for_room_event(&event),
             vec![
                 ResourceInvalidation::PlaylistItems,
-                ResourceInvalidation::PlaybackSnapshot(
-                    PlaybackSnapshotInvalidation::PlaylistChanged { playlist_id }
+                ResourceInvalidation::Playback(
+                    PlaybackInvalidation::PlaylistChanged { playlist_id }
                 ),
             ]
         );
@@ -333,8 +333,8 @@ mod tests {
             resource_invalidations_for_room_event(&event),
             vec![
                 ResourceInvalidation::PlaylistItems,
-                ResourceInvalidation::PlaybackSnapshot(
-                    PlaybackSnapshotInvalidation::MediaChanged { media_id }
+                ResourceInvalidation::Playback(
+                    PlaybackInvalidation::MediaChanged { media_id }
                 ),
             ]
         );
@@ -361,8 +361,8 @@ mod tests {
         };
         let expected = vec![
             ResourceInvalidation::PlaylistItems,
-            ResourceInvalidation::PlaybackSnapshot(
-                PlaybackSnapshotInvalidation::PlaylistItemsChanged { media_ids },
+            ResourceInvalidation::Playback(
+                PlaybackInvalidation::PlaylistItemsChanged { media_ids },
             ),
         ];
 
@@ -386,8 +386,8 @@ mod tests {
             resource_invalidations_for_room_event(&event),
             vec![
                 ResourceInvalidation::PlaylistItems,
-                ResourceInvalidation::PlaybackSnapshot(
-                    PlaybackSnapshotInvalidation::PlaylistChanged { playlist_id }
+                ResourceInvalidation::Playback(
+                    PlaybackInvalidation::PlaylistChanged { playlist_id }
                 ),
             ]
         );
@@ -406,7 +406,7 @@ mod tests {
             ),
             vec![
                 ResourceInvalidation::PlaybackState,
-                ResourceInvalidation::PlaybackSnapshot(PlaybackSnapshotInvalidation::Cache),
+                ResourceInvalidation::Playback(PlaybackInvalidation::Cache),
                 ResourceInvalidation::RoomSettings,
                 ResourceInvalidation::PlaylistItems,
                 ResourceInvalidation::RoomMembers,

@@ -89,7 +89,7 @@ authorization: Bearer <guest_token>
 | --- | --- |
 | Synchronized playback | Play, pause, seek, and media changes need low-latency propagation |
 | Chat | Chat message events are delivered after explicit subscription |
-| Playback snapshot | Expired URLs, Provider credential changes, and media switches need refreshes |
+| Playback | Expired URLs, Provider credential changes, and media switches need refreshes |
 | Room members | Joins, leaves, and permission changes need UI sync |
 | WebRTC signaling | offer, answer, and ICE candidates need room-scoped forwarding; targets use `public_actor_id:conn_id`, where signed-in users are `usr_*` and guests are `gst_*` |
 
@@ -176,7 +176,7 @@ Observations are not retained across WebSocket connections. After disconnect, cl
 1. Request a new WebSocket ticket, or reconnect with a valid access token.
 2. Re-send `observe_resource` for currently visible views.
 3. Include the locally saved `version` so the server can decide whether to send a snapshot.
-4. For `playback_snapshot`, also include cached `media_id`, `playlist_id`, `target`, and `playback_client_profile`.
+4. For `playback`, also include cached `media_id`, `playlist_id`, `target`, and `playback_client_profile`.
 5. Keep the local cache when `resource_observed.changed=false`; replace it when `resource_changed` arrives.
 </Steps>
 

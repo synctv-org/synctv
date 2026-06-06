@@ -1,6 +1,6 @@
 ---
 title: Realtime 资源观察
-description: 使用 Realtime 订阅播放状态、播放快照、房间设置、播放列表项和房间成员。
+description: 使用 Realtime 订阅播放状态、播放信息、房间设置、播放列表项和房间成员。
 ---
 
 import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
@@ -12,7 +12,7 @@ import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 | 资源 | `ObserveResource.resource` 字段 | 版本来源 | 典型用途 |
 | --- | --- | --- | --- |
 | 播放状态 | `playback_state` | `RoomPlaybackState.version` | 播放器 UI、同步当前播放时间和状态 |
-| 播放快照 | `playback_snapshot` | `PlaybackSnapshot.version` | 获取当前播放源 URL、header、代理策略和过期时间 |
+| 播放信息 | `playback` | 每次观察返回当前值 | 获取当前播放源 URL、header、代理策略和过期时间 |
 | 房间设置 | `room_settings` | 房间设置版本 | 控制聊天、播放权限等 UI |
 | 播放列表项 | `playlist_items` | 列表快照版本 | 根列表、子播放列表、provider 浏览和搜索结果 |
 | 房间成员 | `room_members` | 成员列表快照版本 | 成员列表、分页、搜索、角色和状态过滤 |
@@ -33,10 +33,10 @@ import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 <Steps>
 1. 客户端连接房间 WebSocket。
-2. 客户端发送 `ClientMessage.observe_resource`，包含 `observe_id`、本地缓存 `version`、`delivery_mode` 和目标资源。
+2. 客户端发送 `ClientMessage.observe_resource`，包含 `observe_id`、`delivery_mode` 和目标资源。支持恢复游标的资源还可以带本地缓存版本或事件序列。
 3. 服务端加载当前资源，返回 `ServerMessage.resource_observed`。
 4. 如果服务端判断资源已变化，随后返回同一 `observe_id` 的 `ServerMessage.resource_changed`。
-5. 连接期间，房间事件、缓存失效、Provider credential 变更或播放快照过期会触发重新评估。
+5. 连接期间，房间事件、缓存失效、Provider credential 变更或播放信息过期会触发重新评估。
 </Steps>
 
 `ResourceObserved` 字段：
@@ -44,15 +44,15 @@ import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 | 字段 | 说明 |
 | --- | --- |
 | `observe_id` | 对应客户端提交的订阅 ID |
-| `version` | 服务端当前版本。客户端应保存它，用于重连或下次订阅 |
-| `changed` | 服务端当前资源是否不同于客户端提交的 `version` 或播放快照源身份 |
+| `version` | 服务端当前版本；播放信息不暴露客户端缓存版本 |
+| `changed` | 服务端当前资源是否需要发送给客户端 |
 
 `ResourceChanged` 字段：
 
 | 字段 | 说明 |
 | --- | --- |
 | `observe_id` | 哪个订阅发生变化 |
-| `version` | 新版本。客户端应更新本地缓存版本 |
+| `version` | 新版本；播放信息不使用该字段做客户端缓存恢复 |
 | `payload` | 完整快照或 `changed_only`，取决于 `delivery_mode` |
 
 ## 取消订阅
@@ -90,25 +90,21 @@ sendClientMessage({
 服务端变化时返回 `ResourceChanged.payload.playback_state`。
 
   </TabItem>
-  <TabItem label="播放快照" icon="document">
+  <TabItem label="播放信息" icon="document">
 
 ```ts
 sendClientMessage({
   observeResource: {
-    observeId: 'playback-snapshot',
-    version: cached.playbackSnapshotVersion ?? '',
+    observeId: 'playback',
     deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
-    playbackSnapshot: {
-      mediaId: cached.mediaId ?? '',
-      playlistId: cached.playlistId ?? '',
-      target: cached.target ?? new Uint8Array(),
+    playback: {
       playbackClientProfile: currentPlaybackClientProfile,
     },
   },
 });
 ```
 
-`media_id`、`playlist_id`、`target` 和 `playback_client_profile` 用于识别本地缓存对应的播放源；即使版本字符串碰撞，服务端也能判断播放源已经变化。
+播放信息观察会立即返回当前可播放 URL、header、字幕和过期时间，并在房间事件、过期或 Provider credential 变化后重新评估。
 
   </TabItem>
   <TabItem label="房间成员" icon="puzzle">
@@ -142,13 +138,13 @@ notify-only 模式下服务端变化时返回 `ResourceChanged.payload.changed_o
 
 | 事件类型 | 刷新资源 |
 | --- | --- |
-| 播放状态变化 | `playback_state`、`playback_snapshot` |
-| 当前播放媒体或播放列表相关媒体更新 | `playback_snapshot`，必要时 `playlist_items` |
+| 播放状态变化 | `playback_state`、`playback` |
+| 当前播放媒体或播放列表相关媒体更新 | `playback`，必要时 `playlist_items` |
 | 播放列表创建、更新、删除、重排或媒体增删 | `playlist_items` |
 | 房间设置变化 | `room_settings`、`room_members` |
 | 用户加入、离开或权限变化 | `room_members` |
 | 缓存失效命中当前房间或用户 | 对应的播放、设置、列表或成员资源 |
-| Provider credential 变更 | 可能影响当前用户播放快照和 provider 浏览结果 |
-| 播放快照过期 | 到期后自动重新评估 `playback_snapshot` 观察 |
+| Provider credential 变更 | 可能影响当前用户播放信息和 provider 浏览结果 |
+| 播放信息过期 | 到期后自动重新评估 `playback` 观察 |
 
 服务端会对同一房间内相同查询做短窗口合并，减少多个连接同时订阅同一资源时的重复快照加载。客户端不需要依赖这个优化，但可以为多个视图建立独立 `observe_id`。

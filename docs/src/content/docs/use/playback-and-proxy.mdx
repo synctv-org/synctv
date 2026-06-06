@@ -1,6 +1,6 @@
 ---
 title: 播放与代理模型
-description: SyncTV 播放快照、播放 URL、Provider header、代理模式、Range、slice cache、WebRTC 和直播播放边界。
+description: SyncTV 播放信息、播放 URL、Provider header、代理模式、Range、slice cache、WebRTC 和直播播放边界。
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
@@ -12,8 +12,8 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 ## 播放链路
 
 <Steps>
-1. 客户端请求房间当前播放或指定媒体的播放快照。
-2. SyncTV 根据房间状态、媒体、用户、Provider 凭据和客户端能力生成 `PlaybackSnapshot`。
+1. 客户端请求房间当前播放或指定媒体的播放信息。
+2. SyncTV 根据房间状态、媒体、用户、Provider 凭据和客户端能力生成 `Playback`。
 3. Provider 返回一个或多个 `PlaybackInfo`，每个模式包含 URL、format、header、字幕、过期时间和 metadata。
 4. 客户端选择合适模式：直连、proxy、转码、HLS、FLV 或字幕 URL。
 5. URL 过期、媒体切换、Provider 凭据变化或客户端能力变化后，客户端重新获取快照。
@@ -62,12 +62,12 @@ SyncTV proxy slice cache 的边界：
 
 配置细节见 [Proxy slice cache](../../configuration/proxy-slice-cache/)。
 
-## 播放快照和 Realtime
+## 播放信息和 Realtime
 
-新客户端使用 Realtime 资源观察订阅播放快照：
+新客户端使用 Realtime 资源观察订阅播放信息：
 
 - `playback_state`：当前播放位置、状态和版本。
-- `playback_snapshot`：当前媒体的播放 URL、headers、字幕和过期时间。
+- `playback`：当前媒体的播放 URL、headers、字幕和过期时间。
 
 断线重连时，带上本地 `version`、`media_id`、`playlist_id`、`target` 和 `playback_client_profile`。服务端会判断缓存是否仍有效，必要时推送新的快照。
 
@@ -95,7 +95,7 @@ WebRTC 配置见 [WebRTC 配置](../../configuration/webrtc/)，直播见 [直�
 | 只有浏览器失败 | CORS 或 header 限制 | 选择 proxy，检查浏览器 Network |
 | 只有代理失败 | SyncTV 到上游网络或 header | 服务端网络、DNS、proxy header |
 | 多副本直播偶发失败 | HLS 存储模型 | publisher 节点、共享存储、OSS 或 gRPC proxy |
-| 播放 URL 一段时间后失效 | `expires_at` | 订阅或重新拉取播放快照 |
+| 播放 URL 一段时间后失效 | `expires_at` | 订阅或重新拉取播放信息 |
 
 ## 继续阅读
 

@@ -89,7 +89,7 @@ authorization: Bearer <guest_token>
 | --- | --- |
 | 同步播放 | 播放、暂停、seek、切换媒体需要低延迟传播 |
 | 聊天 | 聊天消息事件通过显式订阅接收 |
-| 播放快照 | URL 过期、Provider 凭据变化或媒体切换后需要刷新 |
+| 播放信息 | URL 过期、Provider 凭据变化或媒体切换后需要刷新 |
 | 房间成员列表 | 成员加入、离开、权限变化需要同步 UI |
 | WebRTC 信令 | offer、answer、ICE candidate 需要房间内转发；目标地址使用 `public_actor_id:conn_id`，登录用户是 `usr_*`，游客是 `gst_*` |
 
@@ -176,7 +176,7 @@ WebSocket 断开后，观察不会跨连接保留。客户端重连时应该：
 1. 重新获取 WebSocket ticket，或用有效 access token 重新连接。
 2. 为当前仍然打开的视图重新发送 `observe_resource`。
 3. 带上本地保存的 `version`，让服务端判断是否需要补发快照。
-4. 对 `playback_snapshot` 同时带上本地缓存的 `media_id`、`playlist_id`、`target` 和 `playback_client_profile`。
+4. 对 `playback` 同时带上本地缓存的 `media_id`、`playlist_id`、`target` 和 `playback_client_profile`。
 5. 收到 `resource_observed.changed=false` 时保留本地缓存；收到 `resource_changed` 时替换对应缓存。
 </Steps>
 

@@ -6626,7 +6626,7 @@ fn build_get_playback_cli_output(
 ) -> GetPlaybackCliOutput {
     let synctv_proto::client::GetPlaybackResponse {
         playback_state,
-        playback_snapshot,
+        playback,
     } = response;
     let api_base_url = infer_cli_api_base_url(global);
     let mut pull_urls = Vec::new();
@@ -6637,7 +6637,7 @@ fn build_get_playback_cli_output(
     let mut flv_pull_url = None;
     let mut flv_absolute_pull_url = None;
 
-    if let Some(snapshot) = playback_snapshot.as_ref() {
+    if let Some(snapshot) = playback.as_ref() {
         let mut modes = snapshot.playback_infos.iter().collect::<Vec<_>>();
         modes.sort_by_key(|(mode, _)| *mode);
 
@@ -6679,14 +6679,14 @@ fn build_get_playback_cli_output(
         }
     }
 
-    let default_mode = playback_snapshot
+    let default_mode = playback
         .as_ref()
         .map(|snapshot| snapshot.default_mode.clone())
         .filter(|mode| !mode.is_empty());
 
     GetPlaybackCliOutput {
         playback_state,
-        playback_snapshot,
+        playback,
         default_mode,
         pull_urls,
         default_pull_url,
@@ -7417,7 +7417,7 @@ struct HumanPlaylistItemsResponse<P, M> {
 #[derive(Debug, Clone, Serialize)]
 struct HumanGetPlaybackResponse<T> {
     playback_state: Option<T>,
-    playback_snapshot: Option<synctv_proto::client::PlaybackSnapshot>,
+    playback: Option<synctv_proto::client::Playback>,
     #[serde(skip_serializing_if = "Option::is_none")]
     default_mode: Option<String>,
     pull_urls: Vec<PlaybackPullUrlCliOutput>,
@@ -7452,7 +7452,7 @@ struct PlaybackPullUrlCliOutput {
 #[derive(Debug, Clone, Serialize)]
 struct GetPlaybackCliOutput {
     playback_state: Option<synctv_proto::client::PlaybackState>,
-    playback_snapshot: Option<synctv_proto::client::PlaybackSnapshot>,
+    playback: Option<synctv_proto::client::Playback>,
     #[serde(skip_serializing_if = "Option::is_none")]
     default_mode: Option<String>,
     pull_urls: Vec<PlaybackPullUrlCliOutput>,
@@ -8612,7 +8612,7 @@ impl ToHuman for GetPlaybackCliOutput {
     fn to_human(&self) -> Self::Human {
         HumanGetPlaybackResponse {
             playback_state: self.playback_state.to_human(),
-            playback_snapshot: self.playback_snapshot.clone(),
+            playback: self.playback.clone(),
             default_mode: self.default_mode.clone(),
             pull_urls: self.pull_urls.clone(),
             default_pull_url: self.default_pull_url.clone(),
@@ -13639,7 +13639,7 @@ mod tests {
         let output = build_get_playback_cli_output(
             synctv_proto::client::GetPlaybackResponse {
                 playback_state: None,
-                playback_snapshot: Some(synctv_proto::client::PlaybackSnapshot {
+                playback: Some(synctv_proto::client::Playback {
                     media_id: "media-1".into(),
                     playlist_id: String::new(),
                     room_id: "room-1".into(),

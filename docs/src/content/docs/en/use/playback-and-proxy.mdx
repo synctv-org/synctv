@@ -1,6 +1,6 @@
 ---
 title: Playback and Proxy Model
-description: SyncTV playback snapshots, playback URLs, Provider headers, proxy modes, Range, slice cache, WebRTC, and livestream boundaries.
+description: SyncTV playbacks, playback URLs, Provider headers, proxy modes, Range, slice cache, WebRTC, and livestream boundaries.
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
@@ -12,8 +12,8 @@ Playback issues often sit between the client, SyncTV, Provider, and upstream med
 ## Playback Flow
 
 <Steps>
-1. The client requests the current room playback or a playback snapshot for a media item.
-2. SyncTV uses room state, media, user, Provider credentials, and client profile to build `PlaybackSnapshot`.
+1. The client requests the current room playback or a playback for a media item.
+2. SyncTV uses room state, media, user, Provider credentials, and client profile to build `Playback`.
 3. The Provider returns one or more `PlaybackInfo` entries with URL, format, headers, subtitles, expiry, and metadata.
 4. The client chooses direct URL, proxy URL, transcode variant, HLS, FLV, or subtitle URL.
 5. When URL expiry, media switch, credential change, or client capability changes, the client refreshes the snapshot.
@@ -60,12 +60,12 @@ Proxy slice cache boundaries:
 
 See [Proxy Slice Cache](../../configuration/proxy-slice-cache/).
 
-## Playback Snapshot and Realtime
+## Playback Info and Realtime
 
 New clients observe playback resources over Realtime:
 
 - `playback_state`: current position, state, and version.
-- `playback_snapshot`: playback URLs, headers, subtitles, and expiry.
+- `playback`: playback URLs, headers, subtitles, and expiry.
 
 On reconnect, send local `version`, `media_id`, `playlist_id`, `target`, and `playback_client_profile`. The server decides whether the cached snapshot is still valid.
 
@@ -91,7 +91,7 @@ WebRTC configuration is in [WebRTC Configuration](../../configuration/webrtc/). 
 | Browser only fails | CORS or header restrictions | Use proxy and inspect browser Network |
 | Proxy only fails | Server-to-upstream network or headers | DNS, server network, proxy headers |
 | Multi-replica live randomly fails | HLS storage model | Publisher node, shared storage, OSS, gRPC proxy |
-| URL stops working later | `expires_at` | Observe or fetch a new playback snapshot |
+| URL stops working later | `expires_at` | Observe or fetch a new playback |
 
 ## Continue Reading
 

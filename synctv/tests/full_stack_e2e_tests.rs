@@ -115,12 +115,12 @@ fn optional_event_sequence(sequence: impl Into<String>) -> Option<i64> {
     }
 }
 
-fn observe_playback_snapshot_message(
+fn observe_playback_message(
     observe_id: &str,
     after_event_sequence: impl Into<String>,
 ) -> synctv_proto::client::ClientMessage {
     use synctv_proto::client::{
-        client_message, observe_resource, ObservePlaybackSnapshot, ObserveResource,
+        client_message, observe_resource, ObservePlayback, ObserveResource,
         ResourceDeliveryMode,
     };
 
@@ -128,8 +128,8 @@ fn observe_playback_snapshot_message(
         message: Some(client_message::Message::ObserveResource(ObserveResource {
             observe_id: observe_id.to_string(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
-            resource: Some(observe_resource::Resource::PlaybackSnapshot(
-                ObservePlaybackSnapshot {
+            resource: Some(observe_resource::Resource::Playback(
+                ObservePlayback {
                     media_id: None,
                     playlist_id: None,
                     target: Vec::new(),
@@ -210,12 +210,12 @@ fn observe_room_members_message(
     }
 }
 
-fn resource_playback_snapshot(
+fn resource_playback(
     message: &ServerMessage,
-) -> Option<&synctv_proto::client::PlaybackSnapshot> {
+) -> Option<&synctv_proto::client::Playback> {
     match &message.message {
         Some(server_message::Message::ResourceChanged(changed)) => match changed.payload.as_ref() {
-            Some(synctv_proto::client::resource_changed::Payload::PlaybackSnapshot(snapshot)) => {
+            Some(synctv_proto::client::resource_changed::Payload::Playback(snapshot)) => {
                 Some(snapshot)
             }
             _ => None,
@@ -4216,7 +4216,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     );
     assert_eq!(playback_state["playback_state"]["is_playing"], true);
     assert_eq!(
-        playback_state["playback_snapshot"]["media_id"],
+        playback_state["playback"]["media_id"],
         media_one_id
     );
 
@@ -7073,7 +7073,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn full_stack_grpc_message_stream_watch_playback_snapshot_receives_initial_and_future_updates(
+async fn full_stack_grpc_message_stream_watch_playback_receives_initial_and_future_updates(
 ) {
     use synctv_proto::client::room_service_client::RoomServiceClient;
     use tokio_stream::wrappers::ReceiverStream;
@@ -7149,7 +7149,7 @@ async fn full_stack_grpc_message_stream_watch_playback_snapshot_receives_initial
         .expect("connect member room gRPC client");
     let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(8);
     outbound_tx
-        .send(observe_playback_snapshot_message(
+        .send(observe_playback_message(
             "grpc-playback-snapshot",
             String::new(),
         ))
@@ -7173,15 +7173,15 @@ async fn full_stack_grpc_message_stream_watch_playback_snapshot_receives_initial
         &mut inbound,
         Duration::from_secs(10),
         |message| {
-            resource_playback_snapshot(message).is_some_and(|snapshot| {
+            resource_playback(message).is_some_and(|snapshot| {
                 snapshot.media_id == media_one_id && !snapshot.version.is_empty()
             })
         },
-        "initial grpc playback snapshot",
+        "initial grpc playback",
     )
     .await;
-    let initial_version = resource_playback_snapshot(&initial_snapshot)
-        .expect("playback snapshot should be present")
+    let initial_version = resource_playback(&initial_snapshot)
+        .expect("playback should be present")
         .version
         .clone();
 
@@ -7204,16 +7204,16 @@ async fn full_stack_grpc_message_stream_watch_playback_snapshot_receives_initial
         &mut inbound,
         Duration::from_secs(10),
         |message| {
-            resource_playback_snapshot(message).is_some_and(|snapshot| {
+            resource_playback(message).is_some_and(|snapshot| {
                 snapshot.media_id == media_two_id && !snapshot.version.is_empty()
             })
         },
-        "updated grpc playback snapshot",
+        "updated grpc playback",
     )
     .await;
 
     let snapshot =
-        resource_playback_snapshot(&updated_snapshot).expect("updated snapshot should be present");
+        resource_playback(&updated_snapshot).expect("updated snapshot should be present");
     assert_eq!(snapshot.media_id, media_two_id);
     assert_eq!(
         snapshot.version, initial_version,
@@ -8338,7 +8338,7 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn full_stack_websocket_watch_playback_snapshot_receives_initial_and_future_updates() {
+async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates() {
     use synctv_proto::client::server_message;
 
     let fixture = start_room_realtime_fixture("ws-watch-playback-snapshot").await;
@@ -8466,7 +8466,7 @@ async fn full_stack_websocket_watch_playback_snapshot_receives_initial_and_futur
 
     send_client_message(
         &mut member_ws,
-        observe_playback_snapshot_message("ws-playback-snapshot", String::new()),
+        observe_playback_message("ws-playback-snapshot", String::new()),
     )
     .await;
 
@@ -8474,15 +8474,15 @@ async fn full_stack_websocket_watch_playback_snapshot_receives_initial_and_futur
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            resource_playback_snapshot(message).is_some_and(|snapshot| {
+            resource_playback(message).is_some_and(|snapshot| {
                 snapshot.media_id == media_one_id && !snapshot.version.is_empty()
             })
         },
-        "initial playback snapshot",
+        "initial playback",
     )
     .await;
-    let initial_version = resource_playback_snapshot(&initial_snapshot)
-        .expect("playback snapshot should be present")
+    let initial_version = resource_playback(&initial_snapshot)
+        .expect("playback should be present")
         .version
         .clone();
 
@@ -8505,16 +8505,16 @@ async fn full_stack_websocket_watch_playback_snapshot_receives_initial_and_futur
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            resource_playback_snapshot(message).is_some_and(|snapshot| {
+            resource_playback(message).is_some_and(|snapshot| {
                 snapshot.media_id == media_two_id && !snapshot.version.is_empty()
             })
         },
-        "updated playback snapshot",
+        "updated playback",
     )
     .await;
 
     let snapshot =
-        resource_playback_snapshot(&updated_snapshot).expect("updated snapshot should be present");
+        resource_playback(&updated_snapshot).expect("updated snapshot should be present");
     assert_eq!(snapshot.media_id, media_two_id);
     assert_eq!(
         snapshot.version, initial_version,

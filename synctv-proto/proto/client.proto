@@ -110,7 +110,7 @@ service RoomService {
   rpc CreateWebSocketTicket(CreateWebSocketTicketRequest) returns (CreateWebSocketTicketResponse);
   rpc MessageStream(stream ClientMessage) returns (stream ServerMessage);
   rpc WatchPlaybackState(WatchPlaybackStateRequest) returns (stream WatchPlaybackStateEvent);
-  rpc WatchPlaybackSnapshot(WatchPlaybackSnapshotRequest) returns (stream WatchPlaybackSnapshotEvent);
+  rpc WatchPlayback(WatchPlaybackRequest) returns (stream WatchPlaybackEvent);
   rpc WatchRoomSettings(WatchRoomSettingsRequest) returns (stream WatchRoomSettingsEvent);
   rpc WatchPlaylistItems(WatchPlaylistItemsRequest) returns (stream WatchPlaylistItemsEvent);
   rpc WatchRoomMembers(WatchRoomMembersRequest) returns (stream WatchRoomMembersEvent);
@@ -1993,14 +1993,14 @@ message GetPlaybackRequest {
 message GetPlaybackResponse {
   // Playback state (current time, speed, is_playing, etc.)
   PlaybackState playback_state = 1;
-  // Versioned playback snapshot for the current source.
-  PlaybackSnapshot playback_snapshot = 2;
+  // Player-ready playback information for the current source.
+  Playback playback = 2;
 }
 
 // ==================== Playback Information Structures ====================
 
-// Versioned playback information for the current source.
-message PlaybackSnapshot {
+// Player-ready playback information for the current source.
+message Playback {
   string media_id = 1; // Media ID
   string playlist_id = 2; // Playlist ID
   string room_id = 3; // Room ID
@@ -2016,9 +2016,7 @@ message PlaybackSnapshot {
 
   // Media-level metadata (duration, thumbnail, title, author, etc.)
   map<string, string> metadata = 8;
-  // Version scoped to playback snapshots.
-  string version = 9;
-  // Earliest URL expiration across the snapshot, if any.
+  // Earliest URL expiration across playback URLs, if any.
   optional int64 expires_at = 10;
 }
 
@@ -2158,7 +2156,7 @@ message ObserveResource {
   ResourceDeliveryMode delivery_mode = 3 [(buf.validate.field).enum.defined_only = true];
   oneof resource {
     ObservePlaybackState playback_state = 4;
-    ObservePlaybackSnapshot playback_snapshot = 5;
+    ObservePlayback playback = 5;
     ObserveRoomSettings room_settings = 6;
     ObservePlaylistItems playlist_items = 7;
     ObserveRoomMembers room_members = 8;
@@ -2175,19 +2173,13 @@ message UnobserveResource {
 
 message ObservePlaybackState {
   // Current room playback control state: playing media, playlist, target, position and speed.
-  // Unset starts from the current snapshot and live changes.
+  // Unset starts from the current state and live changes.
   optional int64 after_event_sequence = 1;
 }
 
-message ObservePlaybackSnapshot {
+message ObservePlayback {
   // Player-ready aggregate for the current playback source.
-  // Client-side cached playback source identity.
-  optional string media_id = 1;
-  optional string playlist_id = 2;
-  bytes target = 3;
   PlaybackClientProfile playback_client_profile = 4;
-  // Unset starts from the current snapshot and live changes.
-  optional int64 after_event_sequence = 5;
 }
 
 message ObserveRoomSettings {
@@ -2219,9 +2211,9 @@ message WatchPlaybackStateRequest {
   ObservePlaybackState playback_state = 2;
 }
 
-message WatchPlaybackSnapshotRequest {
+message WatchPlaybackRequest {
   ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
-  ObservePlaybackSnapshot playback_snapshot = 2;
+  ObservePlayback playback = 2;
 }
 
 message WatchRoomSettingsRequest {
@@ -2252,7 +2244,7 @@ message WatchPlaybackStateEvent {
   }
 }
 
-message WatchPlaybackSnapshotEvent {
+message WatchPlaybackEvent {
   oneof event {
     ResourceObserved observed = 1;
     ResourceChanged changed = 2;
@@ -2335,7 +2327,7 @@ message ServerMessage {
     // User notification push (replaces NOTIFICATION_PUSH error code abuse)
     UserNotification notification = 24;
     MediaUpdated media_updated = 25;
-    PlaybackSnapshotChanged playback_snapshot = 26;
+    PlaybackChanged playback = 26;
     PlaylistItemsChanged playlist_items = 27;
     RoomMembersChanged room_members = 28;
     ResourceObserved resource_observed = 29;
@@ -2357,7 +2349,7 @@ message ResourceChanged {
   oneof payload {
     ResourceChangedOnly changed_only = 3;
     PlaybackState playback_state = 4;
-    PlaybackSnapshot playback_snapshot = 5;
+    Playback playback = 5;
     RoomSettingsChanged room_settings = 6;
     ListPlaylistItemsResponse playlist_items = 7;
     GetRoomMembersResponse room_members = 8;
@@ -2835,9 +2827,9 @@ message PlaybackStateChanged {
   PlaybackState state = 2;
 }
 
-message PlaybackSnapshotChanged {
+message PlaybackChanged {
   string room_id = 1;
-  PlaybackSnapshot snapshot = 2;
+  Playback playback = 2;
 }
 
 message UserJoinedRoom {

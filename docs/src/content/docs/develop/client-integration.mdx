@@ -17,13 +17,13 @@ OpenAPI 和 protobuf 定义请求、响应和消息结构；客户端还需要�
 | --- | --- | --- |
 | 登录并保持会话 | 登录、处理 MFA、保存 access/refresh token、刷新会话、处理 401 | 本页“Token 使用”和“本地登录和 MFA” |
 | 进入房间实时状态 | 获取房间、创建 WebSocket ticket、连接 `/ws/rooms/{room_id}`、解码 protobuf | [Realtime API](../realtime-api/) |
-| 展示同步播放 | 读取当前播放状态、获取播放快照、订阅 `playback_state` 和 `playback_snapshot` | [播放模型](../../concepts/playback-model/) |
+| 展示同步播放 | 读取当前播放状态、获取播放信息、订阅 `playback_state` 和 `playback` | [播放模型](../../concepts/playback-model/) |
 | 添加媒体 | 选择 Provider、浏览或搜索媒体、提交播放列表项、处理 Provider 错误 | [媒体源](../../concepts/media-providers/) |
-| 处理 URL 过期 | 读取 `expires_at`、到期前刷新播放快照、切换媒体后丢弃旧 URL | [播放与代理模型](../../use/playback-and-proxy/) |
+| 处理 URL 过期 | 读取 `expires_at`、到期前刷新播放信息、切换媒体后丢弃旧 URL | [播放与代理模型](../../use/playback-and-proxy/) |
 | 实现重连 | WebSocket 断开后重新申请 ticket、重连、用本地版本重新观察资源 | [Realtime API](../realtime-api/) |
 | 统一错误体验 | 按 HTTP status、业务 code、`request_id`、`Retry-After` 分类处理 | [错误参考](../../reference/errors/) |
 
-先实现登录、房间列表、ticket、Realtime 和播放快照，再扩展 Provider、聊天、通知和 WebRTC。这样可以尽早验证客户端已经理解 SyncTV 的核心状态模型。
+先实现登录、房间列表、ticket、Realtime 和播放信息，再扩展 Provider、聊天、通知和 WebRTC。这样可以尽早验证客户端已经理解 SyncTV 的核心状态模型。
 
 ## 选择哪种接口
 
@@ -299,7 +299,7 @@ WebSocket 只处理二进制 protobuf 帧。客户端发送 `synctv.client.Clien
 
 ## 实时资源观察
 
-实时资源观察用于在房间 WebSocket 上订阅可缓存资源，例如播放状态、播放快照、房间设置、播放列表项和房间成员。客户端发送 `ClientMessage.observe_resource`，服务端返回 `resource_observed`、`resource_changed` 或 `resource_observe_error`。
+实时资源观察用于在房间 WebSocket 上订阅可缓存资源，例如播放状态、播放信息、房间设置、播放列表项和房间成员。客户端发送 `ClientMessage.observe_resource`，服务端返回 `resource_observed`、`resource_changed` 或 `resource_observe_error`。
 
 完整协议、delivery mode、版本同步、每类资源示例、重连和错误处理见 [Realtime API](../realtime-api/)。
 

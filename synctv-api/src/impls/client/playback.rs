@@ -12,15 +12,11 @@ use synctv_core::service::playback::{
 use super::convert::{
     playback_client_profile_from_proto, provider_playback_info_to_model,
     sign_local_bilibili_danmaku_urls, try_bilibili_live_danmaku_for_static_media,
-    try_playback_snapshot_to_proto, try_playback_state_to_proto,
+    try_playback_to_proto, try_playback_state_to_proto,
 };
 use super::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
-use crate::impls::playback_snapshot::{
-    compose_playback_snapshot_version, dynamic_playback_snapshot_version,
-    playback_snapshot_expires_at, provider_credential_dependency_fingerprint,
-    static_playback_snapshot_version,
-};
+use crate::impls::playback::playback_expires_at;
 use crate::impls::ApiError;
 use crate::playback_fanout::{PlaybackFanoutActor, PreparedPlaybackStateFanout};
 use synctv_core::models::MediaId;
@@ -45,14 +41,14 @@ pub(super) fn static_media_source_provider(
 
 fn stale_cached_playback_reference<T>(
     state: &RoomPlaybackState,
-    snapshot_result: &Result<T, ApiError>,
+    playback_result: &Result<T, ApiError>,
 ) -> bool {
     if state.playing_media_id.is_none() && state.playing_playlist_id.is_none() {
         return false;
     }
 
     matches!(
-        snapshot_result,
+        playback_result,
         Err(ApiError::NotFound(message))
             if matches!(
                 message.as_str(),
@@ -304,49 +300,6 @@ impl ClientApiImpl {
         }
     }
 
-    async fn playback_snapshot_version_from_state(
-        &self,
-        user_id: &UserId,
-        room_id: &synctv_core::models::RoomId,
-        state: &synctv_core::models::RoomPlaybackState,
-    ) -> Result<String, ApiError> {
-        let base_version = if let Some(media_id) = &state.playing_media_id {
-            let media = self
-                .room_service
-                .media_service()
-                .get_room_media(room_id, media_id)
-                .await
-                .map_err(ApiError::from)?
-                .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
-            static_playback_snapshot_version(&media)
-        } else if let Some(playlist_id) = &state.playing_playlist_id {
-            let playlist = self
-                .room_service
-                .playlist_service()
-                .get_room_playlist(room_id, playlist_id)
-                .await
-                .map_err(ApiError::from)?
-                .ok_or_else(|| ApiError::NotFound("Playlist not found".to_string()))?;
-            dynamic_playback_snapshot_version(&playlist)
-        } else {
-            state.version.to_string()
-        };
-
-        let dependencies = self
-            .playback_credential_dependencies_from_state(user_id, room_id, state)
-            .await?;
-        let credential_fingerprint = provider_credential_dependency_fingerprint(
-            self.credential_repo.as_deref(),
-            &dependencies,
-        )
-        .await?;
-
-        Ok(compose_playback_snapshot_version(
-            base_version,
-            credential_fingerprint.as_deref(),
-        ))
-    }
-
     async fn build_static_media_playback_result(
         &self,
         user_id: &UserId,
@@ -355,7 +308,7 @@ impl ClientApiImpl {
         state: Option<&RoomPlaybackState>,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
+    ) -> Result<crate::proto::client::Playback, ApiError> {
         let public_user_id = self
             .public_id_codec
             .encode_user_id(*user_id)
@@ -448,19 +401,15 @@ impl ClientApiImpl {
             self.signing_key.as_deref(),
             default_mode_expires_at,
         );
-        let mut snapshot = try_playback_snapshot_to_proto(
-            &full_result,
-            static_playback_snapshot_version(&media),
-            &self.public_id_codec,
-        )?;
-        snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
-        Ok(snapshot)
+        let mut playback = try_playback_to_proto(&full_result, &self.public_id_codec)?;
+        playback.expires_at = playback_expires_at(&playback);
+        Ok(playback)
     }
 
     async fn build_dynamic_playlist_playback_result(
         &self,
         request: DynamicPlaylistPlaybackRequest<'_>,
-    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
+    ) -> Result<crate::proto::client::Playback, ApiError> {
         let DynamicPlaylistPlaybackRequest {
             room_id,
             user_id,
@@ -565,23 +514,19 @@ impl ClientApiImpl {
             )
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-        let mut snapshot = try_playback_snapshot_to_proto(
-            &full_result,
-            dynamic_playback_snapshot_version(&playlist),
-            &self.public_id_codec,
-        )?;
-        snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
-        Ok(snapshot)
+        let mut playback = try_playback_to_proto(&full_result, &self.public_id_codec)?;
+        playback.expires_at = playback_expires_at(&playback);
+        Ok(playback)
     }
 
-    async fn build_playback_snapshot_from_state(
+    async fn build_playback_from_state(
         &self,
         user_id: &UserId,
         room_id: &synctv_core::models::RoomId,
         state: &synctv_core::models::RoomPlaybackState,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
+    ) -> Result<crate::proto::client::Playback, ApiError> {
         if let Some(ref media_id) = state.playing_media_id {
             let media = self
                 .room_service
@@ -616,7 +561,7 @@ impl ClientApiImpl {
                 .await;
         }
 
-        Ok(crate::proto::client::PlaybackSnapshot {
+        Ok(crate::proto::client::Playback {
             media_id: String::new(),
             playlist_id: String::new(),
             room_id: self
@@ -630,7 +575,6 @@ impl ClientApiImpl {
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
-            version: state.version.to_string(),
             expires_at: None,
         })
     }
@@ -818,7 +762,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         Ok(crate::proto::client::GetPlaybackResponse {
             playback_state: Some(try_playback_state_to_proto(&state, &self.public_id_codec)?),
-            playback_snapshot: None,
+            playback: None,
         })
     }
 
@@ -866,8 +810,8 @@ impl ClientApiImpl {
             .get_playback_state(&rid)
             .await
             .map_err(ApiError::from)?;
-        let mut playback_snapshot_result = self
-            .build_playback_snapshot_from_state(
+        let mut playback_result = self
+            .build_playback_from_state(
                 &uid,
                 &rid,
                 &state,
@@ -875,7 +819,7 @@ impl ClientApiImpl {
                 request_control,
             )
             .await;
-        if stale_cached_playback_reference(&state, &playback_snapshot_result) {
+        if stale_cached_playback_reference(&state, &playback_result) {
             tracing::info!(
                 room_id = %rid,
                 user_id = %uid,
@@ -890,8 +834,8 @@ impl ClientApiImpl {
                 .reload_state_from_store(&rid)
                 .await
                 .map_err(ApiError::from)?;
-            playback_snapshot_result = self
-                .build_playback_snapshot_from_state(
+            playback_result = self
+                .build_playback_from_state(
                     &uid,
                     &rid,
                     &state,
@@ -900,14 +844,14 @@ impl ClientApiImpl {
                 )
                 .await;
         }
-        let playback_snapshot = match playback_snapshot_result {
+        let playback = match playback_result {
             Ok(snapshot) => Some(snapshot),
             Err(error) => {
                 tracing::warn!(
                     room_id = %rid,
                     user_id = %uid,
                     error = %error,
-                    "Playback snapshot generation failed; returning playback state only"
+                    "Playback generation failed; returning playback state only"
                 );
                 None
             }
@@ -915,7 +859,7 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::GetPlaybackResponse {
             playback_state: Some(try_playback_state_to_proto(&state, &self.public_id_codec)?),
-            playback_snapshot,
+            playback,
         })
     }
 
@@ -1006,7 +950,7 @@ impl ClientApiImpl {
 }
 
 #[async_trait::async_trait]
-impl crate::impls::playback_snapshot::PlaybackSnapshotService for ClientApiImpl {
+impl crate::impls::playback::PlaybackService for ClientApiImpl {
     async fn room_playback_state(
         &self,
         room_id: &synctv_core::models::RoomId,
@@ -1017,26 +961,15 @@ impl crate::impls::playback_snapshot::PlaybackSnapshotService for ClientApiImpl 
             .map_err(ApiError::from)
     }
 
-    async fn get_playback_snapshot(
+    async fn get_playback(
         &self,
         user_id: &UserId,
         room_id: &synctv_core::models::RoomId,
         state: &synctv_core::models::RoomPlaybackState,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
-    ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
-        let mut snapshot = self
-            .build_playback_snapshot_from_state(
-                user_id,
-                room_id,
-                state,
-                playback_client_profile,
-                None,
-            )
-            .await?;
-        snapshot.version = self
-            .playback_snapshot_version_from_state(user_id, room_id, state)
-            .await?;
-        Ok(snapshot)
+    ) -> Result<crate::proto::client::Playback, ApiError> {
+        self.build_playback_from_state(user_id, room_id, state, playback_client_profile, None)
+            .await
     }
 
     async fn playback_credential_dependencies(
@@ -1047,17 +980,6 @@ impl crate::impls::playback_snapshot::PlaybackSnapshotService for ClientApiImpl 
     ) -> Result<Vec<synctv_core::provider::ProviderCredentialDependency>, ApiError> {
         self.playback_credential_dependencies_from_state(user_id, room_id, state)
             .await
-    }
-
-    async fn playback_snapshot_version_for_state(
-        &self,
-        user_id: &UserId,
-        room_id: &synctv_core::models::RoomId,
-        state: &synctv_core::models::RoomPlaybackState,
-    ) -> Result<Option<String>, ApiError> {
-        self.playback_snapshot_version_from_state(user_id, room_id, state)
-            .await
-            .map(Some)
     }
 
     async fn handle_provider_lifecycle_transition(

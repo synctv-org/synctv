@@ -921,12 +921,11 @@ pub(crate) fn sign_local_bilibili_danmaku_urls(
     }
 }
 
-/// Convert models `PlaybackResult` to proto `PlaybackSnapshot`
-pub(crate) fn try_playback_snapshot_to_proto(
+/// Convert models `PlaybackResult` to proto `Playback`
+pub(crate) fn try_playback_to_proto(
     result: &synctv_core::models::media::PlaybackResult,
-    version: impl Into<String>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::PlaybackSnapshot, crate::impls::ApiError> {
+) -> Result<crate::proto::client::Playback, crate::impls::ApiError> {
     validate_playback_result_shape(result)?;
 
     let playback_infos = result
@@ -941,12 +940,12 @@ pub(crate) fn try_playback_snapshot_to_proto(
         .map(|(key, value)| {
             Ok((
                 key.clone(),
-                json_to_string(value, "playback snapshot metadata")?,
+                json_to_string(value, "playback metadata")?,
             ))
         })
         .collect::<Result<_, crate::impls::ApiError>>()?;
 
-    Ok(crate::proto::client::PlaybackSnapshot {
+    Ok(crate::proto::client::Playback {
         media_id: result
             .id
             .map(|id| encode_media_id_for_proto(id, public_id_codec))
@@ -963,7 +962,6 @@ pub(crate) fn try_playback_snapshot_to_proto(
         playback_infos,
         default_mode: result.default_mode.clone(),
         metadata,
-        version: version.into(),
         expires_at: None,
     })
 }
@@ -973,19 +971,19 @@ fn validate_playback_result_shape(
 ) -> Result<(), crate::impls::ApiError> {
     if result.playback_infos.is_empty() {
         return Err(crate::impls::ApiError::Internal(
-            "playback snapshot has no playback modes".to_string(),
+            "playback has no playback modes".to_string(),
         ));
     }
 
     if result.default_mode.trim().is_empty() {
         return Err(crate::impls::ApiError::Internal(
-            "playback snapshot default mode is empty".to_string(),
+            "playback default mode is empty".to_string(),
         ));
     }
 
     if !result.playback_infos.contains_key(&result.default_mode) {
         return Err(crate::impls::ApiError::Internal(format!(
-            "playback snapshot default mode '{}' is missing",
+            "playback default mode '{}' is missing",
             result.default_mode
         )));
     }
@@ -993,7 +991,7 @@ fn validate_playback_result_shape(
     for mode in result.playback_infos.keys() {
         if mode.trim().is_empty() {
             return Err(crate::impls::ApiError::Internal(
-                "playback snapshot contains an empty mode name".to_string(),
+                "playback contains an empty mode name".to_string(),
             ));
         }
     }
@@ -1129,7 +1127,7 @@ mod tests {
         normalize_created_room_settings, playback_client_profile_from_proto,
         proto_role_filter_to_room_role, provider_playback_info_to_model,
         stored_file_reference_to_video_cover, try_bilibili_live_danmaku_for_static_media,
-        try_media_to_proto, try_media_to_proto_for_viewer, try_playback_snapshot_to_proto,
+        try_media_to_proto, try_media_to_proto_for_viewer, try_playback_to_proto,
         try_playlist_to_proto, try_playlist_to_proto_for_viewer, try_room_to_proto_basic,
     };
     use chrono::Utc;
@@ -1252,7 +1250,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_snapshot_to_proto_clears_proxy_headers_but_preserves_raw_headers() {
+    fn playback_to_proto_clears_proxy_headers_but_preserves_raw_headers() {
         use synctv_core::models::media::{
             Danmaku, PlaybackInfo, PlaybackResult, PlaybackUrl, Subtitle, SubtitleUrl,
         };
@@ -1327,13 +1325,11 @@ mod tests {
         .build()
         .expect("playback result should build");
 
-        let proto = try_playback_snapshot_to_proto(
+        let proto = try_playback_to_proto(
             &result,
-            "playback-snapshot-v1",
             &crate::PublicIdCodec::plain(),
         )
-        .expect("playback snapshot should convert");
-        assert_eq!(proto.version, "playback-snapshot-v1");
+        .expect("playback should convert");
 
         let direct = proto
             .playback_infos
@@ -1364,7 +1360,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_snapshot_to_proto_rejects_empty_playback_url() {
+    fn playback_to_proto_rejects_empty_playback_url() {
         use synctv_core::models::media::{PlaybackInfo, PlaybackResult, PlaybackUrl};
 
         let result = PlaybackResult::builder(
@@ -1388,7 +1384,7 @@ mod tests {
         .build()
         .expect("playback result should build");
 
-        let error = try_playback_snapshot_to_proto(&result, "v1", &crate::PublicIdCodec::plain())
+        let error = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
             .expect_err("empty playback URL should fail");
 
         assert!(matches!(
@@ -1399,7 +1395,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_snapshot_to_proto_rejects_missing_default_mode() {
+    fn playback_to_proto_rejects_missing_default_mode() {
         use synctv_core::models::media::{PlaybackInfo, PlaybackResult, PlaybackUrl};
 
         let result = PlaybackResult {
@@ -1426,7 +1422,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let error = try_playback_snapshot_to_proto(&result, "v1", &crate::PublicIdCodec::plain())
+        let error = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
             .expect_err("missing default playback mode should fail");
 
         assert!(matches!(
@@ -1437,7 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_snapshot_to_proto_rejects_empty_default_mode() {
+    fn playback_to_proto_rejects_empty_default_mode() {
         use synctv_core::models::media::{PlaybackInfo, PlaybackResult, PlaybackUrl};
 
         let result = PlaybackResult {
@@ -1464,7 +1460,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let error = try_playback_snapshot_to_proto(&result, "v1", &crate::PublicIdCodec::plain())
+        let error = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
             .expect_err("empty default playback mode should fail");
 
         assert!(matches!(
@@ -1475,7 +1471,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_snapshot_to_proto_rejects_empty_mode_name() {
+    fn playback_to_proto_rejects_empty_mode_name() {
         use synctv_core::models::media::{PlaybackInfo, PlaybackResult, PlaybackUrl};
 
         let result = PlaybackResult {
@@ -1518,7 +1514,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let error = try_playback_snapshot_to_proto(&result, "v1", &crate::PublicIdCodec::plain())
+        let error = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
             .expect_err("empty playback mode name should fail");
 
         assert!(matches!(
@@ -1529,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_snapshot_to_proto_rejects_default_url_index_out_of_range() {
+    fn playback_to_proto_rejects_default_url_index_out_of_range() {
         use synctv_core::models::media::{PlaybackInfo, PlaybackResult, PlaybackUrl};
 
         let result = PlaybackResult::builder(
@@ -1556,7 +1552,7 @@ mod tests {
         .build()
         .expect("playback result should build");
 
-        let error = try_playback_snapshot_to_proto(&result, "v1", &crate::PublicIdCodec::plain())
+        let error = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
             .expect_err("out-of-range playback URL index should fail");
 
         assert!(matches!(
@@ -1567,7 +1563,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_snapshot_to_proto_rejects_subtitle_default_url_index_out_of_range() {
+    fn playback_to_proto_rejects_subtitle_default_url_index_out_of_range() {
         use synctv_core::models::media::{
             PlaybackInfo, PlaybackResult, PlaybackUrl, Subtitle, SubtitleUrl,
         };
@@ -1606,7 +1602,7 @@ mod tests {
         .build()
         .expect("playback result should build");
 
-        let error = try_playback_snapshot_to_proto(&result, "v1", &crate::PublicIdCodec::plain())
+        let error = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
             .expect_err("out-of-range subtitle URL index should fail");
 
         assert!(matches!(

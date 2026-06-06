@@ -911,7 +911,7 @@ const fn requires_state_resync(message: &ServerMessage) -> bool {
                 | Message::PlaylistUpdated(_)
                 | Message::PlaylistDeleted(_)
                 | Message::PlaylistItems(_)
-                | Message::PlaybackSnapshot(_)
+                | Message::Playback(_)
                 | Message::RoomMembers(_)
                 | Message::Notification(_)
         )
@@ -950,7 +950,7 @@ const fn message_type_name(message: &ServerMessage) -> &'static str {
         Some(Message::WebrtcJoin(_)) => "WebrtcJoin",
         Some(Message::WebrtcLeave(_)) => "WebrtcLeave",
         Some(Message::Notification(_)) => "Notification",
-        Some(Message::PlaybackSnapshot(_)) => "PlaybackSnapshot",
+        Some(Message::Playback(_)) => "Playback",
         None => "None",
     }
 }
@@ -1394,7 +1394,7 @@ async fn handle_socket(
             concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
         },
         StreamMessageHandlerRuntime {
-            playback_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
+            playback_service: Some(state.shared_api_runtime.client_api.clone()),
             playlist_items_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
             room_members_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
             room_settings_snapshot_service: None,
@@ -1722,13 +1722,13 @@ mod tests {
     }
 
     #[test]
-    fn test_playback_snapshot_requires_state_resync() {
+    fn test_playback_requires_state_resync() {
         let message = ServerMessage {
             message: Some(
-                crate::proto::client::server_message::Message::PlaybackSnapshot(
-                    crate::proto::client::PlaybackSnapshotChanged {
+                crate::proto::client::server_message::Message::Playback(
+                    crate::proto::client::PlaybackChanged {
                         room_id: "room_test".to_string(),
-                        snapshot: Some(crate::proto::client::PlaybackSnapshot {
+                        playback: Some(crate::proto::client::Playback {
                             media_id: String::new(),
                             playlist_id: String::new(),
                             room_id: "room_test".to_string(),
@@ -1737,7 +1737,6 @@ mod tests {
                             playback_infos: std::collections::HashMap::new(),
                             default_mode: String::new(),
                             metadata: std::collections::HashMap::new(),
-                            version: "1".to_string(),
                             expires_at: Some(4_102_444_800),
                         }),
                     },
@@ -1746,7 +1745,7 @@ mod tests {
         };
 
         assert!(requires_state_resync(&message));
-        assert_eq!(message_type_name(&message), "PlaybackSnapshot");
+        assert_eq!(message_type_name(&message), "Playback");
     }
 
     // extract_user_id is async and requires AppState, so we test the priority

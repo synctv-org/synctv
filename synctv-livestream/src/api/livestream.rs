@@ -822,7 +822,7 @@ impl HlsStreamingApi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::{mock_registry::MockStreamRegistry, PublisherInfo};
+    use crate::relay::{test_registry::TestStreamRegistry, PublisherInfo};
     use chrono::Utc;
 
     fn make_infrastructure_with_publisher(
@@ -830,7 +830,7 @@ mod tests {
         publisher_node_id: &str,
         api_address: &str,
     ) -> LiveStreamingInfrastructure {
-        let registry = Arc::new(MockStreamRegistry::with_publishers(
+        let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
@@ -884,7 +884,7 @@ mod tests {
     async fn test_ensure_pull_stream_validates_epoch_for_local_publisher() {
         use std::collections::HashMap;
 
-        let registry = Arc::new(MockStreamRegistry::with_publishers(HashMap::from([(
+        let registry = Arc::new(TestStreamRegistry::with_publishers(HashMap::from([(
             ("room1".to_string(), "media1".to_string()),
             PublisherInfo {
                 node_id: "node-local".to_string(),
@@ -976,7 +976,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kick_stream_does_not_delete_tracking_when_unpublish_signal_fails() {
-        let registry = Arc::new(MockStreamRegistry::with_publishers(
+        let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
@@ -1050,7 +1050,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kick_stream_keeps_registry_and_tracker_until_unpublish_processing() {
-        let registry = Arc::new(MockStreamRegistry::with_publishers(
+        let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {
@@ -1128,7 +1128,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kick_user_publishers_keep_registry_and_tracker_until_unpublish_processing() {
-        let registry = Arc::new(MockStreamRegistry::with_publishers(
+        let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([
                 (
                     ("room1".to_string(), "media1".to_string()),
@@ -1230,7 +1230,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kick_user_room_publishers_only_removes_streams_in_target_room() {
-        let registry = Arc::new(crate::relay::MockStreamRegistry::with_publishers(
+        let registry = Arc::new(crate::relay::TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([
                 (
                     ("room1".to_string(), "media1".to_string()),
@@ -1342,7 +1342,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kick_user_publishers_skips_remote_registry_publishers() {
-        let registry = Arc::new(MockStreamRegistry::with_publishers(
+        let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([
                 (
                     ("room1".to_string(), "media1".to_string()),
@@ -1427,7 +1427,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kick_stream_skips_remote_publisher_registry_entry() {
-        let registry = Arc::new(MockStreamRegistry::with_publishers(
+        let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
                 PublisherInfo {

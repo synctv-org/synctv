@@ -75,14 +75,14 @@ async fn opaque_room_login(
     room_id: &str,
     password: &str,
     client_ip: &str,
-) -> Result<synctv_api::proto::client::JoinRoomResponse, synctv_api::impls::ApiError> {
+) -> Result<synctv_proto::client::JoinRoomResponse, synctv_api::impls::ApiError> {
     let mut rng = OsRng;
     let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
         .expect("client OPAQUE login start should succeed");
     let challenge = client_api
         .start_room_password_login_with_control(
             user_id,
-            synctv_api::proto::client::StartRoomPasswordLoginRequest {
+            synctv_proto::client::StartRoomPasswordLoginRequest {
                 room_id: room_id.to_string(),
                 credential_request: client_start.message.serialize().to_vec(),
             },
@@ -107,7 +107,7 @@ async fn opaque_room_login(
         .finish_room_password_login_with_control(
             user_id,
             None,
-            synctv_api::proto::client::FinishRoomPasswordLoginRequest {
+            synctv_proto::client::FinishRoomPasswordLoginRequest {
                 session_id: challenge.session_id,
                 credential_finalization: client_finish.message.serialize().to_vec(),
             },
@@ -129,7 +129,7 @@ async fn start_opaque_room_login(
     let challenge = client_api
         .start_room_password_login_with_control(
             user_id,
-            synctv_api::proto::client::StartRoomPasswordLoginRequest {
+            synctv_proto::client::StartRoomPasswordLoginRequest {
                 room_id: room_id.to_string(),
                 credential_request: client_start.message.serialize().to_vec(),
             },
@@ -178,12 +178,12 @@ async fn finish_opaque_room_login(
     user_id: &UserId,
     login: PendingOpaqueRoomLogin,
     client_ip: &str,
-) -> Result<synctv_api::proto::client::JoinRoomResponse, synctv_api::impls::ApiError> {
+) -> Result<synctv_proto::client::JoinRoomResponse, synctv_api::impls::ApiError> {
     client_api
         .finish_room_password_login_with_control(
             user_id,
             None,
-            synctv_api::proto::client::FinishRoomPasswordLoginRequest {
+            synctv_proto::client::FinishRoomPasswordLoginRequest {
                 session_id: login.session_id,
                 credential_finalization: login.credential_finalization,
             },
@@ -232,7 +232,7 @@ async fn opaque_room_password_registration_upload(
     password: &str,
 ) -> (
     String,
-    synctv_api::proto::client::FinishRoomPasswordRegistrationRequest,
+    synctv_proto::client::FinishRoomPasswordRegistrationRequest,
 ) {
     let mut rng = OsRng;
     let client_start =
@@ -242,7 +242,7 @@ async fn opaque_room_password_registration_upload(
         .start_room_password_registration(
             user_id,
             room_id,
-            synctv_api::proto::client::StartRoomPasswordRegistrationRequest {
+            synctv_proto::client::StartRoomPasswordRegistrationRequest {
                 registration_request: client_start.message.serialize().to_vec(),
             },
         )
@@ -264,7 +264,7 @@ async fn opaque_room_password_registration_upload(
 
     (
         challenge.session_id.clone(),
-        synctv_api::proto::client::FinishRoomPasswordRegistrationRequest {
+        synctv_proto::client::FinishRoomPasswordRegistrationRequest {
             session_id: challenge.session_id,
             registration_upload: client_finish.message.serialize().to_vec(),
         },
@@ -396,7 +396,7 @@ async fn test_finish_room_password_login_rejects_session_for_different_room_befo
     let challenge = client_api
         .start_room_password_login_with_control(
             &joining_user.id,
-            synctv_api::proto::client::StartRoomPasswordLoginRequest {
+            synctv_proto::client::StartRoomPasswordLoginRequest {
                 room_id: room_a_public_id,
                 credential_request: client_start.message.serialize().to_vec(),
             },
@@ -422,7 +422,7 @@ async fn test_finish_room_password_login_rejects_session_for_different_room_befo
         .finish_room_password_login_with_control(
             &joining_user.id,
             Some(&room_b_public_id),
-            synctv_api::proto::client::FinishRoomPasswordLoginRequest {
+            synctv_proto::client::FinishRoomPasswordLoginRequest {
                 session_id: challenge.session_id,
                 credential_finalization: client_finish.message.serialize().to_vec(),
             },

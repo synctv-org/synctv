@@ -17,11 +17,11 @@ use super::common::{
 };
 use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
-use crate::proto::providers::bilibili::{
+use synctv_proto::providers::bilibili::{
     CheckQrRequest, GetBindsResponse, LoginQrRequest, LoginSmsRequest, LogoutRequest, ParseRequest,
     SendSmsRequest, StartSmsLoginRequest, UserInfoRequest,
 };
-use crate::proto::providers::common::ProviderInstanceQuery;
+use synctv_proto::providers::common::ProviderInstanceQuery;
 
 /// Bilibili endpoints that authenticate, issue challenges, or mutate stored credentials.
 pub fn bilibili_auth_routes() -> Router<AppState> {
@@ -53,15 +53,15 @@ pub fn bilibili_read_routes() -> Router<AppState> {
         tag = "Provider",
         request_body = ParseRequest,
         responses(
-            (status = 200, description = "Bilibili media parsed", body = crate::proto::providers::bilibili::ParseResponse),
-            (status = 400, description = "Invalid parse request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Bilibili media parsed", body = synctv_proto::providers::bilibili::ParseResponse),
+            (status = 400, description = "Invalid parse request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -72,7 +72,7 @@ pub(crate) async fn parse(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<ParseRequest>,
-) -> AppResult<Json<crate::proto::providers::bilibili::ParseResponse>> {
+) -> AppResult<Json<synctv_proto::providers::bilibili::ParseResponse>> {
     tracing::info!("Bilibili parse request");
 
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
@@ -110,15 +110,15 @@ pub(crate) async fn parse(
         tag = "Provider",
         request_body = LoginQrRequest,
         responses(
-            (status = 200, description = "Bilibili login QR code generated", body = crate::proto::providers::bilibili::QrCodeResponse),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 400, description = "Invalid QR login request", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Bilibili login QR code generated", body = synctv_proto::providers::bilibili::QrCodeResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 400, description = "Invalid QR login request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -129,7 +129,7 @@ pub(crate) async fn login_qr(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<LoginQrRequest>,
-) -> AppResult<Json<crate::proto::providers::bilibili::QrCodeResponse>> {
+) -> AppResult<Json<synctv_proto::providers::bilibili::QrCodeResponse>> {
     tracing::info!("Bilibili login QR request");
 
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
@@ -162,15 +162,15 @@ pub(crate) async fn login_qr(
         tag = "Provider",
         request_body = CheckQrRequest,
         responses(
-            (status = 200, description = "Bilibili QR login status", body = crate::proto::providers::bilibili::QrStatusResponse),
-            (status = 400, description = "Invalid QR check request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Bilibili QR login status", body = synctv_proto::providers::bilibili::QrStatusResponse),
+            (status = 400, description = "Invalid QR check request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -181,7 +181,7 @@ pub(crate) async fn qr_check(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<CheckQrRequest>,
-) -> AppResult<Json<crate::proto::providers::bilibili::QrStatusResponse>> {
+) -> AppResult<Json<synctv_proto::providers::bilibili::QrStatusResponse>> {
     tracing::info!("Bilibili QR check");
 
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
@@ -219,15 +219,15 @@ pub(crate) async fn qr_check(
         tag = "Provider",
         request_body = StartSmsLoginRequest,
         responses(
-            (status = 200, description = "Bilibili SMS login session started", body = crate::proto::providers::bilibili::StartSmsLoginResponse),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 400, description = "Invalid SMS login start request", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Bilibili SMS login session started", body = synctv_proto::providers::bilibili::StartSmsLoginResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 400, description = "Invalid SMS login start request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -238,7 +238,7 @@ pub(crate) async fn sms_start(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<StartSmsLoginRequest>,
-) -> AppResult<Json<crate::proto::providers::bilibili::StartSmsLoginResponse>> {
+) -> AppResult<Json<synctv_proto::providers::bilibili::StartSmsLoginResponse>> {
     tracing::info!("Bilibili SMS login start request");
 
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
@@ -271,15 +271,15 @@ pub(crate) async fn sms_start(
         tag = "Provider",
         request_body = SendSmsRequest,
         responses(
-            (status = 200, description = "Bilibili SMS sent", body = crate::proto::providers::bilibili::SendSmsResponse),
-            (status = 400, description = "Invalid SMS request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Bilibili SMS sent", body = synctv_proto::providers::bilibili::SendSmsResponse),
+            (status = 400, description = "Invalid SMS request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -290,7 +290,7 @@ pub(crate) async fn sms_send(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<SendSmsRequest>,
-) -> AppResult<Json<crate::proto::providers::bilibili::SendSmsResponse>> {
+) -> AppResult<Json<synctv_proto::providers::bilibili::SendSmsResponse>> {
     tracing::info!("Bilibili SMS send request");
 
     let api = state.shared_api_runtime.bilibili_api.clone();
@@ -318,15 +318,15 @@ pub(crate) async fn sms_send(
         tag = "Provider",
         request_body = LoginSmsRequest,
         responses(
-            (status = 200, description = "Bilibili SMS login succeeded", body = crate::proto::providers::bilibili::LoginSmsResponse),
-            (status = 400, description = "Invalid SMS login request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Bilibili SMS login succeeded", body = synctv_proto::providers::bilibili::LoginSmsResponse),
+            (status = 400, description = "Invalid SMS login request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -337,7 +337,7 @@ pub(crate) async fn sms_login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<LoginSmsRequest>,
-) -> AppResult<Json<crate::proto::providers::bilibili::LoginSmsResponse>> {
+) -> AppResult<Json<synctv_proto::providers::bilibili::LoginSmsResponse>> {
     tracing::info!("Bilibili SMS login request");
 
     let api = state.shared_api_runtime.bilibili_api.clone();
@@ -369,15 +369,15 @@ pub(crate) async fn sms_login(
         tag = "Provider",
         request_body = UserInfoRequest,
         responses(
-            (status = 200, description = "Bilibili account info", body = crate::proto::providers::bilibili::UserInfoResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Bilibili account info", body = synctv_proto::providers::bilibili::UserInfoResponse),
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -388,7 +388,7 @@ pub(crate) async fn user_info(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<UserInfoRequest>,
-) -> AppResult<Json<crate::proto::providers::bilibili::UserInfoResponse>> {
+) -> AppResult<Json<synctv_proto::providers::bilibili::UserInfoResponse>> {
     tracing::info!("Bilibili user info request");
 
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
@@ -426,12 +426,12 @@ pub(crate) async fn user_info(
         params(ProviderInstanceQuery),
         responses(
             (status = 200, description = "Saved Bilibili credentials", body = GetBindsResponse),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 400, description = "Invalid provider instance query", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider bind request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider bind information unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 400, description = "Invalid provider instance query", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider bind request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider bind information unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -470,15 +470,15 @@ pub(crate) async fn binds(
         tag = "Provider",
         request_body = LogoutRequest,
         responses(
-            (status = 200, description = "Bilibili credential removed", body = crate::proto::providers::bilibili::LogoutResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Bilibili credential removed", body = synctv_proto::providers::bilibili::LogoutResponse),
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -489,7 +489,7 @@ pub(crate) async fn logout(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<LogoutRequest>,
-) -> AppResult<Json<crate::proto::providers::bilibili::LogoutResponse>> {
+) -> AppResult<Json<synctv_proto::providers::bilibili::LogoutResponse>> {
     tracing::info!("Bilibili logout request");
 
     provider_instance_name_from_body(&req.instance_name)?;

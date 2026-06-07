@@ -5,21 +5,23 @@ use crate::service::file_storage::{
     file_content_object_key, file_ownership_proof_digest, file_storage_object_base_path,
     file_storage_public_url, ownership_proof_chunks_from_bytes,
     validate_create_file_upload_session, DatabaseFileStorageService,
-    S3CompatibleFileStorageService, S3FileStorageConfig, FILE_UPLOAD_TOKEN_HEADER,
+    S3CompatibleFileStorageService, S3FileStorageConfig, FILE_OWNERSHIP_PROOF_KEY,
+    FILE_UPLOAD_TOKEN_HEADER, FILE_UPLOAD_TOKEN_KEY,
 };
 use crate::{
     cache::{KeyBuilder, UsernameCache},
-    models::{SignupMethod, User},
+    models::{ChatReadState, CreateFileUploadSession, NewStoredFile, SignupMethod, User},
     repository::{
         FileStorageRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
         UserRepository,
     },
     service::{
-        auth::JwtService, BruteForceProtection, DisabledFileStorageService,
-        InMemoryTokenBlacklistStore, RateLimiter, RoomService,
+        auth::JwtService, chat_image_upload_policy, BruteForceProtection,
+        DisabledFileStorageService, InMemoryTokenBlacklistStore, RateLimiter, RoomService,
     },
 };
 use opendal::Operator;
+use sha2::{Digest, Sha256};
 use tokio::sync::Barrier;
 
 const TEST_FILE_STORAGE_SCOPE: &str = "rooms/1/users/1";
@@ -43,7 +45,7 @@ impl FileStorageService for PrefixingFileStorageService {
             .take()
             .unwrap_or_else(|| "custom-image".to_string());
         Ok(FileUploadSession {
-            file: NewChatImage {
+            file: NewStoredFile {
                 id: id.clone(),
                 storage_backend: "test-storage".to_string(),
                 object_key: format!("normalized/uploads/{id}"),
@@ -70,8 +72,8 @@ impl FileStorageService for PrefixingFileStorageService {
     async fn prepare_files(
         &self,
         context: FileStorageContext<'_>,
-        images: Vec<NewChatImage>,
-    ) -> Result<Vec<NewChatImage>> {
+        images: Vec<NewStoredFile>,
+    ) -> Result<Vec<NewStoredFile>> {
         assert!(context.user_id.as_i64() > 0);
         assert!(!context.storage_scope.is_empty());
         validate_chat_images(&images)?;
@@ -109,7 +111,7 @@ impl FileStorageService for RecordingFileStorageService {
             .take()
             .unwrap_or_else(|| "custom-image".to_string());
         Ok(FileUploadSession {
-            file: NewChatImage {
+            file: NewStoredFile {
                 id: id.clone(),
                 storage_backend: "test-storage".to_string(),
                 object_key: format!("normalized/uploads/{id}"),
@@ -136,8 +138,8 @@ impl FileStorageService for RecordingFileStorageService {
     async fn prepare_files(
         &self,
         context: FileStorageContext<'_>,
-        images: Vec<NewChatImage>,
-    ) -> Result<Vec<NewChatImage>> {
+        images: Vec<NewStoredFile>,
+    ) -> Result<Vec<NewStoredFile>> {
         assert!(context.user_id.as_i64() > 0);
         assert!(!context.storage_scope.is_empty());
         validate_chat_images(&images)?;
@@ -188,7 +190,7 @@ fn validate_chat_metadata_rejects_non_object_values() {
 
 #[test]
 fn validate_chat_images_rejects_non_object_metadata() {
-    let image = NewChatImage {
+    let image = NewStoredFile {
         id: "img-test".to_string(),
         storage_backend: "database".to_string(),
         object_key: "rooms/1/chat/img-test".to_string(),
@@ -457,7 +459,7 @@ async fn disabled_file_storage_rejects_images() {
                 storage_scope: TEST_FILE_STORAGE_SCOPE,
                 client_request_id: Some("client-1"),
             },
-            vec![NewChatImage {
+            vec![NewStoredFile {
                 id: "image-1".to_string(),
                 storage_backend: "database".to_string(),
                 object_key: "image.webp".to_string(),
@@ -476,7 +478,7 @@ async fn disabled_file_storage_rejects_images() {
 
 #[test]
 fn validate_chat_images_rejects_duplicates_in_one_message() {
-    let image = NewChatImage {
+    let image = NewStoredFile {
         id: "image-1".to_string(),
         storage_backend: "database".to_string(),
         object_key: "image-1.webp".to_string(),
@@ -490,7 +492,7 @@ fn validate_chat_images_rejects_duplicates_in_one_message() {
 
     let duplicate_id = validate_chat_images(&[
         image.clone(),
-        NewChatImage {
+        NewStoredFile {
             id: image.id.clone(),
             object_key: "image-2.webp".to_string(),
             ..image.clone()
@@ -500,7 +502,7 @@ fn validate_chat_images_rejects_duplicates_in_one_message() {
 
     let duplicate_key = validate_chat_images(&[
         image.clone(),
-        NewChatImage {
+        NewStoredFile {
             id: "image-2".to_string(),
             object_key: image.object_key.clone(),
             ..image
@@ -511,7 +513,7 @@ fn validate_chat_images_rejects_duplicates_in_one_message() {
 
 #[test]
 fn validate_chat_images_rejects_zero_size() {
-    let result = validate_chat_images(&[NewChatImage {
+    let result = validate_chat_images(&[NewStoredFile {
         id: "image-1".to_string(),
         storage_backend: "database".to_string(),
         object_key: "image-1.webp".to_string(),
@@ -558,7 +560,7 @@ async fn disabled_file_storage_rejects_prepared_images() {
                 storage_scope: TEST_FILE_STORAGE_SCOPE,
                 client_request_id: Some("client-1"),
             },
-            vec![NewChatImage {
+            vec![NewStoredFile {
                 id: "image-1".to_string(),
                 storage_backend: "database".to_string(),
                 object_key: "rooms/1/chat/2/image-1".to_string(),
@@ -1099,7 +1101,7 @@ async fn s3_file_storage_rejects_unexpected_backend_on_send() {
                 storage_scope: TEST_FILE_STORAGE_SCOPE,
                 client_request_id: Some("client-1"),
             },
-            vec![NewChatImage {
+            vec![NewStoredFile {
                 id: "image-1".to_string(),
                 storage_backend: "database".to_string(),
                 object_key: "image.webp".to_string(),
@@ -1283,7 +1285,7 @@ async fn custom_file_storage_can_normalize_image_metadata() {
             message_type: ChatMessageType::Image,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: vec![NewChatImage {
+            images: vec![NewStoredFile {
                 id: "image-storage-1".to_string(),
                 storage_backend: "client".to_string(),
                 object_key: "raw/image.webp".to_string(),
@@ -1367,7 +1369,7 @@ async fn deleting_image_message_releases_image_objects() {
             message_type: ChatMessageType::Image,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: vec![NewChatImage {
+            images: vec![NewStoredFile {
                 id: "delete-image-1".to_string(),
                 storage_backend: "client".to_string(),
                 object_key: "raw/delete-image.webp".to_string(),

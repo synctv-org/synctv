@@ -5,12 +5,53 @@
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
+use std::time::Duration;
 
+use async_trait::async_trait;
 use synctv_cluster::discovery::node_registry::{ClusterMode, NodeRegistry};
 use synctv_cluster::discovery::NodeInfo;
 use synctv_core::models::UserId;
+use synctv_core::{RedisConnectionRuntime, RedisCoordinationRuntime};
 use synctv_realtime::grpc::UserOnlineStatus;
 use synctv_realtime::grpc::{FanOutResult, RealtimePresenceClient, RealtimePresenceClientConfig};
+
+#[derive(Clone)]
+struct UnavailableRedisRuntime;
+
+fn unavailable_redis_runtime() -> Arc<dyn RedisCoordinationRuntime> {
+    Arc::new(UnavailableRedisRuntime)
+}
+
+fn unavailable_redis_error() -> redis::RedisError {
+    redis::RedisError::from((
+        redis::ErrorKind::Io,
+        "test Redis coordination runtime unavailable",
+    ))
+}
+
+#[async_trait]
+impl RedisConnectionRuntime for UnavailableRedisRuntime {
+    async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
+        Err(unavailable_redis_error())
+    }
+
+    fn operation_timeout(&self) -> Duration {
+        Duration::from_millis(10)
+    }
+}
+
+#[async_trait]
+impl RedisCoordinationRuntime for UnavailableRedisRuntime {
+    async fn multiplexed_connection(
+        &self,
+    ) -> redis::RedisResult<redis::aio::MultiplexedConnection> {
+        Err(unavailable_redis_error())
+    }
+
+    async fn async_pubsub(&self) -> redis::RedisResult<redis::aio::PubSub> {
+        Err(unavailable_redis_error())
+    }
+}
 
 // FanOutResult construction and queries
 
@@ -261,17 +302,8 @@ fn test_merge_user_statuses_node_id_merged() {
 /// to local cache in degraded mode, which is empty.
 #[tokio::test]
 async fn test_cluster_client_no_remote_nodes_fan_out() {
-    let registry = Arc::new(
-        NodeRegistry::new(
-            synctv_core::coordination_runtime_from_client(
-                redis::Client::open("redis://localhost:6379").unwrap(),
-            ),
-            "self-node".to_string(),
-            30,
-            "cl6test:",
-        )
-        .unwrap(),
-    );
+    let registry =
+        Arc::new(NodeRegistry::new_local_only("self-node".to_string(), 30, "cl6test:").unwrap());
 
     let config = RealtimePresenceClientConfig {
         self_node_id: "self-node".to_string(),
@@ -302,9 +334,7 @@ async fn test_cluster_client_no_remote_nodes_fan_out() {
 async fn test_cluster_client_fan_out_fails_closed_when_degraded_cache_is_stale() {
     let registry = Arc::new(
         NodeRegistry::new(
-            synctv_core::coordination_runtime_from_client(
-                redis::Client::open("redis://127.0.0.1:1").unwrap(),
-            ),
+            unavailable_redis_runtime(),
             "self-node".to_string(),
             30,
             "fanout-stale:",

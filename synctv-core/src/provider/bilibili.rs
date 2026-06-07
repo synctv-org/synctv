@@ -23,7 +23,7 @@ use crate::service::RemoteProviderManager;
 ///
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
 pub struct BilibiliProvider {
-    provider_instance_manager: Arc<RemoteProviderManager>,
+    provider_instance_manager: Option<Arc<RemoteProviderManager>>,
     client_manager: Arc<ProviderClientManager>,
 }
 
@@ -55,14 +55,25 @@ impl BilibiliProvider {
         provider_instance_manager: Arc<RemoteProviderManager>,
     ) -> Result<Self, ProviderError> {
         Ok(Self {
-            provider_instance_manager,
+            provider_instance_manager: Some(provider_instance_manager),
             client_manager: Arc::new(ProviderClientManager::new()?),
         })
     }
 
     #[must_use]
-    pub const fn with_client_manager(
+    pub fn with_client_manager(
         provider_instance_manager: Arc<RemoteProviderManager>,
+        client_manager: Arc<ProviderClientManager>,
+    ) -> Self {
+        Self::with_optional_manager_and_client_manager(
+            Some(provider_instance_manager),
+            client_manager,
+        )
+    }
+
+    #[must_use]
+    pub fn with_optional_manager_and_client_manager(
+        provider_instance_manager: Option<Arc<RemoteProviderManager>>,
         client_manager: Arc<ProviderClientManager>,
     ) -> Self {
         Self {
@@ -71,19 +82,35 @@ impl BilibiliProvider {
         }
     }
 
+    pub fn new_local_only() -> Result<Self, ProviderError> {
+        Ok(Self {
+            provider_instance_manager: None,
+            client_manager: Arc::new(ProviderClientManager::new()?),
+        })
+    }
+
     async fn get_client_with_context(
         &self,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
     ) -> Result<BilibiliClientArc, ProviderError> {
-        self.provider_instance_manager
-            .resolve_client_required_with_context(
-                instance_name,
-                request_context,
-                create_remote_bilibili_client,
-                || self.client_manager.local_bilibili_client(),
-            )
-            .await
+        match (instance_name, self.provider_instance_manager.as_ref()) {
+            (None, _) => Ok(self.client_manager.local_bilibili_client()),
+            (Some(_), Some(manager)) => {
+                manager
+                    .resolve_client_required_with_context(
+                        instance_name,
+                        request_context,
+                        create_remote_bilibili_client,
+                        || self.client_manager.local_bilibili_client(),
+                    )
+                    .await
+            }
+            (Some(_), None) => Err(ProviderError::Internal(
+                "provider instance manager is required for remote Bilibili playback resolution"
+                    .to_string(),
+            )),
+        }
     }
 
     /// Match URL to determine type and ID
@@ -964,20 +991,19 @@ impl BilibiliProvider {
             _ => return Err(ProviderError::NotFound),
         };
 
+        let services = ctx.services()?;
         let room_id = super::proxy::parse_proxy_room_id(
-            &ctx.services.public_id_codec,
+            &services.public_id_codec,
             room_id_str,
             "danmaku proxy path",
         )?;
         let media_id = super::proxy::parse_proxy_media_id(
-            &ctx.services.public_id_codec,
+            &services.public_id_codec,
             media_id_str,
             "danmaku proxy path",
         )?;
 
-        // Check room membership and get media
-        let media = ctx
-            .services
+        let media = services
             .room_service
             .media_service()
             .get_room_media(&room_id, &media_id)
@@ -1015,20 +1041,20 @@ impl BilibiliProvider {
                             })
                             .and_then(|claims| {
                                 super::proxy::parse_proxy_user_id(
-                                    &ctx.services.public_id_codec,
+                                    &services.public_id_codec,
                                     &claims.user_id,
                                     "danmaku proxy claims",
                                 )
                             })?
                     };
 
-                    if let Some(access_service) = &ctx.services.provider_access_service {
+                    if let Some(access_service) = &services.provider_access_service {
                         access_service
                             .bilibili_access(credential_owner_id, ctx.request_context)
                             .await?
                             .cookies
                     } else {
-                        let repo = &ctx.services.credential_repo;
+                        let repo = &services.credential_repo;
                         let server_id = bilibili_credential_server_id();
                         let credential = repo
                             .get_by_provider_and_server(credential_owner_id, Self::NAME, &server_id)
@@ -1354,25 +1380,15 @@ mod tests {
     use super::*;
     use crate::models::UserId;
     use crate::provider::{MediaProvider, ProviderClientManager, ProviderContext};
-    use crate::repository::ProviderInstanceRepository;
-    use crate::service::RemoteProviderManager;
     use async_trait::async_trait;
     use std::sync::Arc;
     use synctv_media_providers::bilibili::{BilibiliError, BilibiliInterface};
     use synctv_media_providers::grpc::bilibili as proto;
-
-    fn fake_provider_instance_manager() -> Arc<RemoteProviderManager> {
-        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        Arc::new(RemoteProviderManager::new(repo))
-    }
-
     fn validate_bilibili(config: &Value) -> Result<(), ProviderError> {
         tokio::runtime::Runtime::new()
             .expect("runtime")
             .block_on(async {
-                let provider = BilibiliProvider::new(fake_provider_instance_manager())
-                    .expect("provider should build");
+                let provider = BilibiliProvider::new_local_only().expect("provider should build");
                 provider
                     .validate_source_config(
                         &ProviderContext::new("test"),
@@ -1459,69 +1475,69 @@ mod tests {
         );
     }
 
-    struct MockBilibiliClient;
-    struct MockBilibiliClientWithPgcDurlFallback;
+    struct TestBilibiliClient;
+    struct TestBilibiliClientWithPgcDurlFallback;
 
-    fn mock_not_implemented() -> BilibiliError {
-        BilibiliError::NotImplemented("mock bilibili method not implemented".to_string())
+    fn unconfigured_test_response() -> BilibiliError {
+        BilibiliError::NotImplemented("test bilibili method is not configured".to_string())
     }
 
     #[async_trait]
-    impl BilibiliInterface for MockBilibiliClient {
+    impl BilibiliInterface for TestBilibiliClient {
         async fn new_qr_code(
             &self,
             _request: proto::Empty,
         ) -> Result<proto::NewQrCodeResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn login_with_qr_code(
             &self,
             _request: proto::LoginWithQrCodeReq,
         ) -> Result<proto::LoginWithQrCodeResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn new_captcha(
             &self,
             _request: proto::Empty,
         ) -> Result<proto::NewCaptchaResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn new_sms(
             &self,
             _request: proto::NewSmsReq,
         ) -> Result<proto::NewSmsResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn login_with_sms(
             &self,
             _request: proto::LoginWithSmsReq,
         ) -> Result<proto::LoginWithSmsResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn parse_video_page(
             &self,
             _request: proto::ParseVideoPageReq,
         ) -> Result<proto::VideoPageInfo, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_video_url(
             &self,
             _request: proto::GetVideoUrlReq,
         ) -> Result<proto::VideoUrl, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_dash_video_url(
             &self,
             _request: proto::GetDashVideoUrlReq,
         ) -> Result<proto::GetDashVideoUrlResp, BilibiliError> {
-            Ok(mock_dash_response("https://upos.example/video.m4s"))
+            Ok(test_dash_response("https://upos.example/video.m4s"))
         }
 
         async fn get_subtitles(
@@ -1540,14 +1556,14 @@ mod tests {
             &self,
             _request: proto::ParsePgcPageReq,
         ) -> Result<proto::VideoPageInfo, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_pgcurl(
             &self,
             _request: proto::GetPgcurlReq,
         ) -> Result<proto::VideoUrl, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_dash_pgcurl(
@@ -1555,7 +1571,7 @@ mod tests {
             _request: proto::GetDashPgcurlReq,
         ) -> Result<proto::GetDashPgcurlResp, BilibiliError> {
             Ok(proto::GetDashPgcurlResp {
-                dash: mock_dash_response("https://upos.example/pgc.m4s").dash,
+                dash: test_dash_response("https://upos.example/pgc.m4s").dash,
                 hevc_dash: None,
             })
         }
@@ -1564,14 +1580,14 @@ mod tests {
             &self,
             _request: proto::UserInfoReq,
         ) -> Result<proto::UserInfoResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn r#match(
             &self,
             _request: proto::MatchReq,
         ) -> Result<proto::MatchResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_live_streams(
@@ -1591,73 +1607,73 @@ mod tests {
             &self,
             _request: proto::ParseLivePageReq,
         ) -> Result<proto::VideoPageInfo, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_live_danmu_info(
             &self,
             _request: proto::GetLiveDanmuInfoReq,
         ) -> Result<proto::GetLiveDanmuInfoResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
     }
 
     #[async_trait]
-    impl BilibiliInterface for MockBilibiliClientWithPgcDurlFallback {
+    impl BilibiliInterface for TestBilibiliClientWithPgcDurlFallback {
         async fn new_qr_code(
             &self,
             _request: proto::Empty,
         ) -> Result<proto::NewQrCodeResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn login_with_qr_code(
             &self,
             _request: proto::LoginWithQrCodeReq,
         ) -> Result<proto::LoginWithQrCodeResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn new_captcha(
             &self,
             _request: proto::Empty,
         ) -> Result<proto::NewCaptchaResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn new_sms(
             &self,
             _request: proto::NewSmsReq,
         ) -> Result<proto::NewSmsResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn login_with_sms(
             &self,
             _request: proto::LoginWithSmsReq,
         ) -> Result<proto::LoginWithSmsResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn parse_video_page(
             &self,
             _request: proto::ParseVideoPageReq,
         ) -> Result<proto::VideoPageInfo, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_video_url(
             &self,
             _request: proto::GetVideoUrlReq,
         ) -> Result<proto::VideoUrl, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_dash_video_url(
             &self,
             _request: proto::GetDashVideoUrlReq,
         ) -> Result<proto::GetDashVideoUrlResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_subtitles(
@@ -1673,7 +1689,7 @@ mod tests {
             &self,
             _request: proto::ParsePgcPageReq,
         ) -> Result<proto::VideoPageInfo, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_pgcurl(
@@ -1706,39 +1722,39 @@ mod tests {
             &self,
             _request: proto::UserInfoReq,
         ) -> Result<proto::UserInfoResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn r#match(
             &self,
             _request: proto::MatchReq,
         ) -> Result<proto::MatchResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_live_streams(
             &self,
             _request: proto::GetLiveStreamsReq,
         ) -> Result<proto::GetLiveStreamsResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn parse_live_page(
             &self,
             _request: proto::ParseLivePageReq,
         ) -> Result<proto::VideoPageInfo, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_live_danmu_info(
             &self,
             _request: proto::GetLiveDanmuInfoReq,
         ) -> Result<proto::GetLiveDanmuInfoResp, BilibiliError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
     }
 
-    fn mock_dash_response(url: &str) -> proto::GetDashVideoUrlResp {
+    fn test_dash_response(url: &str) -> proto::GetDashVideoUrlResp {
         proto::GetDashVideoUrlResp {
             dash: Some(proto::DashInfo {
                 duration: 120.0,
@@ -1761,7 +1777,7 @@ mod tests {
         }
     }
 
-    fn provider_with_mock_bilibili_client(client: Arc<dyn BilibiliInterface>) -> BilibiliProvider {
+    fn provider_with_test_bilibili_client(client: Arc<dyn BilibiliInterface>) -> BilibiliProvider {
         let default_clients = ProviderClientManager::new_for_tests()
             .expect("default provider HTTP client should build");
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
@@ -1769,11 +1785,11 @@ mod tests {
             client,
             default_clients.local_emby_client(),
         ));
-        BilibiliProvider::with_client_manager(fake_provider_instance_manager(), client_manager)
+        BilibiliProvider::with_optional_manager_and_client_manager(None, client_manager)
     }
 
-    fn provider_with_default_mock_bilibili_client() -> BilibiliProvider {
-        provider_with_mock_bilibili_client(Arc::new(MockBilibiliClient))
+    fn provider_with_default_test_bilibili_client() -> BilibiliProvider {
+        provider_with_test_bilibili_client(Arc::new(TestBilibiliClient))
     }
 
     fn assert_bilibili_cdn_headers(headers: &HashMap<String, String>, expected_referer: &str) {
@@ -1791,7 +1807,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_video_direct_playback_returns_stream_and_subtitle_headers() {
-        let provider = provider_with_default_mock_bilibili_client();
+        let provider = provider_with_default_test_bilibili_client();
         let result = provider
             .generate_playback(
                 &ProviderContext::new("test").with_user_id(UserId::expect_positive(1)),
@@ -1812,7 +1828,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pgc_direct_playback_returns_stream_and_subtitle_headers() {
-        let provider = provider_with_default_mock_bilibili_client();
+        let provider = provider_with_default_test_bilibili_client();
         let result = provider
             .generate_playback(
                 &ProviderContext::new("test").with_user_id(UserId::expect_positive(1)),
@@ -1834,7 +1850,7 @@ mod tests {
     #[tokio::test]
     async fn test_pgc_direct_playback_falls_back_to_durl_when_dash_is_unavailable() {
         let provider =
-            provider_with_mock_bilibili_client(Arc::new(MockBilibiliClientWithPgcDurlFallback));
+            provider_with_test_bilibili_client(Arc::new(TestBilibiliClientWithPgcDurlFallback));
         let result = provider
             .generate_playback(
                 &ProviderContext::new("test").with_user_id(UserId::expect_positive(1)),
@@ -1861,7 +1877,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_live_direct_playback_returns_live_headers() {
-        let provider = provider_with_default_mock_bilibili_client();
+        let provider = provider_with_default_test_bilibili_client();
         let result = provider
             .generate_playback(
                 &ProviderContext::new("test").with_user_id(UserId::expect_positive(1)),
@@ -1910,8 +1926,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bilibili_shared_credential_dependency_uses_creator() {
-        let provider =
-            BilibiliProvider::new(fake_provider_instance_manager()).expect("provider should build");
+        let provider = BilibiliProvider::new_local_only().expect("provider should build");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_credential_owner_id(UserId::expect_positive(2));
@@ -1939,8 +1954,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bilibili_shared_credential_dependency_requires_explicit_creator() {
-        let provider =
-            BilibiliProvider::new(fake_provider_instance_manager()).expect("provider should build");
+        let provider = BilibiliProvider::new_local_only().expect("provider should build");
         let ctx = ProviderContext::new("test").with_user_id(UserId::expect_positive(1));
         let err = provider
             .credential_dependencies(
@@ -1962,8 +1976,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bilibili_non_shared_credential_dependency_uses_viewer() {
-        let provider =
-            BilibiliProvider::new(fake_provider_instance_manager()).expect("provider should build");
+        let provider = BilibiliProvider::new_local_only().expect("provider should build");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_credential_owner_id(UserId::expect_positive(2));
@@ -1990,8 +2003,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_prepare_bilibili_config_rejects_provider_instance_name() {
-        let provider =
-            BilibiliProvider::new(fake_provider_instance_manager()).expect("provider should build");
+        let provider = BilibiliProvider::new_local_only().expect("provider should build");
         let config = json!({
             "type": "video",
             "bvid": "BV1xx411c7mD",

@@ -1,18 +1,14 @@
-//! Integration tests for `TieredTokenBlacklistStore` persistence ordering.
+//! Integration tests for `TieredTokenBlacklistStore` durable persistence ordering.
 //!
-//! These tests guard the production invariant that PostgreSQL is the durable
+//! These tests guard the production invariant that the durable store is the
 //! source of truth and Redis is only a cache / coordination layer.
 
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use redis::AsyncCommands;
-use synctv_core::service::{
-    auth::token_blacklist::{PgTokenBlacklistStore, TieredTokenBlacklistStore},
-    TokenBlacklistStore,
-};
+use synctv_core::service::{auth::token_blacklist::TieredTokenBlacklistStore, TokenBlacklistStore};
 use synctv_core_testing::{redis_connection_manager, start_redis_with_client};
 use tokio::sync::RwLock;
 
@@ -20,12 +16,49 @@ async fn start_redis() -> (synctv_core_testing::RedisContainer, redis::Client) {
     start_redis_with_client().await
 }
 
-fn unavailable_pg_store() -> PgTokenBlacklistStore {
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .acquire_timeout(Duration::from_millis(200))
-        .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/invalid")
-        .expect("connect_lazy should succeed for unavailable PG target");
-    PgTokenBlacklistStore::new(pool)
+#[derive(Clone, Debug)]
+struct FailingDurableTokenBlacklistStore;
+
+#[async_trait::async_trait]
+impl TokenBlacklistStore for FailingDurableTokenBlacklistStore {
+    async fn is_blacklisted_checked(&self, _key: &str) -> synctv_core::Result<bool> {
+        Err(synctv_core::Error::ServiceUnavailable(
+            "durable token blacklist unavailable".to_string(),
+        ))
+    }
+
+    async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> synctv_core::Result<()> {
+        Err(synctv_core::Error::ServiceUnavailable(
+            "durable token blacklist unavailable".to_string(),
+        ))
+    }
+
+    async fn blacklist_if_not_exists(
+        &self,
+        _key: &str,
+        _ttl_secs: u64,
+    ) -> synctv_core::Result<bool> {
+        Err(synctv_core::Error::ServiceUnavailable(
+            "durable token blacklist unavailable".to_string(),
+        ))
+    }
+
+    async fn get_family_revoked_at_checked(&self, _key: &str) -> synctv_core::Result<Option<i64>> {
+        Err(synctv_core::Error::ServiceUnavailable(
+            "durable token blacklist unavailable".to_string(),
+        ))
+    }
+
+    async fn set_family_revoked(
+        &self,
+        _key: &str,
+        _timestamp: i64,
+        _ttl_secs: u64,
+    ) -> synctv_core::Result<()> {
+        Err(synctv_core::Error::ServiceUnavailable(
+            "durable token blacklist unavailable".to_string(),
+        ))
+    }
 }
 
 #[tokio::test]
@@ -38,7 +71,7 @@ async fn test_blacklist_if_not_exists_requires_pg_success_before_redis_cache_wri
     let redis_key = format!("{key_prefix}bl:{key}");
 
     let store = TieredTokenBlacklistStore::from_runtime(
-        unavailable_pg_store(),
+        FailingDurableTokenBlacklistStore,
         synctv_core::shared_runtime_from_conn(Some(shared_conn)),
         key_prefix.clone(),
     );

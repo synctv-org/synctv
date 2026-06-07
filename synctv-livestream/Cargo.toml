@@ -125,5 +125,3 @@ tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 tempfile.workspace = true
 serde_urlencoded.workspace = true
-testcontainers.workspace = true
-testcontainers-modules.workspace = true

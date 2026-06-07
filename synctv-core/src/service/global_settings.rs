@@ -27,20 +27,24 @@
 //! }
 //! ```
 
-use crate::models::{room_settings::MaxMembers, RoomAdminPermissionBits, RoomPermissionSet};
+use crate::models::room_settings::MaxMembers;
 use crate::service::email::{EmailConfig, EmailConfigProvider};
 use crate::service::{
     settings::SettingsValidationContext,
-    settings_vars::{Setting, SettingsStorage},
+    settings_vars::{Setting, SettingChangeReceiver, SettingsStorage},
     SettingsService,
 };
 use crate::setting;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::warn;
+
+mod types;
+pub use types::{
+    ConfiguredIceServer, CorsAllowedOrigins, IceServerList, OAuth2ProviderConfig,
+    OAuth2ProviderConfigs, OAuth2SignupPolicy, PermissionSet, PublicSettings, RoomPasswordPolicy,
+};
 
 /// Maximum allowed value for `max_chat_messages` setting (0 = unlimited)
 const MAX_CHAT_MESSAGES_LIMIT: u64 = 10_000;
@@ -94,516 +98,6 @@ where
             Ok(())
         }
         Err(error) => Err(error),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PermissionSet(RoomPermissionSet);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PermissionSetParseError(String);
-
-impl fmt::Display for PermissionSetParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for PermissionSetParseError {}
-
-impl PermissionSet {
-    #[must_use]
-    pub const fn admin_default() -> Self {
-        Self(RoomPermissionSet::default_admin())
-    }
-
-    #[must_use]
-    pub const fn member_default() -> Self {
-        Self(RoomPermissionSet::default_member())
-    }
-
-    #[must_use]
-    pub const fn guest_default() -> Self {
-        Self(RoomPermissionSet::default_guest())
-    }
-
-    #[must_use]
-    pub const fn bits(&self) -> RoomPermissionSet {
-        self.0
-    }
-
-    fn names_for_bits(bits: u64) -> Vec<&'static str> {
-        NAMED_PERMISSIONS
-            .iter()
-            .filter_map(|(name, bit)| ((bits & *bit) != 0).then_some(*name))
-            .collect()
-    }
-
-    pub fn validate_guest_default(&self) -> crate::Result<()> {
-        let invalid = self.bits().0 & !RoomPermissionSet::guest_assignable().0;
-        if invalid == 0 {
-            return Ok(());
-        }
-
-        let invalid_names = Self::names_for_bits(invalid);
-        let allowed_names = Self::names_for_bits(RoomPermissionSet::guest_assignable().0);
-        Err(crate::Error::InvalidInput(format!(
-            "permissions.guest_default may only include guest-safe permissions: {}; invalid permissions: {}",
-            allowed_names.join(", "),
-            invalid_names.join(", "),
-        )))
-    }
-}
-
-const NAMED_PERMISSIONS: &[(&str, u64)] = &[
-    ("chat", RoomAdminPermissionBits::CHAT),
-    (
-        "create_media_resource",
-        RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE,
-    ),
-    (
-        "view_media_resources",
-        RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES,
-    ),
-    (
-        "view_member_list",
-        RoomAdminPermissionBits::VIEW_MEMBER_LIST,
-    ),
-    (
-        "view_chat_history",
-        RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
-    ),
-    ("use_webrtc", RoomAdminPermissionBits::USE_WEBRTC),
-    (
-        "delete_media_resource_any",
-        RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY,
-    ),
-    (
-        "reorder_media_resources",
-        RoomAdminPermissionBits::REORDER_MEDIA_RESOURCES,
-    ),
-    (
-        "clear_media_resources",
-        RoomAdminPermissionBits::CLEAR_MEDIA_RESOURCES,
-    ),
-    ("live_control", RoomAdminPermissionBits::LIVE_CONTROL),
-    ("play_control", RoomAdminPermissionBits::PLAY_CONTROL),
-    (
-        "change_current_media",
-        RoomAdminPermissionBits::CHANGE_CURRENT_MEDIA,
-    ),
-    (
-        "change_playback_rate",
-        RoomAdminPermissionBits::CHANGE_PLAYBACK_RATE,
-    ),
-    ("approve_member", RoomAdminPermissionBits::APPROVE_MEMBER),
-    ("kick_member", RoomAdminPermissionBits::KICK_MEMBER),
-    (
-        "set_member_permissions",
-        RoomAdminPermissionBits::SET_MEMBER_PERMISSIONS,
-    ),
-    ("add_member", RoomAdminPermissionBits::ADD_MEMBER),
-    (
-        "set_room_settings",
-        RoomAdminPermissionBits::SET_ROOM_SETTINGS,
-    ),
-    ("delete_chat", RoomAdminPermissionBits::DELETE_CHAT),
-    ("delete_room", RoomAdminPermissionBits::DELETE_ROOM),
-];
-
-impl fmt::Display for PermissionSet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let names = NAMED_PERMISSIONS
-            .iter()
-            .filter_map(|(name, bit)| ((self.0.bits() & *bit) != 0).then_some(*name))
-            .collect::<Vec<_>>();
-        let json = serde_json::to_string(&names).map_err(|_| fmt::Error)?;
-        f.write_str(&json)
-    }
-}
-
-impl std::str::FromStr for PermissionSet {
-    type Err = PermissionSetParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let names = serde_json::from_str::<Vec<String>>(s).map_err(|error| {
-            PermissionSetParseError(format!(
-                "permission set must be a JSON array of permission names: {error}"
-            ))
-        })?;
-
-        let mut bits = RoomPermissionSet::empty();
-        for name in names {
-            let canonical = name.replace('-', "_").to_ascii_lowercase();
-            let Some((_, bit)) = NAMED_PERMISSIONS
-                .iter()
-                .find(|(permission_name, _)| *permission_name == canonical)
-            else {
-                return Err(PermissionSetParseError(format!(
-                    "unknown permission name '{name}'"
-                )));
-            };
-            bits |= *bit;
-        }
-
-        Ok(Self(bits))
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RoomPasswordPolicy {
-    #[default]
-    Optional,
-    Required,
-    Forbidden,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoomPasswordPolicyParseError(String);
-
-impl fmt::Display for RoomPasswordPolicyParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for RoomPasswordPolicyParseError {}
-
-impl fmt::Display for RoomPasswordPolicy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Optional => "optional",
-            Self::Required => "required",
-            Self::Forbidden => "forbidden",
-        })
-    }
-}
-
-impl std::str::FromStr for RoomPasswordPolicy {
-    type Err = RoomPasswordPolicyParseError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "optional" => Ok(Self::Optional),
-            "required" => Ok(Self::Required),
-            "forbidden" => Ok(Self::Forbidden),
-            _ => Err(RoomPasswordPolicyParseError(format!(
-                "room.password_policy must be one of: optional, required, forbidden; got '{value}'"
-            ))),
-        }
-    }
-}
-
-/// A statically configured ICE server entry exposed to native clients.
-///
-/// Supports STUN-only entries and TURN/TURNS entries with optional credentials.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ConfiguredIceServer {
-    pub urls: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential: Option<String>,
-}
-
-impl ConfiguredIceServer {
-    #[must_use]
-    pub fn new(urls: Vec<String>) -> Self {
-        Self {
-            urls,
-            username: None,
-            credential: None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_auth(mut self, username: impl Into<String>, credential: impl Into<String>) -> Self {
-        self.username = Some(username.into());
-        self.credential = Some(credential.into());
-        self
-    }
-}
-
-/// A list of user-configured external ICE servers stored as JSON in the settings database.
-///
-/// Implements `Display` (→ JSON) and `FromStr` (← JSON) so it can be used
-/// directly with `Setting<IceServerList>`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct IceServerList(pub Vec<ConfiguredIceServer>);
-
-impl IceServerList {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(vec![
-            ConfiguredIceServer::new(vec!["stun:stun.l.google.com:19302".to_string()]),
-            ConfiguredIceServer::new(vec!["stun:stun1.l.google.com:19302".to_string()]),
-        ])
-    }
-}
-
-impl Default for IceServerList {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fmt::Display for IceServerList {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let json = serde_json::to_string(&self.0).map_err(|_| fmt::Error)?;
-        f.write_str(&json)
-    }
-}
-
-impl std::str::FromStr for IceServerList {
-    type Err = serde_json::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.is_empty() {
-            return Ok(Self(Vec::new()));
-        }
-        let servers: Vec<ConfiguredIceServer> = serde_json::from_str(s)?;
-        Ok(Self(servers))
-    }
-}
-
-/// A list of allowed CORS origins, stored as a JSON array in the settings database.
-///
-/// Each entry is an origin URL string, e.g. `"https://example.com"`.
-///
-/// Implements `Display` (→ JSON) and `FromStr` (← JSON) so it can be used
-/// directly with `Setting<CorsAllowedOrigins>`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct CorsAllowedOrigins(pub Vec<String>);
-
-impl CorsAllowedOrigins {
-    /// Create an empty list of allowed origins (secure default).
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(Vec::new())
-    }
-}
-
-impl Default for CorsAllowedOrigins {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fmt::Display for CorsAllowedOrigins {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let json = serde_json::to_string(&self.0).map_err(|_| fmt::Error)?;
-        f.write_str(&json)
-    }
-}
-
-impl std::str::FromStr for CorsAllowedOrigins {
-    type Err = serde_json::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.is_empty() {
-            return Ok(Self(Vec::new()));
-        }
-        let origins: Vec<String> = serde_json::from_str(s)?;
-        Ok(Self(origins))
-    }
-}
-
-/// Runtime OAuth2 signup policy for one provider instance.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(default)]
-pub struct OAuth2SignupPolicy {
-    pub enable_signup: bool,
-    pub signup_need_review: bool,
-}
-
-/// Runtime configuration for one OAuth2 provider instance.
-///
-/// Only the common envelope is modeled here. Provider-specific fields live
-/// under `config` and are parsed by the selected provider factory.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(default)]
-pub struct OAuth2ProviderConfig {
-    #[serde(rename = "type")]
-    pub provider_type: String,
-    pub enable_signup: bool,
-    pub signup_need_review: bool,
-    pub config: serde_json::Map<String, serde_json::Value>,
-}
-
-impl OAuth2ProviderConfig {
-    #[must_use]
-    pub const fn signup_policy(&self) -> OAuth2SignupPolicy {
-        OAuth2SignupPolicy {
-            enable_signup: self.enable_signup,
-            signup_need_review: self.signup_need_review,
-        }
-    }
-
-    #[must_use]
-    pub fn provider_config_value(&self) -> serde_json::Value {
-        serde_json::Value::Object(self.config.clone())
-    }
-}
-
-/// Dynamic OAuth2 provider registry stored as one JSON runtime setting.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(transparent)]
-pub struct OAuth2ProviderConfigs(pub BTreeMap<String, OAuth2ProviderConfig>);
-
-impl OAuth2ProviderConfigs {
-    #[must_use]
-    pub fn policy_for(&self, instance_name: &str) -> OAuth2SignupPolicy {
-        self.0
-            .get(instance_name)
-            .map(OAuth2ProviderConfig::signup_policy)
-            .unwrap_or_default()
-    }
-
-    pub fn validate(&self) -> crate::Result<()> {
-        self.validate_with_ssrf_guard(&synctv_common::ssrf::SsrfGuard::strict_policy())
-    }
-
-    pub fn validate_with_ssrf_guard(
-        &self,
-        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
-    ) -> crate::Result<()> {
-        for (instance_name, provider_config) in &self.0 {
-            validate_oauth2_instance_name(instance_name)?;
-            let provider_type = provider_config.provider_type.trim();
-            if provider_type.is_empty() {
-                return Err(crate::Error::InvalidInput(format!(
-                    "OAuth2 provider '{instance_name}' must set a non-empty type"
-                )));
-            }
-            if crate::models::oauth2_client::OAuth2Provider::from_str_name(provider_type).is_none()
-            {
-                return Err(crate::Error::InvalidInput(format!(
-                    "OAuth2 provider '{instance_name}' uses unsupported type '{provider_type}'"
-                )));
-            }
-            let provider_config = provider_config.provider_config_value();
-            crate::oauth2::providers::provider_registry(ssrf_guard.clone())
-                .create_provider(provider_type, &provider_config)
-                .map_err(|error| {
-                    crate::Error::InvalidInput(format!(
-                        "OAuth2 provider '{instance_name}' has invalid {provider_type} config: {error}"
-                    ))
-                })?;
-        }
-        Ok(())
-    }
-}
-
-fn validate_oauth2_instance_name(instance_name: &str) -> crate::Result<()> {
-    if instance_name.is_empty() {
-        return Err(crate::Error::InvalidInput(
-            "OAuth2 provider instance name must not be empty".to_string(),
-        ));
-    }
-    if instance_name.len() > 64 {
-        return Err(crate::Error::InvalidInput(
-            "OAuth2 provider instance name must be at most 64 bytes".to_string(),
-        ));
-    }
-    if !instance_name
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
-        return Err(crate::Error::InvalidInput(
-            "OAuth2 provider instance name may only contain ASCII letters, digits, '_' and '-'"
-                .to_string(),
-        ));
-    }
-    Ok(())
-}
-
-impl fmt::Display for OAuth2ProviderConfigs {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let json = serde_json::to_string(&self.0).map_err(|_| fmt::Error)?;
-        f.write_str(&json)
-    }
-}
-
-impl std::str::FromStr for OAuth2ProviderConfigs {
-    type Err = serde_json::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.is_empty() {
-            return Ok(Self::default());
-        }
-        let configs: BTreeMap<String, OAuth2ProviderConfig> = serde_json::from_str(s)?;
-        Ok(Self(configs))
-    }
-}
-
-/// A snapshot of all client-visible settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PublicSettings {
-    pub allow_room_creation: bool,
-    pub max_rooms_per_user: i64,
-    pub max_members_per_room: i64,
-
-    // Room settings
-    pub disable_create_room: bool,
-    pub create_room_need_review: bool,
-    pub room_password_policy: RoomPasswordPolicy,
-
-    // User settings
-    pub enable_password_signup: bool,
-    pub password_signup_need_review: bool,
-    pub enable_email_signup: bool,
-    pub email_signup_need_review: bool,
-    pub enable_webauthn_signup: bool,
-    pub webauthn_signup_need_review: bool,
-    pub enable_guest: bool,
-    pub enable_email: bool,
-    pub enable_webauthn: bool,
-
-    // Proxy settings
-    pub movie_proxy: bool,
-    pub live_proxy: bool,
-
-    // RTMP settings
-    pub ts_disguised_as_png: bool,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub custom_publish_host: String,
-
-    // Email settings
-    pub email_whitelist_enabled: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub email_whitelist_domains: Vec<String>,
-}
-
-impl PublicSettings {
-    /// Default settings when the settings registry is not configured.
-    #[must_use]
-    pub const fn defaults() -> Self {
-        Self {
-            allow_room_creation: true,
-            max_rooms_per_user: 10,
-            max_members_per_room: 100,
-            disable_create_room: false,
-            create_room_need_review: false,
-            room_password_policy: RoomPasswordPolicy::Optional,
-            enable_password_signup: false,
-            password_signup_need_review: false,
-            enable_email_signup: false,
-            email_signup_need_review: false,
-            enable_webauthn_signup: false,
-            webauthn_signup_need_review: false,
-            enable_guest: true,
-            enable_email: false,
-            enable_webauthn: false,
-            movie_proxy: true,
-            live_proxy: true,
-            ts_disguised_as_png: false,
-            custom_publish_host: String::new(),
-            email_whitelist_enabled: false,
-            email_whitelist_domains: Vec::new(),
-        }
     }
 }
 
@@ -693,35 +187,34 @@ pub struct RuntimeEmailConfigProvider {
 
 impl RuntimeEmailConfigProvider {
     #[must_use]
-    pub fn new(settings: Arc<SettingsRegistry>) -> Self {
+    pub fn new(settings: &Arc<SettingsRegistry>) -> Self {
         let (changes, _) = broadcast::channel(64);
-        let mut enabled_rx = settings.email_enabled.subscribe_changes();
-        let mut smtp_host_rx = settings.email_smtp_host.subscribe_changes();
-        let mut smtp_port_rx = settings.email_smtp_port.subscribe_changes();
-        let mut smtp_username_rx = settings.email_smtp_username.subscribe_changes();
-        let mut smtp_password_rx = settings.email_smtp_password.subscribe_changes();
-        let mut use_tls_rx = settings.email_use_tls.subscribe_changes();
-        let mut from_email_rx = settings.email_from_email.subscribe_changes();
-        let mut from_name_rx = settings.email_from_name.subscribe_changes();
 
         let provider = Self {
-            settings,
+            settings: Arc::clone(settings),
             changes: changes.clone(),
         };
 
         let _ = provider.current_config();
 
+        let Some(mut subscriptions) = try_subscribe_email_settings(settings) else {
+            tracing::warn!(
+                "Runtime email config changes are disabled because settings storage has no service backend"
+            );
+            return provider;
+        };
+
         crate::spawn::spawn_monitored("runtime_email_config_provider_changes", async move {
             loop {
                 let event = tokio::select! {
-                    event = recv_email_setting_change(&mut enabled_rx) => event,
-                    event = recv_email_setting_change(&mut smtp_host_rx) => event,
-                    event = recv_email_setting_change(&mut smtp_port_rx) => event,
-                    event = recv_email_setting_change(&mut smtp_username_rx) => event,
-                    event = recv_email_setting_change(&mut smtp_password_rx) => event,
-                    event = recv_email_setting_change(&mut use_tls_rx) => event,
-                    event = recv_email_setting_change(&mut from_email_rx) => event,
-                    event = recv_email_setting_change(&mut from_name_rx) => event,
+                    event = recv_email_setting_change(&mut subscriptions.enabled) => event,
+                    event = recv_email_setting_change(&mut subscriptions.smtp_host) => event,
+                    event = recv_email_setting_change(&mut subscriptions.smtp_port) => event,
+                    event = recv_email_setting_change(&mut subscriptions.smtp_username) => event,
+                    event = recv_email_setting_change(&mut subscriptions.smtp_password) => event,
+                    event = recv_email_setting_change(&mut subscriptions.use_tls) => event,
+                    event = recv_email_setting_change(&mut subscriptions.from_email) => event,
+                    event = recv_email_setting_change(&mut subscriptions.from_name) => event,
                 };
 
                 match event {
@@ -750,6 +243,32 @@ impl RuntimeEmailConfigProvider {
 
         provider
     }
+}
+
+struct RuntimeEmailSettingSubscriptions {
+    enabled: SettingChangeReceiver<bool>,
+    smtp_host: SettingChangeReceiver<String>,
+    smtp_port: SettingChangeReceiver<u16>,
+    smtp_username: SettingChangeReceiver<String>,
+    smtp_password: SettingChangeReceiver<String>,
+    use_tls: SettingChangeReceiver<bool>,
+    from_email: SettingChangeReceiver<String>,
+    from_name: SettingChangeReceiver<String>,
+}
+
+fn try_subscribe_email_settings(
+    settings: &SettingsRegistry,
+) -> Option<RuntimeEmailSettingSubscriptions> {
+    Some(RuntimeEmailSettingSubscriptions {
+        enabled: settings.email_enabled.subscribe_changes().ok()?,
+        smtp_host: settings.email_smtp_host.subscribe_changes().ok()?,
+        smtp_port: settings.email_smtp_port.subscribe_changes().ok()?,
+        smtp_username: settings.email_smtp_username.subscribe_changes().ok()?,
+        smtp_password: settings.email_smtp_password.subscribe_changes().ok()?,
+        use_tls: settings.email_use_tls.subscribe_changes().ok()?,
+        from_email: settings.email_from_email.subscribe_changes().ok()?,
+        from_name: settings.email_from_name.subscribe_changes().ok()?,
+    })
 }
 
 impl EmailConfigProvider for RuntimeEmailConfigProvider {
@@ -823,6 +342,27 @@ impl SettingsRegistry {
         ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     ) -> Self {
         let storage = Arc::new(SettingsStorage::new(settings_service));
+        Self::from_storage(storage, ssrf_guard)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_tests() -> Self {
+        Self::new_for_tests_with_ssrf_guard(&synctv_common::ssrf::SsrfGuard::strict_policy())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_tests_with_ssrf_guard(
+        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> Self {
+        let providers = Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
+        let storage = Arc::new(SettingsStorage::new_with_provider_map(providers));
+        Self::from_storage(storage, ssrf_guard)
+    }
+
+    fn from_storage(
+        storage: Arc<SettingsStorage>,
+        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> Self {
         let oauth2_ssrf_guard = ssrf_guard.clone();
 
         let email_smtp_host = setting!(String, "email.smtp_host", storage.clone(), String::new());
@@ -1125,10 +665,9 @@ impl SettingsRegistry {
         };
 
         let email_settings = registry.email_settings();
-        registry
-            .storage
-            .settings_service()
-            .add_batch_validator(move |context| email_settings.validate(context));
+        if let Ok(settings_service) = registry.storage.settings_service() {
+            settings_service.add_batch_validator(move |context| email_settings.validate(context));
+        }
         registry
     }
 
@@ -1226,32 +765,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ice_server_list_from_str_empty_string() {
-        let list: IceServerList = "".parse().unwrap();
-        assert!(list.0.is_empty());
-    }
-
-    #[test]
-    fn test_ice_server_list_from_str_valid_json() {
-        let json = r#"[{"urls":["stun:a.com:19302"]},{"urls":["turn:b.com:3478"],"username":"bob","credential":"secret"}]"#;
-        let list: IceServerList = json.parse().unwrap();
-        assert_eq!(list.0.len(), 2);
-        assert_eq!(list.0[0].urls, vec!["stun:a.com:19302"]);
-        assert_eq!(list.0[1].username.as_deref(), Some("bob"));
-        assert_eq!(list.0[1].credential.as_deref(), Some("secret"));
-
-        let display_json = list.to_string();
-        let displayed: Vec<ConfiguredIceServer> = serde_json::from_str(&display_json).unwrap();
-        assert_eq!(displayed, list.0);
-    }
-
-    #[test]
-    fn test_ice_server_list_from_str_invalid_json() {
-        let result = "not json".parse::<IceServerList>();
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_public_settings_registration_defaults_are_closed() {
         let settings = PublicSettings::defaults();
         assert!(!settings.enable_password_signup);
@@ -1312,14 +825,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_settings_registry_rejects_unsafe_guest_default_permissions() {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgres://fake:fake@localhost/fake")
-            .unwrap();
-        let service = Arc::new(SettingsService::new(
-            crate::repository::SettingsRepository::new(pool.clone()),
-            pool,
-        ));
-        let registry = SettingsRegistry::new(service);
+        let registry = SettingsRegistry::new_for_tests();
 
         let invalid = r#"["view_media_resources","chat"]"#;
         assert!(
@@ -1340,14 +846,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_settings_registry_validates_email_whitelist_domains() {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgres://fake:fake@localhost/fake")
-            .unwrap();
-        let service = Arc::new(SettingsService::new(
-            crate::repository::SettingsRepository::new(pool.clone()),
-            pool,
-        ));
-        let registry = SettingsRegistry::new(service);
+        let registry = SettingsRegistry::new_for_tests();
 
         assert!(registry
             .storage
@@ -1358,16 +857,39 @@ mod tests {
         assert!(!registry.storage.validate("email.whitelist", "example"));
     }
 
+    #[test]
+    fn test_settings_registry_wires_validation_providers() {
+        let registry = SettingsRegistry::new_for_tests();
+
+        assert!(registry.storage.validate("server.max_rooms_per_user", "10"));
+        assert!(!registry.storage.validate("server.max_rooms_per_user", "0"));
+        assert!(!registry
+            .storage
+            .validate("server.max_rooms_per_user", "1001"));
+
+        assert!(registry
+            .storage
+            .validate("server.max_members_per_room", "100"));
+        assert!(!registry
+            .storage
+            .validate("server.max_members_per_room", "0"));
+
+        assert!(registry
+            .storage
+            .validate("user.enable_password_signup", "true"));
+        assert!(!registry
+            .storage
+            .validate("user.enable_password_signup", "not_bool"));
+
+        assert!(registry.storage.validate("server.max_chat_messages", "500"));
+        assert!(!registry
+            .storage
+            .validate("server.max_chat_messages", "10001"));
+    }
+
     #[tokio::test]
     async fn test_public_settings_hides_disabled_email_whitelist_domains() {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgres://fake:fake@localhost/fake")
-            .unwrap();
-        let service = Arc::new(SettingsService::new(
-            crate::repository::SettingsRepository::new(pool.clone()),
-            pool,
-        ));
-        let registry = SettingsRegistry::new(service);
+        let registry = SettingsRegistry::new_for_tests();
 
         registry
             .email_whitelist_enabled
@@ -1385,14 +907,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_public_settings_returns_enabled_email_whitelist_domains() {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgres://fake:fake@localhost/fake")
-            .unwrap();
-        let service = Arc::new(SettingsService::new(
-            crate::repository::SettingsRepository::new(pool.clone()),
-            pool,
-        ));
-        let registry = SettingsRegistry::new(service);
+        let registry = SettingsRegistry::new_for_tests();
 
         registry
             .email_whitelist_enabled
@@ -1473,56 +988,11 @@ mod tests {
     }
 
     #[test]
-    fn test_public_settings_skips_empty_custom_publish_host() {
-        let defaults = PublicSettings::defaults();
-        let json = serde_json::to_string(&defaults).unwrap();
-        // custom_publish_host is empty, should be omitted via skip_serializing_if
-        assert!(!json.contains("custom_publish_host"));
-    }
-
-    #[test]
     fn test_public_settings_includes_nonempty_custom_publish_host() {
         let mut settings = PublicSettings::defaults();
         settings.custom_publish_host = "rtmp://live.example.com".to_string();
         let json = serde_json::to_string(&settings).unwrap();
         assert!(json.contains("custom_publish_host"));
         assert!(json.contains("rtmp://live.example.com"));
-    }
-
-    #[test]
-    fn test_ice_server_list_from_str_empty_array() {
-        let list: IceServerList = "[]".parse().unwrap();
-        assert!(list.0.is_empty());
-    }
-
-    #[test]
-    fn test_cors_allowed_origins_from_str_empty_string() {
-        let origins: CorsAllowedOrigins = "".parse().unwrap();
-        assert!(origins.0.is_empty());
-    }
-
-    #[test]
-    fn test_cors_allowed_origins_from_str_valid_json() {
-        let json = r#"["https://example.com","https://app.example.com"]"#;
-        let origins: CorsAllowedOrigins = json.parse().unwrap();
-        assert_eq!(origins.0.len(), 2);
-        assert_eq!(origins.0[0], "https://example.com");
-        assert_eq!(origins.0[1], "https://app.example.com");
-
-        let display_json = origins.to_string();
-        let displayed: Vec<String> = serde_json::from_str(&display_json).unwrap();
-        assert_eq!(displayed, origins.0);
-    }
-
-    #[test]
-    fn test_cors_allowed_origins_from_str_invalid_json() {
-        let result = "not valid json".parse::<CorsAllowedOrigins>();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_cors_allowed_origins_from_str_empty_array() {
-        let origins: CorsAllowedOrigins = "[]".parse().unwrap();
-        assert!(origins.0.is_empty());
     }
 }

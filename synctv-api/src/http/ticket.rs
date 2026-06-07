@@ -20,7 +20,7 @@ use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 use super::middleware::RequestMetadata;
 use super::{AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
-pub use crate::proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTicketResponse};
+use synctv_proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTicketResponse};
 
 /// Create a room-bound WebSocket ticket for secure authentication
 ///
@@ -56,11 +56,11 @@ pub use crate::proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTick
         request_body = CreateWebSocketTicketRequest,
         responses(
             (status = 200, description = "WebSocket ticket created", body = CreateWebSocketTicketResponse),
-            (status = 400, description = "Invalid room_id", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Caller cannot create a ticket for this room", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Ticket backend unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid room_id", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Caller cannot create a ticket for this room", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Room not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Ticket backend unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])

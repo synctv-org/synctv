@@ -80,8 +80,8 @@ fn provider_http_client_from_config(
     Ok(Some(client))
 }
 
-/// Factory function type for creating `MediaProvider` instances
-pub type ProviderFactory = Box<
+/// Factory function type for creating `MediaProvider` instances.
+pub type MediaProviderFactory = Box<
     dyn Fn(&str, &Value, Arc<RemoteProviderManager>) -> Result<Arc<dyn MediaProvider>>
         + Send
         + Sync,
@@ -112,7 +112,7 @@ pub type ProviderFactory = Box<
 /// ```
 pub struct ProvidersManager {
     /// Registered factory functions (`provider_type` → factory)
-    factories: HashMap<String, ProviderFactory>,
+    factories: HashMap<String, MediaProviderFactory>,
 
     /// Created `MediaProvider` instances (singleton per provider type)
     instances: Arc<RwLock<HashMap<String, Arc<dyn MediaProvider>>>>,
@@ -318,7 +318,7 @@ impl ProvidersManager {
     }
 
     /// Register a provider factory
-    pub fn register_factory(&mut self, provider_type: &str, factory: ProviderFactory) {
+    pub fn register_factory(&mut self, provider_type: &str, factory: MediaProviderFactory) {
         self.factories.insert(provider_type.to_string(), factory);
         tracing::debug!("Registered provider factory: {}", provider_type);
     }
@@ -517,18 +517,19 @@ impl std::fmt::Debug for ProvidersManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repository::ProviderInstanceRepository;
-    use sqlx::PgPool;
+
+    fn test_instance_manager() -> Arc<RemoteProviderManager> {
+        crate::service::remote_provider_manager::empty_provider_instance_manager()
+    }
+
+    fn test_manager() -> ProvidersManager {
+        ProvidersManager::new(test_instance_manager()).expect("providers manager should build")
+    }
 
     #[tokio::test]
     async fn test_providers_manager_creation() {
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
-        // Check that built-in providers are registered
         assert!(manager.has_factory("alist"));
         assert!(manager.has_factory("bilibili"));
         assert!(manager.has_factory("emby"));
@@ -540,50 +541,33 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_provider_types() {
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
         let types = manager.list_types();
         assert!(types.contains(&"alist".to_string()));
         assert!(types.contains(&"bilibili".to_string()));
         assert!(types.contains(&"live_proxy".to_string()));
-        assert_eq!(types.len(), 6); // alist, bilibili, emby, rtmp, direct_url, live_proxy
+        assert_eq!(types.len(), 6);
     }
 
     #[tokio::test]
     async fn test_provider_config_without_timeout() {
-        // Provider creation should use defaults when timeout config is omitted.
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
-        // Create provider with empty config (no timeout)
         let config = serde_json::json!({});
         let provider = manager
             .create_provider("alist", "test_alist", &config)
             .await;
         assert!(provider.is_ok());
 
-        // Verify the provider was stored
         let stored = manager.get("test_alist").await;
         assert!(stored.is_some());
     }
 
     #[tokio::test]
     async fn test_provider_config_with_timeout() {
-        // Test that provider accepts per-instance HTTP timeout overrides.
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
-        // Create provider with Alist-specific timeout config.
         let config = serde_json::json!({
             "request_timeout_seconds": 30,
             "connect_timeout_seconds": 10
@@ -593,21 +577,14 @@ mod tests {
             .await;
         assert!(provider.is_ok());
 
-        // Verify the provider was stored
         let stored = manager.get("test_alist_timeout").await;
         assert!(stored.is_some());
     }
 
     #[tokio::test]
     async fn test_bilibili_provider_config_with_timeout() {
-        // Test that Bilibili provider accepts per-instance HTTP timeout overrides.
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
-        // Create provider with Bilibili-specific timeout config.
         let config = serde_json::json!({
             "request_timeout_seconds": 45,
             "connect_timeout_seconds": 10
@@ -617,21 +594,14 @@ mod tests {
             .await;
         assert!(provider.is_ok());
 
-        // Verify the provider was stored
         let stored = manager.get("test_bilibili_timeout").await;
         assert!(stored.is_some());
     }
 
     #[tokio::test]
     async fn test_emby_provider_config_with_timeout() {
-        // Test that Emby provider accepts per-instance HTTP timeout overrides.
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
-        // Create provider with Emby-specific timeout config.
         let config = serde_json::json!({
             "request_timeout_seconds": 60,
             "connect_timeout_seconds": 10
@@ -641,18 +611,13 @@ mod tests {
             .await;
         assert!(provider.is_ok());
 
-        // Verify the provider was stored
         let stored = manager.get("test_emby_timeout").await;
         assert!(stored.is_some());
     }
 
     #[tokio::test]
     async fn test_provider_config_invalid_timeout_rejected() {
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
         for (config, expected_message) in [
             (
@@ -694,9 +659,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_new_with_provider_http_client_accepts_explicit_default_client() {
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let client = synctv_media_providers::provider_http_client_builder(
             synctv_common::ssrf::SsrfGuard::strict_policy(),
         )
@@ -705,7 +667,8 @@ mod tests {
         .build()
         .unwrap();
 
-        let manager = ProvidersManager::new_with_provider_http_client(instance_manager, client);
+        let manager =
+            ProvidersManager::new_with_provider_http_client(test_instance_manager(), client);
 
         assert!(manager.has_factory("alist"));
         assert!(manager.has_factory("bilibili"));
@@ -714,9 +677,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_default_provider_instances_use_injected_default_client_manager() {
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
+        let instance_manager = test_instance_manager();
         let client = synctv_media_providers::provider_http_client_builder(
             synctv_common::ssrf::SsrfGuard::strict_policy(),
         )
@@ -748,9 +709,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_per_instance_timeout_override_keeps_dedicated_client_manager() {
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
+        let instance_manager = test_instance_manager();
         let client = synctv_media_providers::provider_http_client_builder(
             synctv_common::ssrf::SsrfGuard::strict_policy(),
         )
@@ -785,11 +744,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rtmp_provider_no_longer_requires_base_url() {
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
         let config = serde_json::json!({});
         let provider = manager.create_provider("rtmp", "test_rtmp", &config).await;
@@ -798,11 +753,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_live_proxy_provider_no_longer_requires_base_url() {
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
         let config = serde_json::json!({});
         let provider = manager
@@ -813,63 +764,43 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_lookup_by_instance_id() {
-        // Test getting providers by instance ID
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
-        // Create a provider
         let config = serde_json::json!({});
         manager
             .create_provider("alist", "my_alist_instance", &config)
             .await
             .unwrap();
 
-        // Get by instance ID
         let provider = manager.get("my_alist_instance").await;
         assert!(provider.is_some());
         assert_eq!(provider.unwrap().name(), "alist");
 
-        // Get nonexistent instance
         let not_found = manager.get("nonexistent").await;
         assert!(not_found.is_none());
     }
 
     #[tokio::test]
     async fn test_provider_lookup_by_type() {
-        // Test getting providers by type (returns default instance)
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
-        // Create default instance
         let config = serde_json::json!({});
         manager
             .create_provider("alist", "alist", &config)
             .await
             .unwrap();
 
-        // Get by type
         let provider = manager.get_by_type("alist").await;
         assert!(provider.is_some());
         assert_eq!(provider.unwrap().name(), "alist");
 
-        // Get unknown type
         let not_found = manager.get_by_type("unknown").await;
         assert!(not_found.is_none());
     }
 
     #[tokio::test]
     async fn test_default_provider_instances_populate_proxy_registry() {
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
         assert!(
             manager.proxy_registry().get("alist").is_none(),
@@ -896,11 +827,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_provider_uses_default_for_missing_or_empty_instance() {
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
         manager
             .create_provider("alist", "alist", &serde_json::json!({}))
@@ -920,11 +847,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_provider_uses_explicit_local_instance_and_checks_type() {
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
         manager
             .create_provider("alist", "alist_alt", &serde_json::json!({}))
@@ -952,14 +875,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_singleton_pattern() {
-        // Test singleton pattern - creating provider with same instance_id replaces previous
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
-        // Create first instance
         let config1 = serde_json::json!({"request_timeout_seconds": 10});
         let provider1 = manager
             .create_provider("alist", "alist_singleton", &config1)
@@ -967,7 +884,6 @@ mod tests {
             .unwrap();
         assert_eq!(provider1.name(), "alist");
 
-        // Create second instance with same ID (should replace)
         let config2 = serde_json::json!({"request_timeout_seconds": 30});
         let provider2 = manager
             .create_provider("alist", "alist_singleton", &config2)
@@ -975,29 +891,19 @@ mod tests {
             .unwrap();
         assert_eq!(provider2.name(), "alist");
 
-        // Both Arcs point to different instances (second replaced first in map)
-        // but first is still valid via Arc
         assert!(!Arc::ptr_eq(&provider1, &provider2));
 
-        // The manager now returns the second instance
         let stored = manager.get("alist_singleton").await.unwrap();
         assert!(Arc::ptr_eq(&provider2, &stored));
     }
 
     #[tokio::test]
     async fn test_provider_list() {
-        // Test listing all provider instances
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
-        // Initially empty
         let list = manager.list().await;
         assert!(list.is_empty());
 
-        // Create multiple providers
         manager
             .create_provider("alist", "alist1", &serde_json::json!({}))
             .await
@@ -1011,11 +917,9 @@ mod tests {
             .await
             .unwrap();
 
-        // List all
         let list = manager.list().await;
         assert_eq!(list.len(), 3);
 
-        // Verify names
         let names: Vec<&str> = list.iter().map(|p| p.name()).collect();
         assert!(names.contains(&"alist"));
         assert!(names.contains(&"bilibili"));
@@ -1024,44 +928,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_remove() {
-        // Test removing provider instances
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
-        // Create provider
         manager
             .create_provider("alist", "alist_remove", &serde_json::json!({}))
             .await
             .unwrap();
 
-        // Verify it exists
         assert!(manager.get("alist_remove").await.is_some());
 
-        // Remove it
         let removed = manager.remove("alist_remove").await;
         assert!(removed.is_some());
 
-        // Verify it's gone
         assert!(manager.get("alist_remove").await.is_none());
 
-        // Remove nonexistent
         let not_found = manager.remove("nonexistent").await;
         assert!(not_found.is_none());
     }
 
     #[tokio::test]
     async fn test_provider_factory_unknown_type() {
-        // Test creating provider with unknown type
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let manager =
-            ProvidersManager::new(instance_manager).expect("providers manager should build");
+        let manager = test_manager();
 
-        // Try to create unknown provider type
         let config = serde_json::json!({});
         let result = manager
             .create_provider("unknown_type", "test", &config)
@@ -1078,15 +966,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_concurrent_provider_creation() {
-        // Test concurrent provider creation doesn't cause races
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
+        let instance_manager = test_instance_manager();
         let manager = Arc::new(
             ProvidersManager::new(instance_manager).expect("providers manager should build"),
         );
 
-        // Spawn multiple tasks creating different providers concurrently
         let mut handles = vec![];
 
         for i in 0..5 {
@@ -1098,14 +982,12 @@ mod tests {
             }));
         }
 
-        // All should succeed
         let results: Vec<_> = futures::future::join_all(handles).await;
         for result in results {
             assert!(result.is_ok());
             assert!(result.unwrap().is_ok());
         }
 
-        // Verify all instances exist
         for i in 0..5 {
             let instance_id = format!("alist_concurrent_{i}");
             assert!(manager.get(&instance_id).await.is_some());
@@ -1114,14 +996,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_instance_manager_reference() {
-        // Test that ProvidersManager holds a reference to RemoteProviderManager
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
+        let instance_manager = test_instance_manager();
         let manager = ProvidersManager::new(instance_manager.clone())
             .expect("providers manager should build");
 
-        // Verify instance_manager is accessible
         let retrieved = manager.instance_manager();
         assert!(Arc::ptr_eq(&instance_manager, retrieved));
     }

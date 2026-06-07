@@ -14,7 +14,7 @@ pub trait PlaybackService: Send + Sync {
         room_id: &RoomId,
         state: &RoomPlaybackState,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
-    ) -> Result<crate::proto::client::Playback, ApiError>;
+    ) -> Result<synctv_proto::client::Playback, ApiError>;
 
     async fn playback_credential_dependencies(
         &self,
@@ -42,7 +42,7 @@ pub trait PlaybackService: Send + Sync {
     }
 }
 
-pub(crate) fn playback_expires_at(playback: &crate::proto::client::Playback) -> Option<i64> {
+pub(crate) fn playback_expires_at(playback: &synctv_proto::client::Playback) -> Option<i64> {
     playback
         .playback_infos
         .values()

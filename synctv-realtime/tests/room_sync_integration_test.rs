@@ -14,7 +14,7 @@ use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::SharedStateProfile;
 use synctv_core_testing::redis_connection_manager;
 use synctv_realtime::sync::{
-    build_room_message_runtime, room_hub::RoomLifecycleEvent, RoomMessageRuntime,
+    build_room_message_runtime, room_hub::RoomLifecycleEvent, ConnectionId, RoomMessageRuntime,
 };
 mod integration_test_helpers;
 use integration_test_helpers::TestRedis;
@@ -46,7 +46,7 @@ async fn test_cross_replica_subscription_visibility() {
 
     // Subscribe on hub A
     let (_rx, conn_id) = {
-        let connection_id = "conn_a_1".to_string();
+        let connection_id = ConnectionId::new("conn_a_1");
         let rx = hub_a
             .subscribe(room_id, user_id, connection_id.clone())
             .await
@@ -98,7 +98,7 @@ async fn test_cross_replica_unsubscribe_removes_redis_state() {
     // Subscribe on hub A
     let conn_id = "conn_unsub_1".to_string();
     let _rx = hub_a
-        .subscribe(room_id, user_id, conn_id.clone())
+        .subscribe(room_id, user_id, conn_id.clone().into())
         .await
         .expect("subscribe should succeed");
 
@@ -148,11 +148,11 @@ async fn test_remove_room_removes_redis_state_across_replicas() {
     let user_b = UserId::expect_positive(10_000_075);
 
     let _rx1 = hub_a
-        .subscribe(room_id, user_a, "remove_conn_1".to_string())
+        .subscribe(room_id, user_a, "remove_conn_1".to_string().into())
         .await
         .expect("subscribe should succeed");
     let _rx2 = hub_a
-        .subscribe(room_id, user_b, "remove_conn_2".to_string())
+        .subscribe(room_id, user_b, "remove_conn_2".to_string().into())
         .await
         .expect("subscribe should succeed");
 
@@ -200,7 +200,7 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
         .subscribe(
             room_id,
             UserId::expect_positive(10_000_077),
-            "conn_a1".to_string(),
+            "conn_a1".to_string().into(),
         )
         .await
         .expect("subscribe should succeed");
@@ -208,7 +208,7 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
         .subscribe(
             room_id,
             UserId::expect_positive(10_000_078),
-            "conn_a2".to_string(),
+            "conn_a2".to_string().into(),
         )
         .await
         .expect("subscribe should succeed");
@@ -218,7 +218,7 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
         .subscribe(
             room_id,
             UserId::expect_positive(10_000_079),
-            "conn_b1".to_string(),
+            "conn_b1".to_string().into(),
         )
         .await
         .expect("subscribe should succeed");
@@ -296,7 +296,7 @@ async fn test_room_lifecycle_events_across_replicas() {
 
     // First subscriber should trigger RoomActivated
     let _rx = hub_a
-        .subscribe(room_id, user_id, "lc_conn_1".to_string())
+        .subscribe(room_id, user_id, "lc_conn_1".to_string().into())
         .await
         .expect("subscribe should succeed");
 
@@ -319,7 +319,7 @@ async fn test_room_lifecycle_events_across_replicas() {
         .subscribe(
             room_id,
             UserId::expect_positive(10_000_082),
-            "lc_conn_2".to_string(),
+            "lc_conn_2".to_string().into(),
         )
         .await
         .expect("subscribe should succeed");
@@ -374,7 +374,7 @@ async fn test_audit_redis_subscriptions_reports_without_local_populate() {
         .subscribe(
             room_id,
             UserId::expect_positive(10_000_084),
-            "rec_conn_1".to_string(),
+            "rec_conn_1".to_string().into(),
         )
         .await
         .expect("subscribe should succeed");
@@ -382,7 +382,7 @@ async fn test_audit_redis_subscriptions_reports_without_local_populate() {
         .subscribe(
             room_id,
             UserId::expect_positive(10_000_085),
-            "rec_conn_2".to_string(),
+            "rec_conn_2".to_string().into(),
         )
         .await
         .expect("subscribe should succeed");
@@ -390,7 +390,7 @@ async fn test_audit_redis_subscriptions_reports_without_local_populate() {
         .subscribe(
             room_id,
             UserId::expect_positive(10_000_086),
-            "rec_conn_3".to_string(),
+            "rec_conn_3".to_string().into(),
         )
         .await
         .expect("subscribe should succeed");
@@ -448,7 +448,7 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
                 .subscribe(
                     rid,
                     UserId::expect_positive(150_000 + i),
-                    format!("conn_a_{i}"),
+                    format!("conn_a_{i}").into(),
                 )
                 .await
                 .expect("subscribe should succeed");
@@ -462,7 +462,7 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
                 .subscribe(
                     rid,
                     UserId::expect_positive(160_000 + i),
-                    format!("conn_b_{i}"),
+                    format!("conn_b_{i}").into(),
                 )
                 .await
                 .expect("subscribe should succeed");
@@ -524,7 +524,7 @@ async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions()
         .subscribe(
             room_id,
             UserId::expect_positive(10_000_003),
-            "conn_a".to_string(),
+            "conn_a".to_string().into(),
         )
         .await
         .expect("subscribe should succeed");
@@ -532,7 +532,7 @@ async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions()
         .subscribe(
             room_id,
             UserId::expect_positive(10_000_004),
-            "conn_b".to_string(),
+            "conn_b".to_string().into(),
         )
         .await
         .expect("subscribe should succeed");
@@ -551,7 +551,7 @@ async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions()
         1,
         "Only hub B's active subscriber should remain after hub A unsubscribes"
     );
-    assert_eq!(before_cleanup[0].1, "conn_b");
+    assert_eq!(before_cleanup[0].1, ConnectionId::new("conn_b"));
 
     let cancel = tokio_util::sync::CancellationToken::new();
     let cleanup_task = hub_a
@@ -570,7 +570,7 @@ async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions()
         1,
         "Hub A cleanup must not delete hub B's active Redis subscription"
     );
-    assert_eq!(after_cleanup[0].1, "conn_b");
+    assert_eq!(after_cleanup[0].1, ConnectionId::new("conn_b"));
 
     hub_b.unsubscribe("conn_b");
 }
@@ -620,7 +620,7 @@ async fn test_distributed_room_lookup_prunes_stale_hash_members() {
         .expect("distributed subscriber lookup should succeed");
     assert_eq!(
         subscribers,
-        vec![(valid_user_id, "conn_valid".to_string())],
+        vec![(valid_user_id, ConnectionId::new("conn_valid"))],
         "distributed room lookup must prune missing and wrong-room hash members"
     );
 
@@ -694,7 +694,7 @@ async fn test_room_directory_key_uses_crash_safety_ttl() {
     let user_id = UserId::expect_positive(10_000_091);
 
     let _rx = hub
-        .subscribe(room_id, user_id, "conn_ttl".to_string())
+        .subscribe(room_id, user_id, "conn_ttl".to_string().into())
         .await
         .expect("subscribe should succeed");
 

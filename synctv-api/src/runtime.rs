@@ -124,7 +124,7 @@ pub trait RealtimeEventService: Send + Sync {
         &self,
         room_id: RoomId,
         user_id: UserId,
-        connection_id: String,
+        connection_id: ConnectionId,
     ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)>;
 
     fn unsubscribe(&self, connection_id: &str);
@@ -193,7 +193,7 @@ impl RealtimeEventService for LocalNoopRealtimeEventService {
         &self,
         _room_id: RoomId,
         _user_id: UserId,
-        connection_id: String,
+        connection_id: ConnectionId,
     ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
         let (_tx, rx) = mpsc::channel(16);
         Ok((rx, connection_id))
@@ -239,7 +239,7 @@ impl RealtimeEventService for RealtimeManager {
         &self,
         room_id: RoomId,
         user_id: UserId,
-        connection_id: String,
+        connection_id: ConnectionId,
     ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
         RealtimeManager::subscribe_with_id(self, room_id, user_id, connection_id).await
     }
@@ -292,6 +292,8 @@ impl RealtimeEventService for RealtimeManager {
 
 #[cfg(test)]
 mod tests {
+    use synctv_realtime::ConnectionId;
+
     use super::{
         RealtimeConnectionService, RealtimeDeliveryOutcome, RealtimeDeliveryRequirement,
         RealtimeEventService,
@@ -339,7 +341,7 @@ mod tests {
         let event_service: Arc<dyn RealtimeEventService> = realtime_manager.clone();
 
         let mut room_rx = event_service
-            .subscribe_with_id(room_id(), user_id(), "conn-runtime".to_string())
+            .subscribe_with_id(room_id(), user_id(), ConnectionId::new("conn-runtime"))
             .await
             .expect("room subscription should succeed")
             .0;

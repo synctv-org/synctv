@@ -71,36 +71,57 @@ struct CoreState {
     cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
 }
 
-struct RuntimeModePlan {
+struct RuntimeModeProfiles {
     cluster_runtime: bool,
     cache_shared_state_profile: synctv_core::SharedStateProfile,
     realtime_shared_state_profile: synctv_core::SharedStateProfile,
     local_realtime_profile: synctv_core::SharedStateProfile,
-    realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
 }
 
-impl RuntimeModePlan {
-    fn from_infrastructure(infra: &Infrastructure) -> Self {
-        let cluster_runtime = cluster_runtime_enabled(&infra.config);
+impl RuntimeModeProfiles {
+    fn from_config(
+        config: &Config,
+        shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+    ) -> Self {
+        let cluster_runtime = cluster_runtime_enabled(config);
         let cache_shared_state_profile = synctv_core::SharedStateProfile::for_cluster_runtime(
-            infra.shared_runtime.clone(),
-            &infra.config.redis.key_prefix,
+            shared_runtime.clone(),
+            &config.redis.key_prefix,
             cluster_runtime,
         );
-        let realtime_shared_state_profile = build_realtime_state_profile(
-            infra.shared_runtime.clone(),
-            &infra.config.redis.key_prefix,
-            cluster_runtime,
-        );
+        let realtime_shared_state_profile =
+            build_realtime_state_profile(shared_runtime, &config.redis.key_prefix, cluster_runtime);
         let local_realtime_profile =
-            build_realtime_state_profile(None, &infra.config.redis.key_prefix, false);
-        let realtime_outbox = Some(Arc::new(RealtimeOutboxRepository::new(infra.pool.clone())));
+            build_realtime_state_profile(None, &config.redis.key_prefix, false);
 
         Self {
             cluster_runtime,
             cache_shared_state_profile,
             realtime_shared_state_profile,
             local_realtime_profile,
+        }
+    }
+}
+
+struct RuntimeModePlan {
+    cluster_runtime: bool,
+    cache_shared_state_profile: synctv_core::SharedStateProfile,
+    realtime_shared_state_profile: synctv_core::SharedStateProfile,
+    local_realtime_profile: synctv_core::SharedStateProfile,
+    realtime_outbox: Arc<RealtimeOutboxRepository>,
+}
+
+impl RuntimeModePlan {
+    fn from_infrastructure(infra: &Infrastructure) -> Self {
+        let profiles =
+            RuntimeModeProfiles::from_config(&infra.config, infra.shared_runtime.clone());
+        let realtime_outbox = Arc::new(RealtimeOutboxRepository::new(infra.pool.clone()));
+
+        Self {
+            cluster_runtime: profiles.cluster_runtime,
+            cache_shared_state_profile: profiles.cache_shared_state_profile,
+            realtime_shared_state_profile: profiles.realtime_shared_state_profile,
+            local_realtime_profile: profiles.local_realtime_profile,
             realtime_outbox,
         }
     }
@@ -109,16 +130,8 @@ impl RuntimeModePlan {
         self.cluster_runtime
     }
 
-    fn realtime_outbox(&self) -> Option<Arc<RealtimeOutboxRepository>> {
+    fn realtime_outbox(&self) -> Arc<RealtimeOutboxRepository> {
         self.realtime_outbox.clone()
-    }
-
-    fn require_realtime_outbox(&self) -> Result<Arc<RealtimeOutboxRepository>> {
-        self.realtime_outbox.clone().ok_or_else(|| {
-            anyhow::anyhow!(
-                "startup invariant violated: cluster realtime fanout requires a realtime outbox"
-            )
-        })
     }
 }
 
@@ -854,7 +867,7 @@ impl Application {
                 provider_address_overrides: options.provider_address_overrides.clone(),
                 ssrf_guard: infra.config.security.ssrf_guard(),
                 credential_encryption_key_override,
-                realtime_outbox: runtime_plan.realtime_outbox(),
+                realtime_outbox: Some(runtime_plan.realtime_outbox()),
             },
         )
         .await?;
@@ -910,10 +923,10 @@ impl Application {
                         "Failed to start RoomService room settings invalidation runtime: {e}"
                     )
                 })?;
-            shutdown.register_hook(RoomSettingsServiceShutdownHook {
-                name: "room_service_settings",
-                service: synctv_services.room_service.room_settings_service().clone(),
-            });
+            shutdown.register_hook(RoomSettingsServiceShutdownHook::new(
+                "room_service_settings",
+                synctv_services.room_service.room_settings_service().clone(),
+            ));
         }
 
         if synctv_services
@@ -929,10 +942,10 @@ impl Application {
                 .map_err(|e| {
                     anyhow::anyhow!("Failed to start RoomSettingsService invalidation runtime: {e}")
                 })?;
-            shutdown.register_hook(RoomSettingsServiceShutdownHook {
-                name: "chat_service_settings",
-                service: synctv_services.chat_service.room_settings_service().clone(),
-            });
+            shutdown.register_hook(RoomSettingsServiceShutdownHook::new(
+                "chat_service_settings",
+                synctv_services.chat_service.room_settings_service().clone(),
+            ));
         }
 
         // Track settings cancellation token and listen task in shutdown coordinator
@@ -1339,7 +1352,7 @@ impl Application {
         });
 
         let realtime_event_service: Arc<dyn RealtimeEventService> = realtime_manager.clone();
-        let outbox = runtime_plan.require_realtime_outbox()?;
+        let outbox = runtime_plan.realtime_outbox();
         let outbox_cancel = shutdown.register_token("realtime_outbox_dispatcher");
         shutdown.register_task(
             "realtime_outbox_dispatcher",
@@ -1593,7 +1606,7 @@ mod tests {
             },
             database: DatabaseConfig::default(),
             redis: RedisConfig {
-                url: "redis://127.0.0.1:6379".to_string(),
+                url: "redis://redis.invalid".to_string(),
                 ..RedisConfig::default()
             },
             jwt: JwtConfig {
@@ -1730,70 +1743,46 @@ mod tests {
         assert!(should_start_cache_invalidation_listener(&config, true));
     }
 
-    #[tokio::test]
-    async fn test_runtime_mode_plan_keeps_standalone_local_with_durable_event_store() {
+    #[test]
+    fn test_runtime_mode_profile_keeps_standalone_local_state() {
         let mut config = minimal_valid_startup_config();
         config.cluster.enabled = false;
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let infra = Infrastructure {
-            config,
-            pool,
-            shared_runtime: None,
-            cluster_coordination_provider: None,
-            node_id: "runtime-plan-standalone".to_string(),
-        };
 
-        let plan = RuntimeModePlan::from_infrastructure(&infra);
+        let profile = RuntimeModeProfiles::from_config(&config, None);
 
-        assert!(!plan.cluster_runtime());
-        assert!(plan.realtime_outbox().is_some());
+        assert!(!profile.cluster_runtime);
         assert_eq!(
-            plan.cache_shared_state_profile.state_mode(),
+            profile.cache_shared_state_profile.state_mode(),
             synctv_core::SharedStateMode::LocalOnly
         );
         assert_eq!(
-            plan.realtime_shared_state_profile.state_mode(),
+            profile.realtime_shared_state_profile.state_mode(),
             synctv_core::SharedStateMode::LocalOnly
         );
         assert_eq!(
-            plan.local_realtime_profile.state_mode(),
+            profile.local_realtime_profile.state_mode(),
             synctv_core::SharedStateMode::LocalOnly
         );
     }
 
-    #[tokio::test]
-    async fn test_runtime_mode_plan_creates_cluster_outbox_once() {
+    #[test]
+    fn test_runtime_mode_profile_uses_cluster_shared_state() {
         let mut config = minimal_valid_startup_config();
         config.cluster.enabled = true;
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let infra = Infrastructure {
-            config,
-            pool,
-            shared_runtime: None,
-            cluster_coordination_provider: None,
-            node_id: "runtime-plan-cluster".to_string(),
-        };
 
-        let plan = RuntimeModePlan::from_infrastructure(&infra);
-        let first = plan
-            .realtime_outbox()
-            .expect("cluster plan should create realtime outbox");
-        let second = plan
-            .require_realtime_outbox()
-            .expect("cluster plan should expose required outbox");
+        let profile = RuntimeModeProfiles::from_config(&config, None);
 
-        assert!(plan.cluster_runtime());
-        assert!(Arc::ptr_eq(&first, &second));
+        assert!(profile.cluster_runtime);
         assert_eq!(
-            plan.cache_shared_state_profile.state_mode(),
+            profile.cache_shared_state_profile.state_mode(),
             synctv_core::SharedStateMode::SharedRequired
         );
         assert_eq!(
-            plan.realtime_shared_state_profile.state_mode(),
+            profile.realtime_shared_state_profile.state_mode(),
             synctv_core::SharedStateMode::SharedRequired
         );
         assert_eq!(
-            plan.local_realtime_profile.state_mode(),
+            profile.local_realtime_profile.state_mode(),
             synctv_core::SharedStateMode::LocalOnly
         );
     }

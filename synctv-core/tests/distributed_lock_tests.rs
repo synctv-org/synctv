@@ -281,8 +281,8 @@ async fn test_release_by_non_owner_fails() {
     assert!(lock_value.is_some());
 
     // Try to release with wrong value
-    let fake_value = "wrong_lock_value";
-    let released = lock.release(key, fake_value).await.unwrap();
+    let wrong_value = "wrong_lock_value";
+    let released = lock.release(key, wrong_value).await.unwrap();
     assert!(!released, "Release with wrong value should fail");
 
     // Original lock should still be held

@@ -251,7 +251,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
         .list_playlist_items(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::ListPlaylistItemsRequest {
+            synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: Vec::new(),
                 page: 1,
@@ -259,9 +259,9 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
                 search: String::new(),
                 source_provider: String::new(),
                 provider_instance_name: String::new(),
-                sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
-                sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
-                availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
+                sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
             },
         )
@@ -281,7 +281,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
         .unwrap();
     assert_eq!(
         available_folder.availability,
-        synctv_api::proto::client::ResourceAvailability::Available as i32
+        synctv_proto::client::ResourceAvailability::Available as i32
     );
 
     let unavailable_folder = response
@@ -291,7 +291,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
         .unwrap();
     assert_eq!(
         unavailable_folder.availability,
-        synctv_api::proto::client::ResourceAvailability::CreatorInactive as i32
+        synctv_proto::client::ResourceAvailability::CreatorInactive as i32
     );
 
     let available_file = response
@@ -301,7 +301,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
         .unwrap();
     assert_eq!(
         available_file.availability,
-        synctv_api::proto::client::ResourceAvailability::Available as i32
+        synctv_proto::client::ResourceAvailability::Available as i32
     );
 
     let unavailable_file = response
@@ -311,7 +311,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
         .unwrap();
     assert_eq!(
         unavailable_file.availability,
-        synctv_api::proto::client::ResourceAvailability::CreatorInactive as i32
+        synctv_proto::client::ResourceAvailability::CreatorInactive as i32
     );
 
     fixture.cleanup().await;
@@ -363,7 +363,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
         .list_playlist_items(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::ListPlaylistItemsRequest {
+            synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: Vec::new(),
                 page: 1,
@@ -371,10 +371,9 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
                 search: String::new(),
                 source_provider: String::new(),
                 provider_instance_name: String::new(),
-                sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
-                sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
-                availability: synctv_api::proto::client::ResourceAvailabilityFilter::Unavailable
-                    as i32,
+                sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                availability: synctv_proto::client::ResourceAvailabilityFilter::Unavailable as i32,
                 refresh: false,
             },
         )
@@ -392,7 +391,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
         .list_playlist_items(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::ListPlaylistItemsRequest {
+            synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: Vec::new(),
                 page: 2,
@@ -400,10 +399,9 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
                 search: String::new(),
                 source_provider: String::new(),
                 provider_instance_name: String::new(),
-                sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
-                sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
-                availability: synctv_api::proto::client::ResourceAvailabilityFilter::Unavailable
-                    as i32,
+                sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                availability: synctv_proto::client::ResourceAvailabilityFilter::Unavailable as i32,
                 refresh: false,
             },
         )
@@ -437,7 +435,7 @@ async fn list_playlist_items_root_returns_stable_version_until_contents_change()
         .await
         .unwrap();
 
-    let request = synctv_api::proto::client::ListPlaylistItemsRequest {
+    let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: Vec::new(),
         page: 1,
@@ -445,9 +443,9 @@ async fn list_playlist_items_root_returns_stable_version_until_contents_change()
         search: String::new(),
         source_provider: String::new(),
         provider_instance_name: String::new(),
-        sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
-        sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
-        availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
     };
     let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
@@ -515,7 +513,7 @@ async fn list_playlists_availability_filter_updates_total_and_response_items() {
         .list_playlists(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::ListPlaylistsRequest {
+            synctv_proto::client::ListPlaylistsRequest {
                 parent_id: String::new(),
                 page: 1,
                 page_size: 20,
@@ -523,10 +521,9 @@ async fn list_playlists_availability_filter_updates_total_and_response_items() {
                 source_provider: String::new(),
                 provider_instance_name: String::new(),
                 dynamic_only: None,
-                sort_by: synctv_api::proto::client::PlaylistListSortBy::Position as i32,
-                sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
-                availability: synctv_api::proto::client::ResourceAvailabilityFilter::Unavailable
-                    as i32,
+                sort_by: synctv_proto::client::PlaylistListSortBy::Position as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                availability: synctv_proto::client::ResourceAvailabilityFilter::Unavailable as i32,
             },
         )
         .await
@@ -537,7 +534,7 @@ async fn list_playlists_availability_filter_updates_total_and_response_items() {
     assert_eq!(response.playlists[0].id, unavailable_playlist_id);
     assert_eq!(
         response.playlists[0].availability,
-        synctv_api::proto::client::ResourceAvailability::CreatorInactive as i32
+        synctv_proto::client::ResourceAvailability::CreatorInactive as i32
     );
 
     fixture.cleanup().await;
@@ -558,12 +555,12 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
     user_repo.ban(&owner.id, None, None).await.unwrap();
 
     let list_response = client_api
-        .list_rooms(synctv_api::proto::client::ListRoomsRequest {
+        .list_rooms(synctv_proto::client::ListRoomsRequest {
             page: 1,
             page_size: 20,
             search: String::new(),
-            sort_by: synctv_api::proto::client::RoomListSortBy::CreatedAt as i32,
-            sort_direction: synctv_api::proto::client::SortDirection::Desc as i32,
+            sort_by: synctv_proto::client::RoomListSortBy::CreatedAt as i32,
+            sort_direction: synctv_proto::client::SortDirection::Desc as i32,
         })
         .await
         .unwrap();
@@ -576,11 +573,11 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
         .expect("public list should still surface the room");
     assert_eq!(
         listed_room.availability,
-        synctv_api::proto::client::ResourceAvailability::CreatorInactive as i32
+        synctv_proto::client::ResourceAvailability::CreatorInactive as i32
     );
 
     let check_response = client_api
-        .check_room(synctv_api::proto::client::CheckRoomRequest {
+        .check_room(synctv_proto::client::CheckRoomRequest {
             room_id: room_public_id.clone(),
         })
         .await
@@ -589,7 +586,7 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
     assert!(check_response.exists, "room should still exist");
     assert_eq!(
         check_response.availability,
-        synctv_api::proto::client::ResourceAvailability::CreatorInactive as i32
+        synctv_proto::client::ResourceAvailability::CreatorInactive as i32
     );
     assert!(
         check_response.name.is_empty(),
@@ -597,7 +594,7 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
     );
 
     let hot_response = client_api
-        .get_hot_rooms(synctv_api::proto::client::GetHotRoomsRequest { limit: 10 })
+        .get_hot_rooms(synctv_proto::client::GetHotRoomsRequest { limit: 10 })
         .await
         .unwrap();
 
@@ -613,7 +610,7 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
         .expect("hot rooms should still surface the room");
     assert_eq!(
         hot_room.availability,
-        synctv_api::proto::client::ResourceAvailability::CreatorInactive as i32
+        synctv_proto::client::ResourceAvailability::CreatorInactive as i32
     );
 
     fixture.cleanup().await;
@@ -657,7 +654,7 @@ async fn hot_rooms_considers_online_rooms_outside_newest_page() {
     }
 
     let response = client_api
-        .get_hot_rooms(synctv_api::proto::client::GetHotRoomsRequest { limit: 1 })
+        .get_hot_rooms(synctv_proto::client::GetHotRoomsRequest { limit: 1 })
         .await
         .unwrap();
 

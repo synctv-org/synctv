@@ -8,6 +8,6 @@ pub trait RoomMembersSnapshotService: Send + Sync {
     async fn get_room_members_snapshot(
         &self,
         actor: &RoomActor,
-        req: &crate::proto::client::GetRoomMembersRequest,
-    ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError>;
+        req: &synctv_proto::client::GetRoomMembersRequest,
+    ) -> Result<synctv_proto::client::GetRoomMembersResponse, ApiError>;
 }

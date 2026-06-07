@@ -2,7 +2,6 @@
 
 #![allow(clippy::unwrap_used)]
 
-#[allow(dead_code)]
 mod integration_test_helpers;
 
 use std::time::Duration;

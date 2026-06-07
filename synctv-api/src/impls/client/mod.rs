@@ -282,7 +282,7 @@ impl ClientApiImpl {
         room: &synctv_core::models::Room,
         settings: Option<&synctv_core::models::RoomSettings>,
         member_count: Option<i32>,
-    ) -> Result<crate::proto::client::Room, ApiError> {
+    ) -> Result<synctv_proto::client::Room, ApiError> {
         let cover = self
             .load_stored_file_reference(room.cover_file_reference_id)
             .await?;
@@ -312,7 +312,7 @@ impl ClientApiImpl {
         settings: Option<&synctv_core::models::RoomSettings>,
         member_count: Option<i32>,
         availability: synctv_core::service::room::ClientResourceAvailability,
-    ) -> Result<crate::proto::client::Room, ApiError> {
+    ) -> Result<synctv_proto::client::Room, ApiError> {
         let cover = self
             .load_stored_file_reference(room.cover_file_reference_id)
             .await?;
@@ -342,7 +342,7 @@ impl ClientApiImpl {
         media: &synctv_core::models::Media,
         is_available: bool,
         viewer_id: Option<synctv_core::models::UserId>,
-    ) -> Result<crate::proto::client::Media, ApiError> {
+    ) -> Result<synctv_proto::client::Media, ApiError> {
         let cover = self
             .load_stored_file_reference(media.cover_file_reference_id)
             .await?;
@@ -372,7 +372,7 @@ impl ClientApiImpl {
         item_count: i32,
         is_available: bool,
         viewer_id: Option<synctv_core::models::UserId>,
-    ) -> Result<crate::proto::client::Playlist, ApiError> {
+    ) -> Result<synctv_proto::client::Playlist, ApiError> {
         let cover = self
             .load_stored_file_reference(playlist.cover_file_reference_id)
             .await?;

@@ -21,11 +21,11 @@ use crate::impls::playback::PlaybackService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
 use crate::impls::room_members_snapshot::RoomMembersSnapshotService;
 use crate::impls::room_settings_snapshot::RoomSettingsSnapshotService;
-use crate::proto::client::{ResourceDeliveryMode, ServerMessage};
 use crate::resource_change::{
     provider_credential_resource_invalidation, resource_invalidations_for_cache_targets,
     resource_invalidations_for_room_event, ResourceInvalidation,
 };
+use synctv_proto::client::{ResourceDeliveryMode, ServerMessage};
 
 const RESOURCE_EVALUATION_REUSE_WINDOW: Duration = Duration::from_millis(25);
 const MEDIA_RESOURCE_REFRESH_DEDUP_WINDOW: Duration = Duration::from_secs(5);
@@ -37,8 +37,8 @@ const ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT_USIZE: usize = 500;
 
 fn event_cursor_for_chat_event(
     event: &synctv_core::models::ChatMessageEvent,
-) -> crate::proto::client::EventCursor {
-    crate::proto::client::EventCursor {
+) -> synctv_proto::client::EventCursor {
+    synctv_proto::client::EventCursor {
         event_id: Some(event.event_id.clone()),
         sequence: event.sequence,
     }
@@ -46,8 +46,8 @@ fn event_cursor_for_chat_event(
 
 fn proto_event_cursor(
     cursor: synctv_core::models::EventCursor,
-) -> crate::proto::client::EventCursor {
-    crate::proto::client::EventCursor {
+) -> synctv_proto::client::EventCursor {
+    synctv_proto::client::EventCursor {
         event_id: cursor.event_id,
         sequence: cursor.sequence,
     }
@@ -72,14 +72,14 @@ struct ResourceObservation {
 #[derive(Debug, Clone)]
 struct ObservationUpdate {
     changed: bool,
-    changed_message: Option<crate::proto::client::ResourceChanged>,
+    changed_message: Option<synctv_proto::client::ResourceChanged>,
 }
 
 #[derive(Debug, Clone)]
 struct ResourceEvaluation {
     fingerprint: String,
     expires_at: Option<i64>,
-    payload: crate::proto::client::resource_changed::Payload,
+    payload: synctv_proto::client::resource_changed::Payload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -312,10 +312,10 @@ enum ObservedResource {
     },
     RoomSettings,
     PlaylistItems {
-        request: crate::proto::client::ListPlaylistItemsRequest,
+        request: synctv_proto::client::ListPlaylistItemsRequest,
     },
     RoomMembers {
-        request: crate::proto::client::GetRoomMembersRequest,
+        request: synctv_proto::client::GetRoomMembersRequest,
     },
     ChatEvents,
 }
@@ -473,7 +473,6 @@ impl ResourceObserver {
             .contains_key(observe_id)
     }
 
-    #[cfg(test)]
     pub(super) async fn has_chat_events_observation(&self) -> bool {
         self.state
             .lock()
@@ -618,7 +617,7 @@ impl ResourceObserver {
 
     fn observation_start_sequence(
         observation: &ResourceObservation,
-        request: &crate::proto::client::ObserveResource,
+        request: &synctv_proto::client::ObserveResource,
     ) -> i64 {
         let requested_sequence = Self::requested_replay_sequence(request).unwrap_or(0).max(0);
         if observation.exposes_client_event_cursor() {
@@ -628,32 +627,32 @@ impl ResourceObserver {
         }
     }
 
-    fn requested_replay_sequence(request: &crate::proto::client::ObserveResource) -> Option<i64> {
+    fn requested_replay_sequence(request: &synctv_proto::client::ObserveResource) -> Option<i64> {
         request
             .resource
             .as_ref()
             .and_then(|resource| match resource {
-                crate::proto::client::observe_resource::Resource::PlaybackState(observe) => {
+                synctv_proto::client::observe_resource::Resource::PlaybackState(observe) => {
                     observe.after_event_sequence
                 }
-                crate::proto::client::observe_resource::Resource::Playback(_) => None,
-                crate::proto::client::observe_resource::Resource::RoomSettings(observe) => {
+                synctv_proto::client::observe_resource::Resource::Playback(_) => None,
+                synctv_proto::client::observe_resource::Resource::RoomSettings(observe) => {
                     observe.after_event_sequence
                 }
-                crate::proto::client::observe_resource::Resource::PlaylistItems(observe) => {
+                synctv_proto::client::observe_resource::Resource::PlaylistItems(observe) => {
                     observe.after_event_sequence
                 }
-                crate::proto::client::observe_resource::Resource::RoomMembers(observe) => {
+                synctv_proto::client::observe_resource::Resource::RoomMembers(observe) => {
                     observe.after_event_sequence
                 }
-                crate::proto::client::observe_resource::Resource::ChatEvents(observe) => {
+                synctv_proto::client::observe_resource::Resource::ChatEvents(observe) => {
                     observe.after_event_sequence
                 }
             })
     }
 
     fn validate_requested_replay_sequence(
-        request: &crate::proto::client::ObserveResource,
+        request: &synctv_proto::client::ObserveResource,
     ) -> Result<(), String> {
         if Self::requested_replay_sequence(request).is_some_and(|sequence| sequence < 0) {
             return Err("after_event_sequence must be non-negative".to_string());
@@ -663,7 +662,7 @@ impl ResourceObserver {
 
     fn apply_event_cursor_to_observation(
         observation: &mut ResourceObservation,
-        cursor: &crate::proto::client::EventCursor,
+        cursor: &synctv_proto::client::EventCursor,
     ) -> bool {
         if cursor.sequence <= observation.last_sent_event_sequence {
             return false;
@@ -803,7 +802,7 @@ impl MediaResourceHub {
         self: &Arc<Self>,
         event: &RealtimeEvent,
         fatal_connection_id: Option<&str>,
-        cursor: crate::proto::client::EventCursor,
+        cursor: synctv_proto::client::EventCursor,
     ) -> Result<(), String> {
         let invalidations = resource_invalidations_for_room_event(event);
         if invalidations.is_empty() {
@@ -829,7 +828,7 @@ impl MediaResourceHub {
         refresh_key: Option<String>,
         invalidations: Vec<ResourceInvalidation>,
         force: bool,
-        event_cursor: Option<crate::proto::client::EventCursor>,
+        event_cursor: Option<synctv_proto::client::EventCursor>,
     ) -> ResourceRefreshOutcome {
         if invalidations.is_empty() {
             return ResourceRefreshOutcome::default();
@@ -1064,7 +1063,7 @@ impl MediaResourceHub {
         &self,
         invalidations: &[ResourceInvalidation],
         force: bool,
-        event_cursor: Option<crate::proto::client::EventCursor>,
+        event_cursor: Option<synctv_proto::client::EventCursor>,
     ) -> ResourceRefreshOutcome {
         let subscriptions = self.snapshot_subscriptions().await;
         let mut refresh_plan = HashMap::<
@@ -1110,9 +1109,9 @@ impl MediaResourceHub {
                                 continue;
                             }
                         };
-                    let changed = crate::proto::client::ResourceChanged {
+                    let changed = synctv_proto::client::ResourceChanged {
                         observe_id: updated_observation.observe_id.clone(),
-                        payload: Some(crate::proto::client::resource_changed::Payload::ChatEvent(
+                        payload: Some(synctv_proto::client::resource_changed::Payload::ChatEvent(
                             event_payload,
                         )),
                         event_cursor: Some(cursor),
@@ -1228,7 +1227,7 @@ impl MediaResourceHub {
     async fn refresh_subscription_batch<I>(
         &self,
         subscriptions: I,
-        event_cursor: Option<crate::proto::client::EventCursor>,
+        event_cursor: Option<synctv_proto::client::EventCursor>,
     ) -> ResourceRefreshOutcome
     where
         I: IntoIterator<
@@ -1380,7 +1379,7 @@ impl MediaResourceHub {
         revision: u64,
         observer: &ResourceObserver,
         observation: ResourceObservation,
-        changed_message: Option<crate::proto::client::ResourceChanged>,
+        changed_message: Option<synctv_proto::client::ResourceChanged>,
     ) -> SubscriptionRefreshCommit {
         let mut state = self.state.lock().await;
         let Some(subscription_revision) = state
@@ -1396,7 +1395,7 @@ impl MediaResourceHub {
         if let Some(changed) = changed_message {
             if let Err(error) = observer.send_server_message(ServerMessage {
                 message: Some(
-                    crate::proto::client::server_message::Message::ResourceChanged(changed),
+                    synctv_proto::client::server_message::Message::ResourceChanged(changed),
                 ),
             }) {
                 state.subscriptions.remove(key);
@@ -1437,8 +1436,8 @@ impl ResourceObserver {
         let api_error: crate::impls::ApiError = error.into();
         ServerMessage {
             message: Some(
-                crate::proto::client::server_message::Message::ResourceObserveError(
-                    crate::proto::client::ResourceObserveError {
+                synctv_proto::client::server_message::Message::ResourceObserveError(
+                    synctv_proto::client::ResourceObserveError {
                         observe_id: observe_id.into(),
                         error: Some(api_error.to_proto_error()),
                     },
@@ -1474,9 +1473,9 @@ impl ResourceObserver {
     }
 
     fn observation_from_request(
-        request: &crate::proto::client::ObserveResource,
+        request: &synctv_proto::client::ObserveResource,
     ) -> Result<ResourceObservation, String> {
-        use crate::proto::client::observe_resource::Resource;
+        use synctv_proto::client::observe_resource::Resource;
 
         let observe_id = request.observe_id.trim();
         if observe_id.is_empty() {
@@ -1529,7 +1528,7 @@ impl ResourceObserver {
 
     pub(super) async fn handle_observe_resource(
         self: &Arc<Self>,
-        request: &crate::proto::client::ObserveResource,
+        request: &synctv_proto::client::ObserveResource,
     ) -> Result<(), String> {
         let mut observation = match Self::observation_from_request(request) {
             Ok(observation) => observation,
@@ -1559,7 +1558,7 @@ impl ResourceObserver {
         let is_chat_observation = matches!(observation.resource, ObservedResource::ChatEvents);
         let exposes_client_event_cursor = observation.exposes_client_event_cursor();
         let internal_cursor = if is_chat_observation {
-            Some(crate::proto::client::EventCursor {
+            Some(synctv_proto::client::EventCursor {
                 event_id: None,
                 sequence: start_sequence,
             })
@@ -1567,7 +1566,7 @@ impl ResourceObserver {
             match observation.room_resource_cursor_types() {
                 Some(resource_types) if !resource_types.is_empty() => {
                     let _ = resource_types;
-                    Some(crate::proto::client::EventCursor {
+                    Some(synctv_proto::client::EventCursor {
                         event_id: None,
                         sequence: start_sequence,
                     })
@@ -1593,8 +1592,8 @@ impl ResourceObserver {
                 let observe_id = observation.observe_id.clone();
                 if let Err(error) = self.send_server_message(ServerMessage {
                     message: Some(
-                        crate::proto::client::server_message::Message::ResourceObserved(
-                            crate::proto::client::ResourceObserved {
+                        synctv_proto::client::server_message::Message::ResourceObserved(
+                            synctv_proto::client::ResourceObserved {
                                 observe_id: observe_id.clone(),
                                 changed: update.changed,
                                 event_cursor: observed_cursor.clone(),
@@ -1609,7 +1608,7 @@ impl ResourceObserver {
                     changed.event_cursor = observed_cursor;
                     if let Err(error) = self.send_server_message(ServerMessage {
                         message: Some(
-                            crate::proto::client::server_message::Message::ResourceChanged(changed),
+                            synctv_proto::client::server_message::Message::ResourceChanged(changed),
                         ),
                     }) {
                         self.remove_local_observation(&observe_id).await;
@@ -1635,9 +1634,9 @@ impl ResourceObserver {
     pub(super) async fn replay_chat_events_after(
         self: &Arc<Self>,
         chat_service: &ChatService,
-        request: &crate::proto::client::ObserveResource,
+        request: &synctv_proto::client::ObserveResource,
     ) -> Result<(), String> {
-        let Some(crate::proto::client::observe_resource::Resource::ChatEvents(chat_events)) =
+        let Some(synctv_proto::client::observe_resource::Resource::ChatEvents(chat_events)) =
             request.resource.as_ref()
         else {
             return Ok(());
@@ -1688,11 +1687,11 @@ impl ResourceObserver {
                     }
                     self.send_server_message(ServerMessage {
                         message: Some(
-                            crate::proto::client::server_message::Message::ResourceChanged(
-                                crate::proto::client::ResourceChanged {
+                            synctv_proto::client::server_message::Message::ResourceChanged(
+                                synctv_proto::client::ResourceChanged {
                                     observe_id: observe_id.to_string(),
                                     payload: Some(
-                                        crate::proto::client::resource_changed::Payload::ChatEvent(
+                                        synctv_proto::client::resource_changed::Payload::ChatEvent(
                                             chat_message_event_to_proto(
                                                 event,
                                                 &self.public_id_codec,
@@ -1720,11 +1719,11 @@ impl ResourceObserver {
 
     pub(super) async fn replay_room_resource_events_after(
         self: &Arc<Self>,
-        request: &crate::proto::client::ObserveResource,
+        request: &synctv_proto::client::ObserveResource,
     ) -> Result<(), String> {
         if matches!(
             request.resource.as_ref(),
-            Some(crate::proto::client::observe_resource::Resource::ChatEvents(_))
+            Some(synctv_proto::client::observe_resource::Resource::ChatEvents(_))
         ) {
             return Ok(());
         }
@@ -1782,7 +1781,7 @@ impl ResourceObserver {
 
             for logged in &events {
                 after_event_sequence = logged.sequence;
-                let cursor = crate::proto::client::EventCursor {
+                let cursor = synctv_proto::client::EventCursor {
                     event_id: Some(logged.event_id.clone()),
                     sequence: logged.sequence,
                 };
@@ -1795,12 +1794,12 @@ impl ResourceObserver {
                     }
                     self.send_server_message(ServerMessage {
                         message: Some(
-                            crate::proto::client::server_message::Message::ResourceChanged(
-                                crate::proto::client::ResourceChanged {
+                            synctv_proto::client::server_message::Message::ResourceChanged(
+                                synctv_proto::client::ResourceChanged {
                                     observe_id: observe_id.to_string(),
                                     payload: Some(
-                                        crate::proto::client::resource_changed::Payload::ChangedOnly(
-                                            crate::proto::client::ResourceChangedOnly {},
+                                        synctv_proto::client::resource_changed::Payload::ChangedOnly(
+                                            synctv_proto::client::ResourceChangedOnly {},
                                         ),
                                     ),
                                     event_cursor: Some(cursor),
@@ -1836,7 +1835,7 @@ impl ResourceObserver {
                     changed.event_cursor = Some(cursor);
                     self.send_server_message(ServerMessage {
                         message: Some(
-                            crate::proto::client::server_message::Message::ResourceChanged(
+                            synctv_proto::client::server_message::Message::ResourceChanged(
                                 changed.clone(),
                             ),
                         ),
@@ -1854,7 +1853,7 @@ impl ResourceObserver {
 
     pub(super) async fn handle_unobserve_resource(
         self: &Arc<Self>,
-        request: &crate::proto::client::UnobserveResource,
+        request: &synctv_proto::client::UnobserveResource,
     ) -> Result<(), String> {
         let observe_id = request.observe_id.trim();
         self.remove_local_observation(observe_id).await;
@@ -2188,7 +2187,7 @@ impl ResourceObserver {
         resource: &ObservedResource,
         delivery_mode: ResourceDeliveryMode,
     ) -> Result<ResourceEvaluation, String> {
-        use crate::proto::client::resource_changed::Payload;
+        use synctv_proto::client::resource_changed::Payload;
 
         let (fingerprint, expires_at, payload) = match resource {
             ObservedResource::PlaybackState => {
@@ -2200,7 +2199,7 @@ impl ResourceObserver {
                 let version = state.version.to_string();
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly => {
-                        Payload::ChangedOnly(crate::proto::client::ResourceChangedOnly {})
+                        Payload::ChangedOnly(synctv_proto::client::ResourceChangedOnly {})
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
                         Payload::PlaybackState(
@@ -2235,7 +2234,7 @@ impl ResourceObserver {
                 let fingerprint = playback.encode_to_vec();
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly => {
-                        Payload::ChangedOnly(crate::proto::client::ResourceChangedOnly {})
+                        Payload::ChangedOnly(synctv_proto::client::ResourceChangedOnly {})
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
                         Payload::Playback(playback.clone())
@@ -2252,10 +2251,10 @@ impl ResourceObserver {
                 let version = snapshot.version.to_string();
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly => {
-                        Payload::ChangedOnly(crate::proto::client::ResourceChangedOnly {})
+                        Payload::ChangedOnly(synctv_proto::client::ResourceChangedOnly {})
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
-                        Payload::RoomSettings(crate::proto::client::RoomSettingsChanged {
+                        Payload::RoomSettings(synctv_proto::client::RoomSettingsChanged {
                             room_id: self.public_room_id()?,
                             settings: snapshot.settings,
                             version: snapshot.version,
@@ -2278,7 +2277,7 @@ impl ResourceObserver {
                     .map_err(|error| error.to_string())?;
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly => {
-                        Payload::ChangedOnly(crate::proto::client::ResourceChangedOnly {})
+                        Payload::ChangedOnly(synctv_proto::client::ResourceChangedOnly {})
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
                         Payload::PlaylistItems(snapshot.clone())
@@ -2298,7 +2297,7 @@ impl ResourceObserver {
                     .map_err(|error| error.to_string())?;
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly => {
-                        Payload::ChangedOnly(crate::proto::client::ResourceChangedOnly {})
+                        Payload::ChangedOnly(synctv_proto::client::ResourceChangedOnly {})
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
                         Payload::RoomMembers(snapshot.clone())
@@ -2312,7 +2311,7 @@ impl ResourceObserver {
                     ResourceDeliveryMode::NotifyOnly
                     | ResourceDeliveryMode::Unspecified
                     | ResourceDeliveryMode::PushSnapshot => {
-                        Payload::ChangedOnly(crate::proto::client::ResourceChangedOnly {})
+                        Payload::ChangedOnly(synctv_proto::client::ResourceChangedOnly {})
                     }
                 };
                 (version, None, payload)
@@ -2345,7 +2344,7 @@ impl ResourceObserver {
         observation.last_fingerprint.clone_from(&fingerprint);
         observation.expires_at = expires_at;
 
-        let changed_message = changed.then(|| crate::proto::client::ResourceChanged {
+        let changed_message = changed.then(|| synctv_proto::client::ResourceChanged {
             observe_id: observation.observe_id.clone(),
             payload: Some(payload),
             event_cursor: None,
@@ -2395,11 +2394,11 @@ mod tests {
     #[test]
     fn playback_observation_has_no_requested_event_sequence() {
         let observation = playback_observation();
-        let request = crate::proto::client::ObserveResource {
+        let request = synctv_proto::client::ObserveResource {
             observe_id: "playback".to_string(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
-            resource: Some(crate::proto::client::observe_resource::Resource::Playback(
-                crate::proto::client::ObservePlayback {
+            resource: Some(synctv_proto::client::observe_resource::Resource::Playback(
+                synctv_proto::client::ObservePlayback {
                     playback_client_profile: None,
                 },
             )),
@@ -2415,11 +2414,11 @@ mod tests {
     #[test]
     fn playback_observation_starts_from_current_playback_without_client_event_cursor() {
         let observation = playback_observation();
-        let request = crate::proto::client::ObserveResource {
+        let request = synctv_proto::client::ObserveResource {
             observe_id: "playback".to_string(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
-            resource: Some(crate::proto::client::observe_resource::Resource::Playback(
-                crate::proto::client::ObservePlayback {
+            resource: Some(synctv_proto::client::observe_resource::Resource::Playback(
+                synctv_proto::client::ObservePlayback {
                     playback_client_profile: None,
                 },
             )),
@@ -2438,12 +2437,12 @@ mod tests {
 
     #[test]
     fn validate_requested_replay_sequence_rejects_negative_room_resource_cursor() {
-        let request = crate::proto::client::ObserveResource {
+        let request = synctv_proto::client::ObserveResource {
             observe_id: "playback-state".to_string(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(
-                crate::proto::client::observe_resource::Resource::PlaybackState(
-                    crate::proto::client::ObservePlaybackState {
+                synctv_proto::client::observe_resource::Resource::PlaybackState(
+                    synctv_proto::client::ObservePlaybackState {
                         after_event_sequence: Some(-1),
                     },
                 ),
@@ -2458,12 +2457,12 @@ mod tests {
 
     #[test]
     fn validate_requested_replay_sequence_rejects_negative_chat_cursor() {
-        let request = crate::proto::client::ObserveResource {
+        let request = synctv_proto::client::ObserveResource {
             observe_id: "chat-events".to_string(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(
-                crate::proto::client::observe_resource::Resource::ChatEvents(
-                    crate::proto::client::ObserveChatEvents {
+                synctv_proto::client::observe_resource::Resource::ChatEvents(
+                    synctv_proto::client::ObserveChatEvents {
                         after_event_sequence: Some(-1),
                     },
                 ),

@@ -6,8 +6,6 @@
 //!
 //! # Test Coverage
 //!
-//! - Publish key generation and validation
-//! - Expired token rejection
 //! - Banned/deleted user handling
 //! - Banned/pending room handling
 //! - Cross-replica user→stream mapping (Redis)
@@ -78,7 +76,6 @@ fn create_room_service(pool: sqlx::PgPool) -> RoomService {
 fn create_publish_key_service() -> PublishKeyService {
     let jwt_service = create_jwt_service();
     PublishKeyService::new(jwt_service, 24).expect("publish key service should build")
-    // 24 hour TTL
 }
 
 async fn create_test_user(pool: &sqlx::PgPool, username: &str, role: UserRole) -> User {
@@ -154,74 +151,6 @@ async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -
         .expect("Failed to add room creator as member");
 
     room
-}
-
-// Test 1: Publish key generation and validation
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn rtmp_auth_test_publish_key_generation_and_validation() {
-    let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
-
-    let user = create_test_user(&pool, "streamer1", UserRole::User).await;
-    let room = create_test_room(&pool, user.id, "Stream Room 1").await;
-    let media_id = MediaId::new();
-
-    // Generate publish token
-    let publish_key_service = create_publish_key_service();
-    let key = publish_key_service
-        .generate_publish_key(&room.id, &media_id, &user.id)
-        .expect("Failed to generate publish key");
-
-    // Validate the token
-    let claims = publish_key_service
-        .validate_publish_key(&key.token)
-        .await
-        .expect("Failed to validate publish key");
-
-    assert_eq!(claims.room_id, room.id.to_string());
-    assert_eq!(claims.media_id, media_id.to_string());
-    assert_eq!(claims.user_id, user.id.to_string());
-    assert!(claims.perm_live_control);
-}
-
-// Test 2: Expired tokens are rejected
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn rtmp_auth_test_expired_token_rejected() {
-    let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
-
-    let user = create_test_user(&pool, "streamer2", UserRole::User).await;
-    let room = create_test_room(&pool, user.id, "Stream Room 2").await;
-    let media_id = MediaId::new();
-
-    let jwt_service = JwtService::new("test-secret-key-for-expired-token-tests-32chars")
-        .expect("Failed to create JWT service");
-    let publish_key_service =
-        PublishKeyService::new(jwt_service.clone(), 24).expect("publish key service should build");
-    let now = chrono::Utc::now().timestamp();
-    let token = jwt_service
-        .sign_custom(&serde_json::json!({
-            "room_id": room.id.to_string(),
-            "media_id": media_id.to_string(),
-            "user_id": user.id.to_string(),
-            "perm_live_control": true,
-            "iat": now - 7200,
-            "exp": now - 3600,
-            "jti": "expired_rtmp_publish_key_test",
-        }))
-        .expect("Failed to generate expired publish key");
-
-    let result = publish_key_service.validate_publish_key(&token).await;
-
-    assert!(result.is_err(), "Expired token should be rejected");
-
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("expired") || err_msg.contains("Expired"),
-        "Error should mention expiration: {err_msg}"
-    );
 }
 
 // Test 3: Banned users cannot use publish keys

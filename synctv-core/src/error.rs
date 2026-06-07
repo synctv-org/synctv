@@ -288,21 +288,21 @@ mod tests {
         use std::borrow::Cow;
 
         #[derive(Debug)]
-        struct FakeDbError {
+        struct TestDbError {
             code: String,
             message: String,
             constraint: Option<String>,
         }
 
-        impl std::fmt::Display for FakeDbError {
+        impl std::fmt::Display for TestDbError {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "{}", self.message)
             }
         }
 
-        impl std::error::Error for FakeDbError {}
+        impl std::error::Error for TestDbError {}
 
-        impl sqlx::error::DatabaseError for FakeDbError {
+        impl sqlx::error::DatabaseError for TestDbError {
             fn message(&self) -> &str {
                 &self.message
             }
@@ -326,7 +326,7 @@ mod tests {
             }
         }
 
-        sqlx::Error::Database(Box::new(FakeDbError {
+        sqlx::Error::Database(Box::new(TestDbError {
             code: code.to_string(),
             message: message.to_string(),
             constraint: constraint.map(String::from),

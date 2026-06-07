@@ -5,7 +5,7 @@
 use axum::{extract::State, response::Json, routing::get, Router};
 
 use crate::http::AppState;
-use crate::proto::client::{GetPublicSettingsResponse, GetServerInfoResponse};
+use synctv_proto::client::{GetPublicSettingsResponse, GetServerInfoResponse};
 
 /// Create public API router
 pub fn create_public_router() -> Router<AppState> {
@@ -26,7 +26,7 @@ pub fn create_public_router() -> Router<AppState> {
         tag = "Public",
         responses(
             (status = 200, description = "Public server settings", body = GetPublicSettingsResponse),
-            (status = 500, description = "Failed to load settings", body = crate::openapi::ErrorResponseDoc)
+            (status = 500, description = "Failed to load settings", body = synctv_proto::client::ApiErrorResponse)
         )
     )
 )]
@@ -57,7 +57,7 @@ pub async fn get_public_settings(
         tag = "Public",
         responses(
             (status = 200, description = "Public server identity", body = GetServerInfoResponse),
-            (status = 500, description = "Failed to load server identity", body = crate::openapi::ErrorResponseDoc)
+            (status = 500, description = "Failed to load server identity", body = synctv_proto::client::ApiErrorResponse)
         )
     )
 )]

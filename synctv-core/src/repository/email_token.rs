@@ -287,6 +287,3 @@ impl EmailTokenRepository {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {}

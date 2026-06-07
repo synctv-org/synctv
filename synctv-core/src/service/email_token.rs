@@ -111,17 +111,33 @@ impl EmailTokenService {
         token_type: EmailTokenType,
         control: Option<&ExecutionControl>,
     ) -> Result<()> {
-        let Some(ref limiter) = self.rate_limiter else {
+        Self::check_generation_rate_limit_for(
+            self.rate_limiter.as_deref(),
+            &self.rate_limit_config,
+            user_id,
+            token_type,
+            control,
+        )
+        .await
+    }
+
+    async fn check_generation_rate_limit_for(
+        limiter: Option<&dyn RequestRateLimiterService>,
+        config: &EmailTokenRateLimitConfig,
+        user_id: &UserId,
+        token_type: EmailTokenType,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        let Some(limiter) = limiter else {
             return Ok(());
         };
-
         let rate_limit_key = format!("email:{token_type}:{user_id}");
 
         match limiter
             .check_rate_limit_with_control(
                 &rate_limit_key,
-                self.rate_limit_config.max_tokens_per_user,
-                self.rate_limit_config.window_seconds,
+                config.max_tokens_per_user,
+                config.window_seconds,
                 control,
             )
             .await
@@ -433,29 +449,39 @@ mod tests {
         let limiter = Arc::new(crate::service::rate_limit::RateLimiter::local_only(
             "email_token_check:".to_string(),
         ));
-        let pool = sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1/db").unwrap();
-        let service = EmailTokenService::new_with_runtime(
-            pool,
-            limiter,
-            Some(EmailTokenRateLimitConfig {
-                max_tokens_per_user: 2,
-                window_seconds: 60,
-            }),
-        );
+        let config = EmailTokenRateLimitConfig {
+            max_tokens_per_user: 2,
+            window_seconds: 60,
+        };
         let user_id = UserId::new();
 
-        service
-            .check_generate_token_rate_limit(&user_id, EmailTokenType::EmailBind)
-            .await
-            .unwrap();
-        service
-            .check_generate_token_rate_limit(&user_id, EmailTokenType::EmailBind)
-            .await
-            .unwrap();
+        EmailTokenService::check_generation_rate_limit_for(
+            Some(limiter.as_ref()),
+            &config,
+            &user_id,
+            EmailTokenType::EmailBind,
+            None,
+        )
+        .await
+        .unwrap();
+        EmailTokenService::check_generation_rate_limit_for(
+            Some(limiter.as_ref()),
+            &config,
+            &user_id,
+            EmailTokenType::EmailBind,
+            None,
+        )
+        .await
+        .unwrap();
 
-        let result = service
-            .check_generate_token_rate_limit(&user_id, EmailTokenType::EmailBind)
-            .await;
+        let result = EmailTokenService::check_generation_rate_limit_for(
+            Some(limiter.as_ref()),
+            &config,
+            &user_id,
+            EmailTokenType::EmailBind,
+            None,
+        )
+        .await;
         assert!(matches!(result, Err(Error::RateLimited(_))));
     }
 }

@@ -22,8 +22,6 @@ use crate::docker::{
 };
 use crate::postgres::{docker_startup_parallelism, docker_startup_timeout};
 
-pub type RedisConnectionManager = redis::aio::ConnectionManager;
-pub type RedisConnectionHandle = Arc<RwLock<redis::aio::ConnectionManager>>;
 static REDIS_START_SERIALIZER: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(docker_startup_parallelism()));
 const DEFAULT_REDIS_ACTIVE_PARALLELISM: usize = 32;
@@ -576,21 +574,21 @@ pub async fn start_redis_client_url_with_label(
 
 pub async fn start_redis_client_manager_with_label(
     label: &str,
-) -> (RedisContainer, redis::Client, RedisConnectionManager) {
+) -> (RedisContainer, redis::Client, redis::aio::ConnectionManager) {
     let (container, _redis_url, client) = start_redis_inner(label).await;
     let manager = redis_connection_manager(&client).await;
     (container, client, manager)
 }
 
-pub async fn start_redis_client_manager() -> (RedisContainer, redis::Client, RedisConnectionManager)
-{
+pub async fn start_redis_client_manager(
+) -> (RedisContainer, redis::Client, redis::aio::ConnectionManager) {
     start_redis_client_manager_with_label("client-manager").await
 }
 
 /// Start a shared Redis container and return a `ConnectionManager`.
 ///
 /// This reuses the shared Redis container across processes in the same test run.
-pub async fn start_redis() -> (RedisContainer, RedisConnectionManager) {
+pub async fn start_redis() -> (RedisContainer, redis::aio::ConnectionManager) {
     let (container, redis_url, _client) = start_redis_inner("conn-mgr").await;
     let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let manager = redis_connection_manager(&client).await;
@@ -607,7 +605,7 @@ pub async fn start_redis_url_with_label(label: &str) -> (RedisContainer, String)
 /// Use this for tests that need to terminate or otherwise destroy their Redis
 /// instance (e.g. fail-closed tests).  The shared container must never be
 /// terminated because other concurrent test processes depend on it.
-pub async fn start_dedicated_redis() -> (RedisContainer, RedisConnectionManager) {
+pub async fn start_dedicated_redis() -> (RedisContainer, redis::aio::ConnectionManager) {
     let run_lock = redis_run_lock(&current_test_run_id()).await;
     let container_name = format!(
         "synctv-redis-dedicated-{}-{}",
@@ -658,7 +656,7 @@ pub async fn start_dedicated_redis_url_with_label(_label: &str) -> (RedisContain
     (container, redis_url)
 }
 
-pub async fn start_redis_handle() -> (RedisContainer, RedisConnectionHandle) {
+pub async fn start_redis_handle() -> (RedisContainer, Arc<RwLock<redis::aio::ConnectionManager>>) {
     let (container, redis_url, _client) = start_redis_inner("handle").await;
     let client = redis::Client::open(redis_url).expect("Failed to create Redis client for handle");
     let manager = redis_connection_manager(&client).await;
@@ -670,7 +668,7 @@ pub async fn start_redis_url() -> (RedisContainer, String) {
     (container, redis_url)
 }
 
-pub async fn redis_connection_manager(client: &redis::Client) -> RedisConnectionManager {
+pub async fn redis_connection_manager(client: &redis::Client) -> redis::aio::ConnectionManager {
     let deadline = std::time::Instant::now() + docker_startup_timeout();
     let mut last_error = String::from("redis connection manager probe has not run yet");
     while std::time::Instant::now() < deadline {

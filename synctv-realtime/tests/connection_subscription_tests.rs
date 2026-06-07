@@ -55,7 +55,7 @@ async fn test_room_hub_connection_manager_state_consistency() {
 
     // Register connections via ConnectionManager
     conn_manager
-        .register(conn_id_1.clone(), user1)
+        .register(conn_id_1.clone().into_string(), user1)
         .await
         .expect("register user1");
     conn_manager
@@ -63,7 +63,7 @@ async fn test_room_hub_connection_manager_state_consistency() {
         .await
         .expect("join room user1");
     conn_manager
-        .register(conn_id_2.clone(), user2)
+        .register(conn_id_2.clone().into_string(), user2)
         .await
         .expect("register user2");
     conn_manager

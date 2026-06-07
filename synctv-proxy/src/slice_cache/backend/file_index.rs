@@ -33,7 +33,7 @@ impl FileIndex {
         let _guard = self
             .mutation_lock
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let new_size = entry.data_size;
         let old_size = self
             .entries
@@ -52,7 +52,7 @@ impl FileIndex {
         let _guard = self
             .mutation_lock
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((key, value)) = self.entries.remove(key) {
             let current = self.total_size.load(Ordering::Relaxed);
             if current == u64::MAX {

@@ -9,22 +9,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use synctv_core::provider::{
-    proxy::{ProviderProxy, ProxyAction, ProxyRequestContext, ProxyServices},
+    proxy::{ProviderProxy, ProxyAction, ProxyRequestContext},
     sign_playback_urls,
     store::{InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback},
     AlistProvider, PlaybackInfo, PlaybackResult, SubtitleTrack,
 };
 
-fn fake_provider_instance_manager() -> Arc<synctv_core::service::RemoteProviderManager> {
-    let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-    let repo = Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
-        pool,
-    ));
-    Arc::new(synctv_core::service::RemoteProviderManager::new(repo))
-}
-
 fn provider() -> AlistProvider {
-    AlistProvider::new(fake_provider_instance_manager()).expect("provider should build")
+    AlistProvider::new_local_only().expect("proxy-only provider should build")
 }
 
 fn new_store() -> Arc<dyn ProviderStore> {
@@ -66,48 +58,6 @@ async fn store_versioned(store: &Arc<dyn ProviderStore>, vp: &VersionedPlayback)
         .unwrap();
 }
 
-fn fake_proxy_services() -> ProxyServices {
-    let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-    let jwt =
-        synctv_core::service::auth::JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
-            .expect("jwt");
-    let username_cache =
-        synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let token_blacklist = Arc::new(
-        synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-            1000, 3600, 86400,
-        ),
-    );
-    let key_builder = synctv_core::cache::KeyBuilder::new("test");
-    let brute_force =
-        synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string());
-    let user_service = synctv_core::service::UserService::new_for_tests(
-        &pool,
-        jwt,
-        username_cache,
-        token_blacklist,
-        key_builder,
-        brute_force,
-    );
-    let credential_repo =
-        Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
-    let room_service = synctv_core::service::RoomService::new_for_tests(pool, user_service)
-        .expect("room service should build");
-    ProxyServices {
-        room_service: Arc::new(room_service),
-        credential_encryption: None,
-        credential_repo,
-        provider_access_service: None,
-        signing_key: Arc::new(
-            synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-                b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-            )
-            .expect("test proxy signing key should derive"),
-        ),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
-    }
-}
-
 #[tokio::test]
 async fn test_stream_proxy() {
     let store = new_store();
@@ -121,14 +71,14 @@ async fn test_stream_proxy() {
     store_versioned(&store, &vp).await;
 
     let p = provider();
-    let fake_services = fake_proxy_services();
     let mut request_headers = http::HeaderMap::new();
     request_headers.insert(http::header::RANGE, "bytes=10-20".parse().unwrap());
     let ctx = ProxyRequestContext {
         sub_path: "a1/stream",
         store: Some(&store),
         query_string: None,
-        services: &fake_services,
+        services: None,
+        public_id_codec: None,
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
@@ -166,12 +116,12 @@ async fn test_thumbnail_proxy_uses_cached_playback_metadata() {
     store_versioned(&store, &vp).await;
 
     let p = provider();
-    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "thumb1/thumbnail",
         store: Some(&store),
         query_string: None,
-        services: &fake_services,
+        services: None,
+        public_id_codec: None,
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
@@ -248,12 +198,12 @@ async fn test_m3u8_proxy() {
     store_versioned(&store, &vp).await;
 
     let p = provider();
-    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "a2/m3u8",
         store: Some(&store),
         query_string: None,
-        services: &fake_services,
+        services: None,
+        public_id_codec: None,
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
@@ -334,12 +284,12 @@ async fn test_hls_modes_sign_and_resolve_to_their_own_m3u8_urls() {
     );
 
     let p = provider();
-    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "alist-hls/m3u8/transcoded_SD/0",
         store: Some(&store),
         query_string: None,
-        services: &fake_services,
+        services: None,
+        public_id_codec: None,
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
@@ -370,14 +320,14 @@ async fn test_m3u8_rewritten_segment_query_fetches_target_url() {
     store_versioned(&store, &vp).await;
 
     let p = provider();
-    let fake_services = fake_proxy_services();
     let mut request_headers = http::HeaderMap::new();
     request_headers.insert(http::header::RANGE, "bytes=512-1023".parse().unwrap());
     let ctx = ProxyRequestContext {
         sub_path: "alist-segment",
         store: Some(&store),
         query_string: Some("url=https%3A%2F%2Faliyun.example.com%2Fhd%2Fseg-1.ts"),
-        services: &fake_services,
+        services: None,
+        public_id_codec: None,
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
@@ -411,12 +361,12 @@ async fn test_unknown_sub_path() {
     store_versioned(&store, &vp).await;
 
     let p = provider();
-    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "a3/subtitle/zh",
         store: Some(&store),
         query_string: None,
-        services: &fake_services,
+        services: None,
+        public_id_codec: None,
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
@@ -507,12 +457,12 @@ async fn test_signed_subtitle_url_round_trips_for_matching_mode() {
         .expect("decoded subtitle path should still be present");
 
     let p = provider();
-    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path,
         store: Some(&store),
         query_string: None,
-        services: &fake_services,
+        services: None,
+        public_id_codec: None,
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
@@ -547,12 +497,12 @@ async fn test_expired_version() {
     store_versioned(&store, &vp).await;
 
     let p = provider();
-    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "aexp/stream",
         store: Some(&store),
         query_string: None,
-        services: &fake_services,
+        services: None,
+        public_id_codec: None,
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
@@ -568,12 +518,12 @@ async fn test_expired_version() {
 #[tokio::test]
 async fn test_no_store() {
     let p = provider();
-    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "a1/stream",
         store: None,
         query_string: None,
-        services: &fake_services,
+        services: None,
+        public_id_codec: None,
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
@@ -590,12 +540,12 @@ async fn test_no_store() {
 async fn test_no_slash_in_sub_path() {
     let store = new_store();
     let p = provider();
-    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "noslash",
         store: Some(&store),
         query_string: None,
-        services: &fake_services,
+        services: None,
+        public_id_codec: None,
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
@@ -612,12 +562,12 @@ async fn test_no_slash_in_sub_path() {
 async fn test_version_not_in_store() {
     let store = new_store();
     let p = provider();
-    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "missing/stream",
         store: Some(&store),
         query_string: None,
-        services: &fake_services,
+        services: None,
+        public_id_codec: None,
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
@@ -647,12 +597,12 @@ async fn test_m3u8_preserves_headers() {
     store_versioned(&store, &vp).await;
 
     let p = provider();
-    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "a4/m3u8",
         store: Some(&store),
         query_string: None,
-        services: &fake_services,
+        services: None,
+        public_id_codec: None,
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,

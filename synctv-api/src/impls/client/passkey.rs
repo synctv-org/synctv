@@ -2,7 +2,7 @@ use synctv_core::models::UserId;
 
 use super::ClientApiImpl;
 use crate::impls::ApiError;
-use crate::proto::client::{
+use synctv_proto::client::{
     DeletePasskeyRequest, DeletePasskeyResponse, ListPasskeysResponse, PasskeyCredential,
     PasskeyCredentialResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
 };
@@ -90,7 +90,7 @@ impl ClientApiImpl {
     pub async fn finish_passkey_bind_request(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::FinishPasskeyBindRequest,
+        req: synctv_proto::client::FinishPasskeyBindRequest,
     ) -> Result<PasskeyCredentialResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let prepared = self

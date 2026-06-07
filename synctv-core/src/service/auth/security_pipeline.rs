@@ -103,12 +103,6 @@ impl SecurityPipeline {
         }
     }
 
-    /// Check if the blacklist store is configured.
-    #[must_use]
-    pub const fn has_blacklist_store(&self) -> bool {
-        true
-    }
-
     /// Check if the fast-path [`UserCache`] is configured.
     #[must_use]
     pub const fn has_user_cache(&self) -> bool {
@@ -225,13 +219,26 @@ impl SecurityPipeline {
     /// Checks whether the token's JTI is blacklisted and fails closed on
     /// storage errors so revoked tokens cannot bypass the check during outages.
     async fn check_access_token_blacklist(&self, claims: &Claims) -> Result<()> {
+        Self::check_access_token_blacklist_with(
+            self.token_blacklist.as_ref(),
+            &self.key_builder,
+            claims,
+        )
+        .await
+    }
+
+    async fn check_access_token_blacklist_with(
+        token_blacklist: &dyn TokenBlacklistStore,
+        key_builder: &KeyBuilder,
+        claims: &Claims,
+    ) -> Result<()> {
         // Skip check if JTI is empty (shouldn't happen for valid tokens)
         if claims.jti.is_empty() {
             return Ok(());
         }
 
-        let key = self.key_builder.access_token_blacklist(&claims.jti);
-        match self.token_blacklist.is_blacklisted_checked(&key).await {
+        let key = key_builder.access_token_blacklist(&claims.jti);
+        match token_blacklist.is_blacklisted_checked(&key).await {
             Ok(true) => Err(Error::Authentication("Authentication failed".to_string())),
             Ok(false) => Ok(()),
             Err(e) => {
@@ -268,16 +275,8 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    use crate::cache::KeyBuilder;
     use async_trait::async_trait;
-    use sqlx::PgPool;
-
-    use crate::{
-        cache::{KeyBuilder, UsernameCache},
-        service::{
-            auth::{BruteForceProtection, JwtService},
-            InMemoryTokenBlacklistStore, UserService,
-        },
-    };
 
     struct FailingBlacklistStore;
 
@@ -315,25 +314,6 @@ mod tests {
         }
     }
 
-    fn create_user_service(pool: &PgPool) -> Arc<UserService> {
-        let jwt_service =
-            JwtService::new("test-secret-key-for-security-pipeline-unit-tests-min-32")
-                .expect("failed to create jwt service");
-        let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 0);
-        let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
-        let key_builder = KeyBuilder::new("test");
-        let brute_force = BruteForceProtection::in_memory("test".to_string());
-
-        Arc::new(UserService::new_for_tests(
-            pool,
-            jwt_service,
-            username_cache,
-            token_blacklist,
-            key_builder,
-            brute_force,
-        ))
-    }
-
     fn make_claims(user_id: &str, pv: i32) -> Claims {
         let now = chrono::Utc::now();
         Claims {
@@ -357,21 +337,15 @@ mod tests {
 
     #[tokio::test]
     async fn blacklist_storage_error_is_service_unavailable() {
-        let pool = PgPool::connect_lazy("postgres://localhost/synctv")
-            .expect("lazy pool should build without network");
-        let pipeline = SecurityPipeline::new_with_runtime(
-            create_user_service(&pool),
-            SecurityPipelineRuntime {
-                user_cache: None,
-                token_blacklist: Some(Arc::new(FailingBlacklistStore)),
-                key_builder: Some(KeyBuilder::new("test")),
-            },
-        );
-
-        let err = pipeline
-            .check_access_token_blacklist(&make_claims("user-1", 0))
-            .await
-            .expect_err("blacklist storage failures must fail closed");
+        let blacklist = Arc::new(FailingBlacklistStore);
+        let key_builder = KeyBuilder::new("test");
+        let err = SecurityPipeline::check_access_token_blacklist_with(
+            blacklist.as_ref(),
+            &key_builder,
+            &make_claims("user-1", 0),
+        )
+        .await
+        .expect_err("blacklist storage failures must fail closed");
 
         assert!(
             matches!(&err, Error::ServiceUnavailable(msg) if msg.contains("temporarily unavailable")),

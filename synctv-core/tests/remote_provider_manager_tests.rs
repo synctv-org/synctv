@@ -28,15 +28,12 @@ use synctv_media_providers::grpc::{
     alist::alist_server::AlistServer, alist_server::AlistService as AlistGrpcService,
     emby::emby_server::EmbyServer, emby_server::EmbyService as EmbyGrpcService,
 };
-use tokio::sync::{broadcast, Barrier, RwLock};
+use tokio::sync::{broadcast, Barrier};
 use tonic::metadata::MetadataMap;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
 use tonic_health::ServingStatus;
 
-// Test utilities
-
-/// Test infrastructure with `PostgreSQL` and Redis
 struct TestInfra {
     pool: PgPool,
     redis_client: redis::Client,
@@ -264,7 +261,6 @@ fn provider_repo(pool: &PgPool) -> ProviderInstanceRepository {
 const REDIS_INVALIDATION_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const REDIS_INVALIDATION_WAIT_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Create a test provider instance
 fn make_test_instance(name: &str) -> ProviderInstance {
     let now = Utc::now();
     ProviderInstance {
@@ -759,7 +755,6 @@ async fn spawn_stalling_tcp_server() -> (SocketAddr, tokio::task::JoinHandle<()>
     (addr, handle)
 }
 
-/// Create a test provider instance with TLS
 fn make_test_instance_tls(name: &str, insecure: bool) -> ProviderInstance {
     let now = Utc::now();
     ProviderInstance {
@@ -778,8 +773,6 @@ fn make_test_instance_tls(name: &str, insecure: bool) -> ProviderInstance {
     }
 }
 
-// ─── Test 1: Channel creation from DB config ────────────────────────────
-
 async fn scenario_channel_creation_from_db_config() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
@@ -796,16 +789,12 @@ async fn scenario_channel_creation_from_db_config() {
 
     let instance = make_reachable_remote_instance("test-instance-1", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
-
-    // Get channel - should load the validated/cached remote connection.
     let channel = manager.get("test-instance-1").await;
 
     assert!(
         channel.is_some(),
         "validated remote channel should be available"
     );
-
-    // Verify instance exists in DB
     let repo = provider_repo(&infra.pool);
     let fetched = repo.get_by_name("test-instance-1").await.unwrap();
     assert!(fetched.is_some());
@@ -814,8 +803,6 @@ async fn scenario_channel_creation_from_db_config() {
     health_handle.abort();
     let _ = health_handle.await;
 }
-
-// ─── Test 4: Redis invalidation on delete ───────────────────────────────────
 
 async fn scenario_redis_invalidation_on_delete() {
     let infra = TestInfra::new().await;
@@ -848,12 +835,8 @@ async fn scenario_redis_invalidation_on_delete() {
 
     let instance = make_reachable_remote_instance("test-instance-5", host, health_addr.port());
     manager1.add(instance.clone()).await.unwrap();
-
-    // Pre-warm manager2's cache
     let _ = manager2.get("test-instance-5").await;
     tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Delete via manager1
     manager1.delete("test-instance-5").await.unwrap();
 
     wait_until(
@@ -865,15 +848,11 @@ async fn scenario_redis_invalidation_on_delete() {
         },
     )
     .await;
-
-    // Verify manager2 no longer lists the instance
     let instances2 = manager2.list().await.unwrap();
     assert!(
         !instances2.contains(&"test-instance-5".to_string()),
         "Manager2 should not list deleted instance"
     );
-
-    // Verify get returns None
     let channel = manager2.get("test-instance-5").await;
     assert!(channel.is_none(), "Deleted instance should return None");
 
@@ -998,8 +977,6 @@ async fn scenario_delete_rolls_back_when_provider_invalidation_publish_fails() {
     let _ = health_handle.await;
 }
 
-// ─── Test 5: Health check integration ───────────────────────────────────────
-
 async fn scenario_health_check_integration() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
@@ -1020,8 +997,6 @@ async fn scenario_health_check_integration() {
     instance.endpoint = format!("http://health-check.test.localhost:{}", health_addr.port());
     instance.providers = vec!["alist".to_string()];
     manager.add(instance.clone()).await.unwrap();
-
-    // Run health check
     let health_results = manager.health_check().await;
 
     // The in-process provider server should be reported as healthy only when
@@ -1038,8 +1013,6 @@ async fn scenario_health_check_integration() {
     health_handle.abort();
     let _ = health_handle.await;
 }
-
-// ─── Test 7: Health check with enabled/disabled instances ──────────────────
 
 async fn scenario_health_check_respects_enabled_flag() {
     let infra = TestInfra::new().await;
@@ -1063,17 +1036,11 @@ async fn scenario_health_check_respects_enabled_flag() {
     let mut disabled = instance_disabled.clone();
     disabled.enabled = false;
     manager.add(disabled).await.unwrap();
-
-    // Run health check
     let health_results = manager.health_check().await;
-
-    // Enabled instance should be in results
     assert!(
         health_results.contains_key("test-instance-7a"),
         "Health check should include enabled instance"
     );
-
-    // Disabled instance should NOT be in results
     assert!(
         !health_results.contains_key("test-instance-7b"),
         "Health check should skip disabled instance"
@@ -1239,8 +1206,8 @@ async fn scenario_health_check_ignores_authenticated_provider_handler_failure() 
     let _ = health_handle.await;
 }
 
-async fn scenario_add_alist_instance_does_not_require_fake_upstream_auth_for_management_validation()
-{
+async fn scenario_add_alist_instance_does_not_require_external_upstream_auth_for_management_validation(
+) {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let (health_addr, health_handle) =
@@ -1359,8 +1326,6 @@ async fn scenario_add_emby_instance_does_not_require_authenticated_handler_succe
     let _ = health_handle.await;
 }
 
-// ─── Test 8: TLS configuration (non-insecure) ───────────────────────────────
-
 async fn scenario_tls_configuration_secure() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
@@ -1371,8 +1336,6 @@ async fn scenario_tls_configuration_secure() {
     // This avoids the rustls crypto provider issue in test environment
     let repo_instance = provider_repo(&infra.pool);
     repo_instance.create(&instance).await.unwrap();
-
-    // Verify instance was saved with correct TLS settings
     let fetched = repo_instance.get_by_name("test-instance-8").await.unwrap();
     assert!(fetched.is_some());
     let fetched = fetched.unwrap();
@@ -1381,11 +1344,7 @@ async fn scenario_tls_configuration_secure() {
         !fetched.insecure_tls,
         "Instance should not have insecure TLS"
     );
-
-    // Now create the manager and verify it can list the instance
     let manager = RemoteProviderManager::new(Arc::new(provider_repo(&infra.pool)));
-
-    // Verify the instance can be listed
     let instances = manager.list().await.unwrap();
     assert!(
         instances.contains(&"test-instance-8".to_string()),
@@ -1393,59 +1352,9 @@ async fn scenario_tls_configuration_secure() {
     );
 }
 
-// ─── Test 9: TLS configuration (insecure) ───────────────────────────────────
-
-async fn scenario_tls_configuration_insecure() {
-    let infra = TestInfra::new().await;
-    flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
-
-    let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new_with_address_overrides_and_ssrf_guard(
-        Arc::new(repo),
-        None,
-        HashMap::new(),
-        synctv_common::ssrf::SsrfGuard::disabled(),
-    );
-
-    // insecure TLS (connect_with_connector), so use a short timeout to avoid
-    // waiting for the remote to respond. The test exercises the TLS code path.
-    let instance = {
-        let mut inst = make_test_instance_tls("test-instance-9", true);
-        inst.timeout = "2s".to_string();
-        inst
-    };
-
-    // Wrap with timeout to avoid 270s+ waits on DNS/connect to example.com
-    let result = tokio::time::timeout(Duration::from_secs(5), manager.add(instance.clone())).await;
-
-    // If it succeeds (unlikely with port 1), verify the stored config
-    if matches!(&result, Ok(Ok(()))) {
-        let repo = provider_repo(&infra.pool);
-        let fetched = repo.get_by_name("test-instance-9").await.unwrap();
-        assert!(fetched.is_some());
-        let fetched = fetched.unwrap();
-        assert!(fetched.tls, "Instance should have TLS enabled");
-        assert!(
-            fetched.insecure_tls,
-            "Instance should have insecure TLS enabled"
-        );
-    }
-    // Timeout or connection error is expected and acceptable
-}
-
-// ─── Test 10: Best-effort get misses absent remote instance ─────────────────
-
 async fn scenario_get_returns_none_for_absent_remote_instance() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1458,15 +1367,9 @@ async fn scenario_get_returns_none_for_absent_remote_instance() {
     );
 }
 
-// ─── Test 11: Required resolution uses local when instance_name is None ──────
-
 async fn scenario_resolve_client_required_uses_local_when_instance_name_none() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1482,15 +1385,9 @@ async fn scenario_resolve_client_required_uses_local_when_instance_name_none() {
     );
 }
 
-// ─── Test 11b: Explicit instance must not silently fallback locally ─────────
-
 async fn scenario_resolve_client_required_rejects_missing_remote_instance() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1513,10 +1410,6 @@ async fn scenario_resolve_client_required_rejects_missing_remote_instance() {
 async fn scenario_resolve_client_required_surfaces_existing_remote_instance_config_errors() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1549,10 +1442,6 @@ async fn scenario_resolve_client_required_surfaces_existing_remote_instance_conf
 async fn scenario_resolve_client_required_preserves_retryable_repository_failures() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1574,15 +1463,9 @@ async fn scenario_resolve_client_required_preserves_retryable_repository_failure
     );
 }
 
-// ─── Test 12: Fallback when remote instance exists but channel fails ─────────
-
 async fn scenario_fallback_when_channel_creation_fails() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1597,8 +1480,6 @@ async fn scenario_fallback_when_channel_creation_fails() {
         "Adding instance with invalid endpoint should fail validation"
     );
 }
-
-// ─── Test 13: Enable/disable instance ───────────────────────────────────────
 
 async fn scenario_enable_disable_instance() {
     let infra = TestInfra::new().await;
@@ -1616,29 +1497,17 @@ async fn scenario_enable_disable_instance() {
 
     let instance = make_reachable_remote_instance("test-instance-13", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
-
-    // Verify it's enabled and gettable
     let repo = provider_repo(&infra.pool);
     let fetched = repo.get_by_name("test-instance-13").await.unwrap();
     assert!(fetched.is_some());
     assert!(fetched.unwrap().enabled);
-
-    // Disable the instance
     manager.disable("test-instance-13").await.unwrap();
-
-    // Verify it's disabled
     let fetched = repo.get_by_name("test-instance-13").await.unwrap();
     assert!(fetched.is_some());
     assert!(!fetched.unwrap().enabled);
-
-    // get() should return None for disabled instance
     let channel = manager.get("test-instance-13").await;
     assert!(channel.is_none(), "Disabled instance should return None");
-
-    // Re-enable the instance
     manager.enable("test-instance-13").await.unwrap();
-
-    // Verify it's enabled again
     let fetched = repo.get_by_name("test-instance-13").await.unwrap();
     assert!(fetched.is_some());
     assert!(fetched.unwrap().enabled);
@@ -1650,10 +1519,6 @@ async fn scenario_enable_disable_instance() {
 async fn scenario_enable_with_invalid_endpoint_preserves_disabled_state() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1685,23 +1550,19 @@ async fn scenario_enable_with_invalid_endpoint_preserves_disabled_state() {
     );
 }
 
-async fn scenario_enable_remote_instance_requires_jwt_secret() {
+async fn scenario_enable_remote_instances_validate_jwt_secret() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
 
-    let mut instance = make_test_instance("test-instance-13-missing-secret-enable");
-    instance.enabled = false;
-    instance.jwt_secret = None;
+    let mut disabled_missing_secret = make_test_instance("test-instance-13-missing-secret-enable");
+    disabled_missing_secret.enabled = false;
+    disabled_missing_secret.jwt_secret = None;
 
     let repo = provider_repo(&infra.pool);
-    repo.create(&instance).await.unwrap();
+    repo.create(&disabled_missing_secret).await.unwrap();
 
     let result = manager
         .enable("test-instance-13-missing-secret-enable")
@@ -1720,21 +1581,19 @@ async fn scenario_enable_remote_instance_requires_jwt_secret() {
         !persisted.enabled,
         "failed enable must not leave the DB row enabled"
     );
-}
 
-async fn scenario_enable_already_enabled_invalid_remote_instance_without_jwt_secret_fails() {
-    let infra = TestInfra::new().await;
-    flush_provider_instances(&infra).await;
-    let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo));
+    let connection = manager.get("test-instance-13-missing-secret-enable").await;
+    assert!(
+        connection.is_none(),
+        "invalid row without jwt_secret must not resolve to an unusable remote connection"
+    );
 
     let mut invalid = make_test_instance("test-instance-13-invalid-already-enabled");
     invalid.jwt_secret = None;
     invalid.enabled = true;
     invalid.comment = Some("invalid enabled row".to_string());
 
-    provider_repo(&infra.pool)
-        .create(&invalid)
+    repo.create(&invalid)
         .await
         .expect("invalid enabled row should persist");
 
@@ -1752,7 +1611,7 @@ async fn scenario_enable_already_enabled_invalid_remote_instance_without_jwt_sec
         "error should explain missing jwt_secret: {error_message}"
     );
 
-    let persisted = provider_repo(&infra.pool)
+    let persisted = repo
         .get_by_name("test-instance-13-invalid-already-enabled")
         .await
         .expect("lookup should succeed")
@@ -1768,8 +1627,6 @@ async fn scenario_enable_already_enabled_invalid_remote_instance_without_jwt_sec
         "invalid row without jwt_secret must not resolve to an unusable remote connection"
     );
 }
-
-// ─── Test 14: Reconnect instance ────────────────────────────────────────────
 
 async fn scenario_reconnect_instance() {
     let infra = TestInfra::new().await;
@@ -1793,11 +1650,7 @@ async fn scenario_reconnect_instance() {
         result.is_ok(),
         "Reconnect should succeed for a reachable remote instance"
     );
-
-    // Disable the instance
     manager.disable("test-instance-14").await.unwrap();
-
-    // Try to reconnect disabled instance - should fail
     let result = manager.reconnect("test-instance-14").await;
     assert!(
         result.is_err(),
@@ -1807,8 +1660,6 @@ async fn scenario_reconnect_instance() {
     health_handle.abort();
     let _ = health_handle.await;
 }
-
-// ─── Test 15: Add duplicate instance fails ───────────────────────────────────
 
 async fn scenario_add_duplicate_instance_fails() {
     let infra = TestInfra::new().await;
@@ -1826,8 +1677,6 @@ async fn scenario_add_duplicate_instance_fails() {
 
     let instance = make_reachable_remote_instance("test-instance-15", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
-
-    // Try to add duplicate - should fail
     let result = manager.add(instance).await;
     assert!(result.is_err(), "Adding duplicate instance should fail");
 
@@ -1845,10 +1694,6 @@ async fn scenario_add_duplicate_instance_fails() {
 async fn scenario_add_disabled_instance_is_not_retrievable_via_get() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -1991,49 +1836,40 @@ async fn scenario_concurrent_duplicate_add_returns_one_success_and_one_already_e
     let _ = health_handle.await;
 }
 
-// ─── Test 16: Update non-existent instance fails ─────────────────────────────
-
 async fn scenario_update_nonexistent_instance_fails() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
-
-    // Try to update non-existent instance
     let instance = make_test_instance("test-instance-16");
     let result = manager.update(instance).await;
-
-    // Should fail (database will return 0 rows affected)
     assert!(
         result.is_err(),
         "Updating non-existent instance should fail"
     );
 }
 
-async fn scenario_update_invalid_remote_instance_without_jwt_secret_fails() {
+async fn scenario_update_remote_instances_validate_jwt_secret() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
+    let repo = provider_repo(&infra.pool);
 
-    let mut invalid = make_test_instance("test-instance-invalid-update");
-    invalid.jwt_secret = None;
-    invalid.comment = Some("invalid row".to_string());
+    let mut invalid_existing = make_test_instance("test-instance-invalid-update");
+    invalid_existing.jwt_secret = None;
+    invalid_existing.comment = Some("invalid row".to_string());
 
-    provider_repo(&infra.pool)
-        .create(&invalid)
+    repo.create(&invalid_existing)
         .await
         .expect("invalid row should persist");
 
-    invalid.comment = Some("updated comment".to_string());
-    invalid.timeout = "2s".to_string();
+    let mut invalid_existing_update = invalid_existing.clone();
+    invalid_existing_update.comment = Some("updated comment".to_string());
+    invalid_existing_update.timeout = "2s".to_string();
 
-    let result = manager.update(invalid.clone()).await;
+    let result = manager.update(invalid_existing_update.clone()).await;
     assert!(
         result.is_err(),
         "updating an invalid remote row without jwt_secret must fail"
@@ -2045,46 +1881,40 @@ async fn scenario_update_invalid_remote_instance_without_jwt_secret_fails() {
         "error should explain missing jwt_secret: {error_message}"
     );
 
-    let fetched = provider_repo(&infra.pool)
-        .get_by_name(&invalid.name)
+    let fetched = repo
+        .get_by_name(&invalid_existing_update.name)
         .await
         .expect("lookup should succeed")
         .expect("updated instance should exist");
-    assert_ne!(fetched.comment, invalid.comment);
+    assert_ne!(fetched.comment, invalid_existing_update.comment);
     assert_ne!(fetched.timeout, "2s");
     assert_eq!(fetched.jwt_secret, None);
-}
 
-async fn scenario_update_local_only_instance_to_remote_requires_jwt_secret() {
-    let infra = TestInfra::new().await;
-    flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
+    let mut local_missing_secret = make_test_instance("test-instance-local-to-remote-update");
+    local_missing_secret.providers = vec!["live_proxy".to_string()];
+    local_missing_secret.jwt_secret = None;
 
-    let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo));
-
-    let mut instance = make_test_instance("test-instance-local-to-remote-update");
-    instance.providers = vec!["live_proxy".to_string()];
-    instance.jwt_secret = None;
-
-    provider_repo(&infra.pool)
-        .create(&instance)
+    repo.create(&local_missing_secret)
         .await
         .expect("local-only row should persist without jwt_secret");
 
-    instance.providers = vec!["bilibili".to_string()];
+    let mut local_to_remote_missing_secret = local_missing_secret.clone();
+    local_to_remote_missing_secret.providers = vec!["bilibili".to_string()];
 
-    let result = manager.update(instance.clone()).await;
+    let result = manager.update(local_to_remote_missing_secret.clone()).await;
     assert!(
         result.is_err(),
         "updating a local-only instance into a remote-capable one without jwt_secret must fail"
     );
 
-    let persisted = provider_repo(&infra.pool)
-        .get_by_name(&instance.name)
+    let error_message = result.expect_err("missing secret should fail").to_string();
+    assert!(
+        error_message.contains("jwt_secret"),
+        "error should explain missing jwt_secret: {error_message}"
+    );
+
+    let persisted = repo
+        .get_by_name(&local_to_remote_missing_secret.name)
         .await
         .expect("lookup should succeed")
         .expect("instance should still exist");
@@ -2094,29 +1924,17 @@ async fn scenario_update_local_only_instance_to_remote_requires_jwt_secret() {
         "failed update must not persist the remote-capable provider set"
     );
     assert_eq!(persisted.jwt_secret, None);
-}
 
-async fn scenario_update_existing_remote_instance_requires_jwt_secret() {
-    let infra = TestInfra::new().await;
-    flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
-
-    let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo));
-
-    let mut instance = make_test_instance("test-instance-remote-update-missing-secret");
-    provider_repo(&infra.pool)
-        .create(&instance)
+    let existing_remote = make_test_instance("test-instance-remote-update-missing-secret");
+    repo.create(&existing_remote)
         .await
         .expect("remote row with jwt_secret should persist");
 
-    instance.comment = Some("updated comment".to_string());
-    instance.jwt_secret = None;
+    let mut existing_remote_missing_secret = existing_remote.clone();
+    existing_remote_missing_secret.comment = Some("updated comment".to_string());
+    existing_remote_missing_secret.jwt_secret = None;
 
-    let result = manager.update(instance.clone()).await;
+    let result = manager.update(existing_remote_missing_secret.clone()).await;
     assert!(
         result.is_err(),
         "updating an existing remote instance with missing jwt_secret must fail"
@@ -2129,13 +1947,13 @@ async fn scenario_update_existing_remote_instance_requires_jwt_secret() {
         "error should explain missing jwt_secret: {error_message}"
     );
 
-    let persisted = provider_repo(&infra.pool)
-        .get_by_name(&instance.name)
+    let persisted = repo
+        .get_by_name(&existing_remote_missing_secret.name)
         .await
         .expect("lookup should succeed")
         .expect("instance should still exist");
     assert_ne!(
-        persisted.comment, instance.comment,
+        persisted.comment, existing_remote_missing_secret.comment,
         "failed update must not persist other field changes"
     );
     assert_eq!(
@@ -2143,33 +1961,22 @@ async fn scenario_update_existing_remote_instance_requires_jwt_secret() {
         Some("remote-provider-test-secret"),
         "failed update must preserve the existing valid jwt_secret"
     );
-}
 
-async fn scenario_update_local_only_instance_to_remote_rejects_invalid_jwt_secret() {
-    let infra = TestInfra::new().await;
-    flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
+    let mut local_invalid_secret =
+        make_test_instance("test-instance-local-to-remote-invalid-secret");
+    local_invalid_secret.providers = vec!["live_proxy".to_string()];
+    local_invalid_secret.jwt_secret = None;
+    local_invalid_secret.enabled = false;
 
-    let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo));
-
-    let mut instance = make_test_instance("test-instance-local-to-remote-invalid-secret");
-    instance.providers = vec!["live_proxy".to_string()];
-    instance.jwt_secret = None;
-    instance.enabled = false;
-
-    provider_repo(&infra.pool)
-        .create(&instance)
+    repo.create(&local_invalid_secret)
         .await
         .expect("local-only row should persist without jwt_secret");
 
-    instance.providers = vec!["bilibili".to_string()];
-    instance.jwt_secret = Some("shared\nsecret".to_string());
+    let mut local_to_remote_invalid_secret = local_invalid_secret.clone();
+    local_to_remote_invalid_secret.providers = vec!["bilibili".to_string()];
+    local_to_remote_invalid_secret.jwt_secret = Some("shared\nsecret".to_string());
 
-    let result = manager.update(instance.clone()).await;
+    let result = manager.update(local_to_remote_invalid_secret.clone()).await;
     assert!(
         result.is_err(),
         "updating a local-only instance into a remote-capable one with invalid jwt_secret must fail"
@@ -2182,8 +1989,8 @@ async fn scenario_update_local_only_instance_to_remote_rejects_invalid_jwt_secre
         "error should explain invalid jwt_secret syntax: {error_message}"
     );
 
-    let persisted = provider_repo(&infra.pool)
-        .get_by_name(&instance.name)
+    let persisted = repo
+        .get_by_name(&local_to_remote_invalid_secret.name)
         .await
         .expect("lookup should succeed")
         .expect("instance should still exist");
@@ -2195,30 +2002,18 @@ async fn scenario_update_local_only_instance_to_remote_rejects_invalid_jwt_secre
     assert_eq!(persisted.jwt_secret, None);
 }
 
-// ─── Test 17: Delete non-existent instance fails ─────────────────────────────
-
 async fn scenario_delete_nonexistent_instance_fails() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
-
-    // Try to delete non-existent instance
     let result = manager.delete("test-instance-17").await;
-
-    // Should fail (database will return 0 rows affected)
     assert!(
         result.is_err(),
         "Deleting non-existent instance should fail"
     );
 }
-
-// ─── Test 18: Get all instances ─────────────────────────────────────────────
 
 async fn scenario_get_all_instances() {
     let infra = TestInfra::new().await;
@@ -2242,21 +2037,15 @@ async fn scenario_get_all_instances() {
         );
         manager.add(instance).await.unwrap();
     }
-
-    // Also create a disabled instance
     let mut disabled = make_test_instance("test-instance-18b-disabled");
     disabled.enabled = false;
     manager.add(disabled).await.unwrap();
-
-    // Get all instances (should include both enabled and disabled)
     let all_instances = manager.get_all_instances().await.unwrap();
 
     assert!(
         all_instances.len() >= 4,
         "Should have at least 4 instances (3 enabled + 1 disabled)"
     );
-
-    // Verify we have both enabled and disabled
     let enabled_count = all_instances.iter().filter(|i| i.enabled).count();
     let disabled_count = all_instances.iter().filter(|i| !i.enabled).count();
 
@@ -2272,8 +2061,6 @@ async fn scenario_get_all_instances() {
     health_handle.abort();
     let _ = health_handle.await;
 }
-
-// ─── Test 19: Manager without Redis (local-only invalidation) ───────────────
 
 async fn scenario_manager_without_redis() {
     let infra = TestInfra::new().await;
@@ -2297,11 +2084,7 @@ async fn scenario_manager_without_redis() {
 
     let instance = make_reachable_remote_instance("test-instance-19", host, health_addr.port());
     manager.add(instance.clone()).await.unwrap();
-
-    // Get should still work
     let _ = manager.get("test-instance-19").await;
-
-    // List should work
     let instances = manager.list().await.unwrap();
     assert!(
         instances.contains(&"test-instance-19".to_string()),
@@ -2311,8 +2094,6 @@ async fn scenario_manager_without_redis() {
     health_handle.abort();
     let _ = health_handle.await;
 }
-
-// ─── Test 20: Init pre-warms cache ──────────────────────────────────────────
 
 async fn scenario_init_pre_warms_cache() {
     let infra = TestInfra::new().await;
@@ -2336,12 +2117,8 @@ async fn scenario_init_pre_warms_cache() {
         );
         manager.add(instance).await.unwrap();
     }
-
-    // Call init - should pre-warm cache
     let result = manager.init().await;
     assert!(result.is_ok(), "Init should succeed");
-
-    // Verify instances are listed
     let instances = manager.list().await.unwrap();
     assert!(
         instances.len() >= 3,
@@ -2404,15 +2181,9 @@ async fn scenario_init_rejects_invalid_secret_and_aborts_prewarming() {
     let _ = health_handle.await;
 }
 
-// ─── Test 21: Explicit disabled SSRF no longer blocks internal endpoints ─────
-
 async fn scenario_internal_ips_fail_connectivity_validation_when_ssrf_is_explicitly_disabled() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new_with_address_overrides_and_ssrf_guard(
@@ -2455,15 +2226,9 @@ async fn scenario_internal_ips_fail_connectivity_validation_when_ssrf_is_explici
     );
 }
 
-// ─── Test 22: SSRF validation allows public endpoints ───────────────────────
-
 async fn scenario_ssrf_validation_allows_public_endpoints() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -2497,8 +2262,6 @@ async fn scenario_ssrf_validation_allows_public_endpoints() {
     );
 }
 
-// ─── Test 23: resolve_client_required with remote instance ──────────────────
-
 async fn scenario_resolve_client_required_uses_remote_when_available() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
@@ -2526,8 +2289,6 @@ async fn scenario_resolve_client_required_uses_remote_when_available() {
     let _ = health_handle.await;
 }
 
-// ─── Test 24: Cache respects max capacity ───────────────────────────────────
-
 async fn scenario_cache_respects_max_capacity() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
@@ -2541,8 +2302,6 @@ async fn scenario_cache_respects_max_capacity() {
         None,
         make_test_address_overrides(host, health_addr.port()),
     );
-
-    // This is more of a sanity check that the cache doesn't panic
     for i in 1..=10 {
         let instance = make_reachable_remote_instance(
             &format!("test-instance-24-{i}"),
@@ -2551,8 +2310,6 @@ async fn scenario_cache_respects_max_capacity() {
         );
         manager.add(instance).await.unwrap();
     }
-
-    // All should be listable
     let instances = manager.list().await.unwrap();
     assert!(instances.len() >= 10, "Should list at least 10 instances");
 
@@ -2705,8 +2462,6 @@ async fn scenario_durable_invalidation_catches_up_after_listener_starts_late() {
     let _ = health_handle.await;
 }
 
-// ─── Test 25: Provider instance supports_provider ───────────────────────────
-
 async fn scenario_provider_instance_supports_provider() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
@@ -2729,8 +2484,6 @@ async fn scenario_provider_instance_supports_provider() {
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
-
-    // Test supports_provider
     assert!(instance.supports_provider("bilibili"));
     assert!(instance.supports_provider("alist"));
     assert!(instance.supports_provider("emby"));
@@ -2738,21 +2491,17 @@ async fn scenario_provider_instance_supports_provider() {
     assert!(!instance.supports_provider("rtmp"));
 }
 
-async fn scenario_add_remote_instance_requires_jwt_secret() {
+async fn scenario_add_remote_instances_validate_jwt_secret() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
 
-    let mut instance = make_test_instance("test-instance-missing-secret");
-    instance.jwt_secret = None;
+    let mut missing_secret = make_test_instance("test-instance-missing-secret");
+    missing_secret.jwt_secret = None;
 
-    let result = manager.add(instance).await;
+    let result = manager.add(missing_secret).await;
     assert!(
         result.is_err(),
         "remote instance without jwt_secret must be rejected"
@@ -2764,24 +2513,12 @@ async fn scenario_add_remote_instance_requires_jwt_secret() {
         error_message.contains("jwt_secret"),
         "error should explain missing jwt_secret: {error_message}"
     );
-}
 
-async fn scenario_add_remote_instance_rejects_invalid_jwt_secret_even_when_disabled() {
-    let infra = TestInfra::new().await;
-    flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
+    let mut invalid_secret = make_test_instance("test-instance-invalid-secret-disabled");
+    invalid_secret.enabled = false;
+    invalid_secret.jwt_secret = Some("shared\nsecret".to_string());
 
-    let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo));
-
-    let mut instance = make_test_instance("test-instance-invalid-secret-disabled");
-    instance.enabled = false;
-    instance.jwt_secret = Some("shared\nsecret".to_string());
-
-    let result = manager.add(instance.clone()).await;
+    let result = manager.add(invalid_secret.clone()).await;
     assert!(
         result.is_err(),
         "disabled remote instance with invalid jwt_secret must be rejected"
@@ -2796,7 +2533,7 @@ async fn scenario_add_remote_instance_rejects_invalid_jwt_secret_even_when_disab
 
     assert!(
         provider_repo(&infra.pool)
-            .get_by_name(&instance.name)
+            .get_by_name(&invalid_secret.name)
             .await
             .expect("lookup should succeed")
             .is_none(),
@@ -2807,10 +2544,6 @@ async fn scenario_add_remote_instance_rejects_invalid_jwt_secret_even_when_disab
 async fn scenario_add_instance_rejects_local_only_providers() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -2853,10 +2586,6 @@ async fn scenario_add_instance_rejects_local_only_providers() {
 async fn scenario_add_unreachable_remote_instance_fails_connectivity_validation() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -2934,10 +2663,6 @@ async fn scenario_add_reachable_remote_instance_succeeds_with_connectivity_valid
 async fn scenario_enable_unreachable_remote_instance_preserves_disabled_state() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -2973,10 +2698,6 @@ async fn scenario_enable_unreachable_remote_instance_preserves_disabled_state() 
 async fn scenario_reconnect_unreachable_remote_instance_fails_connectivity_validation() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-    let _redis_conn = Some(Arc::new(RwLock::new(
-        infra.redis_connection_manager().await,
-    )));
-    let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
@@ -3115,13 +2836,9 @@ async fn scenario_invalid_remote_instance_without_jwt_secret_is_rejected_at_runt
     );
 }
 
-// ─── Test 26: Provider instance parse_timeout ───────────────────────────────
-
 async fn scenario_provider_instance_parse_timeout() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
-
-    // Test valid timeout formats
     let mut instance1 = make_test_instance("test-26a");
     instance1.timeout = "10s".to_string();
     assert_eq!(instance1.parse_timeout().unwrap(), Duration::from_secs(10));
@@ -3133,8 +2850,6 @@ async fn scenario_provider_instance_parse_timeout() {
     let mut instance3 = make_test_instance("test-26c");
     instance3.timeout = "5m".to_string();
     assert_eq!(instance3.parse_timeout().unwrap(), Duration::from_mins(5));
-
-    // Test invalid timeout format
     let mut instance4 = make_test_instance("test-26d");
     instance4.timeout = "invalid".to_string();
     assert!(
@@ -3247,9 +2962,10 @@ async fn test_health_check_ignores_emby_authenticated_provider_handler_failure()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_add_alist_instance_does_not_require_fake_upstream_auth_for_management_validation() {
+async fn test_add_alist_instance_does_not_require_external_upstream_auth_for_management_validation()
+{
     install_rustls_provider_once();
-    scenario_add_alist_instance_does_not_require_fake_upstream_auth_for_management_validation()
+    scenario_add_alist_instance_does_not_require_external_upstream_auth_for_management_validation()
         .await;
 }
 
@@ -3267,13 +2983,6 @@ async fn test_add_emby_instance_does_not_require_authenticated_handler_success_f
 async fn test_tls_configuration_secure() {
     install_rustls_provider_once();
     scenario_tls_configuration_secure().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_tls_configuration_insecure() {
-    install_rustls_provider_once();
-    scenario_tls_configuration_insecure().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3453,16 +3162,9 @@ async fn test_provider_instance_supports_provider() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_add_remote_instance_requires_jwt_secret() {
+async fn test_add_remote_instances_validate_jwt_secret() {
     install_rustls_provider_once();
-    scenario_add_remote_instance_requires_jwt_secret().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_add_remote_instance_rejects_invalid_jwt_secret_even_when_disabled() {
-    install_rustls_provider_once();
-    scenario_add_remote_instance_rejects_invalid_jwt_secret_even_when_disabled().await;
+    scenario_add_remote_instances_validate_jwt_secret().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3544,44 +3246,16 @@ async fn test_provider_instance_parse_timeout() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_enable_remote_instance_requires_jwt_secret() {
+async fn test_enable_remote_instances_validate_jwt_secret() {
     install_rustls_provider_once();
-    scenario_enable_remote_instance_requires_jwt_secret().await;
+    scenario_enable_remote_instances_validate_jwt_secret().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_enable_already_enabled_invalid_remote_instance_without_jwt_secret_fails() {
+async fn test_update_remote_instances_validate_jwt_secret() {
     install_rustls_provider_once();
-    scenario_enable_already_enabled_invalid_remote_instance_without_jwt_secret_fails().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_update_invalid_remote_instance_without_jwt_secret_fails() {
-    install_rustls_provider_once();
-    scenario_update_invalid_remote_instance_without_jwt_secret_fails().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_update_local_only_instance_to_remote_requires_jwt_secret() {
-    install_rustls_provider_once();
-    scenario_update_local_only_instance_to_remote_requires_jwt_secret().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_update_existing_remote_instance_requires_jwt_secret() {
-    install_rustls_provider_once();
-    scenario_update_existing_remote_instance_requires_jwt_secret().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_update_local_only_instance_to_remote_rejects_invalid_jwt_secret() {
-    install_rustls_provider_once();
-    scenario_update_local_only_instance_to_remote_rejects_invalid_jwt_secret().await;
+    scenario_update_remote_instances_validate_jwt_secret().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

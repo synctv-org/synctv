@@ -8,7 +8,8 @@ use crate::impls::admin::RequestContext;
 use synctv_core::Config;
 
 // Use synctv_proto for all gRPC types to avoid duplication
-use crate::proto::admin::{
+use synctv_proto::admin::admin_service_server::AdminService;
+use synctv_proto::admin::{
     AddAdminRequest, AddAdminResponse, AddMemberRequest, AddMemberResponse,
     ApproveRoomCreationReviewRequest, ApproveRoomCreationReviewResponse,
     ApproveRoomJoinReviewRequest, ApproveRoomJoinReviewResponse,
@@ -39,7 +40,6 @@ use crate::proto::admin::{
     UpdateUserRoleRequest, UpdateUserRoleResponse, UpdateUserUsernameRequest,
     UpdateUserUsernameResponse,
 };
-use crate::proto::admin_service_server::AdminService;
 
 use crate::impls::AdminApiImpl;
 

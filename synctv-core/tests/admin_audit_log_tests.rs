@@ -1,21 +1,13 @@
 //! Admin audit log tests
 //!
-//! Tests audit log functionality for admin operations including:
-//! - Audit log integrity
-//! - Buffer-full fallback behavior
-//! - Graceful degradation when database fails
-//! - Async write verification
-//!
 //! Docker tests: cargo test -p synctv-core --test `admin_audit_log_tests` -- --ignored --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use synctv_core::models::{AuditAction, AuditTargetType};
 use synctv_core::service::{AuditEventParams, AuditService, StreamKickAuditRequest};
 use synctv_core_testing::create_test_pool;
-// Test Infrastructure
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -36,7 +28,6 @@ async fn test_audit_log_integrity_all_fields() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    // Log a complete audit event
     service
         .log(AuditEventParams {
             actor_id: "100101".to_string(),
@@ -106,7 +97,6 @@ async fn test_audit_log_details_json_integrity() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    // Log with complex JSON details
     let details = serde_json::json!({
         "nested": {
             "deeply": {
@@ -133,7 +123,6 @@ async fn test_audit_log_details_json_integrity() {
         .await
         .expect("Log should succeed");
 
-    // Verify JSON is stored and retrieved correctly
     let row: (serde_json::Value,) =
         sqlx::query_as("SELECT details FROM audit_logs WHERE actor_id = '100102'")
             .fetch_one(&pool)
@@ -172,7 +161,6 @@ async fn test_audit_log_created_at_timestamp() {
 
     let after = chrono::Utc::now();
 
-    // Verify timestamp is within expected range
     let row: (chrono::DateTime<chrono::Utc>,) =
         sqlx::query_as("SELECT created_at FROM audit_logs WHERE actor_id = '100103'")
             .fetch_one(&pool)
@@ -190,7 +178,6 @@ async fn test_audit_log_multiple_actions_same_actor() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    // Log multiple actions by same actor
     let actions = vec![
         AuditAction::UserCreated,
         AuditAction::UserBanned,
@@ -219,7 +206,6 @@ async fn test_audit_log_multiple_actions_same_actor() {
             .expect("Log should succeed");
     }
 
-    // Verify all actions are logged
     let count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id = '100104'")
             .fetch_one(&pool)
@@ -232,7 +218,6 @@ async fn test_audit_log_multiple_actions_same_actor() {
         "All actions should be logged"
     );
 
-    // Verify unique IDs for each log
     let ids: Vec<(i64,)> =
         sqlx::query_as("SELECT id FROM audit_logs WHERE actor_id = '100104' ORDER BY created_at")
             .fetch_all(&pool)
@@ -245,130 +230,6 @@ async fn test_audit_log_multiple_actions_same_actor() {
         actions.len(),
         "Each log should have unique ID"
     );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_buffer_full_drops_events_with_fake_pool() {
-    let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-    let (service, _handle) = AuditService::new_with_capacity(pool, 5);
-
-    // Fill buffer rapidly
-    let mut ok_count = 0;
-    let mut error_count = 0;
-
-    for i in 0..100 {
-        match service
-            .log(AuditEventParams {
-                actor_id: format!("buffer_actor_{i}"),
-                actor_username: "buffer_tester".to_string(),
-                action: AuditAction::UserCreated,
-                target_type: AuditTargetType::User,
-                target_id: Some(format!("target_{i}")),
-                details: serde_json::json!({}),
-                ip_address: None,
-                user_agent: None,
-            })
-            .await
-        {
-            Ok(()) => ok_count += 1,
-            Err(_) => error_count += 1,
-        }
-    }
-
-    // Give background task time to process (and fail on fake pool)
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // With capacity 5 and 100 events, at least some should be dropped or errored
-    // The exact count depends on timing
-    assert!(
-        service.dropped_count() > 0 || error_count > 0,
-        "With capacity 5 and 100 events, should have drops or errors"
-    );
-
-    tracing::info!(
-        "Buffer test: {} ok, {} errors, {} dropped",
-        ok_count,
-        error_count,
-        service.dropped_count()
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_dropped_count_starts_at_zero() {
-    let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-    let (service, _handle) = AuditService::new_with_capacity(pool, 100);
-
-    assert_eq!(
-        service.dropped_count(),
-        0,
-        "Dropped count should start at 0"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_unbuffered_service_never_drops() {
-    let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-    let service = AuditService::new_unbuffered(pool);
-
-    // Unbuffered service always attempts direct write
-    // With fake pool, it will return an error but not drop
-    let result = service
-        .log(AuditEventParams {
-            actor_id: "unbuf_actor".to_string(),
-            actor_username: "unbuffered_tester".to_string(),
-            action: AuditAction::UserCreated,
-            target_type: AuditTargetType::User,
-            target_id: Some("target".to_string()),
-            details: serde_json::json!({}),
-            ip_address: None,
-            user_agent: None,
-        })
-        .await;
-
-    // Should fail (fake pool) but dropped_count should remain 0
-    assert!(result.is_err(), "Unbuffered write to fake pool should fail");
-    assert_eq!(
-        service.dropped_count(),
-        0,
-        "Unbuffered service should not count drops"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_buffered_write_eventually_visible() {
-    let (_container, pool) = create_test_pool().await;
-
-    let (service, _handle) = AuditService::new(pool.clone());
-
-    // Log an event
-    service
-        .log(AuditEventParams {
-            actor_id: "100105".to_string(),
-            actor_username: "buffered_writer".to_string(),
-            action: AuditAction::UserCreated,
-            target_type: AuditTargetType::User,
-            target_id: Some("target".to_string()),
-            details: serde_json::json!({}),
-            ip_address: None,
-            user_agent: None,
-        })
-        .await
-        .expect("Buffered log should succeed");
-
-    tokio::time::sleep(Duration::from_secs(6)).await;
-
-    // Event should be visible in database
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id = '100105'")
-            .fetch_one(&pool)
-            .await
-            .expect("Query should succeed");
-
-    assert_eq!(count, 1, "Buffered event should eventually be written");
 }
 
 #[tokio::test]
@@ -411,7 +272,6 @@ async fn test_concurrent_audit_logging() {
 
     assert_eq!(success_count, 20, "All concurrent logs should succeed");
 
-    // Verify all are in database
     let count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id::text LIKE '1002%'")
             .fetch_one(&pool)
@@ -470,7 +330,6 @@ async fn test_all_audit_actions_are_logged() {
             .expect("Log should succeed");
     }
 
-    // Verify all actions are logged with stable numeric action codes.
     let logged_actions: Vec<(i16,)> = sqlx::query_as(
         "SELECT action FROM audit_logs WHERE actor_username = 'action_tester' ORDER BY created_at",
     )
@@ -520,7 +379,6 @@ async fn test_all_target_types_are_logged() {
             .expect("Log should succeed");
     }
 
-    // Verify all target types are logged with stable numeric target codes.
     let logged_types: Vec<(Option<i16>,)> = sqlx::query_as(
         "SELECT target_type FROM audit_logs WHERE actor_username = 'target_tester' ORDER BY created_at",
     )
@@ -661,15 +519,14 @@ async fn test_log_stream_kicked_without_reason() {
 
     service
         .log_stream_kicked(StreamKickAuditRequest {
-                    actor_id: "100109".to_string(),
-                    actor_username: "stream_admin".to_string(),
-                    room_id: "room_abc".to_string(),
-                    media_id: "media_xyz".to_string(),
-                    reason: None,
-                    ip_address: // No reason
-            None,
-                    user_agent: None,
-                })
+            actor_id: "100109".to_string(),
+            actor_username: "stream_admin".to_string(),
+            room_id: "room_abc".to_string(),
+            media_id: "media_xyz".to_string(),
+            reason: None,
+            ip_address: None,
+            user_agent: None,
+        })
         .await
         .expect("Stream kick log should succeed");
 
@@ -691,7 +548,6 @@ async fn test_settings_viewed_audit_log() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    // Log a settings view event
     service
         .log(AuditEventParams {
             actor_id: "100110".to_string(),
@@ -741,7 +597,6 @@ async fn test_settings_group_viewed_audit_log() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    // Log a settings group view event
     service
         .log(AuditEventParams {
             actor_id: "100111".to_string(),

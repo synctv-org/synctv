@@ -546,8 +546,7 @@ impl VersionedPlayback {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RedisConnectionRuntime;
-    use async_trait::async_trait;
+    use crate::test_helpers::failing_redis_runtime;
     use redis::AsyncCommands;
     use std::sync::Arc;
 
@@ -559,17 +558,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_redis_provider_store_accepts_trait_object_runtime() {
-        #[derive(Clone)]
-        struct FakeRedisRuntime;
-
-        #[async_trait]
-        impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
-                panic!("snapshot should not be called in constructor-only test");
-            }
-        }
-
-        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let runtime = failing_redis_runtime();
         let store = RedisProviderStore::from_runtime(runtime.clone());
 
         assert!(

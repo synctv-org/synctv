@@ -333,7 +333,7 @@ async fn insert_trusted_email_identity(pool: &PgPool, user_id: &UserId, email: &
     .expect("trusted email identity should be inserted");
 }
 
-async fn insert_dummy_passkey(pool: &PgPool, user_id: &UserId, credential_id: &[u8]) {
+async fn insert_test_passkey(pool: &PgPool, user_id: &UserId, credential_id: &[u8]) {
     sqlx::query(
         r"
         INSERT INTO auth_webauthn_credentials (
@@ -346,7 +346,7 @@ async fn insert_dummy_passkey(pool: &PgPool, user_id: &UserId, credential_id: &[
     .bind(credential_id)
     .execute(pool)
     .await
-    .expect("insert dummy passkey");
+    .expect("insert test passkey");
 }
 
 async fn insert_oauth2_identity(
@@ -1544,7 +1544,7 @@ async fn assert_two_factor_blocks_deleting_required_passkey(pool: PgPool) {
     .await
     .expect("create password+passkey user");
     let credential_id = b"two-factor-required-passkey";
-    insert_dummy_passkey(&pool, &user.id, credential_id).await;
+    insert_test_passkey(&pool, &user.id, credential_id).await;
 
     user_service
         .set_two_factor_enabled(&user.id, true)
@@ -1881,7 +1881,7 @@ async fn assert_refresh_token_rejects_deleted_passkey_binding(pool: PgPool) {
     .await
     .expect("create user with password");
     let credential_id = b"passkey-refresh-binding";
-    insert_dummy_passkey(&pool, &user.id, credential_id).await;
+    insert_test_passkey(&pool, &user.id, credential_id).await;
 
     let refresh_token = match service
         .login_with_verified_external_credential_with_control(

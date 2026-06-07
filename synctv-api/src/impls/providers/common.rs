@@ -373,8 +373,8 @@ impl ProviderCommonApiImpl {
 
     pub async fn list_available_provider_instances(
         &self,
-        req: crate::proto::providers::common::ListAvailableProviderInstancesRequest,
-    ) -> Result<crate::proto::providers::common::ProviderInstancesResponse, ApiError> {
+        req: synctv_proto::providers::common::ListAvailableProviderInstancesRequest,
+    ) -> Result<synctv_proto::providers::common::ProviderInstancesResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let mut instances = if req.provider_type.trim().is_empty() {
@@ -393,13 +393,13 @@ impl ProviderCommonApiImpl {
         };
         instances.sort();
 
-        Ok(crate::proto::providers::common::ProviderInstancesResponse { instances })
+        Ok(synctv_proto::providers::common::ProviderInstancesResponse { instances })
     }
 
     pub async fn list_provider_backends(
         &self,
-        req: crate::proto::providers::common::ListProviderBackendsRequest,
-    ) -> Result<crate::proto::providers::common::ProviderBackendsResponse, ApiError> {
+        req: synctv_proto::providers::common::ListProviderBackendsRequest,
+    ) -> Result<synctv_proto::providers::common::ProviderBackendsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let mut backends = Vec::new();
@@ -429,13 +429,13 @@ impl ProviderCommonApiImpl {
             }
         }
 
-        Ok(crate::proto::providers::common::ProviderBackendsResponse { backends })
+        Ok(synctv_proto::providers::common::ProviderBackendsResponse { backends })
     }
 
     pub async fn list_provider_instances(
         &self,
-        req: crate::proto::providers::common::ListProviderInstancesRequest,
-    ) -> Result<crate::proto::providers::common::ListProviderInstancesResponse, ApiError> {
+        req: synctv_proto::providers::common::ListProviderInstancesRequest,
+    ) -> Result<synctv_proto::providers::common::ListProviderInstancesResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let query = synctv_core::models::ProviderInstanceListQuery {
@@ -462,7 +462,7 @@ impl ProviderCommonApiImpl {
             .await;
 
         Ok(
-            crate::proto::providers::common::ListProviderInstancesResponse {
+            synctv_proto::providers::common::ListProviderInstancesResponse {
                 instances: instances
                     .into_iter()
                     .map(|instance| {
@@ -480,11 +480,11 @@ impl ProviderCommonApiImpl {
 
     pub async fn add_provider_instance(
         &self,
-        req: crate::proto::providers::common::AddProviderInstanceRequest,
+        req: synctv_proto::providers::common::AddProviderInstanceRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::providers::common::AddProviderInstanceResponse, ApiError> {
+    ) -> Result<synctv_proto::providers::common::AddProviderInstanceResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let instance = ProviderInstance::new_remote(NewProviderInstance {
             name: req.name,
@@ -517,10 +517,10 @@ impl ProviderCommonApiImpl {
         .await;
 
         Ok(
-            crate::proto::providers::common::AddProviderInstanceResponse {
+            synctv_proto::providers::common::AddProviderInstanceResponse {
                 instance: Some(provider_instance_to_proto(
                     instance,
-                    crate::proto::providers::common::ProviderInstanceStatus::Connected.into(),
+                    synctv_proto::providers::common::ProviderInstanceStatus::Connected.into(),
                 )),
             },
         )
@@ -528,11 +528,11 @@ impl ProviderCommonApiImpl {
 
     pub async fn update_provider_instance(
         &self,
-        req: crate::proto::providers::common::UpdateProviderInstanceRequest,
+        req: synctv_proto::providers::common::UpdateProviderInstanceRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::providers::common::UpdateProviderInstanceResponse, ApiError> {
+    ) -> Result<synctv_proto::providers::common::UpdateProviderInstanceResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         if req.endpoint.is_none()
             && req.comment.is_none()
@@ -624,10 +624,10 @@ impl ProviderCommonApiImpl {
         .await;
 
         Ok(
-            crate::proto::providers::common::UpdateProviderInstanceResponse {
+            synctv_proto::providers::common::UpdateProviderInstanceResponse {
                 instance: Some(provider_instance_to_proto(
                     instance,
-                    crate::proto::providers::common::ProviderInstanceStatus::Connected.into(),
+                    synctv_proto::providers::common::ProviderInstanceStatus::Connected.into(),
                 )),
             },
         )
@@ -635,10 +635,10 @@ impl ProviderCommonApiImpl {
 
     pub async fn delete_provider_instance(
         &self,
-        req: crate::proto::providers::common::DeleteProviderInstanceRequest,
+        req: synctv_proto::providers::common::DeleteProviderInstanceRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<crate::proto::providers::common::DeleteProviderInstanceResponse, ApiError> {
+    ) -> Result<synctv_proto::providers::common::DeleteProviderInstanceResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.provider_instance_manager
             .delete(&req.name)
@@ -655,16 +655,16 @@ impl ProviderCommonApiImpl {
         )
         .await;
 
-        Ok(crate::proto::providers::common::DeleteProviderInstanceResponse { success: true })
+        Ok(synctv_proto::providers::common::DeleteProviderInstanceResponse { success: true })
     }
 
     pub async fn reconnect_provider_instance(
         &self,
-        req: crate::proto::providers::common::ReconnectProviderInstanceRequest,
+        req: synctv_proto::providers::common::ReconnectProviderInstanceRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::providers::common::ReconnectProviderInstanceResponse, ApiError> {
+    ) -> Result<synctv_proto::providers::common::ReconnectProviderInstanceResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.provider_instance_manager
             .reconnect_with_control(&req.name, control)
@@ -694,10 +694,10 @@ impl ProviderCommonApiImpl {
         .await;
 
         Ok(
-            crate::proto::providers::common::ReconnectProviderInstanceResponse {
+            synctv_proto::providers::common::ReconnectProviderInstanceResponse {
                 instance: Some(provider_instance_to_proto(
                     instance,
-                    crate::proto::providers::common::ProviderInstanceStatus::Connected.into(),
+                    synctv_proto::providers::common::ProviderInstanceStatus::Connected.into(),
                 )),
             },
         )
@@ -705,9 +705,9 @@ impl ProviderCommonApiImpl {
 
     pub async fn enable_provider_instance(
         &self,
-        req: crate::proto::providers::common::EnableProviderInstanceRequest,
+        req: synctv_proto::providers::common::EnableProviderInstanceRequest,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::providers::common::EnableProviderInstanceResponse, ApiError> {
+    ) -> Result<synctv_proto::providers::common::EnableProviderInstanceResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.provider_instance_manager
             .enable_with_control(&req.name, control)
@@ -724,10 +724,10 @@ impl ProviderCommonApiImpl {
             })?;
 
         Ok(
-            crate::proto::providers::common::EnableProviderInstanceResponse {
+            synctv_proto::providers::common::EnableProviderInstanceResponse {
                 instance: Some(provider_instance_to_proto(
                     instance,
-                    crate::proto::providers::common::ProviderInstanceStatus::Connected.into(),
+                    synctv_proto::providers::common::ProviderInstanceStatus::Connected.into(),
                 )),
             },
         )
@@ -735,9 +735,9 @@ impl ProviderCommonApiImpl {
 
     pub async fn disable_provider_instance(
         &self,
-        req: crate::proto::providers::common::DisableProviderInstanceRequest,
+        req: synctv_proto::providers::common::DisableProviderInstanceRequest,
         _control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::providers::common::DisableProviderInstanceResponse, ApiError> {
+    ) -> Result<synctv_proto::providers::common::DisableProviderInstanceResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.provider_instance_manager
             .disable(&req.name)
@@ -754,10 +754,10 @@ impl ProviderCommonApiImpl {
             })?;
 
         Ok(
-            crate::proto::providers::common::DisableProviderInstanceResponse {
+            synctv_proto::providers::common::DisableProviderInstanceResponse {
                 instance: Some(provider_instance_to_proto(
                     instance,
-                    crate::proto::providers::common::ProviderInstanceStatus::Disconnected.into(),
+                    synctv_proto::providers::common::ProviderInstanceStatus::Disconnected.into(),
                 )),
             },
         )
@@ -775,8 +775,8 @@ fn defaultable_page_size_i32_to_u32(value: i32, max: i32) -> Option<u32> {
 fn provider_instance_sort_by_from_proto(
     sort_by: i32,
 ) -> Result<synctv_core::models::ProviderInstanceListSortBy, ApiError> {
-    use crate::proto::providers::common::ProviderInstanceListSortBy as ProtoSortBy;
     use synctv_core::models::ProviderInstanceListSortBy as CoreSortBy;
+    use synctv_proto::providers::common::ProviderInstanceListSortBy as ProtoSortBy;
 
     match ProtoSortBy::try_from(sort_by) {
         Ok(ProtoSortBy::Name) => Ok(CoreSortBy::Name),
@@ -792,7 +792,7 @@ fn provider_instance_sort_by_from_proto(
 fn provider_instance_sort_direction_from_proto(
     sort_direction: i32,
 ) -> Result<CoreSortDirection, ApiError> {
-    use crate::proto::providers::common::SortDirection as ProtoSortDirection;
+    use synctv_proto::providers::common::SortDirection as ProtoSortDirection;
 
     match ProtoSortDirection::try_from(sort_direction) {
         Ok(ProtoSortDirection::Asc) => Ok(CoreSortDirection::Asc),
@@ -813,10 +813,10 @@ fn normalize_non_empty_filter(value: &str) -> Option<String> {
 fn provider_instance_to_proto(
     instance: synctv_core::models::ProviderInstance,
     status: i32,
-) -> crate::proto::providers::common::ProviderInstance {
+) -> synctv_proto::providers::common::ProviderInstance {
     let timeout_seconds = instance.timeout_seconds();
 
-    crate::proto::providers::common::ProviderInstance {
+    synctv_proto::providers::common::ProviderInstance {
         name: instance.name,
         endpoint: instance.endpoint,
         comment: instance.comment.unwrap_or_default(),
@@ -835,7 +835,7 @@ fn provider_instance_status(
     instance: &synctv_core::models::ProviderInstance,
     healthy: Option<bool>,
 ) -> i32 {
-    use crate::proto::providers::common::ProviderInstanceStatus;
+    use synctv_proto::providers::common::ProviderInstanceStatus;
 
     if !instance.enabled {
         return ProviderInstanceStatus::Disconnected.into();
@@ -960,14 +960,14 @@ mod tests {
     fn provider_instance_sort_mapping_defaults_only_unspecified_values() {
         assert_eq!(
             provider_instance_sort_by_from_proto(
-                crate::proto::providers::common::ProviderInstanceListSortBy::Unspecified as i32,
+                synctv_proto::providers::common::ProviderInstanceListSortBy::Unspecified as i32,
             )
             .expect("unspecified sort field should map to default"),
             synctv_core::models::ProviderInstanceListSortBy::CreatedAt
         );
         assert_eq!(
             provider_instance_sort_direction_from_proto(
-                crate::proto::providers::common::SortDirection::Unspecified as i32,
+                synctv_proto::providers::common::SortDirection::Unspecified as i32,
             )
             .expect("unspecified sort direction should map to default"),
             CoreSortDirection::Desc
@@ -1004,16 +1004,16 @@ mod tests {
 
         let response = api
             .list_provider_instances(
-                crate::proto::providers::common::ListProviderInstancesRequest {
+                synctv_proto::providers::common::ListProviderInstancesRequest {
                     page: 0,
                     page_size: 0,
                     provider_type: "direct_url".to_string(),
                     search: String::new(),
                     enabled: None,
                     tls: None,
-                    sort_by: crate::proto::providers::common::ProviderInstanceListSortBy::CreatedAt
+                    sort_by: synctv_proto::providers::common::ProviderInstanceListSortBy::CreatedAt
                         as i32,
-                    sort_direction: crate::proto::providers::common::SortDirection::Asc as i32,
+                    sort_direction: synctv_proto::providers::common::SortDirection::Asc as i32,
                 },
             )
             .await

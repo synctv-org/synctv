@@ -5,9 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-synctv-core = { path = "..", default-features = false }
+synctv-core = { path = "..", default-features = false, features = ["test-support"] }
 synctv-common.workspace = true
 
+async-trait.workspace = true
 opaque-ke.workspace = true
 rand.workspace = true
 sha2_010.workspace = true

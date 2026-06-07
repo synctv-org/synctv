@@ -1816,7 +1816,7 @@ impl std::fmt::Debug for CacheInvalidationService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
+    use crate::test_helpers::failing_redis_runtime;
 
     #[test]
     fn test_invalidation_message_serialization() {
@@ -1845,17 +1845,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_invalidation_service_accepts_trait_object_runtime() {
-        #[derive(Clone)]
-        struct FakeRedisRuntime;
-
-        #[async_trait]
-        impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
-                panic!("snapshot should not be called in constructor-only test");
-            }
-        }
-
-        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let runtime = failing_redis_runtime();
         let service = CacheInvalidationService::from_runtime(
             runtime.clone(),
             "test-node".to_string(),
@@ -1892,16 +1882,7 @@ mod tests {
 
     #[test]
     fn test_from_shared_state_profile_uses_shared_runtime() {
-        struct FakeRedisRuntime;
-
-        #[async_trait::async_trait]
-        impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
-                panic!("snapshot should not be called in constructor-only test");
-            }
-        }
-
-        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let runtime = failing_redis_runtime();
         let profile =
             SharedStateProfile::from_runtime(Some(runtime.clone()), "synctv:test:", false);
         let service = CacheInvalidationService::from_shared_state_profile(

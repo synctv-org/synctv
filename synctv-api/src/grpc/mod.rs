@@ -1,6 +1,3 @@
-// Re-export proto types from synctv-proto
-pub use synctv_proto::{admin, client};
-
 // Re-export cluster proto from synctv-cluster (internal)
 pub use synctv_cluster::grpc::synctv::cluster;
 use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
@@ -97,14 +94,14 @@ macro_rules! impl_grpc_service_ext {
 }
 
 // Apply the macro to all gRPC service server types used in this crate
-impl_grpc_service_ext!(<T> crate::proto::client::auth_service_server::AuthServiceServer<T>);
-impl_grpc_service_ext!(<T> crate::proto::client::user_service_server::UserServiceServer<T>);
-impl_grpc_service_ext!(<T> crate::proto::client::room_service_server::RoomServiceServer<T>);
-impl_grpc_service_ext!(<T> crate::proto::client::public_service_server::PublicServiceServer<T>);
-impl_grpc_service_ext!(<T> crate::proto::client::email_service_server::EmailServiceServer<T>);
-impl_grpc_service_ext!(<T> crate::proto::client::notification_service_server::NotificationServiceServer<T>);
-impl_grpc_service_ext!(<T> crate::proto::client::o_auth2_service_server::OAuth2ServiceServer<T>);
-impl_grpc_service_ext!(<T> crate::proto::admin_service_server::AdminServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::client::auth_service_server::AuthServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::client::user_service_server::UserServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::client::room_service_server::RoomServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::client::public_service_server::PublicServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::client::email_service_server::EmailServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::client::notification_service_server::NotificationServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::admin::admin_service_server::AdminServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer<T>);
@@ -503,13 +500,6 @@ fn validate_cluster_grpc_runtime_requirements(
 }
 
 // Use synctv_proto for all server traits and message types (single source of truth)
-use crate::proto::admin_service_server::AdminServiceServer;
-use crate::proto::client::{
-    auth_service_server::AuthServiceServer, email_service_server::EmailServiceServer,
-    notification_service_server::NotificationServiceServer,
-    public_service_server::PublicServiceServer, room_service_server::RoomServiceServer,
-    user_service_server::UserServiceServer,
-};
 use crate::realtime_fanout::RealtimeFanoutService;
 use crate::runtime::{
     RealtimeConnectionService, RealtimeDeliveryRequirement, RealtimeEventService,
@@ -522,6 +512,13 @@ use synctv_core::service::{
     SettingsRegistry, SettingsService, UserService as CoreUserService,
 };
 use synctv_core::Config;
+use synctv_proto::admin::admin_service_server::AdminServiceServer;
+use synctv_proto::client::{
+    auth_service_server::AuthServiceServer, email_service_server::EmailServiceServer,
+    notification_service_server::NotificationServiceServer,
+    public_service_server::PublicServiceServer, room_service_server::RoomServiceServer,
+    user_service_server::UserServiceServer,
+};
 
 /// Configuration for the gRPC server
 pub struct GrpcServerConfig<'a> {
@@ -1362,12 +1359,11 @@ mod tests {
         RealtimeConnectionService, RealtimeDeliveryOutcome, RealtimeDeliveryRequirement,
         RealtimeEventService, RealtimeMetrics,
     };
-    use async_trait::async_trait;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::time::Duration;
     use synctv_core::cache::UsernameCache;
-    use synctv_core::models::{RoomId, SignupMethod, User, UserId, UserRole, UserStatus};
+    use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
     use synctv_core::provider::ProviderSet;
     use synctv_core::repository::{
         ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
@@ -1384,10 +1380,7 @@ mod tests {
         create_test_brute_force_protection_service, create_test_token_blacklist_store_service,
     };
     use synctv_proto::client::room_service_server::RoomService as GrpcRoomService;
-    use synctv_realtime::sync::{
-        BroadcastResult, ConnectionLimits, ConnectionManager, RealtimeEvent, RealtimeManager,
-    };
-    use tokio::sync::{broadcast, mpsc};
+    use synctv_realtime::sync::{ConnectionLimits, ConnectionManager, RealtimeManager};
     use tokio_stream::StreamExt;
     use tonic::Request;
 
@@ -1544,6 +1537,8 @@ mod tests {
     use tower::ServiceExt;
 
     struct FallbackGrpcTestContext {
+        _postgres: synctv_core_testing::TestContainer,
+        pool: sqlx::PgPool,
         config: Arc<synctv_core::Config>,
         jwt_service: JwtService,
         user_service: Arc<UserService>,
@@ -1555,62 +1550,8 @@ mod tests {
         audit_service: Arc<AuditService>,
     }
 
-    struct FakeRealtimeEventService {
-        node_id: String,
-        distributed_enabled: bool,
-    }
-
-    #[async_trait]
-    impl RealtimeEventService for FakeRealtimeEventService {
-        async fn subscribe_with_id(
-            &self,
-            _room_id: RoomId,
-            _user_id: UserId,
-            _connection_id: String,
-        ) -> synctv_realtime::Result<(
-            mpsc::Receiver<RealtimeEvent>,
-            synctv_realtime::sync::ConnectionId,
-        )> {
-            panic!("subscribe_with_id should not be called in this test");
-        }
-
-        fn unsubscribe(&self, _connection_id: &str) {
-            panic!("unsubscribe should not be called in this test");
-        }
-
-        fn broadcast(&self, _event: RealtimeEvent) -> BroadcastResult {
-            panic!("broadcast should not be called in this test");
-        }
-
-        fn publish_only(&self, _event: RealtimeEvent) -> bool {
-            panic!("publish_only should not be called in this test");
-        }
-
-        fn broadcast_local(&self, _room_id: &RoomId, _event: &RealtimeEvent) -> usize {
-            panic!("broadcast_local should not be called in this test");
-        }
-
-        fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
-            panic!("subscribe_admin_events should not be called in this test");
-        }
-
-        fn metrics(&self) -> RealtimeMetrics {
-            RealtimeMetrics {
-                distributed_enabled: self.distributed_enabled,
-            }
-        }
-
-        fn node_id(&self) -> &str {
-            &self.node_id
-        }
-
-        async fn shutdown(&self) {}
-    }
-
-    fn fallback_grpc_test_context() -> FallbackGrpcTestContext {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-            .expect("lazy pool");
+    async fn fallback_grpc_test_context() -> FallbackGrpcTestContext {
+        let (postgres, pool) = synctv_core_testing::create_test_pool().await;
         let config = Arc::new(synctv_core::Config::default());
         let jwt_service =
             JwtService::new("test-secret-key-for-grpc-router-tests-minimum-32-chars").expect("jwt");
@@ -1632,13 +1573,14 @@ mod tests {
             pool.clone(),
         ));
         let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
-        let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
-            synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
-        )));
+        let provider_instance_manager =
+            synctv_core_testing::create_empty_provider_instance_manager();
         let credential_repo = Arc::new(UserProviderCredentialRepository::new(pool.clone()));
-        let audit_service = AuditService::new_unbuffered(pool);
+        let audit_service = AuditService::new_unbuffered(pool.clone());
 
         FallbackGrpcTestContext {
+            _postgres: postgres,
+            pool,
             config,
             jwt_service,
             user_service,
@@ -1689,14 +1631,11 @@ mod tests {
         request
     }
 
-    fn shared_http_app_state() -> Arc<crate::http::AppState> {
-        let context = fallback_grpc_test_context();
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-            .expect("lazy pool");
-        let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
-            synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
-        )));
+    async fn shared_http_app_state() -> (FallbackGrpcTestContext, Arc<crate::http::AppState>) {
+        let context = fallback_grpc_test_context().await;
+        let pool = context.pool.clone();
+        let provider_instance_manager =
+            synctv_core_testing::create_empty_provider_instance_manager();
         let providers = ProviderSet::new_with_ssrf_guard(
             provider_instance_manager.clone(),
             synctv_common::ssrf::SsrfGuard::strict_policy(),
@@ -1707,14 +1646,14 @@ mod tests {
         let (_, state) =
             crate::http::create_router_with_state_from_config(crate::http::RouterConfig {
                 config: Arc::new(synctv_core::Config::default()),
-                user_service: context.user_service,
+                user_service: context.user_service.clone(),
                 user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
                     128,
                     60,
                     300,
                     "test:user:".to_string(),
                 )),
-                room_service: context.room_service,
+                room_service: context.room_service.clone(),
                 content_filter: ContentFilter::new(),
                 provider_instance_manager,
                 user_provider_credential_repository: Arc::new(
@@ -1725,7 +1664,7 @@ mod tests {
                 connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
                     synctv_realtime::sync::ConnectionLimits::default(),
                 )),
-                jwt_service: context.jwt_service,
+                jwt_service: context.jwt_service.clone(),
                 realtime_fanout_service: crate::realtime_fanout::disabled_realtime_fanout_service(),
                 oauth2_service: None,
                 passkey_service: None,
@@ -1766,7 +1705,7 @@ mod tests {
             })
             .expect("HTTP app state should build for tests");
 
-        Arc::new(state)
+        (context, Arc::new(state))
     }
 
     #[test]
@@ -1882,16 +1821,19 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_build_fallback_http_app_state_reuses_shared_runtime_instances() {
-        let context = fallback_grpc_test_context();
+        let context = fallback_grpc_test_context().await;
         let connection_service: Arc<dyn RealtimeConnectionService> =
             Arc::new(synctv_realtime::sync::ConnectionManager::new(
                 synctv_realtime::sync::ConnectionLimits::default(),
             ));
-        let event_service: Arc<dyn RealtimeEventService> = Arc::new(FakeRealtimeEventService {
-            node_id: "fallback-http-node".to_string(),
-            distributed_enabled: true,
-        });
+        let event_service: Arc<dyn RealtimeEventService> = Arc::new(
+            crate::test_support::RecordingRealtimeEventService::with_node(
+                "fallback-http-node",
+                true,
+            ),
+        );
         let provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver> =
             Arc::new(
                 synctv_core::provider::store::ProviderStoreRegistry::local_only(
@@ -2154,7 +2096,7 @@ mod tests {
             .public_id_codec
             .encode_room_id(room.id)
             .expect("room id should encode");
-        let mut request = Request::new(crate::proto::client::WatchChatEventsRequest::default());
+        let mut request = Request::new(synctv_proto::client::WatchChatEventsRequest::default());
         request.metadata_mut().insert(
             "x-room-id",
             MetadataValue::try_from(public_room_id.as_str()).unwrap(),
@@ -2176,7 +2118,7 @@ mod tests {
             .expect("watch event");
         assert!(matches!(
             first.event,
-            Some(crate::proto::client::watch_chat_events_event::Event::Observed(_))
+            Some(synctv_proto::client::watch_chat_events_event::Event::Observed(_))
         ));
 
         let sent = client_api
@@ -2185,7 +2127,7 @@ mod tests {
                     room_id: room.id,
                     user_id: owner.id,
                 },
-                crate::proto::client::SendChatMessageRequest {
+                synctv_proto::client::SendChatMessageRequest {
                     client_message_id: "grpc-chat-live-send-1".to_string(),
                     content: "grpc live push".to_string(),
                     metadata: br"{}".to_vec(),
@@ -2206,8 +2148,8 @@ mod tests {
                 .expect("watch event");
             if let Some(event) = item.event.as_ref() {
                 match event {
-                    crate::proto::client::watch_chat_events_event::Event::Changed(changed) => {
-                        if let Some(crate::proto::client::resource_changed::Payload::ChatEvent(
+                    synctv_proto::client::watch_chat_events_event::Event::Changed(changed) => {
+                        if let Some(synctv_proto::client::resource_changed::Payload::ChatEvent(
                             chat,
                         )) = changed.payload.as_ref()
                         {
@@ -2216,8 +2158,8 @@ mod tests {
                             }
                         }
                     }
-                    crate::proto::client::watch_chat_events_event::Event::Observed(_) => {}
-                    crate::proto::client::watch_chat_events_event::Event::Error(error) => {
+                    synctv_proto::client::watch_chat_events_event::Event::Observed(_) => {}
+                    synctv_proto::client::watch_chat_events_event::Event::Error(error) => {
                         panic!("watch returned error: {error:?}");
                     }
                 }
@@ -2233,21 +2175,21 @@ mod tests {
 
     #[test]
     fn test_cluster_node_id_uses_injected_event_service() {
-        let event_service: Arc<dyn RealtimeEventService> = Arc::new(FakeRealtimeEventService {
-            node_id: "fake-node".to_string(),
-            distributed_enabled: true,
-        });
+        let event_service: Arc<dyn RealtimeEventService> = Arc::new(
+            crate::test_support::RecordingRealtimeEventService::with_node("test-node", true),
+        );
 
         assert_eq!(
             cluster_node_id(&event_service),
-            "fake-node",
+            "test-node",
             "gRPC transport must derive cluster node identity from the injected realtime event service"
         );
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_resolve_provider_proxy_runtime_reuses_shared_http_app_state() {
-        let shared_http_app_state = shared_http_app_state();
+        let (_context, shared_http_app_state) = shared_http_app_state().await;
         let config = synctv_core::Config::default();
 
         let (signing_key, provider_stores) = resolve_provider_proxy_runtime(
@@ -2594,7 +2536,7 @@ mod tests {
         assert_eq!(
             health_status_for_service(
                 &health_service,
-                <crate::proto::client::auth_service_server::AuthServiceServer<
+                <synctv_proto::client::auth_service_server::AuthServiceServer<
                     crate::grpc::ClientServiceImpl,
                 > as tonic::server::NamedService>::NAME,
             )
@@ -2604,7 +2546,7 @@ mod tests {
         assert_eq!(
             health_status_for_service(
                 &health_service,
-                <crate::proto::client::email_service_server::EmailServiceServer<
+                <synctv_proto::client::email_service_server::EmailServiceServer<
                     crate::grpc::ClientServiceImpl,
                 > as tonic::server::NamedService>::NAME,
             )
@@ -2614,7 +2556,7 @@ mod tests {
         assert_eq!(
             health_status_for_service(
                 &health_service,
-                <crate::proto::client::notification_service_server::NotificationServiceServer<
+                <synctv_proto::client::notification_service_server::NotificationServiceServer<
                     crate::grpc::NotificationServiceImpl,
                 > as tonic::server::NamedService>::NAME,
             )
@@ -2631,7 +2573,7 @@ mod tests {
         assert_eq!(
             health_status_for_service(
                 &health_service,
-                <crate::proto::client::auth_service_server::AuthServiceServer<
+                <synctv_proto::client::auth_service_server::AuthServiceServer<
                     crate::grpc::ClientServiceImpl,
                 > as tonic::server::NamedService>::NAME,
             )
@@ -2641,7 +2583,7 @@ mod tests {
         assert_eq!(
             health_status_for_service(
                 &health_service,
-                <crate::proto::client::email_service_server::EmailServiceServer<
+                <synctv_proto::client::email_service_server::EmailServiceServer<
                     crate::grpc::ClientServiceImpl,
                 > as tonic::server::NamedService>::NAME,
             )
@@ -2651,7 +2593,7 @@ mod tests {
         assert_eq!(
             health_status_for_service(
                 &health_service,
-                <crate::proto::client::notification_service_server::NotificationServiceServer<
+                <synctv_proto::client::notification_service_server::NotificationServiceServer<
                     crate::grpc::NotificationServiceImpl,
                 > as tonic::server::NamedService>::NAME,
             )
@@ -2698,7 +2640,7 @@ mod tests {
         assert_eq!(
             health_status_for_service(
                 &health_service,
-                <crate::proto::client::auth_service_server::AuthServiceServer<
+                <synctv_proto::client::auth_service_server::AuthServiceServer<
                     crate::grpc::ClientServiceImpl,
                 > as tonic::server::NamedService>::NAME,
             )

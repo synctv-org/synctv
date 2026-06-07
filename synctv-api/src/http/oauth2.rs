@@ -70,7 +70,7 @@ fn require_oauth2_api(state: &AppState) -> Result<Arc<crate::impls::OAuth2ApiImp
         ),
         responses(
             (status = 200, description = "OAuth2 authorization URL", body = GetAuthorizationUrlResponse),
-            (status = 400, description = "Invalid OAuth2 request", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid OAuth2 request", body = synctv_proto::client::ApiErrorResponse)
         )
     )
 )]
@@ -131,8 +131,8 @@ pub async fn get_authorize_url(
         request_body = ExchangeAuthorizationCodeRequest,
         responses(
             (status = 200, description = "Authorization code exchanged", body = ExchangeAuthorizationCodeResponse),
-            (status = 400, description = "Invalid OAuth2 exchange request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required for bind flow", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid OAuth2 exchange request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required for bind flow", body = synctv_proto::client::ApiErrorResponse)
         )
     )
 )]
@@ -205,8 +205,8 @@ pub async fn exchange_authorization_code(
         ),
         responses(
             (status = 200, description = "OAuth2 bind authorization URL", body = GetAuthorizationUrlForBindResponse),
-            (status = 400, description = "Invalid OAuth2 bind request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid OAuth2 bind request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -270,8 +270,8 @@ pub async fn get_bind_authorize_url(
         ),
         responses(
             (status = 200, description = "OAuth2 provider unlinked", body = UnlinkProviderResponse),
-            (status = 400, description = "Invalid unlink request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid unlink request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -326,7 +326,7 @@ pub async fn unlink_provider(
         tag = "OAuth2",
         responses(
             (status = 200, description = "Available OAuth2 providers", body = ListAvailableProvidersResponse),
-            (status = 503, description = "OAuth2 is not configured", body = crate::openapi::ErrorResponseDoc)
+            (status = 503, description = "OAuth2 is not configured", body = synctv_proto::client::ApiErrorResponse)
         )
     )
 )]
@@ -367,7 +367,7 @@ pub async fn list_available_providers(
         tag = "OAuth2",
         responses(
             (status = 200, description = "Linked OAuth2 providers", body = GetLinkedProvidersResponse),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])

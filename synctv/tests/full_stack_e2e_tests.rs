@@ -2315,13 +2315,13 @@ async fn full_stack_health_endpoints_report_live_and_ready() {
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_management_exposes_only_remote_admin_surface() {
     use synctv_api::grpc::{AdminServiceImpl, ClientServiceImpl};
-    use synctv_api::proto::admin_service_server::AdminServiceServer;
-    use synctv_api::proto::client::{
+    use synctv_management::proto::management_service_server::ManagementServiceServer;
+    use synctv_management::service::ManagementServiceImpl;
+    use synctv_proto::admin::admin_service_server::AdminServiceServer;
+    use synctv_proto::client::{
         auth_service_server::AuthServiceServer, public_service_server::PublicServiceServer,
         room_service_server::RoomServiceServer, user_service_server::UserServiceServer,
     };
-    use synctv_management::proto::management_service_server::ManagementServiceServer;
-    use synctv_management::service::ManagementServiceImpl;
 
     let server = start_test_server().await;
 
@@ -6090,8 +6090,8 @@ async fn full_stack_cli_serve_dry_run_validates_config_without_starting_listener
     let config_path = temp_dir.path().join("synctv-dry-run.yaml");
 
     let config = test_config(
-        "postgresql://postgres:password@127.0.0.1:5432/synctv_dry_run".to_string(),
-        "redis://127.0.0.1:6379/0".to_string(),
+        "postgresql://postgres:password@db.invalid/synctv_dry_run".to_string(),
+        "redis://redis.invalid/0".to_string(),
         api_port,
         management_port,
         rtmp_port,

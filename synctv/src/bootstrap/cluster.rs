@@ -410,7 +410,7 @@ mod tests {
         config.server.host = "127.0.0.1".to_string();
         config.server.port = 8080;
         config.cluster.secret.clear();
-        config.redis.url = "redis://127.0.0.1:6379".to_string();
+        config.redis.url = "redis://redis.invalid".to_string();
         config.cluster.discovery_mode = ClusterDiscoveryMode::K8sDns;
         config
     }

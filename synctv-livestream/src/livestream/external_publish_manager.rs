@@ -715,12 +715,12 @@ impl Drop for ExternalPublishStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::MockStreamRegistry;
+    use crate::relay::TestStreamRegistry;
     use std::future::pending;
 
     #[tokio::test]
     async fn test_external_publish_manager_creation() {
-        let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
+        let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
         let manager = ExternalPublishManager::new(
@@ -735,7 +735,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_external_publish_manager_shared_http_client_disables_inherited_read_timeout() {
-        let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
+        let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
         let manager = ExternalPublishManager::new(

@@ -277,7 +277,7 @@ fn emby_auth_headers(token: &str) -> HashMap<String, String> {
 ///
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
 pub struct EmbyProvider {
-    provider_instance_manager: Arc<RemoteProviderManager>,
+    provider_instance_manager: Option<Arc<RemoteProviderManager>>,
     client_manager: Arc<ProviderClientManager>,
 }
 
@@ -295,14 +295,25 @@ impl EmbyProvider {
         provider_instance_manager: Arc<RemoteProviderManager>,
     ) -> Result<Self, ProviderError> {
         Ok(Self {
-            provider_instance_manager,
+            provider_instance_manager: Some(provider_instance_manager),
             client_manager: Arc::new(ProviderClientManager::new()?),
         })
     }
 
     #[must_use]
-    pub const fn with_client_manager(
+    pub fn with_client_manager(
         provider_instance_manager: Arc<RemoteProviderManager>,
+        client_manager: Arc<ProviderClientManager>,
+    ) -> Self {
+        Self::with_optional_manager_and_client_manager(
+            Some(provider_instance_manager),
+            client_manager,
+        )
+    }
+
+    #[must_use]
+    pub fn with_optional_manager_and_client_manager(
+        provider_instance_manager: Option<Arc<RemoteProviderManager>>,
         client_manager: Arc<ProviderClientManager>,
     ) -> Self {
         Self {
@@ -311,19 +322,35 @@ impl EmbyProvider {
         }
     }
 
+    pub fn new_local_only() -> Result<Self, ProviderError> {
+        Ok(Self {
+            provider_instance_manager: None,
+            client_manager: Arc::new(ProviderClientManager::new()?),
+        })
+    }
+
     async fn get_client_with_context(
         &self,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
     ) -> Result<EmbyClientArc, ProviderError> {
-        self.provider_instance_manager
-            .resolve_client_required_with_context(
-                instance_name,
-                request_context,
-                create_remote_emby_client,
-                || self.client_manager.local_emby_client(),
-            )
-            .await
+        match (instance_name, self.provider_instance_manager.as_ref()) {
+            (None, _) => Ok(self.client_manager.local_emby_client()),
+            (Some(_), Some(manager)) => {
+                manager
+                    .resolve_client_required_with_context(
+                        instance_name,
+                        request_context,
+                        create_remote_emby_client,
+                        || self.client_manager.local_emby_client(),
+                    )
+                    .await
+            }
+            (Some(_), None) => Err(ProviderError::Internal(
+                "provider instance manager is required for remote Emby playback resolution"
+                    .to_string(),
+            )),
+        }
     }
 
     /// Login to Emby/Jellyfin and return a validated provider credential payload.
@@ -1586,18 +1613,10 @@ mod tests {
     use super::*;
     use crate::models::UserId;
     use crate::provider::ProviderClientManager;
-    use crate::repository::ProviderInstanceRepository;
     use async_trait::async_trait;
     use std::sync::Arc;
     use synctv_media_providers::emby::{EmbyError, EmbyInterface};
     use synctv_media_providers::grpc::emby as proto;
-
-    fn fake_provider_instance_manager() -> Arc<RemoteProviderManager> {
-        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        Arc::new(RemoteProviderManager::new(repo))
-    }
-
     /// Validate Emby source config: checks item_id and server_id fields.
     /// Host/token/user_id are resolved from the media or playlist creator at runtime.
     fn validate_emby(config: &Value) -> Result<(), ProviderError> {
@@ -1616,32 +1635,32 @@ mod tests {
         Ok(())
     }
 
-    struct MockEmbyClient;
+    struct TestEmbyClient;
 
-    fn mock_not_implemented() -> EmbyError {
-        EmbyError::NotImplemented("mock emby method not implemented".to_string())
+    fn unconfigured_test_response() -> EmbyError {
+        EmbyError::NotImplemented("test emby method is not configured".to_string())
     }
 
     #[async_trait]
-    impl EmbyInterface for MockEmbyClient {
+    impl EmbyInterface for TestEmbyClient {
         async fn login(&self, _request: proto::LoginReq) -> Result<proto::LoginResp, EmbyError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn me(&self, _request: proto::MeReq) -> Result<proto::MeResp, EmbyError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_items(
             &self,
             _request: proto::GetItemsReq,
         ) -> Result<proto::GetItemsResp, EmbyError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_item(&self, _request: proto::GetItemReq) -> Result<proto::Item, EmbyError> {
             Ok(proto::Item {
-                name: "Mock Movie".to_string(),
+                name: "Test Movie".to_string(),
                 id: "item-1".to_string(),
                 r#type: "Movie".to_string(),
                 parent_id: String::new(),
@@ -1661,18 +1680,18 @@ mod tests {
             &self,
             _request: proto::FsListReq,
         ) -> Result<proto::FsListResp, EmbyError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn get_system_info(
             &self,
             _request: proto::SystemInfoReq,
         ) -> Result<proto::SystemInfoResp, EmbyError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn logout(&self, _request: proto::LogoutReq) -> Result<proto::Empty, EmbyError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn playback_info(
@@ -1710,45 +1729,45 @@ mod tests {
             &self,
             _request: proto::DeleteActiveEncodingsReq,
         ) -> Result<proto::Empty, EmbyError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn report_playback_start(
             &self,
             _request: proto::ReportPlaybackStartReq,
         ) -> Result<proto::Empty, EmbyError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn report_playback_stop(
             &self,
             _request: proto::ReportPlaybackStopReq,
         ) -> Result<proto::Empty, EmbyError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
 
         async fn report_playback_progress(
             &self,
             _request: proto::ReportPlaybackProgressReq,
         ) -> Result<proto::Empty, EmbyError> {
-            Err(mock_not_implemented())
+            Err(unconfigured_test_response())
         }
     }
 
-    fn provider_with_mock_emby_client() -> EmbyProvider {
+    fn provider_with_test_emby_client() -> EmbyProvider {
         let default_clients = ProviderClientManager::new_for_tests()
             .expect("default provider HTTP client should build");
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
             default_clients.local_alist_client(),
             default_clients.local_bilibili_client(),
-            Arc::new(MockEmbyClient),
+            Arc::new(TestEmbyClient),
         ));
-        EmbyProvider::with_client_manager(fake_provider_instance_manager(), client_manager)
+        EmbyProvider::with_optional_manager_and_client_manager(None, client_manager)
     }
 
     #[tokio::test]
     async fn test_emby_direct_playback_returns_subtitle_auth_headers() {
-        let provider = provider_with_mock_emby_client();
+        let provider = provider_with_test_emby_client();
         let result = provider
             .resolve_from_api(
                 &ResolvedEmbyConfig {
@@ -1803,8 +1822,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_emby_credential_dependencies_use_creator_credential() {
-        let provider =
-            EmbyProvider::new(fake_provider_instance_manager()).expect("provider should build");
+        let provider = EmbyProvider::new_local_only().expect("provider should build");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_credential_owner_id(UserId::expect_positive(2));
@@ -1830,8 +1848,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_emby_credential_dependencies_require_explicit_creator_credential_owner() {
-        let provider =
-            EmbyProvider::new(fake_provider_instance_manager()).expect("provider should build");
+        let provider = EmbyProvider::new_local_only().expect("provider should build");
         let ctx = ProviderContext::new("test").with_user_id(UserId::expect_positive(1));
         let err = provider
             .credential_dependencies(
@@ -1851,8 +1868,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_prepare_emby_config_rejects_provider_instance_name() {
-        let provider =
-            EmbyProvider::new(fake_provider_instance_manager()).expect("provider should build");
+        let provider = EmbyProvider::new_local_only().expect("provider should build");
         let config = json!({
             "item_id": "item-456",
             "provider_instance_name": "remote-emby-1",
@@ -2086,8 +2102,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_emby_playback_lifecycle_session_id_uses_provider_metadata() {
-        let provider =
-            EmbyProvider::new(fake_provider_instance_manager()).expect("provider should build");
+        let provider = EmbyProvider::new_local_only().expect("provider should build");
         let result = PlaybackResult {
             playback_infos: HashMap::new(),
             default_mode: "direct".to_string(),

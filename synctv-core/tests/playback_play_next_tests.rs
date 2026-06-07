@@ -209,13 +209,13 @@ async fn insert_root_media(pool: &PgPool, room_id: &RoomId, name: &str, position
 }
 
 #[derive(Debug)]
-struct FakeDynamicProvider {
+struct TestDynamicProvider {
     instance_id: String,
     provider_type: &'static str,
     require_credential_encryption: bool,
 }
 
-impl FakeDynamicProvider {
+impl TestDynamicProvider {
     fn new(instance_id: impl Into<String>) -> Self {
         Self::with_provider_type("alist", instance_id, false)
     }
@@ -290,7 +290,7 @@ impl FakeDynamicProvider {
 }
 
 #[async_trait]
-impl MediaProvider for FakeDynamicProvider {
+impl MediaProvider for TestDynamicProvider {
     fn name(&self) -> &'static str {
         self.provider_type
     }
@@ -313,7 +313,7 @@ impl MediaProvider for FakeDynamicProvider {
 }
 
 #[async_trait]
-impl DynamicFolder for FakeDynamicProvider {
+impl DynamicFolder for TestDynamicProvider {
     async fn list_playlist(
         &self,
         ctx: &ProviderContext<'_>,
@@ -1076,7 +1076,7 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
-            Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
+            Ok(Arc::new(TestDynamicProvider::new(instance_id)))
         }),
     );
     let providers_manager = Arc::new(providers_manager);
@@ -1140,7 +1140,7 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
-            Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
+            Ok(Arc::new(TestDynamicProvider::new(instance_id)))
         }),
     );
     let providers_manager = Arc::new(providers_manager);
@@ -1214,7 +1214,7 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
-            Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
+            Ok(Arc::new(TestDynamicProvider::new(instance_id)))
         }),
     );
     let providers_manager = Arc::new(providers_manager);
@@ -1291,7 +1291,7 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
-            Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
+            Ok(Arc::new(TestDynamicProvider::new(instance_id)))
         }),
     );
     let providers_manager = Arc::new(providers_manager);
@@ -1353,7 +1353,7 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
-            Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
+            Ok(Arc::new(TestDynamicProvider::new(instance_id)))
         }),
     );
     let providers_manager = Arc::new(providers_manager);
@@ -1417,7 +1417,7 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
             Ok(Arc::new(
-                FakeDynamicProvider::requiring_credential_encryption(instance_id),
+                TestDynamicProvider::requiring_credential_encryption(instance_id),
             ))
         }),
     );

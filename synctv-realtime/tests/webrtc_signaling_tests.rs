@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_realtime::sync::events::{RealtimeEvent, WebRTCSignalKind};
-use synctv_realtime::{ConnectionManager, RoomMessageHub};
+use synctv_realtime::{ConnectionId, ConnectionManager, RoomMessageHub};
 
 fn stable_test_id(s: &str) -> i64 {
     s.bytes().fold(0_i64, |acc, byte| {
@@ -84,11 +84,11 @@ async fn test_ice_candidate_routing() {
 
     // Both users subscribe
     let mut rx1 = hub
-        .subscribe(room, user1, "conn1".to_string())
+        .subscribe(room, user1, ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room, user2, "conn2".to_string())
+        .subscribe(room, user2, ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
 
@@ -126,11 +126,11 @@ async fn test_ice_candidate_routing_uses_explicit_target_connection() {
     let user2 = uid("user2");
 
     let mut rx1 = hub
-        .subscribe(room, user1, "conn1".to_string())
+        .subscribe(room, user1, ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room, user2, "conn2".to_string())
+        .subscribe(room, user2, ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
 
@@ -237,11 +237,11 @@ async fn test_sdp_offer_answer_flow() {
     let callee = uid("callee");
 
     let mut rx_caller = hub
-        .subscribe(room, caller, "conn1".to_string())
+        .subscribe(room, caller, ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let mut rx_callee = hub
-        .subscribe(room, callee, "conn2".to_string())
+        .subscribe(room, callee, ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
 
@@ -328,11 +328,11 @@ async fn test_webrtc_join_leave_broadcast() {
     let user2 = uid("user2");
 
     let mut rx1 = hub
-        .subscribe(room, user1, "conn1".to_string())
+        .subscribe(room, user1, ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room, user2, "conn2".to_string())
+        .subscribe(room, user2, ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
 
@@ -449,15 +449,15 @@ async fn test_multi_user_signaling() {
 
     // 3 users in same room
     let mut rx1 = hub
-        .subscribe(room, uid("user1"), "conn1".to_string())
+        .subscribe(room, uid("user1"), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room, uid("user2"), "conn2".to_string())
+        .subscribe(room, uid("user2"), ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
     let mut rx3 = hub
-        .subscribe(room, uid("user3"), "conn3".to_string())
+        .subscribe(room, uid("user3"), ConnectionId::new("conn3"))
         .await
         .expect("subscribe should succeed");
 
@@ -602,15 +602,15 @@ async fn test_broadcast_to_user_all_connections() {
 
     // Same user with multiple connections (e.g., multiple tabs)
     let mut rx1 = hub
-        .subscribe(room, user, "conn1".to_string())
+        .subscribe(room, user, ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room, user, "conn2".to_string())
+        .subscribe(room, user, ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
     let mut rx3 = hub
-        .subscribe(room, user, "conn3".to_string())
+        .subscribe(room, user, ConnectionId::new("conn3"))
         .await
         .expect("subscribe should succeed");
 

@@ -188,12 +188,6 @@ impl ChatImage {
     }
 }
 
-pub type ChatImageBlob = super::file_storage::FileBlob;
-pub type ChatImageObject = super::file_storage::FileObject;
-pub type ChatImageOwnershipProofRange = super::file_storage::FileOwnershipProofRange;
-
-pub type NewChatImage = super::file_storage::NewStoredFile;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateChatImageUploadSession {
     pub room_id: RoomId,
@@ -209,11 +203,11 @@ pub struct CreateChatImageUploadSession {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatImageUploadSession {
-    pub image: NewChatImage,
+    pub image: super::file_storage::NewStoredFile,
     pub upload_required: bool,
     pub ownership_proof_required: bool,
     pub ownership_proof_nonce: Option<String>,
-    pub ownership_proof_ranges: Vec<ChatImageOwnershipProofRange>,
+    pub ownership_proof_ranges: Vec<super::file_storage::FileOwnershipProofRange>,
     pub ownership_proof_metadata_key: Option<String>,
     pub upload_url: Option<String>,
     pub upload_method: Option<String>,
@@ -245,7 +239,7 @@ pub struct SendChatMessage {
     pub message_type: ChatMessageType,
     pub reply_to_message_id: Option<i64>,
     pub metadata: JsonValue,
-    pub images: Vec<NewChatImage>,
+    pub images: Vec<super::file_storage::NewStoredFile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

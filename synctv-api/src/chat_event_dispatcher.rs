@@ -60,66 +60,9 @@ pub fn chat_message_event_to_realtime(event: &ChatMessageEvent) -> RealtimeEvent
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::RealtimeMetrics;
-    use async_trait::async_trait;
+    use crate::test_support::RecordingRealtimeEventService;
     use chrono::Utc;
-    use std::sync::Mutex;
     use synctv_core::models::{ChatEventKind, ChatMessage, ChatMessageWithImages, RoomId, UserId};
-    use synctv_realtime::sync::{BroadcastResult, ConnectionId};
-    use tokio::sync::{broadcast, mpsc};
-
-    #[derive(Default)]
-    struct RecordingRealtimeEventService {
-        events: Mutex<Vec<RealtimeEvent>>,
-    }
-
-    #[async_trait]
-    impl RealtimeEventService for RecordingRealtimeEventService {
-        async fn subscribe_with_id(
-            &self,
-            _room_id: RoomId,
-            _user_id: UserId,
-            _connection_id: String,
-        ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
-            let (_tx, rx) = mpsc::channel(1);
-            Ok((rx, "test-connection".to_string()))
-        }
-
-        fn unsubscribe(&self, _connection_id: &str) {}
-
-        fn broadcast(&self, event: RealtimeEvent) -> BroadcastResult {
-            self.events.lock().expect("lock events").push(event);
-            BroadcastResult {
-                local_sent: 1,
-                redis_sent: false,
-            }
-        }
-
-        fn publish_only(&self, _event: RealtimeEvent) -> bool {
-            false
-        }
-
-        fn broadcast_local(&self, _room_id: &RoomId, _event: &RealtimeEvent) -> usize {
-            0
-        }
-
-        fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
-            let (_tx, rx) = broadcast::channel(1);
-            rx
-        }
-
-        fn metrics(&self) -> RealtimeMetrics {
-            RealtimeMetrics {
-                distributed_enabled: false,
-            }
-        }
-
-        fn node_id(&self) -> &'static str {
-            "test-node"
-        }
-
-        async fn shutdown(&self) {}
-    }
 
     fn chat_event() -> ChatMessageEvent {
         let occurred_at = Utc::now();
@@ -153,7 +96,7 @@ mod tests {
         let outcome = dispatcher.dispatch(&event);
 
         assert!(outcome.local_delivered());
-        let events = recorder.events.lock().expect("lock events");
+        let events = recorder.broadcast_events();
         match events.first().expect("recorded event") {
             RealtimeEvent::ChatMessageEvent {
                 event_id,

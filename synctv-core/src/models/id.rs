@@ -65,12 +65,6 @@ macro_rules! numeric_id_type {
             pub fn as_i64(&self) -> i64 {
                 self.0
             }
-
-            #[track_caller]
-            #[must_use]
-            pub fn expect_positive(id: i64) -> Self {
-                Self::try_from(id).expect("typed id must be positive")
-            }
         }
 
         impl Default for $name {
@@ -185,6 +179,37 @@ numeric_id_type!(
     "EmailRegistrationTokenId",
     EMAIL_REGISTRATION_TOKEN_ID_COUNTER
 );
+
+#[cfg(any(test, feature = "test-support"))]
+macro_rules! numeric_id_test_support {
+    ($name:ident) => {
+        impl $name {
+            #[track_caller]
+            #[must_use]
+            pub fn expect_positive(id: i64) -> Self {
+                match Self::try_from(id) {
+                    Ok(id) => id,
+                    Err(error) => panic!("{error}"),
+                }
+            }
+        }
+    };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+numeric_id_test_support!(UserId);
+#[cfg(any(test, feature = "test-support"))]
+numeric_id_test_support!(RoomId);
+#[cfg(any(test, feature = "test-support"))]
+numeric_id_test_support!(MediaId);
+#[cfg(any(test, feature = "test-support"))]
+numeric_id_test_support!(PlaylistId);
+#[cfg(any(test, feature = "test-support"))]
+numeric_id_test_support!(ReviewRequestId);
+#[cfg(any(test, feature = "test-support"))]
+numeric_id_test_support!(BanRecordId);
+#[cfg(any(test, feature = "test-support"))]
+numeric_id_test_support!(EmailRegistrationTokenId);
 
 #[cfg(test)]
 mod tests {

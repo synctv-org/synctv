@@ -388,10 +388,10 @@ async fn test_update_with_version_nonexistent_media() {
     let ctx = setup_test_context("v6").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    let fake_media = make_media(&ctx.root_playlist.id, &ctx.room.id, "nonexistent.mp4", 0);
+    let missing_media = make_media(&ctx.root_playlist.id, &ctx.room.id, "nonexistent.mp4", 0);
 
     let result = media_repo
-        .update_with_version(&fake_media, 0)
+        .update_with_version(&missing_media, 0)
         .await
         .unwrap();
 

@@ -642,6 +642,59 @@ async fn test_add_media_batch_exactly_100_accepted() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[ignore = "Requires Docker"]
+async fn test_add_media_batch_uses_batch_target_playlist() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("batch_target_creator"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Batch Target Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    register_direct_url_provider(&room_service).await;
+    let target_playlist = create_top_level_playlist(&pool, &room.id).await;
+    let stray_playlist = create_top_level_playlist(&pool, &room.id).await;
+
+    let requests: Vec<AddMediaRequest> = (0..2)
+        .map(|i| AddMediaRequest {
+            playlist_id: Some(stray_playlist.id),
+            name: format!("Targeted Video {i}"),
+            description: String::new(),
+            source_provider: "direct_url".to_string(),
+            provider_instance_name: None,
+            source_config: serde_json::json!({"url": format!("https://example.com/target{}.mp4", i)}),
+        })
+        .collect();
+
+    let media_list = room_service
+        .media_service()
+        .add_media_batch(room.id, creator.id, Some(target_playlist.id), requests)
+        .await
+        .expect("batch add should succeed");
+
+    assert_eq!(media_list.len(), 2);
+    assert!(
+        media_list
+            .iter()
+            .all(|media| media.playlist_id == Some(target_playlist.id)),
+        "batch add should use the batch target playlist for every item"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore = "Requires Docker"]
 async fn test_edit_media_optimistic_lock_retry_exhaustion() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

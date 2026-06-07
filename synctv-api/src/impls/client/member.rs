@@ -17,7 +17,7 @@ use super::media::prepare_delete_entries_outbox_fanout;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
 pub(crate) fn compute_room_members_response_version(
-    response: &crate::proto::client::GetRoomMembersResponse,
+    response: &synctv_proto::client::GetRoomMembersResponse,
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"room-members-snapshot-v1");
@@ -60,29 +60,29 @@ async fn required_member_username(
 fn proto_room_member_list_sort_by(
     value: i32,
 ) -> Result<synctv_core::models::RoomMemberListSortBy, ApiError> {
-    match crate::proto::client::RoomMemberListSortBy::try_from(value).map_err(|_| {
+    match synctv_proto::client::RoomMemberListSortBy::try_from(value).map_err(|_| {
         ApiError::InvalidInput("Unsupported room member list sort field".to_string())
     })? {
-        crate::proto::client::RoomMemberListSortBy::Unspecified
-        | crate::proto::client::RoomMemberListSortBy::JoinedAt => {
+        synctv_proto::client::RoomMemberListSortBy::Unspecified
+        | synctv_proto::client::RoomMemberListSortBy::JoinedAt => {
             Ok(synctv_core::models::RoomMemberListSortBy::JoinedAt)
         }
-        crate::proto::client::RoomMemberListSortBy::Username => {
+        synctv_proto::client::RoomMemberListSortBy::Username => {
             Ok(synctv_core::models::RoomMemberListSortBy::Username)
         }
-        crate::proto::client::RoomMemberListSortBy::Role => {
+        synctv_proto::client::RoomMemberListSortBy::Role => {
             Ok(synctv_core::models::RoomMemberListSortBy::Role)
         }
     }
 }
 
 fn proto_sort_direction(value: i32) -> Result<synctv_core::models::SortDirection, ApiError> {
-    match crate::proto::client::SortDirection::try_from(value)
+    match synctv_proto::client::SortDirection::try_from(value)
         .map_err(|_| ApiError::InvalidInput("Unsupported sort direction".to_string()))?
     {
-        crate::proto::client::SortDirection::Unspecified
-        | crate::proto::client::SortDirection::Asc => Ok(synctv_core::models::SortDirection::Asc),
-        crate::proto::client::SortDirection::Desc => Ok(synctv_core::models::SortDirection::Desc),
+        synctv_proto::client::SortDirection::Unspecified
+        | synctv_proto::client::SortDirection::Asc => Ok(synctv_core::models::SortDirection::Asc),
+        synctv_proto::client::SortDirection::Desc => Ok(synctv_core::models::SortDirection::Desc),
     }
 }
 
@@ -107,8 +107,8 @@ fn usize_to_i64_api(value: usize, field: &'static str) -> Result<i64, ApiError> 
 fn room_join_review_row_to_proto(
     row: &RoomJoinReviewRecord,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::RoomJoinReview, ApiError> {
-    Ok(crate::proto::client::RoomJoinReview {
+) -> Result<synctv_proto::client::RoomJoinReview, ApiError> {
+    Ok(synctv_proto::client::RoomJoinReview {
         id: public_id_codec
             .encode_review_request_id(row.id)
             .map_err(ApiError::InvalidInput)?,
@@ -166,7 +166,7 @@ impl ClientApiImpl {
         &self,
         room_id: &synctv_core::models::RoomId,
         request_id: ReviewRequestId,
-    ) -> Result<crate::proto::client::RoomJoinReview, ApiError> {
+    ) -> Result<synctv_proto::client::RoomJoinReview, ApiError> {
         let row = self
             .review_service
             .load_room_join_in_room(request_id, *room_id)
@@ -179,8 +179,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::ListRoomJoinReviewsRequest,
-    ) -> Result<crate::proto::client::ListRoomJoinReviewsResponse, ApiError> {
+        req: synctv_proto::client::ListRoomJoinReviewsRequest,
+    ) -> Result<synctv_proto::client::ListRoomJoinReviewsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
@@ -218,7 +218,7 @@ impl ClientApiImpl {
             .iter()
             .map(|row| room_join_review_row_to_proto(row, &self.public_id_codec))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(crate::proto::client::ListRoomJoinReviewsResponse {
+        Ok(synctv_proto::client::ListRoomJoinReviewsResponse {
             reviews,
             total: i32::try_from(page.total).map_err(|_| {
                 ApiError::Internal("room join review count exceeds i32 range".to_string())
@@ -234,8 +234,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::GetRoomMembersRequest,
-    ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
+        req: synctv_proto::client::GetRoomMembersRequest,
+    ) -> Result<synctv_proto::client::GetRoomMembersResponse, ApiError> {
         let actor = self.room_actor_for_user(user_id, room_id).await?;
         self.get_room_members_for_actor(&actor, req).await
     }
@@ -243,8 +243,8 @@ impl ClientApiImpl {
     pub async fn get_room_members_as_guest(
         &self,
         access: &GuestRoomAccess,
-        req: crate::proto::client::GetRoomMembersRequest,
-    ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
+        req: synctv_proto::client::GetRoomMembersRequest,
+    ) -> Result<synctv_proto::client::GetRoomMembersResponse, ApiError> {
         self.get_room_members_for_actor(&RoomActor::Guest(access.clone()), req)
             .await
     }
@@ -252,8 +252,8 @@ impl ClientApiImpl {
     pub async fn get_room_members_for_actor(
         &self,
         actor: &RoomActor,
-        req: crate::proto::client::GetRoomMembersRequest,
-    ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
+        req: synctv_proto::client::GetRoomMembersRequest,
+    ) -> Result<synctv_proto::client::GetRoomMembersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_room_permission(actor, synctv_core::models::RoomPermission::VIEW_MEMBER_LIST)
             .await?;
@@ -302,7 +302,7 @@ impl ClientApiImpl {
             &self.public_id_codec,
         )?;
 
-        let mut response = crate::proto::client::GetRoomMembersResponse {
+        let mut response = synctv_proto::client::GetRoomMembersResponse {
             members: proto_members,
             total: i32::try_from(total)
                 .map_err(|_| ApiError::Internal("Member count exceeds i32 range".to_string()))?,
@@ -316,10 +316,10 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::AddMemberRequest,
-    ) -> Result<crate::proto::client::AddMemberResponse, ApiError> {
+        req: synctv_proto::client::AddMemberRequest,
+    ) -> Result<synctv_proto::client::AddMemberResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let crate::proto::client::AddMemberRequest {
+        let synctv_proto::client::AddMemberRequest {
             user_id: target_user_id,
             role,
             notify,
@@ -380,7 +380,7 @@ impl ClientApiImpl {
             .permission_service()
             .effective_member_with_user_permissions(&member_with_user, &room_settings);
 
-        Ok(crate::proto::client::AddMemberResponse {
+        Ok(synctv_proto::client::AddMemberResponse {
             member: Some(try_room_member_to_proto_with_permissions(
                 &member_with_user,
                 permissions,
@@ -393,8 +393,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::ApproveRoomJoinReviewRequest,
-    ) -> Result<crate::proto::client::ApproveRoomJoinReviewResponse, ApiError> {
+        req: synctv_proto::client::ApproveRoomJoinReviewRequest,
+    ) -> Result<synctv_proto::client::ApproveRoomJoinReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
@@ -448,7 +448,7 @@ impl ClientApiImpl {
             .permission_service()
             .effective_member_with_user_permissions(&member_with_user, &room_settings);
 
-        Ok(crate::proto::client::ApproveRoomJoinReviewResponse {
+        Ok(synctv_proto::client::ApproveRoomJoinReviewResponse {
             review: Some(self.load_room_join_review(&rid, request_id).await?),
             member: Some(try_room_member_to_proto_with_permissions(
                 &member_with_user,
@@ -462,8 +462,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::RejectRoomJoinReviewRequest,
-    ) -> Result<crate::proto::client::RejectRoomJoinReviewResponse, ApiError> {
+        req: synctv_proto::client::RejectRoomJoinReviewRequest,
+    ) -> Result<synctv_proto::client::RejectRoomJoinReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
@@ -490,7 +490,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         prepared_membership_fanout.publish_after_outbox_commit();
 
-        Ok(crate::proto::client::RejectRoomJoinReviewResponse {
+        Ok(synctv_proto::client::RejectRoomJoinReviewResponse {
             review: Some(self.load_room_join_review(&rid, request_id).await?),
             success: true,
         })
@@ -500,10 +500,10 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::UpdateMemberPermissionsRequest,
-    ) -> Result<crate::proto::client::UpdateMemberPermissionsResponse, ApiError> {
+        req: synctv_proto::client::UpdateMemberPermissionsRequest,
+    ) -> Result<synctv_proto::client::UpdateMemberPermissionsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let crate::proto::client::UpdateMemberPermissionsRequest {
+        let synctv_proto::client::UpdateMemberPermissionsRequest {
             user_id: target_user_id,
             role,
             added_permissions,
@@ -639,7 +639,7 @@ impl ClientApiImpl {
             .permission_service()
             .effective_member_with_user_permissions(&member_with_user, &room_settings);
 
-        Ok(crate::proto::client::UpdateMemberPermissionsResponse {
+        Ok(synctv_proto::client::UpdateMemberPermissionsResponse {
             member: Some(try_room_member_to_proto_with_permissions(
                 &member_with_user,
                 permissions,
@@ -652,10 +652,10 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::KickMemberRequest,
-    ) -> Result<crate::proto::client::KickMemberResponse, ApiError> {
+        req: synctv_proto::client::KickMemberRequest,
+    ) -> Result<synctv_proto::client::KickMemberResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let crate::proto::client::KickMemberRequest {
+        let synctv_proto::client::KickMemberRequest {
             user_id: target_user_id,
             kick_cooldown_seconds,
         } = req;
@@ -711,7 +711,7 @@ impl ClientApiImpl {
             .disconnect_user_from_room(&rid, &target_uid)
             .await;
 
-        Ok(crate::proto::client::KickMemberResponse { success: true })
+        Ok(synctv_proto::client::KickMemberResponse { success: true })
     }
 }
 
@@ -720,8 +720,8 @@ impl crate::impls::room_members_snapshot::RoomMembersSnapshotService for ClientA
     async fn get_room_members_snapshot(
         &self,
         actor: &crate::impls::client::RoomActor,
-        req: &crate::proto::client::GetRoomMembersRequest,
-    ) -> Result<crate::proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
+        req: &synctv_proto::client::GetRoomMembersRequest,
+    ) -> Result<synctv_proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
         self.get_room_members_for_actor(actor, req.clone()).await
     }
 }
@@ -734,13 +734,13 @@ mod tests {
     fn room_member_query_enum_mappers_reject_unknown_values_and_preserve_defaults() {
         assert_eq!(
             proto_room_member_list_sort_by(
-                crate::proto::client::RoomMemberListSortBy::Unspecified as i32
+                synctv_proto::client::RoomMemberListSortBy::Unspecified as i32
             )
             .expect("unspecified room member sort should be accepted"),
             synctv_core::models::RoomMemberListSortBy::JoinedAt
         );
         assert_eq!(
-            proto_sort_direction(crate::proto::client::SortDirection::Unspecified as i32)
+            proto_sort_direction(synctv_proto::client::SortDirection::Unspecified as i32)
                 .expect("unspecified sort direction should be accepted"),
             synctv_core::models::SortDirection::Asc
         );

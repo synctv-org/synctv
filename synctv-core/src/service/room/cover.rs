@@ -1,0 +1,211 @@
+use crate::{
+    models::{FileBlob, FileUploadSession, NewStoredFile, Room, RoomId, UserId},
+    service::{
+        file_storage::FileStorageContext, room_cover_upload_policy, FileStorageCleanupOrigin,
+    },
+    Error, Result,
+};
+
+use super::{CreateRoomCoverUploadSession, RoomService};
+
+const ROOM_COVER_REFERENCE_KIND: &str = "room_cover";
+
+fn room_cover_storage_scope(room_id: RoomId) -> String {
+    format!("rooms/{}/cover", room_id.as_i64())
+}
+
+impl RoomService {
+    pub async fn create_room_cover_upload_session(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: CreateRoomCoverUploadSession,
+    ) -> Result<FileUploadSession> {
+        let storage = self.room_file_storage_service.as_ref().ok_or_else(|| {
+            Error::InvalidInput("file storage is not configured for room covers".to_string())
+        })?;
+        self.room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+        self.permission_service
+            .check_permission_no_cache(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+            )
+            .await?;
+
+        storage
+            .create_upload_session(crate::models::CreateFileUploadSession {
+                user_id,
+                storage_scope: room_cover_storage_scope(room_id),
+                client_file_id: request.client_cover_id,
+                mime_type: request.mime_type,
+                size_bytes: request.size_bytes,
+                width: request.width,
+                height: request.height,
+                checksum_sha256: request.checksum_sha256,
+                metadata: request.metadata,
+                policy: room_cover_upload_policy(),
+            })
+            .await
+    }
+
+    pub async fn store_room_cover_upload_object(
+        &self,
+        encoded_object_key: &str,
+        upload_token: &str,
+        content_type: Option<&str>,
+        data: Vec<u8>,
+    ) -> Result<FileBlob> {
+        self.room_file_storage_service
+            .as_ref()
+            .ok_or_else(|| {
+                Error::InvalidInput("file storage is not configured for room covers".to_string())
+            })?
+            .store_upload_object(encoded_object_key, upload_token, content_type, data)
+            .await
+    }
+
+    pub async fn get_room_cover_object(
+        &self,
+        encoded_object_key: &str,
+        read_token: &str,
+    ) -> Result<FileBlob> {
+        self.room_file_storage_service
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
+            .get_object(encoded_object_key, read_token)
+            .await
+    }
+
+    pub async fn update_room_cover(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        file: NewStoredFile,
+    ) -> Result<Room> {
+        let storage = self.room_file_storage_service.as_ref().ok_or_else(|| {
+            Error::InvalidInput("file storage is not configured for room covers".to_string())
+        })?;
+        let mut tx = self.room_repo.pool().begin().await?;
+        let mut room = self
+            .room_repo
+            .get_by_id_for_update_with_executor(&room_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+        self.permission_service
+            .check_permission_no_cache(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+            )
+            .await?;
+
+        let storage_scope = room_cover_storage_scope(room_id);
+        let prepared = storage
+            .prepare_files(
+                FileStorageContext {
+                    user_id,
+                    storage_scope: &storage_scope,
+                    client_request_id: None,
+                },
+                vec![file],
+            )
+            .await?;
+        let file = prepared
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::InvalidInput("room cover file is required".to_string()))?;
+        let new_reference_id = crate::repository::FileStorageRepository::insert_reference_in_tx(
+            &mut tx,
+            &file.storage_backend,
+            &file.object_key,
+            ROOM_COVER_REFERENCE_KIND,
+            &room_id.as_i64().to_string(),
+            None,
+            &file.metadata,
+        )
+        .await?
+        .ok_or_else(|| {
+            Error::InvalidInput("room cover file object is not registered".to_string())
+        })?;
+        let old_reference = if let Some(reference_id) = room.cover_file_reference_id {
+            crate::repository::FileStorageRepository::new(self.pool.clone())
+                .get_reference_by_id(reference_id)
+                .await?
+                .map(|reference| {
+                    reference
+                        .reference_target(ROOM_COVER_REFERENCE_KIND, room_id.as_i64().to_string())
+                })
+        } else {
+            None
+        };
+
+        room.cover_file_reference_id = Some(new_reference_id);
+        let updated_room = self
+            .room_repo
+            .update_with_executor(&room, room.version, &mut *tx)
+            .await?;
+        tx.commit().await?;
+
+        if let Some(old_reference) = old_reference {
+            if old_reference.storage_backend != file.storage_backend
+                || old_reference.object_key != file.object_key
+            {
+                storage
+                    .delete_files(
+                        FileStorageCleanupOrigin::ReferenceReleased,
+                        &[old_reference],
+                    )
+                    .await?;
+            }
+        }
+        self.notify_room_invalidation(&room_id).await;
+        Ok(updated_room)
+    }
+
+    pub async fn clear_room_cover(&self, room_id: RoomId, user_id: UserId) -> Result<Room> {
+        let mut tx = self.room_repo.pool().begin().await?;
+        let mut room = self
+            .room_repo
+            .get_by_id_for_update_with_executor(&room_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+        self.permission_service
+            .check_permission_no_cache(
+                &room_id,
+                &user_id,
+                crate::models::RoomPermission::SET_ROOM_SETTINGS,
+            )
+            .await?;
+        let old_reference = if let Some(reference_id) = room.cover_file_reference_id {
+            crate::repository::FileStorageRepository::new(self.pool.clone())
+                .get_reference_by_id(reference_id)
+                .await?
+                .map(|reference| {
+                    reference
+                        .reference_target(ROOM_COVER_REFERENCE_KIND, room_id.as_i64().to_string())
+                })
+        } else {
+            None
+        };
+        room.cover_file_reference_id = None;
+        let updated_room = self
+            .room_repo
+            .update_with_executor(&room, room.version, &mut *tx)
+            .await?;
+        tx.commit().await?;
+
+        if let (Some(storage), Some(reference)) =
+            (self.room_file_storage_service.as_ref(), old_reference)
+        {
+            storage
+                .delete_files(FileStorageCleanupOrigin::ReferenceReleased, &[reference])
+                .await?;
+        }
+        self.notify_room_invalidation(&room_id).await;
+        Ok(updated_room)
+    }
+}

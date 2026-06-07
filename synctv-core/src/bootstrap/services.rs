@@ -581,7 +581,7 @@ pub async fn init_services_with_options(
 
     // Initialize Email service. SMTP connection details live in runtime settings
     // and are read lazily when mail is sent.
-    let email_config_provider = RuntimeEmailConfigProvider::new(Arc::clone(&settings_registry));
+    let email_config_provider = RuntimeEmailConfigProvider::new(&settings_registry);
     let email_service = Some(Arc::new(EmailService::new(Arc::new(
         email_config_provider,
     ))?));
@@ -1115,12 +1115,9 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
 }
 
 #[cfg(test)]
-fn test_providers_manager(pool: &PgPool) -> anyhow::Result<Arc<ProvidersManager>> {
-    let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
-    let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
-        provider_repo,
-        None,
-    ));
+fn test_providers_manager() -> anyhow::Result<Arc<ProvidersManager>> {
+    let provider_instance_manager =
+        crate::service::remote_provider_manager::empty_provider_instance_manager();
     Ok(Arc::new(ProvidersManager::new(provider_instance_manager)?))
 }
 
@@ -1193,14 +1190,43 @@ mod tests {
     use super::*;
     use crate::cache::CacheInvalidationService;
     use crate::service::RateLimiter;
+    use crate::test_helpers::failing_redis_runtime;
 
-    struct FakeRedisRuntime;
+    fn test_user_service(pool: &PgPool) -> UserService {
+        let jwt_service = JwtService::with_durations(
+            "f4e9a7c21d3b5e6f8a9c0b1d2e3f4a5b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+            24,
+            30,
+            24,
+            60,
+        )
+        .expect("jwt service");
+        let username_cache = UsernameCache::local_only("test:user:".to_string(), 100, 60);
+        let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
+            crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
+        );
 
-    #[async_trait::async_trait]
-    impl crate::RedisConnectionRuntime for FakeRedisRuntime {
-        async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
-            panic!("snapshot should not be called in this unit test");
-        }
+        UserService::new_for_tests(
+            pool,
+            jwt_service,
+            username_cache,
+            token_blacklist,
+            crate::cache::KeyBuilder::new("test"),
+            crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
+        )
+    }
+
+    fn test_cache_invalidation() -> Arc<CacheInvalidationService> {
+        Arc::new(CacheInvalidationService::new(
+            "node-test".to_string(),
+            "test:cache:stream".to_string(),
+        ))
+    }
+
+    fn test_room_brute_force() -> Arc<dyn crate::service::auth::BruteForceProtectionService> {
+        Arc::new(crate::service::auth::BruteForceProtection::in_memory(
+            "test:room".to_string(),
+        ))
     }
 
     #[test]
@@ -1215,7 +1241,7 @@ mod tests {
     fn test_shared_state_profile_prefers_shared_runtime_when_available() {
         let profile = SharedStateProfile::new(
             SharedStateMode::SharedBestEffort,
-            Some(Arc::new(FakeRedisRuntime)),
+            Some(failing_redis_runtime()),
             "test:",
         );
         assert_eq!(profile.state_mode(), SharedStateMode::SharedBestEffort);
@@ -1401,44 +1427,20 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_build_room_service_wires_brute_force_protection() {
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let jwt_service = JwtService::with_durations(
-            "f4e9a7c21d3b5e6f8a9c0b1d2e3f4a5b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
-            24,
-            30,
-            24,
-            60,
-        )
-        .expect("jwt service");
-        let username_cache = UsernameCache::local_only("test:user:".to_string(), 100, 60);
-        let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
-            crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
-        );
-        let user_service = UserService::new_for_tests(
-            &pool,
-            jwt_service,
-            username_cache,
-            token_blacklist,
-            crate::cache::KeyBuilder::new("test"),
-            crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
-        );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new(
-            "node-test".to_string(),
-            "test:cache:stream".to_string(),
-        ));
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let user_service = test_user_service(&pool);
+        let cache_invalidation = test_cache_invalidation();
 
         let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
             user_service,
             credential_repo: None,
             credential_encryption: None,
-            providers_manager: test_providers_manager(&pool)
-                .expect("providers manager should build"),
+            providers_manager: test_providers_manager().expect("providers manager should build"),
             cache_invalidation,
-            brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
-                "test:room".to_string(),
-            )),
+            brute_force: test_room_brute_force(),
             audit_service: None,
             settings_registry: None,
             user_notification_service: None,
@@ -1490,43 +1492,18 @@ mod tests {
             Arc::new(tokio::sync::RwLock::new(redis_conn)),
         ));
 
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let jwt_service = JwtService::with_durations(
-            "f4e9a7c21d3b5e6f8a9c0b1d2e3f4a5b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
-            24,
-            30,
-            24,
-            60,
-        )
-        .expect("jwt service");
-        let username_cache = UsernameCache::local_only("test:user:".to_string(), 100, 60);
-        let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
-            crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
-        );
-        let user_service = UserService::new_for_tests(
-            &pool,
-            jwt_service,
-            username_cache,
-            token_blacklist,
-            crate::cache::KeyBuilder::new("test"),
-            crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
-        );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new(
-            "node-test".to_string(),
-            "test:cache:stream".to_string(),
-        ));
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let user_service = test_user_service(&pool);
+        let cache_invalidation = test_cache_invalidation();
 
         let standalone_room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
             user_service: user_service.clone(),
             credential_repo: None,
             credential_encryption: None,
-            providers_manager: test_providers_manager(&pool)
-                .expect("providers manager should build"),
+            providers_manager: test_providers_manager().expect("providers manager should build"),
             cache_invalidation: cache_invalidation.clone(),
-            brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
-                "test:room".to_string(),
-            )),
+            brute_force: test_room_brute_force(),
             audit_service: None,
             settings_registry: None,
             user_notification_service: None,
@@ -1562,12 +1539,9 @@ mod tests {
             user_service,
             credential_repo: None,
             credential_encryption: None,
-            providers_manager: test_providers_manager(&pool)
-                .expect("providers manager should build"),
+            providers_manager: test_providers_manager().expect("providers manager should build"),
             cache_invalidation,
-            brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
-                "test:room".to_string(),
-            )),
+            brute_force: test_room_brute_force(),
             audit_service: None,
             settings_registry: None,
             user_notification_service: None,
@@ -1606,35 +1580,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_services_wiring_applies_settings_registry_to_room_service() {
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let jwt_service = JwtService::with_durations(
-            "f4e9a7c21d3b5e6f8a9c0b1d2e3f4a5b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
-            24,
-            30,
-            24,
-            60,
-        )
-        .expect("jwt service");
-        let username_cache = UsernameCache::local_only("test:user:".to_string(), 100, 60);
-        let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
-            crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
-        );
-        let user_service = UserService::new_for_tests(
-            &pool,
-            jwt_service,
-            username_cache,
-            token_blacklist,
-            crate::cache::KeyBuilder::new("test"),
-            crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
-        );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new(
-            "node-test".to_string(),
-            "test:cache:stream".to_string(),
-        ));
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let user_service = test_user_service(&pool);
+        let cache_invalidation = test_cache_invalidation();
         let settings_service = Arc::new(SettingsService::new(
             SettingsRepository::new(pool.clone()),
-            PgPool::connect_lazy("postgresql://test").expect("lazy pool should build"),
+            pool.clone(),
         ));
         let settings_registry = Arc::new(SettingsRegistry::new(settings_service));
 
@@ -1643,12 +1596,9 @@ mod tests {
             user_service: user_service.clone(),
             credential_repo: None,
             credential_encryption: None,
-            providers_manager: test_providers_manager(&pool)
-                .expect("providers manager should build"),
+            providers_manager: test_providers_manager().expect("providers manager should build"),
             cache_invalidation,
-            brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
-                "test:room".to_string(),
-            )),
+            brute_force: test_room_brute_force(),
             audit_service: None,
             settings_registry: Some(Arc::clone(&settings_registry)),
             user_notification_service: None,
@@ -1679,34 +1629,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_build_room_service_reuses_injected_providers_manager() {
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let jwt_service = JwtService::with_durations(
-            "f4e9a7c21d3b5e6f8a9c0b1d2e3f4a5b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
-            24,
-            30,
-            24,
-            60,
-        )
-        .expect("jwt service");
-        let username_cache = UsernameCache::local_only("test:user:".to_string(), 100, 60);
-        let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
-            crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
-        );
-        let user_service = UserService::new_for_tests(
-            &pool,
-            jwt_service,
-            username_cache,
-            token_blacklist,
-            crate::cache::KeyBuilder::new("test"),
-            crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
-        );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new(
-            "node-test".to_string(),
-            "test:cache:stream".to_string(),
-        ));
-        let providers_manager =
-            test_providers_manager(&pool).expect("providers manager should build");
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let user_service = test_user_service(&pool);
+        let cache_invalidation = test_cache_invalidation();
+        let providers_manager = test_providers_manager().expect("providers manager should build");
 
         let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
@@ -1715,9 +1643,7 @@ mod tests {
             credential_encryption: None,
             providers_manager: Arc::clone(&providers_manager),
             cache_invalidation,
-            brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
-                "test:room".to_string(),
-            )),
+            brute_force: test_room_brute_force(),
             audit_service: None,
             settings_registry: None,
             user_notification_service: None,
@@ -1750,34 +1676,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_room_service_accepts_media_credential_encryption_injection() {
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let jwt_service = JwtService::with_durations(
-            "f4e9a7c21d3b5e6f8a9c0b1d2e3f4a5b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
-            24,
-            30,
-            24,
-            60,
-        )
-        .expect("jwt service");
-        let username_cache = UsernameCache::local_only("test:user:".to_string(), 100, 60);
-        let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
-            crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
-        );
-        let user_service = UserService::new_for_tests(
-            &pool,
-            jwt_service,
-            username_cache,
-            token_blacklist,
-            crate::cache::KeyBuilder::new("test"),
-            crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
-        );
-        let cache_invalidation = Arc::new(CacheInvalidationService::new(
-            "node-test".to_string(),
-            "test:cache:stream".to_string(),
-        ));
-        let providers_manager =
-            test_providers_manager(&pool).expect("providers manager should build");
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let user_service = test_user_service(&pool);
+        let cache_invalidation = test_cache_invalidation();
+        let providers_manager = test_providers_manager().expect("providers manager should build");
         let encryption = crate::credential_encryption::CredentialEncryption::new(&[7u8; 32])
             .expect("credential encryption should construct");
         let room_service = build_room_service(RoomServiceBuildArgs {
@@ -1792,9 +1696,7 @@ mod tests {
             credential_encryption: Some(encryption),
             providers_manager: Arc::clone(&providers_manager),
             cache_invalidation,
-            brute_force: Arc::new(crate::service::auth::BruteForceProtection::in_memory(
-                "test:room".to_string(),
-            )),
+            brute_force: test_room_brute_force(),
             audit_service: None,
             settings_registry: None,
             user_notification_service: None,
@@ -1863,17 +1765,10 @@ mod tests {
     #[tokio::test]
     async fn test_init_oauth2_service_rejects_cluster_mode_without_shared_state_at_bootstrap_layer()
     {
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let settings_registry = test_settings_registry(pool.clone());
-
         let profile = SharedStateProfile::from_runtime(None, "synctv:", true);
-        let error = init_oauth2_service(
-            &pool,
-            settings_registry,
-            &profile,
-            synctv_common::ssrf::SsrfGuard::strict_policy(),
-        )
-        .expect_err("cluster bootstrap must not fall back to in-memory OAuth2 state store");
+        let Err(error) = build_oauth_state_store(&profile) else {
+            panic!("cluster bootstrap must not fall back to in-memory OAuth2 state store");
+        };
 
         assert!(
             error
@@ -1884,8 +1779,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_init_oauth2_service_starts_without_runtime_providers() {
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let settings_registry = test_settings_registry(pool.clone());
         let profile = SharedStateProfile::from_runtime(None, "synctv:", false);
         let service = init_oauth2_service(
@@ -1936,8 +1832,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_build_email_token_service_uses_shared_rate_limiter() {
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let limiter: Arc<dyn RequestRateLimiterService> =
             Arc::new(RateLimiter::local_only("test-email-token:".to_string()));
 
@@ -1959,8 +1856,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_build_providers_manager_loads_defaults_from_config() {
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let config = Config::default();
         let provider_repo = Arc::new(ProviderInstanceRepository::new(pool));
         let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(

@@ -436,50 +436,8 @@ impl MediaProvider for DirectUrlProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::proxy::ProxyServices;
     use crate::provider::store::InMemoryProviderStore;
     use std::sync::Arc;
-
-    fn fake_proxy_services() -> ProxyServices {
-        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-        let jwt = crate::service::auth::JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
-            .expect("jwt");
-        let username_cache =
-            crate::cache::UsernameCache::local_only("test:username:".to_string(), 100, 60);
-        let token_blacklist = Arc::new(
-            crate::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                1000, 3600, 86400,
-            ),
-        );
-        let key_builder = crate::cache::KeyBuilder::new("test");
-        let brute_force = crate::service::auth::BruteForceProtection::in_memory("test".to_string());
-        let user_service = crate::service::UserService::new_for_tests(
-            &pool,
-            jwt,
-            username_cache,
-            token_blacklist,
-            key_builder,
-            brute_force,
-        );
-        let credential_repo = Arc::new(crate::repository::UserProviderCredentialRepository::new(
-            pool.clone(),
-        ));
-        let room_service = crate::service::RoomService::new_for_tests(pool, user_service)
-            .expect("room service should build");
-        ProxyServices {
-            room_service: Arc::new(room_service),
-            credential_encryption: None,
-            credential_repo,
-            provider_access_service: None,
-            signing_key: Arc::new(
-                crate::proxy_signature::ProxySigningKey::try_derive_from(
-                    b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-                )
-                .expect("test proxy signing key should derive"),
-            ),
-            public_id_codec: Arc::new(crate::PublicIdCodec::plain()),
-        }
-    }
 
     #[test]
     fn test_detect_format() {
@@ -729,7 +687,6 @@ mod tests {
             )
             .await
             .unwrap();
-        let services = fake_proxy_services();
         let claims = crate::proxy_signature::ProxyUrlClaims {
             provider: "direct_url".to_string(),
             version: version.to_string(),
@@ -743,7 +700,8 @@ mod tests {
             query_string: None,
             store: Some(&store),
             proxy_base: "/api/providers/proxy/direct_url",
-            services: &services,
+            services: None,
+            public_id_codec: None,
             verified_claims: Some(&claims),
             request_context: None,
             request_headers: &http::HeaderMap::new(),

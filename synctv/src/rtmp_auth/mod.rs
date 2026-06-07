@@ -35,6 +35,8 @@ use synctv_livestream::AuthCallback;
 // TTL for the per-user rtmp:user_stream:{user_id} Redis key, matching the publisher TTL.
 use synctv_livestream::relay::registry::PUBLISHER_TTL_SECS;
 
+const STREAMHUB_RESTARTING_MESSAGE: &str = "StreamHub is restarting, please retry in a few seconds";
+
 #[async_trait]
 pub trait UserStreamIndex: Send + Sync {
     async fn put(
@@ -239,6 +241,40 @@ struct PendingPublishCleanup {
     user_id: UserId,
 }
 
+#[derive(Clone)]
+struct PublisherCleanupRuntime {
+    user_stream_tracker: Arc<StreamTracker>,
+    registry: Arc<dyn StreamRegistryTrait>,
+    node_id: String,
+    api_address: String,
+    stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
+    user_stream_index: Arc<dyn UserStreamIndex>,
+    pending_publish_cleanups: Arc<DashMap<(String, String), VecDeque<PendingPublishCleanup>>>,
+}
+
+struct PublisherCleanupRuntimeConfig {
+    user_stream_tracker: Arc<StreamTracker>,
+    registry: Arc<dyn StreamRegistryTrait>,
+    node_id: String,
+    api_address: String,
+    stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
+    user_stream_index: Arc<dyn UserStreamIndex>,
+}
+
+impl PublisherCleanupRuntime {
+    fn new(config: PublisherCleanupRuntimeConfig) -> Self {
+        Self {
+            user_stream_tracker: config.user_stream_tracker,
+            registry: config.registry,
+            node_id: config.node_id,
+            api_address: config.api_address,
+            stream_event_tx: config.stream_event_tx,
+            user_stream_index: config.user_stream_index,
+            pending_publish_cleanups: Arc::new(DashMap::new()),
+        }
+    }
+}
+
 /// Maximum number of pending publish cleanup entries retained per (room, media) key.
 /// This bounds memory growth under pathological retry scenarios while allowing
 /// a small number of retries to preserve their epoch fences.
@@ -260,25 +296,13 @@ pub struct SyncTvRtmpAuth {
     room_service: Arc<RoomService>,
     user_service: Arc<UserService>,
     publish_key_service: Arc<dyn StreamingPublishKeyService>,
-    user_stream_tracker: Arc<StreamTracker>,
-    /// Publisher registry (Redis) for single-publisher-per-media enforcement
-    registry: Arc<dyn StreamRegistryTrait>,
-    /// This node's unique identifier for publisher registration
-    node_id: String,
-    /// Advertised shared API address for cross-node proxying (e.g., "10.0.0.1:8080")
-    api_address: String,
+    publisher_cleanup: PublisherCleanupRuntime,
     /// Broadcast channel for stream lifecycle events (StreamStarted/StreamStopped)
-    stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     /// Shared codec for client-visible RTMP app/stream identifiers.
     public_id_codec: Arc<synctv_core::PublicIdCodec>,
     /// Optional shared restart flag from LivestreamServer. When set, new
     /// publications are rejected during the StreamHub cleanup/re-register window.
     is_restarting: Option<Arc<AtomicBool>>,
-    /// Shared user→stream index used for cross-node lookup when available.
-    user_stream_index: Arc<dyn UserStreamIndex>,
-    /// Epochs captured after successful auth-phase registration and used to fence
-    /// later unpublish/rollback cleanup for the same logical stream.
-    pending_publish_cleanups: Arc<DashMap<(String, String), VecDeque<PendingPublishCleanup>>>,
 }
 
 pub struct SyncTvRtmpAuthConfig {
@@ -301,15 +325,16 @@ impl SyncTvRtmpAuth {
             room_service: config.room_service,
             user_service: config.user_service,
             publish_key_service: config.publish_key_service,
-            user_stream_tracker: config.user_stream_tracker,
-            registry: config.registry,
-            node_id: config.node_id,
-            api_address: config.api_address,
-            stream_event_tx: config.stream_event_tx,
+            publisher_cleanup: PublisherCleanupRuntime::new(PublisherCleanupRuntimeConfig {
+                user_stream_tracker: config.user_stream_tracker,
+                registry: config.registry,
+                node_id: config.node_id.clone(),
+                api_address: config.api_address.clone(),
+                stream_event_tx: config.stream_event_tx,
+                user_stream_index: config.user_stream_index,
+            }),
             public_id_codec: config.public_id_codec,
             is_restarting: config.is_restarting,
-            user_stream_index: config.user_stream_index,
-            pending_publish_cleanups: Arc::new(DashMap::new()),
         }
     }
 
@@ -330,7 +355,9 @@ impl SyncTvRtmpAuth {
             .decode_media_id(stream_name)
             .map_err(|error| format!("Invalid RTMP media id: {error}").into())
     }
+}
 
+impl PublisherCleanupRuntime {
     fn remember_pending_publish_cleanup(
         &self,
         room_id: &str,
@@ -458,6 +485,228 @@ impl SyncTvRtmpAuth {
             );
         }
     }
+
+    /// Register the publisher in Redis and set up tracking.
+    ///
+    /// Ongoing TTL renewal is handled by `PublisherManager::maintain_heartbeats()`.
+    /// This method only performs the initial registration.
+    async fn register_and_start_ttl(
+        &self,
+        validated: &ValidatedPublish,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let registered = self
+            .registry
+            .try_register_publisher(
+                &validated.room_id.to_string(),
+                &validated.media_id.to_string(),
+                &self.node_id,
+                &validated.user_id.to_string(),
+                &self.api_address,
+            )
+            .await
+            .map_err(|e| format!("Failed to register publisher in Redis: {e}"))?;
+
+        if !registered {
+            return Err(format!(
+                "Another publisher is already active for media {} in room {}",
+                validated.media_id, validated.room_id
+            )
+            .into());
+        }
+
+        let registered_epoch = self
+            .lookup_registered_epoch(
+                &validated.room_id.to_string(),
+                &validated.media_id.to_string(),
+            )
+            .await?;
+
+        tracing::info!(
+            "Publisher authenticated and registered: user={}, room={}, media={}, node={}, auth={}, epoch={}",
+            validated.user_id,
+            validated.room_id,
+            validated.media_id,
+            self.node_id,
+            validated.auth_level,
+            registered_epoch,
+        );
+
+        if let Err(error) = self
+            .user_stream_index
+            .put(
+                validated.user_id,
+                validated.room_id,
+                validated.media_id,
+                PUBLISHER_TTL_SECS,
+            )
+            .await
+        {
+            tracing::error!(
+                user_id = %validated.user_id,
+                cross_node_lookup = self.user_stream_index.supports_cross_node_lookup(),
+                "Failed to write shared user-stream index after publisher registration: {}. \
+                 Rolling back publisher registration to maintain consistency.",
+                error
+            );
+            if let Err(unreg_err) = self
+                .registry
+                .unregister_publisher_if_epoch_matches(
+                    &validated.room_id.to_string(),
+                    &validated.media_id.to_string(),
+                    registered_epoch,
+                )
+                .await
+            {
+                tracing::error!(
+                    room_id = %validated.room_id,
+                    media_id = %validated.media_id,
+                    "Rollback of publisher registration also failed: {}. \
+                     Registry TTL will eventually expire the stale entry.",
+                    unreg_err
+                );
+            }
+            return Err(format!("Failed to write shared user-stream index: {error}").into());
+        }
+
+        self.user_stream_tracker.insert(
+            validated.user_id.to_string(),
+            validated.room_id.to_string(),
+            validated.media_id.to_string(),
+            &validated.room_id.to_string(),
+            &validated.media_id.to_string(),
+        );
+
+        if let Some(ref tx) = self.stream_event_tx {
+            publish_stream_lifecycle_event(
+                tx,
+                StreamLifecycleEvent::Started {
+                    room_id: validated.room_id.to_string(),
+                    media_id: validated.media_id.to_string(),
+                    user_id: validated.user_id.to_string(),
+                },
+            );
+        }
+
+        self.remember_pending_publish_cleanup(
+            &validated.room_id.to_string(),
+            &validated.media_id.to_string(),
+            PendingPublishCleanup {
+                epoch: registered_epoch,
+                user_id: validated.user_id,
+            },
+        );
+
+        Ok(())
+    }
+
+    async fn cleanup_on_unpublish(&self, room_id: &str, media_id: &str) {
+        let Some(attempt) = self.resolve_publish_cleanup(room_id, media_id, "on_unpublish") else {
+            return;
+        };
+
+        let should_cleanup = match self
+            .cleanup_publisher_if_current_attempt(room_id, media_id, attempt.epoch)
+            .await
+        {
+            Ok(should_cleanup) => should_cleanup,
+            Err(e) => {
+                tracing::error!(
+                    room_id = %room_id,
+                    media_id = %media_id,
+                    epoch = attempt.epoch,
+                    "Failed to fence publisher cleanup on unpublish; keeping pending cleanup for retry: {}",
+                    e
+                );
+                return;
+            }
+        };
+
+        if !should_cleanup {
+            let _ = self.consume_pending_publish_cleanup(room_id, media_id);
+            tracing::info!(
+                room_id = %room_id,
+                media_id = %media_id,
+                epoch = attempt.epoch,
+                "Ignoring stale on_unpublish cleanup for superseded publisher epoch"
+            );
+            return;
+        }
+
+        let _ = self.consume_pending_publish_cleanup(room_id, media_id);
+        let tracked_user = self.user_stream_tracker.remove_stream(room_id, media_id);
+        tracing::info!(
+            user_id = %attempt.user_id,
+            room_id = %room_id,
+            media_id = %media_id,
+            had_tracker_entry = tracked_user.is_some(),
+            "Publisher unpublished, fenced cleanup completed"
+        );
+
+        self.delete_user_stream_key(attempt.user_id, "unpublish")
+            .await;
+
+        if let Some(ref tx) = self.stream_event_tx {
+            publish_stream_lifecycle_event(
+                tx,
+                StreamLifecycleEvent::Stopped {
+                    room_id: room_id.to_string(),
+                    media_id: media_id.to_string(),
+                    user_id: attempt.user_id.to_string(),
+                },
+            );
+        }
+    }
+
+    async fn cleanup_on_publish_rollback(&self, room_id: &str, media_id: &str) {
+        tracing::warn!(
+            room_id = %room_id,
+            media_id = %media_id,
+            "Rolling back publisher registration due to StreamHub failure"
+        );
+
+        let Some(attempt) = self.resolve_publish_cleanup(room_id, media_id, "rollback") else {
+            return;
+        };
+
+        let should_cleanup = match self
+            .cleanup_publisher_if_current_attempt(room_id, media_id, attempt.epoch)
+            .await
+        {
+            Ok(should_cleanup) => should_cleanup,
+            Err(e) => {
+                tracing::warn!(
+                    room_id = %room_id,
+                    media_id = %media_id,
+                    epoch = attempt.epoch,
+                    error = %e,
+                    "Failed to rollback publisher registration with epoch fence; keeping pending cleanup for retry"
+                );
+                return;
+            }
+        };
+
+        if !should_cleanup {
+            let _ = self.consume_pending_publish_cleanup(room_id, media_id);
+            tracing::info!(
+                room_id = %room_id,
+                media_id = %media_id,
+                epoch = attempt.epoch,
+                "Ignoring stale rollback cleanup for superseded publisher epoch"
+            );
+            return;
+        }
+
+        let _ = self.consume_pending_publish_cleanup(room_id, media_id);
+        let _ = self.user_stream_tracker.remove_stream(room_id, media_id);
+        self.delete_user_stream_key(attempt.user_id, "rollback")
+            .await;
+
+        tracing::info!(
+            room_id = %room_id,
+            media_id = %media_id,
+            "Publisher registration rolled back successfully"
+        );
+    }
 }
 
 #[async_trait]
@@ -471,16 +720,12 @@ impl AuthCallback for SyncTvRtmpAuth {
         Option<synctv_livestream::rtmp_auth::AuthPublishRewrite>,
         Box<dyn std::error::Error + Send + Sync>,
     > {
-        if self
-            .is_restarting
-            .as_ref()
-            .is_some_and(|flag| flag.load(Ordering::Acquire))
-        {
+        if streamhub_restart_in_progress(self.is_restarting.as_ref()) {
             tracing::warn!(
                 room_id = %app_name,
                 "RTMP publish rejected: StreamHub is restarting"
             );
-            return Err("StreamHub is restarting, please retry in a few seconds".into());
+            return Err(STREAMHUB_RESTARTING_MESSAGE.into());
         }
 
         // Phase 1: Validate room, token, user status, and authorization
@@ -489,7 +734,9 @@ impl AuthCallback for SyncTvRtmpAuth {
             .await?;
 
         // Phase 2: Register in Redis, track mapping, emit event, spawn TTL renewal
-        self.register_and_start_ttl(&validated).await?;
+        self.publisher_cleanup
+            .register_and_start_ttl(&validated)
+            .await?;
 
         // Phase 3: Return rewrite so StreamHub uses canonical (room_id, media_id)
         // instead of the raw RTMP identifiers (room_id, JWT_TOKEN).
@@ -525,65 +772,9 @@ impl AuthCallback for SyncTvRtmpAuth {
     }
 
     async fn on_unpublish(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
-        let Some(resolved) = self.resolve_publish_cleanup(app_name, stream_name, "on_unpublish")
-        else {
-            return;
-        };
-        let attempt = resolved;
-
-        let should_cleanup = match self
-            .cleanup_publisher_if_current_attempt(app_name, stream_name, attempt.epoch)
-            .await
-        {
-            Ok(should_cleanup) => should_cleanup,
-            Err(e) => {
-                tracing::error!(
-                    room_id = %app_name,
-                    media_id = %stream_name,
-                    epoch = attempt.epoch,
-                    "Failed to fence publisher cleanup on unpublish; keeping pending cleanup for retry: {}",
-                    e
-                );
-                return;
-            }
-        };
-
-        if !should_cleanup {
-            let _ = self.consume_pending_publish_cleanup(app_name, stream_name);
-            tracing::info!(
-                room_id = %app_name,
-                media_id = %stream_name,
-                epoch = attempt.epoch,
-                "Ignoring stale on_unpublish cleanup for superseded publisher epoch"
-            );
-            return;
-        }
-
-        let _ = self.consume_pending_publish_cleanup(app_name, stream_name);
-        let tracked_user = self
-            .user_stream_tracker
-            .remove_stream(app_name, stream_name);
-        tracing::info!(
-            user_id = %attempt.user_id,
-            room_id = %app_name,
-            media_id = %stream_name,
-            had_tracker_entry = tracked_user.is_some(),
-            "Publisher unpublished, fenced cleanup completed"
-        );
-
-        self.delete_user_stream_key(attempt.user_id, "unpublish")
+        self.publisher_cleanup
+            .cleanup_on_unpublish(app_name, stream_name)
             .await;
-
-        if let Some(ref tx) = self.stream_event_tx {
-            publish_stream_lifecycle_event(
-                tx,
-                StreamLifecycleEvent::Stopped {
-                    room_id: app_name.to_string(),
-                    media_id: stream_name.to_string(),
-                    user_id: attempt.user_id.to_string(),
-                },
-            );
-        }
     }
 
     /// Roll back publisher registration when `StreamHub` publish fails after auth.
@@ -595,80 +786,19 @@ impl AuthCallback for SyncTvRtmpAuth {
     /// 2. Remove user->stream mapping from local tracker
     /// 3. Remove per-user `rtmp:user_stream:{user_id}` Redis key
     async fn on_publish_rollback(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
-        tracing::warn!(
-            room_id = %app_name,
-            media_id = %stream_name,
-            "Rolling back publisher registration due to StreamHub failure"
-        );
-
-        let Some(resolved) = self.resolve_publish_cleanup(app_name, stream_name, "rollback") else {
-            return;
-        };
-        let attempt = resolved;
-
-        let should_cleanup = match self
-            .cleanup_publisher_if_current_attempt(app_name, stream_name, attempt.epoch)
-            .await
-        {
-            Ok(should_cleanup) => should_cleanup,
-            Err(e) => {
-                tracing::warn!(
-                    room_id = %app_name,
-                    media_id = %stream_name,
-                    epoch = attempt.epoch,
-                    error = %e,
-                    "Failed to rollback publisher registration with epoch fence; keeping pending cleanup for retry"
-                );
-                return;
-            }
-        };
-
-        if !should_cleanup {
-            let _ = self.consume_pending_publish_cleanup(app_name, stream_name);
-            tracing::info!(
-                room_id = %app_name,
-                media_id = %stream_name,
-                epoch = attempt.epoch,
-                "Ignoring stale rollback cleanup for superseded publisher epoch"
-            );
-            return;
-        }
-
-        let _ = self.consume_pending_publish_cleanup(app_name, stream_name);
-        let _ = self
-            .user_stream_tracker
-            .remove_stream(app_name, stream_name);
-        self.delete_user_stream_key(attempt.user_id, "rollback")
+        self.publisher_cleanup
+            .cleanup_on_publish_rollback(app_name, stream_name)
             .await;
-
-        tracing::info!(
-            room_id = %app_name,
-            media_id = %stream_name,
-            "Publisher registration rolled back successfully"
-        );
     }
 }
 
-/// Extract and URL-decode the `token` parameter from a query string.
-///
-/// Returns `None` if:
-/// - No `token=` parameter is present
-/// - The token value is empty or contains only whitespace
-///
-/// The token value is percent-decoded (e.g. `%2B` → `+`) so that JWT tokens
-/// containing `+` characters survive URL encoding in RTMP query strings.
 fn extract_token_from_query(query: &str) -> Option<String> {
     for pair in query.split('&') {
         if let Some(encoded_value) = pair.strip_prefix("token=") {
-            // Percent-decode the token. Replace encoding errors with U+FFFD
-            // (malformed UTF-8 in a JWT is invalid anyway, but we surface it
-            // later during JWT validation rather than silently dropping here).
             let decoded = percent_decode_str(encoded_value)
                 .decode_utf8_lossy()
                 .into_owned();
 
-            // Return None for empty or whitespace-only tokens to avoid
-            // meaningless JWT validation errors downstream.
             if decoded.trim().is_empty() {
                 return None;
             }
@@ -677,6 +807,10 @@ fn extract_token_from_query(query: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn streamhub_restart_in_progress(is_restarting: Option<&Arc<AtomicBool>>) -> bool {
+    is_restarting.is_some_and(|flag| flag.load(Ordering::Acquire))
 }
 
 /// Validated publish claims with authorization level
@@ -886,130 +1020,6 @@ impl SyncTvRtmpAuth {
         } else {
             "media_creator"
         })
-    }
-
-    /// Register the publisher in Redis and set up tracking.
-    ///
-    /// Ongoing TTL renewal is handled by `PublisherManager::maintain_heartbeats()`,
-    /// not here. This method only performs the initial registration.
-    async fn register_and_start_ttl(
-        &self,
-        validated: &ValidatedPublish,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Enforce single-publisher-per-media: atomically register in Redis.
-        // This also writes user→stream to `stream:user_publishers:{user_id}` via
-        // the Lua script in try_register_publisher_with_user, providing a cross-replica
-        // reverse index for user→stream lookups via get_user_publishers().
-        let registered = self
-            .registry
-            .try_register_publisher(
-                &validated.room_id.to_string(),
-                &validated.media_id.to_string(),
-                &self.node_id,
-                &validated.user_id.to_string(),
-                &self.api_address,
-            )
-            .await
-            .map_err(|e| format!("Failed to register publisher in Redis: {e}"))?;
-
-        if !registered {
-            return Err(format!(
-                "Another publisher is already active for media {} in room {}",
-                validated.media_id, validated.room_id
-            )
-            .into());
-        }
-
-        let registered_epoch = self
-            .lookup_registered_epoch(
-                &validated.room_id.to_string(),
-                &validated.media_id.to_string(),
-            )
-            .await?;
-
-        tracing::info!(
-            "Publisher authenticated and registered: user={}, room={}, media={}, node={}, auth={}, epoch={}",
-            validated.user_id,
-            validated.room_id,
-            validated.media_id,
-            self.node_id,
-            validated.auth_level,
-            registered_epoch,
-        );
-
-        // Write an additional cross-node user→stream index entry.
-        // This complements the Set-based `stream:user_publishers:{user_id}` index
-        // already written by try_register_publisher_with_user.
-        // if the shared index write fails after registration succeeded,
-        // roll back the publisher registration to keep the shared state consistent.
-        if let Err(error) = self
-            .user_stream_index
-            .put(
-                validated.user_id,
-                validated.room_id,
-                validated.media_id,
-                PUBLISHER_TTL_SECS,
-            )
-            .await
-        {
-            tracing::error!(
-                user_id = %validated.user_id,
-                cross_node_lookup = self.user_stream_index.supports_cross_node_lookup(),
-                "Failed to write shared user-stream index after publisher registration: {}. \
-                 Rolling back publisher registration to maintain consistency.",
-                error
-            );
-            if let Err(unreg_err) = self
-                .registry
-                .unregister_publisher_if_epoch_matches(
-                    &validated.room_id.to_string(),
-                    &validated.media_id.to_string(),
-                    registered_epoch,
-                )
-                .await
-            {
-                tracing::error!(
-                    room_id = %validated.room_id,
-                    media_id = %validated.media_id,
-                    "Rollback of publisher registration also failed: {}. \
-                     Registry TTL will eventually expire the stale entry.",
-                    unreg_err
-                );
-            }
-            return Err(format!("Failed to write shared user-stream index: {error}").into());
-        }
-
-        // Track user->stream mapping locally for kick-on-user-ban (O(1) local lookup)
-        self.user_stream_tracker.insert(
-            validated.user_id.to_string(),
-            validated.room_id.to_string(),
-            validated.media_id.to_string(),
-            &validated.room_id.to_string(),
-            &validated.media_id.to_string(),
-        );
-
-        // Emit stream lifecycle event
-        if let Some(ref tx) = self.stream_event_tx {
-            publish_stream_lifecycle_event(
-                tx,
-                StreamLifecycleEvent::Started {
-                    room_id: validated.room_id.to_string(),
-                    media_id: validated.media_id.to_string(),
-                    user_id: validated.user_id.to_string(),
-                },
-            );
-        }
-
-        self.remember_pending_publish_cleanup(
-            &validated.room_id.to_string(),
-            &validated.media_id.to_string(),
-            PendingPublishCleanup {
-                epoch: registered_epoch,
-                user_id: validated.user_id,
-            },
-        );
-
-        Ok(())
     }
 }
 
@@ -1282,113 +1292,46 @@ mod tests {
 
     #[tokio::test]
     async fn test_rtmp_ids_require_public_id_prefixes() {
-        let auth = make_test_auth_with_registry(local_stream_registry());
+        let codec = synctv_core::PublicIdCodec::plain();
 
         assert_eq!(
-            auth.decode_rtmp_room_id("room_42")
+            codec
+                .decode_room_id("room_42")
                 .expect("room_42 should decode as a public room id"),
             RoomId::expect_positive(42)
         );
         assert_eq!(
-            auth.decode_rtmp_media_id("med_99")
+            codec
+                .decode_media_id("med_99")
                 .expect("med_99 should decode as a public media id"),
             MediaId::expect_positive(99)
         );
-        assert!(auth.decode_rtmp_room_id("42").is_err());
-        assert!(auth.decode_rtmp_media_id("99").is_err());
+        assert!(codec.decode_room_id("42").is_err());
+        assert!(codec.decode_media_id("99").is_err());
     }
 
-    #[tokio::test]
-    async fn test_on_publish_rejects_during_streamhub_restart() {
+    #[test]
+    fn test_publish_restart_guard_rejects_during_streamhub_restart() {
         let restarting = Arc::new(AtomicBool::new(true));
-        let auth = SyncTvRtmpAuth::new(SyncTvRtmpAuthConfig {
-            room_service: Arc::new(
-                RoomService::new_for_tests(
-                    sqlx::postgres::PgPoolOptions::new()
-                        .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-                        .expect("lazy pool"),
-                    UserService::new_for_tests(
-                        &sqlx::postgres::PgPoolOptions::new()
-                            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-                            .expect("lazy pool"),
-                        synctv_core::service::JwtService::new(
-                            "test-secret-key-for-http-router-tests-minimum-32-chars",
-                        )
-                        .expect("jwt"),
-                        synctv_core::cache::UsernameCache::local_only(
-                            "test:username:".to_string(),
-                            16,
-                            60,
-                        ),
-                        Arc::new(
-                            synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                                128, 3600, 86400,
-                            ),
-                        ),
-                        synctv_core::cache::KeyBuilder::new("test"),
-                        synctv_core::service::auth::BruteForceProtection::in_memory(
-                            "test".to_string(),
-                        ),
-                    ),
-                )
-                .expect("room service should build"),
-            ),
-            user_service: Arc::new(UserService::new_for_tests(
-                &sqlx::postgres::PgPoolOptions::new()
-                    .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-                    .expect("lazy pool"),
-                synctv_core::service::JwtService::new(
-                    "test-secret-key-for-http-router-tests-minimum-32-chars",
-                )
-                .expect("jwt"),
-                synctv_core::cache::UsernameCache::local_only(
-                    "test:username:".to_string(),
-                    16,
-                    60,
-                ),
-                Arc::new(synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                    128, 3600, 86400,
-                )),
-                synctv_core::cache::KeyBuilder::new("test"),
-                synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string()),
-            )),
-        publish_key_service: Arc::new(
-            synctv_core::service::PublishKeyService::with_default_ttl(
-                synctv_core::service::JwtService::new(
-                    "test-secret-key-for-http-router-tests-minimum-32-chars",
-                )
-                .expect("jwt"),
-            )
-            .expect("publish key service should build"),
-        ),
-        user_stream_tracker: Arc::new(synctv_livestream::api::StreamTracker::new()),
-        registry: synctv_livestream::relay::local_stream_registry(),
-        node_id: "node-1".to_string(),
-        api_address: "127.0.0.1:50051".to_string(),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
-        stream_event_tx: None,
-        is_restarting: Some(restarting),
-        user_stream_index: Arc::new(LocalOnlyUserStreamIndex),
-    });
 
-        let result = auth.on_publish("room", "stream", None).await;
-        let err = result.expect_err("publish must be rejected while restarting");
-        assert!(
-            err.to_string().contains("StreamHub is restarting"),
-            "unexpected error: {err}"
+        assert!(streamhub_restart_in_progress(Some(&restarting)));
+        assert_eq!(
+            STREAMHUB_RESTARTING_MESSAGE,
+            "StreamHub is restarting, please retry in a few seconds"
         );
     }
 
     #[tokio::test]
     async fn test_delayed_unpublish_does_not_remove_newer_registration() {
         let registry = synctv_livestream::relay::local_stream_registry();
-        let auth = make_test_auth_with_registry(registry.clone());
+        let runtime = make_publisher_cleanup_runtime(registry.clone());
 
         let room_id = "101";
         let media_id = "201";
         let second_user_id = "302";
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, "301"))
+        runtime
+            .register_and_start_ttl(&validated_publish(room_id, media_id, "301"))
             .await
             .expect("first publish registration should succeed");
 
@@ -1404,11 +1347,12 @@ mod tests {
             .await
             .expect("test setup should remove first publisher");
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, second_user_id))
+        runtime
+            .register_and_start_ttl(&validated_publish(room_id, media_id, second_user_id))
             .await
             .expect("second publish registration should succeed");
 
-        auth.on_unpublish(room_id, media_id, None).await;
+        runtime.cleanup_on_unpublish(room_id, media_id).await;
 
         let current = registry
             .get_publisher(room_id, media_id)
@@ -1417,7 +1361,9 @@ mod tests {
             .expect("stale unpublish must not remove the replacement publisher");
         assert_eq!(current.user_id, second_user_id);
         assert_eq!(
-            auth.user_stream_tracker.get_stream_user(room_id, media_id),
+            runtime
+                .user_stream_tracker
+                .get_stream_user(room_id, media_id),
             Some(second_user_id.to_string()),
             "stale unpublish must not remove the replacement stream tracker entry"
         );
@@ -1426,12 +1372,13 @@ mod tests {
     #[tokio::test]
     async fn test_delayed_unpublish_preserves_newer_rollback_fence() {
         let registry = synctv_livestream::relay::local_stream_registry();
-        let auth = make_test_auth_with_registry(registry.clone());
+        let runtime = make_publisher_cleanup_runtime(registry.clone());
 
         let room_id = "102";
         let media_id = "202";
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, "303"))
+        runtime
+            .register_and_start_ttl(&validated_publish(room_id, media_id, "303"))
             .await
             .expect("first publish registration should succeed");
 
@@ -1447,12 +1394,13 @@ mod tests {
             .await
             .expect("test setup should remove first publisher");
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, "304"))
+        runtime
+            .register_and_start_ttl(&validated_publish(room_id, media_id, "304"))
             .await
             .expect("second publish registration should succeed");
 
-        auth.on_unpublish(room_id, media_id, None).await;
-        auth.on_publish_rollback(room_id, media_id, None).await;
+        runtime.cleanup_on_unpublish(room_id, media_id).await;
+        runtime.cleanup_on_publish_rollback(room_id, media_id).await;
 
         assert!(
             !registry
@@ -1466,13 +1414,14 @@ mod tests {
     #[tokio::test]
     async fn test_delayed_rollback_does_not_remove_newer_registration() {
         let registry = synctv_livestream::relay::local_stream_registry();
-        let auth = make_test_auth_with_registry(registry.clone());
+        let runtime = make_publisher_cleanup_runtime(registry.clone());
 
         let room_id = "103";
         let media_id = "203";
         let second_user_id = "306";
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, "305"))
+        runtime
+            .register_and_start_ttl(&validated_publish(room_id, media_id, "305"))
             .await
             .expect("first publish registration should succeed");
 
@@ -1488,11 +1437,12 @@ mod tests {
             .await
             .expect("test setup should remove first publisher");
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, second_user_id))
+        runtime
+            .register_and_start_ttl(&validated_publish(room_id, media_id, second_user_id))
             .await
             .expect("second publish registration should succeed");
 
-        auth.on_publish_rollback(room_id, media_id, None).await;
+        runtime.cleanup_on_publish_rollback(room_id, media_id).await;
 
         let current = registry
             .get_publisher(room_id, media_id)
@@ -1505,18 +1455,19 @@ mod tests {
     #[tokio::test]
     async fn test_unpublish_retry_preserves_fence_until_cleanup_succeeds() {
         let registry = Arc::new(FlakyUnregisterRegistry::new(local_stream_registry()));
-        let auth = make_test_auth_with_registry_dyn(registry.clone());
+        let runtime = make_publisher_cleanup_runtime(registry.clone());
 
         let room_id = "104";
         let media_id = "204";
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, "307"))
+        runtime
+            .register_and_start_ttl(&validated_publish(room_id, media_id, "307"))
             .await
             .expect("publish registration should succeed");
 
         registry.set_fail_unregister_if_epoch_matches_times(1);
 
-        auth.on_unpublish(room_id, media_id, None).await;
+        runtime.cleanup_on_unpublish(room_id, media_id).await;
         assert!(
             registry
                 .is_stream_active(room_id, media_id)
@@ -1525,7 +1476,7 @@ mod tests {
             "failed cleanup attempt should leave publisher registered for retry"
         );
 
-        auth.on_unpublish(room_id, media_id, None).await;
+        runtime.cleanup_on_unpublish(room_id, media_id).await;
         assert!(
             !registry
                 .is_stream_active(room_id, media_id)
@@ -1538,18 +1489,19 @@ mod tests {
     #[tokio::test]
     async fn test_publish_rollback_retry_preserves_fence_until_cleanup_succeeds() {
         let registry = Arc::new(FlakyUnregisterRegistry::new(local_stream_registry()));
-        let auth = make_test_auth_with_registry_dyn(registry.clone());
+        let runtime = make_publisher_cleanup_runtime(registry.clone());
 
         let room_id = "105";
         let media_id = "205";
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, "308"))
+        runtime
+            .register_and_start_ttl(&validated_publish(room_id, media_id, "308"))
             .await
             .expect("publish registration should succeed");
 
         registry.set_fail_unregister_if_epoch_matches_times(1);
 
-        auth.on_publish_rollback(room_id, media_id, None).await;
+        runtime.cleanup_on_publish_rollback(room_id, media_id).await;
         assert!(
             registry
                 .is_stream_active(room_id, media_id)
@@ -1558,7 +1510,7 @@ mod tests {
             "failed rollback attempt should leave publisher registered for retry"
         );
 
-        auth.on_publish_rollback(room_id, media_id, None).await;
+        runtime.cleanup_on_publish_rollback(room_id, media_id).await;
         assert!(
             !registry
                 .is_stream_active(room_id, media_id)
@@ -1571,18 +1523,21 @@ mod tests {
     #[tokio::test]
     async fn test_unpublish_without_in_memory_fence_does_not_guess_cleanup_target() {
         let registry = synctv_livestream::relay::local_stream_registry();
-        let auth = make_test_auth_with_registry(registry.clone());
-        let restarted_auth = make_test_auth_with_registry(registry.clone());
+        let runtime = make_publisher_cleanup_runtime(registry.clone());
+        let restarted_runtime = make_publisher_cleanup_runtime(registry.clone());
 
         let room_id = "106";
         let media_id = "206";
         let user_id = "309";
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, user_id))
+        runtime
+            .register_and_start_ttl(&validated_publish(room_id, media_id, user_id))
             .await
             .expect("publish registration should succeed");
 
-        restarted_auth.on_unpublish(room_id, media_id, None).await;
+        restarted_runtime
+            .cleanup_on_unpublish(room_id, media_id)
+            .await;
 
         assert!(
             registry
@@ -1596,19 +1551,20 @@ mod tests {
     #[tokio::test]
     async fn test_publish_rollback_without_in_memory_fence_does_not_guess_cleanup_target() {
         let registry = synctv_livestream::relay::local_stream_registry();
-        let auth = make_test_auth_with_registry(registry.clone());
-        let restarted_auth = make_test_auth_with_registry(registry.clone());
+        let runtime = make_publisher_cleanup_runtime(registry.clone());
+        let restarted_runtime = make_publisher_cleanup_runtime(registry.clone());
 
         let room_id = "107";
         let media_id = "207";
         let user_id = "310";
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, user_id))
+        runtime
+            .register_and_start_ttl(&validated_publish(room_id, media_id, user_id))
             .await
             .expect("publish registration should succeed");
 
-        restarted_auth
-            .on_publish_rollback(room_id, media_id, None)
+        restarted_runtime
+            .cleanup_on_publish_rollback(room_id, media_id)
             .await;
 
         assert!(
@@ -1623,15 +1579,16 @@ mod tests {
     #[tokio::test]
     async fn test_restarted_unpublish_does_not_remove_replacement_publisher() {
         let registry = synctv_livestream::relay::local_stream_registry();
-        let auth = make_test_auth_with_registry(registry.clone());
-        let restarted_auth = make_test_auth_with_registry(registry.clone());
+        let runtime = make_publisher_cleanup_runtime(registry.clone());
+        let restarted_runtime = make_publisher_cleanup_runtime(registry.clone());
 
         let room_id = "108";
         let media_id = "208";
         let first_user_id = "311";
         let second_user_id = "312";
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, first_user_id))
+        runtime
+            .register_and_start_ttl(&validated_publish(room_id, media_id, first_user_id))
             .await
             .expect("first publish registration should succeed");
 
@@ -1647,11 +1604,14 @@ mod tests {
             .await
             .expect("test setup should remove first publisher");
 
-        auth.register_and_start_ttl(&validated_publish(room_id, media_id, second_user_id))
+        runtime
+            .register_and_start_ttl(&validated_publish(room_id, media_id, second_user_id))
             .await
             .expect("second publish registration should succeed");
 
-        restarted_auth.on_unpublish(room_id, media_id, None).await;
+        restarted_runtime
+            .cleanup_on_unpublish(room_id, media_id)
+            .await;
 
         let current = registry
             .get_publisher(room_id, media_id)
@@ -1690,56 +1650,15 @@ mod tests {
         ));
     }
 
-    fn make_test_auth_with_registry(registry: Arc<dyn StreamRegistryTrait>) -> SyncTvRtmpAuth {
-        make_test_auth_with_registry_dyn(registry)
-    }
-
-    fn make_test_auth_with_registry_dyn(registry: Arc<dyn StreamRegistryTrait>) -> SyncTvRtmpAuth {
-        let lazy_pool = || {
-            sqlx::postgres::PgPoolOptions::new()
-                .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-                .expect("lazy pool")
-        };
-        let make_user_service = || {
-            UserService::new_for_tests(
-                &lazy_pool(),
-                synctv_core::service::JwtService::new(
-                    "test-secret-key-for-http-router-tests-minimum-32-chars",
-                )
-                .expect("jwt"),
-                synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 16, 60),
-                Arc::new(
-                    synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                        128, 3600, 86400,
-                    ),
-                ),
-                synctv_core::cache::KeyBuilder::new("test"),
-                synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string()),
-            )
-        };
-
-        SyncTvRtmpAuth::new(SyncTvRtmpAuthConfig {
-            room_service: Arc::new(
-                RoomService::new_for_tests(lazy_pool(), make_user_service())
-                    .expect("room service should build"),
-            ),
-            user_service: Arc::new(make_user_service()),
-            publish_key_service: Arc::new(
-                synctv_core::service::PublishKeyService::with_default_ttl(
-                    synctv_core::service::JwtService::new(
-                        "test-secret-key-for-http-router-tests-minimum-32-chars",
-                    )
-                    .expect("jwt"),
-                )
-                .expect("publish key service should build"),
-            ),
-            user_stream_tracker: Arc::new(synctv_livestream::api::StreamTracker::new()),
+    fn make_publisher_cleanup_runtime(
+        registry: Arc<dyn StreamRegistryTrait>,
+    ) -> PublisherCleanupRuntime {
+        PublisherCleanupRuntime::new(PublisherCleanupRuntimeConfig {
+            user_stream_tracker: Arc::new(StreamTracker::new()),
             registry,
             node_id: "node-1".to_string(),
             api_address: "127.0.0.1:50051".to_string(),
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
             stream_event_tx: None,
-            is_restarting: None,
             user_stream_index: Arc::new(LocalOnlyUserStreamIndex),
         })
     }
@@ -1775,12 +1694,12 @@ mod tests {
         );
     }
 
-    struct MockRedisRuntime;
+    struct TestRedisRuntime;
 
     #[async_trait::async_trait]
-    impl RedisConnectionRuntime for MockRedisRuntime {
+    impl RedisConnectionRuntime for TestRedisRuntime {
         async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
-            panic!("mock redis runtime snapshot should not be called in factory tests");
+            panic!("test redis runtime snapshot should not be called in factory tests");
         }
     }
 
@@ -1798,7 +1717,7 @@ mod tests {
     fn test_user_stream_index_factory_keeps_standalone_mode_local_even_with_runtime() {
         let profile = SharedStateProfile::new(
             SharedStateMode::SharedBestEffort,
-            Some(Arc::new(MockRedisRuntime)),
+            Some(Arc::new(TestRedisRuntime)),
             "test:",
         );
 
@@ -1828,7 +1747,7 @@ mod tests {
     fn test_user_stream_index_factory_uses_shared_backend_in_cluster_mode() {
         let profile = SharedStateProfile::new(
             SharedStateMode::SharedRequired,
-            Some(Arc::new(MockRedisRuntime)),
+            Some(Arc::new(TestRedisRuntime)),
             "test:",
         );
 

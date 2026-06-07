@@ -16,6 +16,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::credential_encryption::CredentialEncryption;
+use crate::error::Result as CoreResult;
 use crate::models::{ProviderCredential, UserId, UserProviderCredential};
 use crate::repository::UserProviderCredentialRepository;
 
@@ -106,9 +107,34 @@ pub trait ProviderAccessService: Send + Sync {
     ) -> Result<(), ProviderError>;
 }
 
+#[async_trait]
+pub trait ProviderCredentialReader: Send + Sync {
+    async fn get_by_provider_and_server(
+        &self,
+        user_id: UserId,
+        provider: &str,
+        server_id: &str,
+    ) -> CoreResult<Option<UserProviderCredential>>;
+}
+
+#[async_trait]
+impl ProviderCredentialReader for UserProviderCredentialRepository {
+    async fn get_by_provider_and_server(
+        &self,
+        user_id: UserId,
+        provider: &str,
+        server_id: &str,
+    ) -> CoreResult<Option<UserProviderCredential>> {
+        UserProviderCredentialRepository::get_by_provider_and_server(
+            self, user_id, provider, server_id,
+        )
+        .await
+    }
+}
+
 #[derive(Clone)]
 pub struct CachedProviderAccessService {
-    credential_repo: Arc<UserProviderCredentialRepository>,
+    credential_reader: Arc<dyn ProviderCredentialReader>,
     store: Option<Arc<dyn ProviderStore>>,
     credential_encryption: Option<CredentialEncryption>,
     alist_provider: Arc<AlistProvider>,
@@ -117,11 +143,11 @@ pub struct CachedProviderAccessService {
 impl CachedProviderAccessService {
     #[must_use]
     pub fn new(
-        credential_repo: Arc<UserProviderCredentialRepository>,
+        credential_reader: Arc<dyn ProviderCredentialReader>,
         alist_provider: Arc<AlistProvider>,
     ) -> Self {
         Self {
-            credential_repo,
+            credential_reader,
             store: None,
             credential_encryption: None,
             alist_provider,
@@ -333,7 +359,7 @@ impl CachedProviderAccessService {
         user_id: UserId,
         server_id: &str,
     ) -> Result<Option<UserProviderCredential>, ProviderError> {
-        self.credential_repo
+        self.credential_reader
             .get_by_provider_and_server(user_id, provider, server_id)
             .await
             .map_err(|error| {
@@ -817,25 +843,64 @@ struct CachedAlistSession {
 mod tests {
     use super::*;
     use crate::provider::store::InMemoryProviderStore;
-    use crate::repository::ProviderInstanceRepository;
-    use crate::service::RemoteProviderManager;
     use chrono::Utc;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct InMemoryCredentialReader {
+        records: Mutex<Vec<UserProviderCredential>>,
+    }
+
+    impl InMemoryCredentialReader {
+        fn empty() -> Arc<Self> {
+            Arc::new(Self::default())
+        }
+
+        fn with_records(records: Vec<UserProviderCredential>) -> Arc<Self> {
+            Arc::new(Self {
+                records: Mutex::new(records),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl ProviderCredentialReader for InMemoryCredentialReader {
+        async fn get_by_provider_and_server(
+            &self,
+            user_id: UserId,
+            provider: &str,
+            server_id: &str,
+        ) -> CoreResult<Option<UserProviderCredential>> {
+            Ok(self
+                .records
+                .lock()
+                .expect("credential reader lock should be available")
+                .iter()
+                .find(|record| {
+                    record.user_id == user_id
+                        && record.provider == provider
+                        && record.server_id == server_id
+                })
+                .cloned())
+        }
+    }
 
     fn test_encryption() -> CredentialEncryption {
         CredentialEncryption::new(&[0x42; 32]).expect("test encryption key should be valid")
     }
 
     fn test_service(store: Arc<dyn ProviderStore>) -> CachedProviderAccessService {
-        let credential_pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
-        let credential_repo = Arc::new(UserProviderCredentialRepository::new(credential_pool));
-        let provider_pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
-        let provider_instance_repo = Arc::new(ProviderInstanceRepository::new(provider_pool));
-        let provider_instance_manager =
-            Arc::new(RemoteProviderManager::new(provider_instance_repo));
-        let alist_provider =
-            Arc::new(AlistProvider::new(provider_instance_manager).expect("provider should build"));
+        test_service_with_reader(store, InMemoryCredentialReader::empty())
+    }
 
-        CachedProviderAccessService::new(credential_repo, alist_provider)
+    fn test_service_with_reader(
+        store: Arc<dyn ProviderStore>,
+        credential_reader: Arc<dyn ProviderCredentialReader>,
+    ) -> CachedProviderAccessService {
+        let alist_provider =
+            Arc::new(AlistProvider::new_local_only().expect("provider should build"));
+
+        CachedProviderAccessService::new(credential_reader, alist_provider)
             .with_store(store)
             .with_credential_encryption(Some(test_encryption()))
     }
@@ -886,16 +951,11 @@ mod tests {
     #[tokio::test]
     async fn encode_sensitive_requires_credential_encryption() {
         let store = Arc::new(InMemoryProviderStore::new(16));
-        let credential_pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
-        let credential_repo = Arc::new(UserProviderCredentialRepository::new(credential_pool));
-        let provider_pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
-        let provider_instance_repo = Arc::new(ProviderInstanceRepository::new(provider_pool));
-        let provider_instance_manager =
-            Arc::new(RemoteProviderManager::new(provider_instance_repo));
         let alist_provider =
-            Arc::new(AlistProvider::new(provider_instance_manager).expect("provider should build"));
+            Arc::new(AlistProvider::new_local_only().expect("provider should build"));
         let service =
-            CachedProviderAccessService::new(credential_repo, alist_provider).with_store(store);
+            CachedProviderAccessService::new(InMemoryCredentialReader::empty(), alist_provider)
+                .with_store(store);
 
         let error = service
             .encode_sensitive(&CachedAlistSession {
@@ -907,6 +967,47 @@ mod tests {
         assert!(error
             .to_string()
             .contains("Credential encryption must be configured"));
+    }
+
+    #[tokio::test]
+    async fn bilibili_access_loads_record_from_reader_and_caches_binding() {
+        let store = Arc::new(InMemoryProviderStore::new(16));
+        let user_id = UserId::expect_positive(7);
+        let server_id = UserProviderCredential::bilibili_server_id();
+        let record = credential_record(
+            BilibiliProvider::NAME,
+            user_id,
+            &server_id,
+            None,
+            ProviderCredential::bilibili(HashMap::from([(
+                "SESSDATA".to_string(),
+                "cookie".to_string(),
+            )])),
+        );
+        let service = test_service_with_reader(
+            store.clone(),
+            InMemoryCredentialReader::with_records(vec![record]),
+        );
+
+        let access = service
+            .bilibili_access(user_id, None)
+            .await
+            .expect("bilibili access resolves from credential reader");
+
+        assert!(access.authenticated);
+        assert_eq!(
+            access.cookies.get("SESSDATA").map(String::as_str),
+            Some("cookie")
+        );
+        assert!(store
+            .get_raw(&CachedProviderAccessService::binding_key(
+                BilibiliProvider::NAME,
+                user_id,
+                &server_id,
+            ))
+            .await
+            .expect("binding cache read succeeds")
+            .is_some());
     }
 
     #[tokio::test]

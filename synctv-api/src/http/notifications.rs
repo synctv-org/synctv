@@ -11,14 +11,14 @@ use crate::http::middleware::RequestMetadata;
 use crate::http::validation::ProtoQuery;
 use crate::http::AppState;
 use crate::impls::EndpointRateLimitCategory;
-use crate::proto::client::{
-    DeleteNotificationRequest, GetNotificationRequest, GetNotificationResponse,
-    ListNotificationsResponse, MarkAllAsReadRequest, MarkAsReadRequest,
-};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Json,
+};
+use synctv_proto::client::{
+    DeleteNotificationRequest, GetNotificationRequest, GetNotificationResponse,
+    ListNotificationsResponse, MarkAllAsReadRequest, MarkAsReadRequest,
 };
 
 fn get_notification_api(
@@ -44,12 +44,12 @@ fn get_notification_api(
         get,
         path = "/api/notifications",
         tag = "Notification",
-        params(crate::proto::client::ListNotificationsRequest),
+        params(synctv_proto::client::ListNotificationsRequest),
         responses(
             (status = 200, description = "Notifications list", body = ListNotificationsResponse),
-            (status = 400, description = "Invalid notification filter", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Notification service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid notification filter", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Notification service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -58,7 +58,7 @@ fn get_notification_api(
 )]
 pub async fn list_notifications(
     request_meta: RequestMetadata,
-    ProtoQuery(query): ProtoQuery<crate::proto::client::ListNotificationsRequest>,
+    ProtoQuery(query): ProtoQuery<synctv_proto::client::ListNotificationsRequest>,
     State(state): State<AppState>,
 ) -> AppResult<Json<ListNotificationsResponse>> {
     let api = get_notification_api(&state)?;
@@ -92,9 +92,9 @@ pub async fn list_notifications(
         ),
         responses(
             (status = 200, description = "Notification details", body = GetNotificationResponse),
-            (status = 400, description = "Invalid notification ID", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Notification not found", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid notification ID", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Notification not found", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -135,9 +135,9 @@ pub async fn get_notification(
         request_body = MarkAsReadRequest,
         responses(
             (status = 204, description = "Notifications marked as read"),
-            (status = 400, description = "Invalid notification IDs", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Notification service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid notification IDs", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Notification service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -182,9 +182,9 @@ pub async fn mark_as_read(
         request_body = Option<MarkAllAsReadRequest>,
         responses(
             (status = 204, description = "Notifications marked as read"),
-            (status = 400, description = "Invalid timestamp", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Notification service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid timestamp", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Notification service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -233,9 +233,9 @@ pub async fn mark_all_as_read(
         ),
         responses(
             (status = 204, description = "Notification deleted"),
-            (status = 400, description = "Invalid notification ID", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Notification not found", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid notification ID", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Notification not found", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -279,8 +279,8 @@ pub async fn delete_notification(
         tag = "Notification",
         responses(
             (status = 204, description = "All read notifications deleted"),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Notification service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Notification service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -349,26 +349,26 @@ pub fn create_notification_write_router() -> axum::Router<AppState> {
 mod tests {
     #[test]
     fn test_list_notifications_request_deserializes_search_and_sort() {
-        let query: crate::proto::client::ListNotificationsRequest =
+        let query: synctv_proto::client::ListNotificationsRequest =
             serde_json::from_str(r#"{"search":"alert","sort_by":3,"sort_direction":1}"#).unwrap();
         assert_eq!(query.search, "alert");
         assert_eq!(
             query.sort_by,
-            crate::proto::client::NotificationListSortBy::Title as i32
+            synctv_proto::client::NotificationListSortBy::Title as i32
         );
         assert_eq!(
             query.sort_direction,
-            crate::proto::client::SortDirection::Asc as i32
+            synctv_proto::client::SortDirection::Asc as i32
         );
     }
 
     #[test]
     fn test_notification_path_requests_deserialize_proto_field_names() {
-        let get_request: crate::proto::client::GetNotificationRequest =
+        let get_request: synctv_proto::client::GetNotificationRequest =
             serde_json::from_str(r#"{"notification_id":42}"#).unwrap();
         assert_eq!(get_request.notification_id, 42);
 
-        let delete_request: crate::proto::client::DeleteNotificationRequest =
+        let delete_request: synctv_proto::client::DeleteNotificationRequest =
             serde_json::from_str(r#"{"notification_id":42}"#).unwrap();
         assert_eq!(delete_request.notification_id, 42);
     }

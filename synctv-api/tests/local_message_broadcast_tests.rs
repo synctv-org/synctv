@@ -17,13 +17,12 @@ use synctv_realtime::sync::{
     ConnectionLimits, ConnectionManager, RealtimeConfig, RealtimeManager, RoomMessageHub,
 };
 
-#[tokio::test]
-async fn test_realtime_manager_single_node_mode_works() {
-    let config = RealtimeConfig {
+fn local_realtime_config(node_id: &str) -> RealtimeConfig {
+    RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
         distributed_enabled: false,
-        node_id: "test_local_node".to_string(),
+        node_id: node_id.to_string(),
         dedup_window: Duration::from_mins(1),
         critical_channel_capacity: 100,
         publish_channel_capacity: 1000,
@@ -32,13 +31,15 @@ async fn test_realtime_manager_single_node_mode_works() {
         stream_max_length: 1000,
         event_handler: None,
         parent_cancel_token: None,
-    };
+    }
+}
 
-    let manager = RealtimeManager::new(config)
+#[tokio::test]
+async fn test_realtime_manager_single_node_mode_works() {
+    let manager = RealtimeManager::new(local_realtime_config("test_local_node"))
         .await
         .expect("RealtimeManager::new should succeed without Redis");
 
-    // Verify metrics show Redis is not enabled
     let metrics = manager.metrics();
     assert!(
         !metrics.distributed_enabled,
@@ -48,29 +49,13 @@ async fn test_realtime_manager_single_node_mode_works() {
 
 #[tokio::test]
 async fn test_local_subscribe_and_broadcast() {
-    let config = RealtimeConfig {
-        distributed_transport_factory: None,
-        message_runtime: Arc::new(RoomMessageHub::new()),
-        distributed_enabled: false,
-        node_id: "test_local_broadcast".to_string(),
-        dedup_window: Duration::from_mins(1),
-        critical_channel_capacity: 100,
-        publish_channel_capacity: 1000,
-        key_prefix: "synctv:".to_string(),
-        catchup_window_secs: 300,
-        stream_max_length: 1000,
-        event_handler: None,
-        parent_cancel_token: None,
-    };
-
-    let manager = RealtimeManager::new(config)
+    let manager = RealtimeManager::new(local_realtime_config("test_local_broadcast"))
         .await
         .expect("RealtimeManager::new should succeed");
 
     let room_id = RoomId::expect_positive(10_000_009);
     let user_id = UserId::expect_positive(10_000_010);
 
-    // Subscribe to room
     let (mut rx, conn_id) = manager
         .subscribe(room_id, user_id)
         .await
@@ -97,7 +82,6 @@ async fn test_local_subscribe_and_broadcast() {
         "Redis should not be used in single-node mode"
     );
 
-    // Verify message is received
     let received = tokio::time::timeout(Duration::from_millis(500), rx.recv())
         .await
         .expect("Should receive message within timeout")
@@ -110,29 +94,13 @@ async fn test_local_subscribe_and_broadcast() {
         _ => panic!("Expected ChatMessage event"),
     }
 
-    // Cleanup
     manager.unsubscribe(&conn_id);
 }
 
 #[tokio::test]
 async fn test_multiple_subscribers_receive_broadcasts() {
-    let config = RealtimeConfig {
-        distributed_transport_factory: None,
-        message_runtime: Arc::new(RoomMessageHub::new()),
-        distributed_enabled: false,
-        node_id: "test_multi_subscribers".to_string(),
-        dedup_window: Duration::from_mins(1),
-        critical_channel_capacity: 100,
-        publish_channel_capacity: 1000,
-        key_prefix: "synctv:".to_string(),
-        catchup_window_secs: 300,
-        stream_max_length: 1000,
-        event_handler: None,
-        parent_cancel_token: None,
-    };
-
     let manager = Arc::new(
-        RealtimeManager::new(config)
+        RealtimeManager::new(local_realtime_config("test_multi_subscribers"))
             .await
             .expect("RealtimeManager::new should succeed"),
     );
@@ -166,7 +134,6 @@ async fn test_multiple_subscribers_receive_broadcasts() {
         "Local broadcast should reach all 3 subscribers"
     );
 
-    // Verify all subscribers receive the message
     for (i, (rx, _)) in subscribers.iter_mut().enumerate() {
         let received = tokio::time::timeout(Duration::from_millis(500), rx.recv())
             .await
@@ -184,7 +151,6 @@ async fn test_multiple_subscribers_receive_broadcasts() {
         }
     }
 
-    // Cleanup
     for (_, conn_id) in subscribers {
         manager.unsubscribe(&conn_id);
     }
@@ -198,242 +164,21 @@ async fn test_connection_manager_works_standalone() {
     let user_id = UserId::expect_positive(10_000_010);
     let conn_id = format!("conn_{}", synctv_common::snanoid!(8));
 
-    // Register connection
     conn_manager
         .register(conn_id.clone(), user_id)
         .await
         .expect("Should register connection");
 
-    // Verify connection is tracked
     assert_eq!(conn_manager.connection_count(), 1);
 
-    // Unregister
     conn_manager.unregister(&conn_id).await;
     assert_eq!(conn_manager.connection_count(), 0);
 }
 
-/// LocalMessageBroadcaster provides local-only message broadcasting
-/// when RealtimeManager is not available (no Redis).
-///
-/// This is a lightweight wrapper around RoomMessageHub that provides
-/// the same interface as RealtimeManager for local operations.
-pub struct LocalMessageBroadcaster {
-    message_hub: Arc<synctv_realtime::sync::RoomMessageHub>,
-}
-
-impl LocalMessageBroadcaster {
-    /// Create a new local message broadcaster
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            message_hub: Arc::new(synctv_realtime::sync::RoomMessageHub::new()),
-        }
-    }
-
-    /// Subscribe to room events
-    pub async fn subscribe(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-    ) -> (
-        tokio::sync::mpsc::Receiver<synctv_realtime::sync::RealtimeEvent>,
-        String,
-    ) {
-        let connection_id = format!("{user_id}_{}", synctv_common::snanoid!(8));
-        let rx = self
-            .message_hub
-            .subscribe(room_id, user_id, connection_id.clone())
-            .await
-            .expect("subscribe should succeed");
-        (rx, connection_id)
-    }
-
-    /// Broadcast an event to room subscribers
-    pub fn broadcast(
-        &self,
-        room_id: &RoomId,
-        event: &synctv_realtime::sync::RealtimeEvent,
-    ) -> usize {
-        self.message_hub.broadcast(room_id, event)
-    }
-
-    /// Unsubscribe from room events
-    pub fn unsubscribe(&self, connection_id: &str) {
-        self.message_hub.unsubscribe(connection_id);
-    }
-}
-
-impl Default for LocalMessageBroadcaster {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[tokio::test]
-async fn test_local_message_broadcaster_basic() {
-    let broadcaster = LocalMessageBroadcaster::new();
-    let room_id = RoomId::expect_positive(10_000_009);
-    let user_id = UserId::expect_positive(10_000_010);
-
-    // Subscribe
-    let (mut rx, conn_id) = broadcaster.subscribe(room_id, user_id).await;
-
-    let event = RealtimeEvent::ChatMessage {
-        event_id: synctv_common::snanoid!(16),
-        room_id,
-        user_id: UserId::expect_positive(10_000_010),
-        username: "user1".to_string(),
-        message: "Hello from local!".to_string(),
-        timestamp: Utc::now(),
-        display_position: None,
-        display_color: None,
-    };
-
-    let sent = broadcaster.broadcast(&room_id, &event);
-    assert_eq!(sent, 1, "Should send to 1 subscriber");
-
-    // Receive
-    let received = tokio::time::timeout(Duration::from_millis(500), rx.recv())
-        .await
-        .expect("Should receive message")
-        .expect("Should have message");
-
-    match received {
-        RealtimeEvent::ChatMessage { message, .. } => {
-            assert_eq!(message, "Hello from local!");
-        }
-        _ => panic!("Expected ChatMessage"),
-    }
-
-    // Cleanup
-    broadcaster.unsubscribe(&conn_id);
-}
-
-#[tokio::test]
-async fn test_local_message_broadcaster_multiple_subscribers() {
-    let broadcaster = LocalMessageBroadcaster::new();
-    let room_id = RoomId::expect_positive(10_000_011);
-
-    let mut receivers = Vec::new();
-    let mut conn_ids = Vec::new();
-    for i in 0..3 {
-        let user_id = UserId::expect_positive(20_000 + i);
-        let (rx, conn_id) = broadcaster.subscribe(room_id, user_id).await;
-        receivers.push(rx);
-        conn_ids.push(conn_id);
-    }
-
-    let event = RealtimeEvent::ChatMessage {
-        event_id: synctv_common::snanoid!(16),
-        room_id,
-        user_id: UserId::expect_positive(10_000_012),
-        username: "broadcaster".to_string(),
-        message: "Broadcast to all".to_string(),
-        timestamp: Utc::now(),
-        display_position: None,
-        display_color: None,
-    };
-
-    let sent = broadcaster.broadcast(&room_id, &event);
-    assert_eq!(sent, 3, "Should send to all 3 subscribers");
-
-    // All should receive
-    for (i, rx) in receivers.iter_mut().enumerate() {
-        let received = tokio::time::timeout(Duration::from_millis(500), rx.recv())
-            .await
-            .unwrap_or_else(|_| panic!("Subscriber {i} should receive"))
-            .expect("Should have message");
-
-        match received {
-            RealtimeEvent::ChatMessage { message, .. } => {
-                assert_eq!(message, "Broadcast to all");
-            }
-            _ => panic!("Subscriber {i} expected ChatMessage"),
-        }
-    }
-
-    // Cleanup
-    for conn_id in conn_ids {
-        broadcaster.unsubscribe(&conn_id);
-    }
-}
-
-/// Test that a local RealtimeManager can be created on-demand.
-/// This is what ClientServiceImpl.get_realtime_manager() does internally.
-#[tokio::test]
-async fn test_lazy_realtime_manager_creation() {
-    use tokio::sync::OnceCell;
-
-    // Simulate the lazy creation pattern used in ClientServiceImpl
-    let local_realtime_manager: Arc<OnceCell<Arc<RealtimeManager>>> = Arc::new(OnceCell::new());
-
-    // First call should create the RealtimeManager
-    let cm1 = local_realtime_manager
-        .get_or_init(|| async {
-            let config = RealtimeConfig {
-                distributed_transport_factory: None,
-                message_runtime: Arc::new(RoomMessageHub::new()),
-                distributed_enabled: false,
-                node_id: format!("local_{}", synctv_common::snanoid!(8)),
-                dedup_window: Duration::from_mins(1),
-                critical_channel_capacity: 100,
-                publish_channel_capacity: 1000,
-                key_prefix: "synctv:".to_string(),
-                catchup_window_secs: 300,
-                stream_max_length: 1000,
-                event_handler: None,
-                parent_cancel_token: None,
-            };
-            Arc::new(
-                RealtimeManager::new(config)
-                    .await
-                    .expect("RealtimeManager::new should succeed without Redis"),
-            )
-        })
-        .await;
-
-    // Second call should return the same instance
-    let cm2 = local_realtime_manager
-        .get_or_init(|| async {
-            // This should not be called
-            panic!("Should not create a second RealtimeManager");
-        })
-        .await;
-
-    // Both should be the same instance
-    assert!(
-        Arc::ptr_eq(cm1, cm2),
-        "Should return the same RealtimeManager instance"
-    );
-
-    // Verify it works
-    let metrics = cm1.metrics();
-    assert!(
-        !metrics.distributed_enabled,
-        "Local RealtimeManager should not have Redis enabled"
-    );
-}
-
-/// Test that a locally-created RealtimeManager supports all necessary operations.
 #[tokio::test]
 async fn test_local_realtime_manager_supports_room_operations() {
-    let config = RealtimeConfig {
-        distributed_transport_factory: None,
-        message_runtime: Arc::new(RoomMessageHub::new()),
-        distributed_enabled: false,
-        node_id: "test_local_ops".to_string(),
-        dedup_window: Duration::from_mins(1),
-        critical_channel_capacity: 100,
-        publish_channel_capacity: 1000,
-        key_prefix: "synctv:".to_string(),
-        catchup_window_secs: 300,
-        stream_max_length: 1000,
-        event_handler: None,
-        parent_cancel_token: None,
-    };
-
     let manager = Arc::new(
-        RealtimeManager::new(config)
+        RealtimeManager::new(local_realtime_config("test_local_ops"))
             .await
             .expect("RealtimeManager::new should succeed"),
     );
@@ -441,7 +186,6 @@ async fn test_local_realtime_manager_supports_room_operations() {
     let room_id = RoomId::expect_positive(10_000_009);
     let user_id = UserId::expect_positive(10_000_010);
 
-    // Test subscribe
     let (mut rx, conn_id) = manager
         .subscribe(room_id, user_id)
         .await
@@ -453,7 +197,7 @@ async fn test_local_realtime_manager_supports_room_operations() {
         user_id,
         username: "user1".to_string(),
         permissions: RoomPermissionSet(0),
-        role: 2, // Member role
+        role: 2,
         added_permissions: RoomPermissionSet(0),
         removed_permissions: RoomPermissionSet(0),
         admin_added_permissions: RoomPermissionSet(0),
@@ -465,7 +209,6 @@ async fn test_local_realtime_manager_supports_room_operations() {
     let result = manager.broadcast(event.clone());
     assert_eq!(result.local_sent, 1, "Should send to 1 subscriber");
 
-    // Test receive
     let received = tokio::time::timeout(Duration::from_millis(500), rx.recv())
         .await
         .expect("Should receive event")
@@ -478,10 +221,8 @@ async fn test_local_realtime_manager_supports_room_operations() {
         _ => panic!("Expected UserJoined event"),
     }
 
-    // Test unsubscribe
     manager.unsubscribe(&conn_id);
 
-    // Verify no more subscribers
     let result = manager.broadcast(event);
     assert_eq!(
         result.local_sent, 0,

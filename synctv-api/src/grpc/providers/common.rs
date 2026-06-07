@@ -6,8 +6,8 @@ use crate::http::SharedApiRuntime;
 use crate::impls::admin::RequestContext;
 use synctv_core::Config;
 
-use crate::proto::providers::common::provider_common_service_server::ProviderCommonService;
-use crate::proto::providers::common::{
+use synctv_proto::providers::common::provider_common_service_server::ProviderCommonService;
+use synctv_proto::providers::common::{
     AddProviderInstanceRequest, AddProviderInstanceResponse, DeleteProviderInstanceRequest,
     DeleteProviderInstanceResponse, DisableProviderInstanceRequest,
     DisableProviderInstanceResponse, EnableProviderInstanceRequest, EnableProviderInstanceResponse,

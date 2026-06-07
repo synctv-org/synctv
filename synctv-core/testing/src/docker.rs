@@ -9,9 +9,9 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 
 pub(crate) const TEST_RUN_LABEL: &str = "synctv.test.run_id";
 
-pub(crate) struct ProcessLock(File);
+pub struct ProcessLock(File);
 
-pub(crate) struct DockerSlotGuard {
+pub struct DockerSlotGuard {
     _local_permit: SemaphorePermit<'static>,
     _process_lock: ProcessLock,
 }

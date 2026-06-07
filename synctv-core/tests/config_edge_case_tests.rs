@@ -81,7 +81,7 @@ fn test_is_trusted_proxy_invalid_entry_ignored() {
 #[test]
 fn test_database_config_debug_masks_password() {
     let config = DatabaseConfig {
-        url: "postgresql://synctv:secret_password@localhost:5432/synctv".to_string(),
+        url: "postgresql://synctv:secret_password@db.invalid/synctv".to_string(),
         ..DatabaseConfig::default()
     };
     let debug = format!("{config:?}");
@@ -99,12 +99,12 @@ fn test_database_config_debug_masks_password() {
 #[test]
 fn test_database_config_debug_no_password() {
     let config = DatabaseConfig {
-        url: "postgresql://localhost:5432/synctv".to_string(),
+        url: "postgresql://db.invalid/synctv".to_string(),
         ..DatabaseConfig::default()
     };
     let debug = format!("{config:?}");
     // No @ sign, so no masking needed
-    assert!(debug.contains("localhost:5432"));
+    assert!(debug.contains("db.invalid"));
 }
 
 // Redis config debug masking

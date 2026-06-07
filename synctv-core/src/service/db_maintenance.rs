@@ -58,6 +58,27 @@ pub struct DatabaseMaintenanceService {
 }
 
 impl DatabaseMaintenanceService {
+    fn notification_retention_days_from_config(config: &CleanupConfig) -> CoreResult<i32> {
+        u32_to_i32(
+            config.notification_retention_days,
+            "notification_retention_days",
+        )
+    }
+
+    fn notification_max_retention_days_from_config(config: &CleanupConfig) -> CoreResult<i32> {
+        u32_to_i32(
+            config.notification_max_retention_days,
+            "notification_max_retention_days",
+        )
+    }
+
+    fn expired_credential_buffer_hours_from_config(config: &CleanupConfig) -> CoreResult<i32> {
+        u32_to_i32(
+            config.expired_credential_buffer_hours,
+            "expired_credential_buffer_hours",
+        )
+    }
+
     /// Create a new maintenance service.
     #[must_use]
     pub fn new(pool: PgPool, leader_check: Arc<dyn LeaderCheck>) -> Self {
@@ -89,17 +110,11 @@ impl DatabaseMaintenanceService {
     }
 
     fn notification_retention_days(&self) -> CoreResult<i32> {
-        u32_to_i32(
-            self.config.notification_retention_days,
-            "notification_retention_days",
-        )
+        Self::notification_retention_days_from_config(&self.config)
     }
 
     fn notification_max_retention_days(&self) -> CoreResult<i32> {
-        u32_to_i32(
-            self.config.notification_max_retention_days,
-            "notification_max_retention_days",
-        )
+        Self::notification_max_retention_days_from_config(&self.config)
     }
 
     fn expired_token_retention_days(&self) -> CoreResult<i32> {
@@ -110,10 +125,7 @@ impl DatabaseMaintenanceService {
     }
 
     fn expired_credential_buffer_hours(&self) -> CoreResult<i32> {
-        u32_to_i32(
-            self.config.expired_credential_buffer_hours,
-            "expired_credential_buffer_hours",
-        )
+        Self::expired_credential_buffer_hours_from_config(&self.config)
     }
 
     fn unreferenced_file_retention_seconds(&self) -> CoreResult<i64> {
@@ -638,32 +650,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_custom_cleanup_config_is_used_by_db_maintenance() {
-        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
-        let leader = Arc::new(AlwaysLeader);
-        let svc = DatabaseMaintenanceService::new_with_options(
-            pool,
-            leader,
-            DatabaseMaintenanceOptions {
-                config: CleanupConfig {
-                    expired_credential_buffer_hours: 6,
-                    notification_retention_days: 14,
-                    notification_max_retention_days: 45,
-                    ..CleanupConfig::default()
-                },
-                ..DatabaseMaintenanceOptions::default()
-            },
+        let config = CleanupConfig {
+            expired_credential_buffer_hours: 6,
+            notification_retention_days: 14,
+            notification_max_retention_days: 45,
+            ..CleanupConfig::default()
+        };
+
+        assert_eq!(
+            DatabaseMaintenanceService::notification_retention_days_from_config(&config).unwrap(),
+            14
         );
-
-        assert_eq!(svc.notification_retention_days().unwrap(), 14);
-        assert_eq!(svc.notification_max_retention_days().unwrap(), 45);
-        assert_eq!(svc.expired_credential_buffer_hours().unwrap(), 6);
-    }
-
-    /// Dummy leader check that always returns true (for tests).
-    struct AlwaysLeader;
-    impl LeaderCheck for AlwaysLeader {
-        fn is_leader(&self) -> bool {
-            true
-        }
+        assert_eq!(
+            DatabaseMaintenanceService::notification_max_retention_days_from_config(&config)
+                .unwrap(),
+            45
+        );
+        assert_eq!(
+            DatabaseMaintenanceService::expired_credential_buffer_hours_from_config(&config)
+                .unwrap(),
+            6
+        );
     }
 }

@@ -5,58 +5,14 @@ use super::convert::*;
 use crate::impls::ApiError;
 use async_trait::async_trait;
 use std::sync::Arc;
-use std::time::Duration;
 use synctv_core::models::{
     MediaId, MemberStatus, PlaylistId, RoomGuestPermissionBits, RoomId, RoomMemberPermissionBits,
     RoomPermission, RoomPermissionSet, RoomRole, RoomStatus, UserId, UserRole, UserStatus,
 };
 use synctv_core::provider::{ProviderStore, ProviderStoreResolver, StoreError, StoreLockGuard};
-use synctv_core::RedisConnectionRuntime;
 
 fn test_public_id_codec() -> crate::PublicIdCodec {
     crate::PublicIdCodec::plain()
-}
-
-fn test_pool_without_repository_access() -> sqlx::PgPool {
-    sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .acquire_timeout(Duration::from_millis(50))
-        .connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused?connect_timeout=1")
-        .expect("lazy test pool")
-}
-
-fn test_client_api_without_repository_access() -> super::ClientApiImpl {
-    test_client_api_without_repository_access_with_runtime(
-        crate::impls::ClientApiRuntime::test_disabled(),
-    )
-}
-
-fn test_client_api_without_repository_access_with_runtime(
-    runtime: crate::impls::ClientApiRuntime,
-) -> super::ClientApiImpl {
-    let pool = test_pool_without_repository_access();
-    super::ClientApiImpl::new_with_runtime(
-        crate::impls::ClientApiConfig {
-            user_service: Arc::new(synctv_core_testing::create_test_user_service(pool.clone())),
-            room_service: Arc::new(synctv_core_testing::create_test_room_service(pool)),
-            connection_service: Arc::new(synctv_realtime::sync::ConnectionManager::new(
-                synctv_realtime::sync::ConnectionLimits::default(),
-            )),
-            config: Arc::new(synctv_core::Config::default()),
-            publish_key_service: None,
-            jwt_service: synctv_core_testing::create_test_jwt_service(),
-            live_streaming_infrastructure: None,
-            providers_manager: None,
-            settings_registry: None,
-            public_id_codec: Arc::new(test_public_id_codec()),
-            chat_service: None,
-            credential_encryption: None,
-            provider_stores: None,
-            email_api: None,
-            passkey_service: None,
-        },
-        runtime,
-    )
 }
 
 fn guest_access(permissions: RoomPermissionSet) -> super::GuestRoomAccess {
@@ -73,14 +29,11 @@ fn guest_access(permissions: RoomPermissionSet) -> super::GuestRoomAccess {
 
 #[tokio::test]
 async fn test_shared_room_actor_playlist_items_rejects_guest_without_media_resource_permission() {
-    let api = test_client_api_without_repository_access();
-    let err = api
-        .list_playlist_items_as_guest(
-            &guest_access(RoomPermissionSet::empty()),
-            crate::proto::client::ListPlaylistItemsRequest::default(),
-        )
-        .await
-        .expect_err("guest media-resource reads must be rejected before any repository lookup");
+    let err = super::ClientApiImpl::require_guest_permission(
+        &guest_access(RoomPermissionSet::empty()),
+        RoomPermission::VIEW_MEDIA_RESOURCES,
+    )
+    .expect_err("guest media-resource reads must be rejected before any repository lookup");
 
     assert!(
         matches!(err, ApiError::Authorization(ref message) if message.contains("Guests do not have permission")),
@@ -91,7 +44,6 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_without_media_resou
 #[tokio::test]
 async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resource_permission_requested(
 ) {
-    let api = test_client_api_without_repository_access();
     let requested = RoomPermissionSet(
         synctv_core::models::RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES
             | synctv_core::models::RoomAdminPermissionBits::USE_WEBRTC,
@@ -101,13 +53,11 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resou
     );
     assert!(!capped.has(synctv_core::models::RoomPermission::VIEW_MEDIA_RESOURCES));
 
-    let err = api
-        .list_playlist_items_as_guest(
-            &guest_access(capped),
-            crate::proto::client::ListPlaylistItemsRequest::default(),
-        )
-        .await
-        .expect_err("guest media-resource reads must stay rejected after guest permission capping");
+    let err = super::ClientApiImpl::require_guest_permission(
+        &guest_access(capped),
+        RoomPermission::VIEW_MEDIA_RESOURCES,
+    )
+    .expect_err("guest media-resource reads must stay rejected after guest permission capping");
 
     assert!(
         matches!(err, ApiError::Authorization(ref message) if message.contains("Guests do not have permission")),
@@ -117,21 +67,12 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resou
 
 #[tokio::test]
 async fn update_room_settings_rejects_empty_patch_before_repository_access() {
-    let api = test_client_api_without_repository_access();
-    let room_id = test_public_id_codec()
-        .encode_room_id(RoomId::expect_positive(1))
-        .expect("room id should encode");
-
-    let err = api
-        .update_room_settings(
-            &UserId::expect_positive(1),
-            &room_id,
-            crate::proto::client::UpdateRoomSettingsRequest {
-                settings: Vec::new(),
-            },
-        )
-        .await
-        .expect_err("empty settings patch must be rejected");
+    let err = super::room::validate_update_room_settings_request(
+        &synctv_proto::client::UpdateRoomSettingsRequest {
+            settings: Vec::new(),
+        },
+    )
+    .expect_err("empty settings patch must be rejected");
 
     assert!(
         matches!(err, ApiError::InvalidInput(ref message) if message.contains("settings patch")),
@@ -154,43 +95,10 @@ fn test_guest_actor_cannot_satisfy_signed_in_room_operations() {
     );
 }
 
-#[tokio::test]
-async fn test_room_actor_executor_rejects_malformed_authorization_header() {
-    let config = Arc::new(synctv_core::Config::default());
-    let api = test_client_api_without_repository_access();
-    let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
-        synctv_core_testing::create_test_jwt_service(),
-    )));
-    let request_executor = Arc::new(crate::impls::RequestExecutor::new(
-        config.clone(),
-        jwt_validator,
-        Arc::new(synctv_core::service::SecurityPipeline::new(
-            api.user_service.clone(),
-        )),
-        Arc::new(synctv_core::service::RateLimiter::local_only(
-            "test:room-actor-auth:".to_string(),
-        )),
-    ));
-    let api = Arc::new(test_client_api_without_repository_access_with_runtime(
-        crate::impls::ClientApiRuntime {
-            request_executor: Some(request_executor),
-            ..crate::impls::ClientApiRuntime::test_disabled()
-        },
-    ));
-    let metadata = crate::impls::RequestMetadata::new(crate::impls::TransportProtocol::Http)
-        .with_authorization(Some("malformed-token".to_string()));
-
-    let err = super::ClientApiImpl::execute_room_actor_endpoint(
-        api,
-        &metadata,
-        test_public_id_codec()
-            .encode_room_id(RoomId::expect_positive(1))
-            .expect("room id should encode"),
-        crate::impls::EndpointRateLimitCategory::Read,
-        |_api, _actor| async move { Ok::<_, ApiError>(()) },
-    )
-    .await
-    .expect_err("malformed authorization must fail before room actor resolution");
+#[test]
+fn test_room_actor_executor_rejects_malformed_authorization_header() {
+    let err = super::ClientApiImpl::bearer_token_from_authorization("malformed-token")
+        .expect_err("malformed authorization must fail before room actor resolution");
 
     assert!(
         matches!(err, ApiError::Authentication(ref message) if message == synctv_common::messages::INVALID_AUTHORIZATION_HEADER),
@@ -198,105 +106,30 @@ async fn test_room_actor_executor_rejects_malformed_authorization_header() {
     );
 }
 
-#[tokio::test]
-async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
-    #[derive(Clone)]
-    struct FakeRedisRuntime;
-
-    #[async_trait]
-    impl RedisConnectionRuntime for FakeRedisRuntime {
-        async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
-            panic!("snapshot should not be called in constructor-only test");
-        }
-    }
-
-    let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
-    let api = super::ClientApiImpl::new_with_runtime(
-        crate::impls::ClientApiConfig {
-            user_service: Arc::new(synctv_core::service::UserService::new_for_tests(
-            &sqlx::postgres::PgPoolOptions::new()
-                .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-                .expect("lazy pool"),
-            synctv_core::service::JwtService::new(
-                "test-secret-key-for-client-api-redis-runtime-minimum-32-chars",
-            )
-            .expect("jwt"),
-            synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 128, 60),
-            Arc::new(
-                synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                    128, 3600, 86400,
-                ),
-            ),
-            synctv_core::cache::KeyBuilder::new("test"),
-            synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
-        )),
-            room_service: Arc::new(synctv_core::service::RoomService::new_for_tests(
-            sqlx::postgres::PgPoolOptions::new()
-                .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-                .expect("lazy pool"),
-            synctv_core::service::UserService::new_for_tests(
-                &sqlx::postgres::PgPoolOptions::new()
-                    .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-                    .expect("lazy pool"),
-                synctv_core::service::JwtService::new(
-                    "test-secret-key-for-client-api-redis-runtime-minimum-32-chars",
-                )
-                .expect("jwt"),
-                synctv_core::cache::UsernameCache::local_only(
-                    "test:username:".to_string(),
-                    128,
-                    60,
-                ),
-                Arc::new(
-                    synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                        128, 3600, 86400,
-                    ),
-                ),
-                synctv_core::cache::KeyBuilder::new("test"),
-                synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
-            ),
-        )
-        .expect("room service should build")),
-            connection_service: Arc::new(synctv_realtime::sync::ConnectionManager::new(
-            synctv_realtime::sync::ConnectionLimits::default(),
-        )),
-            config: Arc::new(synctv_core::Config::default()),
-            publish_key_service: None,
-            jwt_service: synctv_core::service::JwtService::new(
-            "test-secret-key-for-client-api-redis-runtime-minimum-32-chars",
-        )
-        .expect("jwt"),
-            live_streaming_infrastructure: None,
-            providers_manager: None,
-            settings_registry: None,
-            public_id_codec: Arc::new(test_public_id_codec()),
-            chat_service: None,
-            credential_encryption: None,
-            provider_stores: None,
-            email_api: None,
-            passkey_service: None,
-        },
-        crate::impls::ClientApiRuntime {
-            redis_runtime: Some(runtime.clone()),
-            ..crate::impls::ClientApiRuntime::test_disabled()
-        },
-    );
+#[test]
+fn test_client_api_runtime_accepts_trait_object_redis_runtime() {
+    let runtime = synctv_core_testing::failing_redis_runtime();
+    let runtime_config = crate::impls::ClientApiRuntime {
+        redis_runtime: Some(runtime.clone()),
+        ..crate::impls::ClientApiRuntime::test_disabled()
+    };
 
     assert!(
-        api.redis_runtime
+        runtime_config
+            .redis_runtime
             .as_ref()
             .is_some_and(|injected| Arc::ptr_eq(injected, &runtime)),
-        "client API should retain the injected Redis runtime object"
+        "client API runtime should retain the injected Redis runtime object"
     );
 }
 
-#[tokio::test]
-async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
+#[test]
+fn test_client_api_config_accepts_trait_object_provider_store_resolver() {
     #[derive(Clone)]
-    struct FakeProviderStore;
+    struct TestProviderStore;
 
     #[async_trait]
-    impl ProviderStore for FakeProviderStore {
+    impl ProviderStore for TestProviderStore {
         async fn get_raw(&self, _key: &str) -> Result<Option<Vec<u8>>, StoreError> {
             panic!("store access should not be called in constructor-only test");
         }
@@ -323,11 +156,11 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
         }
     }
 
-    struct FakeProviderStoreResolver {
+    struct TestProviderStoreResolver {
         store: Arc<dyn ProviderStore>,
     }
 
-    impl ProviderStoreResolver for FakeProviderStoreResolver {
+    impl ProviderStoreResolver for TestProviderStoreResolver {
         fn load(&self, _name: &str) -> Arc<dyn ProviderStore> {
             self.store.clone()
         }
@@ -337,82 +170,16 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
         }
     }
 
-    let resolver: Arc<dyn ProviderStoreResolver> = Arc::new(FakeProviderStoreResolver {
-        store: Arc::new(FakeProviderStore),
+    let resolver: Arc<dyn ProviderStoreResolver> = Arc::new(TestProviderStoreResolver {
+        store: Arc::new(TestProviderStore),
     });
-    let api = super::ClientApiImpl::new_with_runtime(
-        crate::impls::ClientApiConfig {
-            user_service: Arc::new(synctv_core::service::UserService::new_for_tests(
-            &sqlx::postgres::PgPoolOptions::new()
-                .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-                .expect("lazy pool"),
-            synctv_core::service::JwtService::new(
-                "test-secret-key-for-client-api-provider-store-minimum-32-chars",
-            )
-            .expect("jwt"),
-            synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 128, 60),
-            Arc::new(
-                synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                    128, 3600, 86400,
-                ),
-            ),
-            synctv_core::cache::KeyBuilder::new("test"),
-            synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
-        )),
-            room_service: Arc::new(synctv_core::service::RoomService::new_for_tests(
-            sqlx::postgres::PgPoolOptions::new()
-                .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-                .expect("lazy pool"),
-            synctv_core::service::UserService::new_for_tests(
-                &sqlx::postgres::PgPoolOptions::new()
-                    .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-                    .expect("lazy pool"),
-                synctv_core::service::JwtService::new(
-                    "test-secret-key-for-client-api-provider-store-minimum-32-chars",
-                )
-                .expect("jwt"),
-                synctv_core::cache::UsernameCache::local_only(
-                    "test:username:".to_string(),
-                    128,
-                    60,
-                ),
-                Arc::new(
-                    synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                        128, 3600, 86400,
-                    ),
-                ),
-                synctv_core::cache::KeyBuilder::new("test"),
-                synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
-            ),
-        )
-        .expect("room service should build")),
-            connection_service: Arc::new(synctv_realtime::sync::ConnectionManager::new(
-            synctv_realtime::sync::ConnectionLimits::default(),
-        )),
-            config: Arc::new(synctv_core::Config::default()),
-            publish_key_service: None,
-            jwt_service: synctv_core::service::JwtService::new(
-            "test-secret-key-for-client-api-provider-store-minimum-32-chars",
-        )
-        .expect("jwt"),
-            live_streaming_infrastructure: None,
-            providers_manager: None,
-            settings_registry: None,
-            public_id_codec: Arc::new(test_public_id_codec()),
-            chat_service: None,
-            credential_encryption: None,
-            provider_stores: Some(resolver.clone()),
-            email_api: None,
-            passkey_service: None,
-        },
-        crate::impls::ClientApiRuntime::test_disabled(),
-    );
+    let provider_stores = Some(resolver.clone());
 
     assert!(
-        api.provider_stores
+        provider_stores
             .as_ref()
             .is_some_and(|injected| Arc::ptr_eq(injected, &resolver)),
-        "client API should retain the injected provider store resolver object"
+        "client API config should retain the injected provider store resolver object"
     );
 }
 
@@ -786,7 +553,7 @@ fn test_try_room_to_proto_basic() {
     assert_eq!(proto.member_count, 5);
     assert_eq!(
         proto.availability,
-        crate::proto::client::ResourceAvailability::Available as i32
+        synctv_proto::client::ResourceAvailability::Available as i32
     );
     assert!(!proto.is_banned);
 }
@@ -810,7 +577,7 @@ fn test_room_to_proto_banned() {
     assert!(proto.is_banned);
     assert_eq!(
         proto.availability,
-        crate::proto::client::ResourceAvailability::Available as i32
+        synctv_proto::client::ResourceAvailability::Available as i32
     );
 }
 

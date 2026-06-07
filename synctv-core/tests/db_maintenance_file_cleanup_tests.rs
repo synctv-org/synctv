@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use chrono::{Duration, Utc};
 use synctv_core::{
     models::{
-        CreateFileUploadSession, FileReferenceTarget, FileUploadSession, NewChatImage, Room,
+        CreateFileUploadSession, FileReferenceTarget, FileUploadSession, NewStoredFile, Room,
         RoomId, RoomStatus, SignupMethod, User, UserId, UserRole, UserStatus,
     },
     repository::{FileStorageRepository, RoomRepository, UserRepository},
@@ -40,8 +40,8 @@ impl FileStorageService for RecordingFileStorageService {
     async fn prepare_files(
         &self,
         _context: FileStorageContext<'_>,
-        files: Vec<NewChatImage>,
-    ) -> synctv_core::Result<Vec<NewChatImage>> {
+        files: Vec<NewStoredFile>,
+    ) -> synctv_core::Result<Vec<NewStoredFile>> {
         Ok(files)
     }
 
@@ -76,8 +76,8 @@ impl FileStorageService for FailingFileStorageService {
     async fn prepare_files(
         &self,
         _context: FileStorageContext<'_>,
-        files: Vec<NewChatImage>,
-    ) -> synctv_core::Result<Vec<NewChatImage>> {
+        files: Vec<NewStoredFile>,
+    ) -> synctv_core::Result<Vec<NewStoredFile>> {
         Ok(files)
     }
 

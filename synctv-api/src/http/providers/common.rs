@@ -16,7 +16,7 @@ use super::super::{
 };
 use super::super::{error::map_api_error, AppResult};
 use crate::impls::{ApiError, EndpointRateLimitCategory};
-use crate::proto::providers::common::{
+use synctv_proto::providers::common::{
     AddProviderInstanceRequest, AddProviderInstanceResponse, DeleteProviderInstanceRequest,
     DeleteProviderInstanceResponse, DisableProviderInstanceRequest,
     DisableProviderInstanceResponse, EnableProviderInstanceRequest, EnableProviderInstanceResponse,
@@ -56,10 +56,10 @@ pub fn register_common_routes() -> Router<AppState> {
         ),
         responses(
             (status = 200, description = "Available provider instances", body = ProviderInstancesResponse),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider registry request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider registry unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider registry request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider registry unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -103,12 +103,12 @@ pub(crate) async fn list_instances(
         ),
         responses(
             (status = 200, description = "Provider instances", body = ListProviderInstancesResponse),
-            (status = 400, description = "Invalid provider instance query", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Admin role required", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider instance request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider registry unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid provider instance query", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Admin role required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider instance request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider registry unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(("bearer_auth" = []))
     )
@@ -137,13 +137,13 @@ pub(crate) async fn list_provider_instances(
         request_body = AddProviderInstanceRequest,
         responses(
             (status = 200, description = "Provider instance added", body = AddProviderInstanceResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Admin role required", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider instance request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider instance conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider registry unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Admin role required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider instance request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider instance conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider registry unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(("bearer_auth" = []))
     )
@@ -176,14 +176,14 @@ pub(crate) async fn add_provider_instance(
         request_body = UpdateProviderInstanceRequest,
         responses(
             (status = 200, description = "Provider instance updated", body = UpdateProviderInstanceResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Admin role required", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider instance not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider instance request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider instance conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider registry unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Admin role required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider instance not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider instance request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider instance conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider registry unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(("bearer_auth" = []))
     )
@@ -217,14 +217,14 @@ pub(crate) async fn update_provider_instance(
         params(("name" = String, Path, description = "Provider instance name")),
         responses(
             (status = 200, description = "Provider instance deleted", body = DeleteProviderInstanceResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Admin role required", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider instance not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider instance request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider instance conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider registry unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Admin role required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider instance not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider instance request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider instance conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider registry unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(("bearer_auth" = []))
     )
@@ -256,14 +256,14 @@ pub(crate) async fn delete_provider_instance(
         params(("name" = String, Path, description = "Provider instance name")),
         responses(
             (status = 200, description = "Provider instance reconnected", body = ReconnectProviderInstanceResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Admin role required", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider instance not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider instance request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider instance conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider registry unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Admin role required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider instance not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider instance request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider instance conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider registry unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(("bearer_auth" = []))
     )
@@ -295,14 +295,14 @@ pub(crate) async fn reconnect_provider_instance(
         params(("name" = String, Path, description = "Provider instance name")),
         responses(
             (status = 200, description = "Provider instance enabled", body = EnableProviderInstanceResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Admin role required", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider instance not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider instance request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider instance conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider registry unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Admin role required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider instance not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider instance request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider instance conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider registry unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(("bearer_auth" = []))
     )
@@ -334,14 +334,14 @@ pub(crate) async fn enable_provider_instance(
         params(("name" = String, Path, description = "Provider instance name")),
         responses(
             (status = 200, description = "Provider instance disabled", body = DisableProviderInstanceResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Admin role required", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider instance not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider instance request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider instance conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider registry unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Admin role required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider instance not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider instance request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider instance conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider registry unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(("bearer_auth" = []))
     )
@@ -375,11 +375,11 @@ pub(crate) async fn disable_provider_instance(
         ),
         responses(
             (status = 200, description = "Enabled backends for the provider type", body = ProviderBackendsResponse),
-            (status = 400, description = "Invalid provider backend request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider registry request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider registry unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid provider backend request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider registry request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider registry unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])

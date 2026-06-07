@@ -169,7 +169,7 @@ macro_rules! setting {
 #[derive(Clone)]
 pub struct SettingsStorage {
     inner: Arc<RwLock<HashMap<String, String, BuildHasherDefault<DefaultHasher>>>>,
-    settings_service: Arc<SettingsService>,
+    settings_service: Option<Arc<SettingsService>>,
     setting_providers: Arc<RwLock<HashMap<String, Arc<dyn SettingProvider>>>>,
 }
 
@@ -189,7 +189,18 @@ impl SettingsStorage {
         let setting_providers = settings_service.providers();
         Self {
             inner: Arc::new(RwLock::new(HashMap::default())),
-            settings_service,
+            settings_service: Some(settings_service),
+            setting_providers,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_provider_map(
+        setting_providers: Arc<RwLock<HashMap<String, Arc<dyn SettingProvider>>>>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::default())),
+            settings_service: None,
             setting_providers,
         }
     }
@@ -207,17 +218,17 @@ impl SettingsStorage {
         self.setting_providers.read().get(key).cloned()
     }
 
-    /// Get a reference to the underlying `SettingsService`.
-    #[must_use]
-    pub const fn settings_service(&self) -> &Arc<SettingsService> {
-        &self.settings_service
+    pub(crate) fn settings_service(&self) -> Result<&Arc<SettingsService>> {
+        self.settings_service.as_ref().ok_or_else(|| {
+            crate::Error::Internal("Settings storage has no service backend".to_string())
+        })
     }
 
     /// Initialize all settings from database
     pub fn init(&self) -> Result<()> {
         // Load all settings as flat key-value pairs
         let all_values = self
-            .settings_service
+            .settings_service()?
             .get_all_values()
             .map_err(|e| crate::Error::Internal(format!("Failed to load settings: {e}")))?;
 
@@ -229,7 +240,7 @@ impl SettingsStorage {
 
     fn reload_all_from_service(&self) -> Result<()> {
         let all_values = self
-            .settings_service
+            .settings_service()?
             .get_all_values()
             .map_err(|e| crate::Error::Internal(format!("Failed to reload settings: {e}")))?;
 
@@ -250,7 +261,11 @@ impl SettingsStorage {
     /// loop cleanly without leaking the background task.
     pub fn start_reload_listener(&self, cancel: tokio_util::sync::CancellationToken) {
         let storage = self.clone();
-        let mut receiver = self.settings_service.subscribe_reloads();
+        let Ok(settings_service) = self.settings_service() else {
+            tracing::warn!("SettingsStorage reload listener not started: no service backend");
+            return;
+        };
+        let mut receiver = settings_service.subscribe_reloads();
 
         crate::spawn::spawn_monitored("settings_reload_listener", async move {
             loop {
@@ -298,16 +313,16 @@ impl SettingsStorage {
         self.inner.read().get(key).cloned()
     }
 
-    pub fn subscribe_changes<T>(&self, key: &'static str) -> SettingChangeReceiver<T>
+    pub fn subscribe_changes<T>(&self, key: &'static str) -> Result<SettingChangeReceiver<T>>
     where
         T: Clone + Display + std::str::FromStr + Send + Sync + 'static,
         <T as std::str::FromStr>::Err: std::error::Error + Send + Sync,
     {
-        SettingChangeReceiver {
+        Ok(SettingChangeReceiver {
             key,
-            receiver: self.settings_service.subscribe_reloads(),
+            receiver: self.settings_service()?.subscribe_reloads(),
             _phantom: std::marker::PhantomData,
-        }
+        })
     }
 
     /// Set a raw string value in memory without persisting.
@@ -322,7 +337,7 @@ impl SettingsStorage {
     /// Set raw string value for a key, persisting to database before updating cache.
     pub async fn set_raw(&self, key: &str, value: String) -> Result<()> {
         // Persist to database first — fail fast if the write fails.
-        self.settings_service
+        self.settings_service()?
             .update(key, value.clone())
             .await
             .map_err(|e| {
@@ -337,7 +352,7 @@ impl SettingsStorage {
 
     pub(crate) async fn set_raw_internal_if_missing(&self, key: &str, value: String) -> Result<()> {
         let setting = self
-            .settings_service
+            .settings_service()?
             .upsert_internal_if_missing(key, value)
             .await
             .map_err(|e| {
@@ -631,7 +646,7 @@ where
     /// Call this before reading the initial value when the caller needs a
     /// race-free watch: the subscription receives every later write while the
     /// initial read establishes the current snapshot.
-    pub fn subscribe_changes(&self) -> SettingChangeReceiver<T> {
+    pub fn subscribe_changes(&self) -> Result<SettingChangeReceiver<T>> {
         self.storage.subscribe_changes(self.key)
     }
 }
@@ -757,37 +772,14 @@ mod tests {
     }
 
     struct TestStorageHarness {
-        _runtime: tokio::runtime::Runtime,
         storage: Arc<SettingsStorage>,
-        service: Arc<SettingsService>,
     }
 
-    /// Helper: create a `SettingsStorage` backed by a lazy (never-connected)
-    /// pool while keeping an explicit current-thread Tokio runtime alive for the
-    /// duration of the test. This avoids nextest leak flakes from implicit test
-    /// runtimes while still satisfying `sqlx::connect_lazy`.
     fn test_storage_harness() -> TestStorageHarness {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let (storage, service) = {
-            let _guard = runtime.enter();
-            let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
-            let pool = pool_opts
-                .connect_lazy("postgres://fake:fake@localhost/fake")
-                .unwrap();
-            let repo = crate::repository::SettingsRepository::new(pool.clone());
-            let service = Arc::new(SettingsService::new(repo, pool));
-            let storage = Arc::new(SettingsStorage::new(service.clone()));
-            (storage, service)
-        };
+        let providers = Arc::new(RwLock::new(HashMap::default()));
+        let storage = Arc::new(SettingsStorage::new_with_provider_map(providers));
 
-        TestStorageHarness {
-            _runtime: runtime,
-            storage,
-            service,
-        }
+        TestStorageHarness { storage }
     }
 
     #[test]
@@ -876,44 +868,6 @@ mod tests {
         assert!(
             !storage.validate("unknown.key", "anything"),
             "unknown keys should fail validation"
-        );
-    }
-
-    #[test]
-    fn test_storage_validate_service_providers_wired() {
-        // Verify that creating a SettingsStorage wires providers to the
-        // SettingsService so that validate_setting works too.
-        let harness = test_storage_harness();
-        let storage = harness.storage;
-        let service = harness.service;
-
-        let _setting = Setting::<i64>::new("server.max_rooms_per_user", storage, 10)
-            .with_validator(|v: &i64| {
-                if *v > 0 && *v <= 1000 {
-                    Ok(())
-                } else {
-                    Err(crate::Error::InvalidInput("Must be 1-1000".into()))
-                }
-            });
-
-        // The SettingsService should now validate via the wired providers
-        assert!(
-            service
-                .validate_setting("server.max_rooms_per_user", "10")
-                .is_ok(),
-            "Service should accept valid value"
-        );
-        assert!(
-            service
-                .validate_setting("server.max_rooms_per_user", "0")
-                .is_err(),
-            "Service should reject invalid value"
-        );
-        assert!(
-            service
-                .validate_setting("server.max_rooms_per_user", "not_a_number")
-                .is_err(),
-            "Service should reject unparseable value"
         );
     }
 

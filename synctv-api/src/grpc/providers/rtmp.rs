@@ -6,8 +6,8 @@ use crate::http::SharedApiRuntime;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
 use synctv_core::Config;
 
-use crate::proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderService;
-use crate::proto::providers::rtmp::{
+use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderService;
+use synctv_proto::providers::rtmp::{
     CreatePublishKeyRequest, CreatePublishKeyResponse, GetStreamInfoRequest, GetStreamInfoResponse,
 };
 

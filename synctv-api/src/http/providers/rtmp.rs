@@ -7,7 +7,7 @@ use axum::{
 
 use crate::http::{error::map_api_error, middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
-use crate::proto::providers::rtmp::{
+use synctv_proto::providers::rtmp::{
     CreatePublishKeyRequest, CreatePublishKeyResponse, GetStreamInfoRequest, GetStreamInfoResponse,
 };
 
@@ -34,9 +34,9 @@ pub fn rtmp_routes() -> Router<AppState> {
         ),
         responses(
             (status = 200, description = "Publish key generated", body = CreatePublishKeyResponse),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Permission denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Room or media not found", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Permission denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Room or media not found", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -80,9 +80,9 @@ pub(crate) async fn generate_publish_key(
         ),
         responses(
             (status = 200, description = "Live stream information", body = GetStreamInfoResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Stream not found", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Stream not found", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])

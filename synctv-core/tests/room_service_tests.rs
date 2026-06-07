@@ -11,7 +11,7 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        room_settings::{AllowAutoJoin, RequireApproval},
+        room_settings::{AllowAutoJoin, MaxMembers, RequireApproval},
         Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, Playlist, PlaylistId,
         ReviewRequestId, RoomAdminPermissionBits, RoomId, RoomListQuery, RoomRole, RoomSettings,
         RoomStatus, User, UserId, UserRole, UserStatus,
@@ -127,113 +127,124 @@ fn make_user(username: &str) -> User {
     }
 }
 
+fn make_media(
+    room_id: RoomId,
+    creator_id: UserId,
+    playlist_id: Option<PlaylistId>,
+    name: &str,
+) -> Media {
+    let now = Utc::now();
+    Media {
+        id: MediaId::new(),
+        playlist_id,
+        room_id,
+        name: name.to_string(),
+        description: String::new(),
+        position: 0.0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({}),
+        provider_instance_name: None,
+        creator_id: Some(creator_id),
+        cover_file_reference_id: None,
+        added_at: now,
+        updated_at: now,
+        version: 0,
+    }
+}
+
+fn make_playlist(
+    room_id: RoomId,
+    creator_id: UserId,
+    parent_id: Option<PlaylistId>,
+    name: &str,
+) -> Playlist {
+    let now = Utc::now();
+    Playlist {
+        id: PlaylistId::new(),
+        room_id,
+        creator_id: Some(creator_id),
+        name: name.to_string(),
+        description: String::new(),
+        cover_file_reference_id: None,
+        parent_id,
+        position: 0.0,
+        source_provider: None,
+        source_config: None,
+        provider_instance_name: None,
+        created_at: now,
+        updated_at: now,
+        version: 0,
+    }
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_create_room_with_password_stores_hash() {
+async fn test_create_room_initializes_password_settings_and_playlist_state() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
     let password_repo = RoomPasswordRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("pwd_owner")).await.unwrap();
+    let password_owner = user_repo.create(&make_user("pwd_owner")).await.unwrap();
+    let open_owner = user_repo.create(&make_user("nopwd_owner")).await.unwrap();
 
-    let (room, member) = room_service
+    let (password_room, password_member) = room_service
         .create_room(
             "Password Room".to_string(),
             "A password-protected room".to_string(),
-            owner.id,
+            password_owner.id,
             Some("MySecretPassword123".to_string()),
             None,
         )
         .await
         .unwrap();
-
-    assert_eq!(room.name, "Password Room");
-    assert_eq!(member.role, RoomRole::Creator);
-
-    let credential = password_repo
-        .get_opaque_credential(&room.id)
-        .await
-        .unwrap()
-        .expect("OPAQUE room password credential should be stored");
-    assert!(
-        !credential.record.record.is_empty(),
-        "OPAQUE room password credential should contain a record"
-    );
-    assert!(
-        !credential.record.credential_identifier.is_empty(),
-        "OPAQUE room password credential should contain an identifier"
-    );
-    assert_eq!(credential.state.version, 1);
-    assert!(credential.state.enabled);
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_create_room_without_password() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-    let password_repo = RoomPasswordRepository::new(pool.clone());
-
-    let owner = user_repo.create(&make_user("nopwd_owner")).await.unwrap();
-
-    let (room, member) = room_service
+    let (open_room, open_member) = room_service
         .create_room(
             "No Password Room".to_string(),
             "An open room".to_string(),
-            owner.id,
+            open_owner.id,
             None,
             None,
         )
         .await
         .unwrap();
 
-    assert_eq!(room.name, "No Password Room");
-    assert_eq!(member.role, RoomRole::Creator);
+    assert_eq!(password_room.name, "Password Room");
+    assert_eq!(password_member.role, RoomRole::Creator);
+    assert_eq!(open_room.name, "No Password Room");
+    assert_eq!(open_member.role, RoomRole::Creator);
+
+    let credential = password_repo
+        .get_opaque_credential(&password_room.id)
+        .await
+        .unwrap()
+        .expect("OPAQUE room password credential should be stored");
+    assert!(!credential.record.record.is_empty());
+    assert!(!credential.record.credential_identifier.is_empty());
+    assert_eq!(credential.state.version, 1);
+    assert!(credential.state.enabled);
 
     assert!(
         password_repo
-            .get_opaque_credential(&room.id)
+            .get_opaque_credential(&open_room.id)
             .await
             .unwrap()
             .is_none(),
-        "OPAQUE room password credential should not be stored"
+        "open room should not store OPAQUE credentials"
     );
     assert!(
-        password_repo.get_state(&room.id).await.unwrap().is_none(),
-        "room password state row should not be stored until the feature is configured"
+        password_repo
+            .get_state(&open_room.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "open room should not store password state"
     );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_create_room_initializes_settings_version_at_one() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("settings_version_owner"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Settings Version Room".to_string(),
-            "verify initial settings version".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
 
     let (settings, version) = room_service
-        .get_room_settings_with_version(&room.id)
+        .get_room_settings_with_version(&open_room.id)
         .await
         .unwrap();
-
     assert!(settings.chat_enabled.0);
     assert!(settings.allow_auto_join.0);
     assert!(!settings.allow_guest_join.0);
@@ -241,47 +252,15 @@ async fn test_create_room_initializes_settings_version_at_one() {
         settings.max_members.0,
         RoomSettings::default().max_members.0
     );
-    assert_eq!(
-        version, 1,
-        "new rooms should persist default settings eagerly"
-    );
-}
+    assert_eq!(version, 1);
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_create_room_does_not_create_root_playlist() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("playlist_owner"))
-        .await
-        .unwrap();
-
-    let (room, _member) = room_service
-        .create_room(
-            "Playlist Room".to_string(),
-            "A room with playlist".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Verify room creation does not create any top-level playlist rows implicitly
     let playlist_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
-            .bind(room.id)
+        sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = ANY($1)")
+            .bind(vec![password_room.id.as_i64(), open_room.id.as_i64()])
             .fetch_one(&pool)
             .await
             .unwrap();
-
-    assert_eq!(
-        playlist_count, 0,
-        "Room creation should not create any playlist rows"
-    );
+    assert_eq!(playlist_count, 0);
 }
 
 #[tokio::test]
@@ -431,7 +410,6 @@ async fn test_join_room_password_required_not_provided() {
         .await
         .unwrap();
 
-    // Try to join without providing a password
     let result = room_service.join_room(room.id, joiner.id, None).await;
 
     assert!(result.is_err());
@@ -903,19 +881,15 @@ async fn test_leave_room_member_succeeds() {
         .await
         .unwrap();
 
-    // Join the room first
     room_service
         .join_room(room.id, joiner.id, None)
         .await
         .unwrap();
 
-    // Verify membership exists
     assert!(member_repo.is_member(&room.id, &joiner.id).await.unwrap());
 
-    // Leave the room
     room_service.leave_room(room.id, joiner.id).await.unwrap();
 
-    // Verify membership is gone
     assert!(!member_repo.is_member(&room.id, &joiner.id).await.unwrap());
 }
 
@@ -1215,20 +1189,16 @@ async fn test_delete_room_sets_deleted_at() {
         .await
         .unwrap();
 
-    // Room should exist
     assert!(room_repo.exists(&room.id).await.unwrap());
 
-    // Delete the room
     room_service.delete_room(room.id, owner.id).await.unwrap();
 
-    // Room should no longer be findable via normal queries (deleted_at IS NULL filter)
     let fetched = room_repo.get_by_id(&room.id).await.unwrap();
     assert!(
         fetched.is_none(),
         "Room should not be found after soft-delete"
     );
 
-    // But should still exist in DB with deleted_at set
     let deleted_at: Option<chrono::DateTime<Utc>> =
         sqlx::query_scalar("SELECT deleted_at FROM rooms WHERE id = $1")
             .bind(room.id)
@@ -1336,7 +1306,6 @@ async fn test_kicked_user_cannot_rejoin_until_cooldown_expires() {
         .await
         .unwrap();
 
-    // Join first
     room_service
         .join_room(room.id, target.id, None)
         .await
@@ -1523,78 +1492,41 @@ async fn test_room_description_over_500_rejected() {
     }
 }
 
-// Password is re-verified inside the lock with fresh data to prevent a race
-// between the first password check and the locked room update.
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_join_room_password_changed_during_join_with_correct_old_password_fails() {
-    // This test simulates the race condition scenario:
-    // With a distributed lock, the re-verification inside the lock catches this.
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo.create(&make_user("race_owner")).await.unwrap();
-    let joiner = user_repo.create(&make_user("race_joiner")).await.unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Race Test Room".to_string(),
-            String::new(),
-            owner.id,
-            Some("OriginalPassword123".to_string()),
-            None,
-        )
-        .await
-        .unwrap();
-
-    room_service
-        .update_room_password(&room.id, Some("NewPassword456".to_string()))
-        .await
-        .expect("password update should succeed");
-
-    // Now try to join with the OLD password
-    // This should fail because the password hash in DB has changed
-    // (With distributed lock, the re-verification inside lock will catch this)
-    let result = room_service
-        .join_room(room.id, joiner.id, Some("OriginalPassword123".to_string()))
-        .await;
-
-    assert!(
-        result.is_err(),
-        "Join with old password should fail after password change"
-    );
-    match result.unwrap_err() {
-        Error::Authorization(msg) => {
-            assert!(
-                msg.contains("Invalid password") || msg.contains("password"),
-                "Error should mention password: {msg}"
-            );
-        }
-        other => panic!("Expected Authorization error, got: {other:?}"),
-    }
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_join_room_password_changed_during_join_with_correct_new_password_succeeds() {
+async fn test_join_room_uses_current_password_state_after_updates() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
     let owner = user_repo
-        .create(&make_user("race_new_owner"))
+        .create(&make_user("pwd_transition_owner"))
         .await
         .unwrap();
-    let joiner = user_repo
-        .create(&make_user("race_new_joiner"))
+    let old_joiner = user_repo
+        .create(&make_user("pwd_transition_old"))
+        .await
+        .unwrap();
+    let new_joiner = user_repo
+        .create(&make_user("pwd_transition_new"))
+        .await
+        .unwrap();
+    let clear_joiner = user_repo
+        .create(&make_user("pwd_transition_clear"))
+        .await
+        .unwrap();
+    let missing_joiner = user_repo
+        .create(&make_user("pwd_transition_missing"))
+        .await
+        .unwrap();
+    let added_joiner = user_repo
+        .create(&make_user("pwd_transition_added"))
         .await
         .unwrap();
 
     let (room, _) = room_service
         .create_room(
-            "Race New Password Room".to_string(),
+            "Password Transition Room".to_string(),
             String::new(),
             owner.id,
             Some("OriginalPassword123".to_string()),
@@ -1608,127 +1540,56 @@ async fn test_join_room_password_changed_during_join_with_correct_new_password_s
         .await
         .expect("password update should succeed");
 
-    // Join with the NEW password - should succeed
     let result = room_service
-        .join_room(room.id, joiner.id, Some("NewPassword456".to_string()))
+        .join_room(
+            room.id,
+            old_joiner.id,
+            Some("OriginalPassword123".to_string()),
+        )
         .await;
+    assert!(matches!(result, Err(Error::Authorization(_))));
 
-    assert!(
-        result.is_ok(),
-        "Join with new password should succeed after password change: {:?}",
-        result.err()
-    );
-    let (joined_room, member, _members) = result.unwrap();
+    let (joined_room, member, _) = room_service
+        .join_room(room.id, new_joiner.id, Some("NewPassword456".to_string()))
+        .await
+        .expect("new password should allow join");
     assert_eq!(joined_room.id, room.id);
-    assert_eq!(member.user_id, joiner.id);
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_join_room_password_not_required_password_cleared_during_join() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("pwd_cleared_owner"))
-        .await
-        .unwrap();
-    let joiner = user_repo
-        .create(&make_user("pwd_cleared_joiner"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Password Cleared Room".to_string(),
-            String::new(),
-            owner.id,
-            Some("OriginalPassword123".to_string()),
-            None,
-        )
-        .await
-        .unwrap();
+    assert_eq!(member.user_id, new_joiner.id);
 
     room_service
         .update_room_password(&room.id, None)
         .await
         .expect("room password should be disabled");
 
-    let result = room_service.join_room(room.id, joiner.id, None).await;
-
-    assert!(
-        result.is_ok(),
-        "Join should succeed when password is no longer required: {:?}",
-        result.err()
-    );
-    let (joined_room, member, _members) = result.unwrap();
+    let (joined_room, member, _) = room_service
+        .join_room(room.id, clear_joiner.id, None)
+        .await
+        .expect("cleared password should allow join");
     assert_eq!(joined_room.id, room.id);
-    assert_eq!(member.user_id, joiner.id);
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_join_room_password_added_during_join_requires_password() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("pwd_added_owner"))
-        .await
-        .unwrap();
-    let joiner = user_repo
-        .create(&make_user("pwd_added_joiner"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Password Added Room".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+    assert_eq!(member.user_id, clear_joiner.id);
 
     room_service
-        .update_room_password(&room.id, Some("NewPassword123".to_string()))
+        .update_room_password(&room.id, Some("AddedPassword123".to_string()))
         .await
         .expect("password update should succeed");
 
-    // Join without password should fail
-    let result = room_service.join_room(room.id, joiner.id, None).await;
-
-    assert!(
-        result.is_err(),
-        "Join without password should fail when password is added"
-    );
-    match result.unwrap_err() {
-        Error::Authorization(msg) => {
-            assert!(
-                msg.contains("Password required") || msg.contains("password"),
-                "Error should mention password required: {msg}"
-            );
-        }
-        other => panic!("Expected Authorization error, got: {other:?}"),
-    }
-
-    // Join with correct password should succeed
     let result = room_service
-        .join_room(room.id, joiner.id, Some("NewPassword123".to_string()))
+        .join_room(room.id, missing_joiner.id, None)
         .await;
+    assert!(matches!(result, Err(Error::Authorization(_))));
 
-    assert!(
-        result.is_ok(),
-        "Join with correct password should succeed: {:?}",
-        result.err()
-    );
+    let (joined_room, member, _) = room_service
+        .join_room(
+            room.id,
+            added_joiner.id,
+            Some("AddedPassword123".to_string()),
+        )
+        .await
+        .expect("added password should allow join");
+    assert_eq!(joined_room.id, room.id);
+    assert_eq!(member.user_id, added_joiner.id);
 }
 
-/// Test that different users can create rooms with the same display name.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_room_creation_same_name_different_users_succeeds() {
@@ -1745,7 +1606,6 @@ async fn test_concurrent_room_creation_same_name_different_users_succeeds() {
         .await
         .unwrap();
 
-    // Both users create rooms with the same name simultaneously.
     let room_name = "Same Name Room".to_string();
 
     let (result1, result2) = tokio::join!(
@@ -1771,46 +1631,6 @@ async fn test_concurrent_room_creation_same_name_different_users_succeeds() {
             .await
             .unwrap();
     assert_eq!(room_count, 2, "Both active rooms should exist");
-}
-
-/// Test that the same user cannot create two rooms with the same name.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_same_user_cannot_create_duplicate_room_name() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let user = user_repo
-        .create(&make_user("same_user_duplicate_room"))
-        .await
-        .unwrap();
-
-    room_service
-        .create_room(
-            "Repeated Name".to_string(),
-            "Desc1".to_string(),
-            user.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    let result = room_service
-        .create_room(
-            "Repeated Name".to_string(),
-            "Desc2".to_string(),
-            user.id,
-            None,
-            None,
-        )
-        .await;
-
-    assert!(matches!(
-        result,
-        Err(Error::AlreadyExists(ref msg)) if msg == "You already have a room with this name"
-    ));
 }
 
 #[tokio::test]
@@ -1867,7 +1687,6 @@ async fn test_concurrent_same_user_duplicate_room_name_is_service_prevented() {
     assert_eq!(persisted_count, 1);
 }
 
-/// Test that the same user can still create multiple rooms when the names differ.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_same_user_can_create_multiple_rooms_with_distinct_names() {
@@ -2065,55 +1884,6 @@ async fn test_update_room_password_updates_password_state_without_settings_notif
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_password_update_allows_join_with_new_password() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("pwd_update_owner"))
-        .await
-        .unwrap();
-    let joiner = user_repo
-        .create(&make_user("pwd_update_joiner"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Password Update Room".to_string(),
-            String::new(),
-            owner.id,
-            Some("OldPassword123".to_string()),
-            None,
-        )
-        .await
-        .unwrap();
-
-    room_service
-        .update_room_password(&room.id, Some("NewPassword456".to_string()))
-        .await
-        .unwrap();
-
-    // Join with old password should fail
-    let result = room_service
-        .join_room(room.id, joiner.id, Some("OldPassword123".to_string()))
-        .await;
-    assert!(result.is_err(), "Old password should fail after update");
-
-    // Join with new password should succeed
-    let result = room_service
-        .join_room(room.id, joiner.id, Some("NewPassword456".to_string()))
-        .await;
-    assert!(
-        result.is_ok(),
-        "New password should succeed: {:?}",
-        result.err()
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_kick_member_invalidates_permission_cache() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -2140,13 +1910,11 @@ async fn test_kick_member_invalidates_permission_cache() {
         .await
         .unwrap();
 
-    // Target joins the room
     room_service
         .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
-    // Verify target is a member with permissions
     let perm_service = room_service.permission_service();
     let initial_perms = perm_service
         .get_user_permissions_eventually_consistent(&room.id, &target.id)
@@ -2175,7 +1943,6 @@ async fn test_kick_member_invalidates_permission_cache() {
         "kick should create an active cooldown"
     );
 
-    // Verify that get_user_permissions returns error for kicked user
     let perms_result = perm_service
         .get_user_permissions_no_cache(&room.id, &target.id)
         .await;
@@ -2212,13 +1979,11 @@ async fn test_kick_prevents_room_access_even_with_cached_permissions() {
         .await
         .unwrap();
 
-    // Target joins and gets permissions cached
     room_service
         .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
-    // Cache permissions
     let perm_service = room_service.permission_service();
     let _cached = perm_service
         .get_user_permissions_eventually_consistent(&room.id, &target.id)
@@ -2230,7 +1995,6 @@ async fn test_kick_prevents_room_access_even_with_cached_permissions() {
         .await
         .unwrap();
 
-    // Try to rejoin - should fail because kick cooldown is active
     let result = room_service.join_room(room.id, target.id, None).await;
     assert!(
         result.is_err(),
@@ -2396,7 +2160,6 @@ async fn test_single_setting_update_with_retry() {
         .await
         .unwrap();
 
-    // Update a single setting
     let result = room_service
         .update_room_setting(&room.id, &owner.id, "allow_guest_join", "true")
         .await;
@@ -2407,7 +2170,6 @@ async fn test_single_setting_update_with_retry() {
         result.err()
     );
 
-    // Verify the setting was updated
     let settings = room_service.get_room_settings(&room.id).await.unwrap();
     assert!(
         settings.allow_guest_join.0,
@@ -2448,7 +2210,6 @@ async fn test_password_update_with_cas_retry() {
         result.err()
     );
 
-    // Verify the new password works
     let joiner = user_repo
         .create(&make_user("pwd_retry_joiner"))
         .await
@@ -2491,23 +2252,19 @@ async fn test_room_deletion_invalidates_caches() {
         .await
         .unwrap();
 
-    // Member joins to populate caches
     room_service
         .join_room(room.id, member.id, None)
         .await
         .unwrap();
 
-    // Cache permissions
     let perm_service = room_service.permission_service();
     let _cached = perm_service
         .get_user_permissions_eventually_consistent(&room.id, &member.id)
         .await
         .unwrap();
 
-    // Delete the room
     room_service.delete_room(room.id, owner.id).await.unwrap();
 
-    // Verify room is deleted (soft-deleted, not visible via normal queries)
     let room_repo = RoomRepository::new(pool.clone());
     let fetched = room_repo.get_by_id(&room.id).await.unwrap();
     assert!(fetched.is_none(), "Room should not be found after deletion");
@@ -2573,19 +2330,23 @@ async fn test_room_password_uses_unique_salt_per_room() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_max_members_enforced_on_join() {
+async fn test_max_members_enforces_capacity_and_zero_unlimited() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("max_owner")).await.unwrap();
+    let unlimited_owner = user_repo.create(&make_user("unlim_owner")).await.unwrap();
+    let boundary_owner = user_repo
+        .create(&make_user("boundary_owner"))
+        .await
+        .unwrap();
 
-    let settings = synctv_core::models::RoomSettings {
-        max_members: synctv_core::models::room_settings::MaxMembers(3),
+    let settings = RoomSettings {
+        max_members: MaxMembers(3),
         ..Default::default()
     };
-
     let (room, _) = room_service
         .create_room(
             "Max Members Room".to_string(),
@@ -2597,126 +2358,78 @@ async fn test_max_members_enforced_on_join() {
         .await
         .unwrap();
 
-    // First joiner (count: 2)
     let joiner1 = user_repo.create(&make_user("max_joiner1")).await.unwrap();
-    let result = room_service.join_room(room.id, joiner1.id, None).await;
-    assert!(
-        result.is_ok(),
-        "First joiner should succeed: {:?}",
-        result.err()
-    );
-
-    // Second joiner (count: 3 = max)
     let joiner2 = user_repo.create(&make_user("max_joiner2")).await.unwrap();
-    let result = room_service.join_room(room.id, joiner2.id, None).await;
-    assert!(
-        result.is_ok(),
-        "Second joiner should succeed (at limit): {:?}",
-        result.err()
-    );
+    room_service
+        .join_room(room.id, joiner1.id, None)
+        .await
+        .expect("first joiner should fit below capacity");
+    room_service
+        .join_room(room.id, joiner2.id, None)
+        .await
+        .expect("second joiner should reach capacity");
 
-    // Verify current member count
     let count = member_repo.count_by_room(&room.id).await.unwrap();
-    assert_eq!(count, 3, "Should have 3 members (owner + 2 joiners)");
+    assert_eq!(count, 3);
 
-    // Third joiner should fail (would exceed max_members)
     let joiner3 = user_repo.create(&make_user("max_joiner3")).await.unwrap();
     let result = room_service.join_room(room.id, joiner3.id, None).await;
-    assert!(result.is_err(), "Third joiner should fail (exceeds max)");
+    assert!(matches!(result, Err(Error::InvalidInput(_))));
 
-    match result.unwrap_err() {
-        Error::InvalidInput(msg) => {
-            assert!(
-                msg.contains("full") || msg.contains("max") || msg.contains("capacity"),
-                "Error should mention room capacity: {msg}"
-            );
-        }
-        other => panic!("Expected InvalidInput error, got: {other:?}"),
-    }
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_max_members_zero_means_unlimited() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo.create(&make_user("unlim_owner")).await.unwrap();
-
-    let settings = synctv_core::models::RoomSettings {
-        max_members: synctv_core::models::room_settings::MaxMembers(0),
+    let unlimited_settings = RoomSettings {
+        max_members: MaxMembers(0),
         ..Default::default()
     };
-
-    let (room, _) = room_service
+    let (unlimited_room, _) = room_service
         .create_room(
             "Unlimited Room".to_string(),
             String::new(),
-            owner.id,
+            unlimited_owner.id,
             None,
-            Some(settings),
+            Some(unlimited_settings),
         )
         .await
         .unwrap();
 
-    // Add many members - all should succeed
     for i in 0..20 {
         let joiner = user_repo
             .create(&make_user(&format!("unlim_joiner_{i}")))
             .await
             .unwrap();
-        let result = room_service.join_room(room.id, joiner.id, None).await;
-        assert!(
-            result.is_ok(),
-            "Joiner {} should succeed (unlimited room): {:?}",
-            i,
-            result.err()
-        );
+        room_service
+            .join_room(unlimited_room.id, joiner.id, None)
+            .await
+            .expect("max_members=0 should allow additional members");
     }
-}
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_max_members_enforced_at_limit_boundary() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("boundary_owner"))
-        .await
-        .unwrap();
-
-    let settings = synctv_core::models::RoomSettings {
-        max_members: synctv_core::models::room_settings::MaxMembers(1),
+    let boundary_settings = RoomSettings {
+        max_members: MaxMembers(1),
         ..Default::default()
     };
-
-    let (room, _) = room_service
+    let (boundary_room, _) = room_service
         .create_room(
             "Boundary Room".to_string(),
             String::new(),
-            owner.id,
+            boundary_owner.id,
             None,
-            Some(settings),
+            Some(boundary_settings),
         )
         .await
         .unwrap();
 
-    // Any joiner should fail (room already at capacity)
     let joiner = user_repo
         .create(&make_user("boundary_joiner"))
         .await
         .unwrap();
-    let result = room_service.join_room(room.id, joiner.id, None).await;
-    assert!(result.is_err(), "Joiner should fail (room at capacity)");
+    let result = room_service
+        .join_room(boundary_room.id, joiner.id, None)
+        .await;
+    assert!(matches!(result, Err(Error::InvalidInput(_))));
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_max_members_cannot_exceed_10000() {
-    // Test that the max_members validation rejects values > 10000
     use synctv_core::models::room_settings::RoomSettingsRegistry;
 
     let result = RoomSettingsRegistry::validate_setting("max_members", "10001");
@@ -2956,7 +2669,7 @@ async fn test_get_room_settings_with_version_refreshes_local_cache_after_write()
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_set_settings_returns_committed_room_settings_snapshot() {
+async fn test_room_settings_mutations_return_committed_snapshots() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -2995,88 +2708,34 @@ async fn test_set_settings_returns_committed_room_settings_snapshot() {
         snapshot.settings.max_members.0,
         updated_settings.max_members.0
     );
-}
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_set_room_settings_returns_committed_room_settings_snapshot() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("room_settings_snapshot_owner"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Set Room Settings Snapshot Room".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    let updated_settings = RoomSettings {
-        chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+    let admin_updated_settings = RoomSettings {
+        chat_enabled: synctv_core::models::room_settings::ChatEnabled(true),
+        allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(false),
+        max_members: MaxMembers(50),
         ..RoomSettings::default()
     };
-
     let snapshot = room_service
-        .set_room_settings(&room.id, &updated_settings)
+        .set_room_settings(&room.id, &admin_updated_settings)
         .await
         .expect("admin room settings update should return committed snapshot");
 
-    assert_eq!(snapshot.version, 2);
-    assert!(!snapshot.settings.chat_enabled.0);
+    assert_eq!(snapshot.version, 3);
+    assert!(snapshot.settings.chat_enabled.0);
+    assert!(!snapshot.settings.allow_guest_join.0);
     assert_eq!(
         snapshot.settings.max_members.0,
-        updated_settings.max_members.0
+        admin_updated_settings.max_members.0
     );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_reset_room_settings_returns_committed_room_settings_snapshot() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("reset_settings_snapshot_owner"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Reset Room Settings Snapshot Room".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    let updated_settings = RoomSettings {
-        chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
-        ..RoomSettings::default()
-    };
-    room_service
-        .set_room_settings(&room.id, &updated_settings)
-        .await
-        .expect("room settings should be customized before reset");
 
     let snapshot = room_service
         .reset_room_settings(&room.id, &owner.id)
         .await
         .expect("reset should return committed snapshot");
 
-    assert_eq!(snapshot.version, 3);
+    assert_eq!(snapshot.version, 4);
     assert!(snapshot.settings.chat_enabled.0);
+    assert!(!snapshot.settings.allow_guest_join.0);
     assert_eq!(
         snapshot.settings.max_members.0,
         RoomSettings::default().max_members.0
@@ -3290,24 +2949,10 @@ async fn test_remove_media_respects_admin_override_columns() {
     .await
     .unwrap();
 
-    let now = Utc::now();
-    let media = Media {
-        id: MediaId::new(),
-        playlist_id: None,
-        room_id: room.id,
-        name: "Protected Media".to_string(),
-        description: String::new(),
-        position: 0.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({}),
-        provider_instance_name: None,
-        creator_id: Some(owner.id),
-        cover_file_reference_id: None,
-        added_at: now,
-        updated_at: now,
-        version: 0,
-    };
-    let media = media_repo.create(&media).await.unwrap();
+    let media = media_repo
+        .create(&make_media(room.id, owner.id, None, "Protected Media"))
+        .await
+        .unwrap();
 
     let result = room_service.remove_media(room.id, admin.id, media.id).await;
     assert!(
@@ -3341,65 +2986,23 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
         .await
         .unwrap();
 
-    let now = Utc::now();
-
     let top_level_playlist = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: "Folder".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: now,
-            updated_at: now,
-            version: 0,
-        })
+        .create(&make_playlist(room.id, owner.id, None, "Folder"))
         .await
         .unwrap();
 
     let root_media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: None,
-            room_id: room.id,
-            name: "root-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: now,
-            updated_at: now,
-            version: 0,
-        })
+        .create(&make_media(room.id, owner.id, None, "root-media"))
         .await
         .unwrap();
 
     let child_media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: Some(top_level_playlist.id),
-            room_id: room.id,
-            name: "child-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: now,
-            updated_at: now,
-            version: 0,
-        })
+        .create(&make_media(
+            room.id,
+            owner.id,
+            Some(top_level_playlist.id),
+            "child-media",
+        ))
         .await
         .unwrap();
 
@@ -3475,24 +3078,8 @@ async fn test_leave_room_removes_owned_resources_before_former_member_can_delete
         .await
         .unwrap();
 
-    let now = Utc::now();
     let media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: None,
-            room_id: room.id,
-            name: "owned-before-leave".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(member.id),
-            cover_file_reference_id: None,
-            added_at: now,
-            updated_at: now,
-            version: 0,
-        })
+        .create(&make_media(room.id, member.id, None, "owned-before-leave"))
         .await
         .unwrap();
 
@@ -3538,43 +3125,12 @@ async fn test_get_playlist_only_returns_room_root_media() {
         .await
         .unwrap();
 
-    let now = Utc::now();
     let media_a = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: None,
-            room_id: room_a.id,
-            name: "room-a-root".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: now,
-            updated_at: now,
-            version: 0,
-        })
+        .create(&make_media(room_a.id, owner.id, None, "room-a-root"))
         .await
         .unwrap();
     media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: None,
-            room_id: room_b.id,
-            name: "room-b-root".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: now,
-            updated_at: now,
-            version: 0,
-        })
+        .create(&make_media(room_b.id, owner.id, None, "room-b-root"))
         .await
         .unwrap();
 
@@ -3620,22 +3176,7 @@ async fn test_delete_entries_allows_foreign_playlist_delete_with_delete_any_perm
     member_repo.add(&admin_member).await.unwrap();
 
     let playlist = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: "Granted Delete".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_playlist(room.id, owner.id, None, "Granted Delete"))
         .await
         .unwrap();
 
@@ -3705,22 +3246,7 @@ async fn test_delete_entries_denies_foreign_playlist_delete_when_delete_any_revo
         .unwrap();
 
     let playlist = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: "Revoked Delete".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_playlist(room.id, owner.id, None, "Revoked Delete"))
         .await
         .unwrap();
 
@@ -3777,22 +3303,7 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
         .unwrap();
 
     let media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: None,
-            room_id: room.id,
-            name: "foreign-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_media(room.id, owner.id, None, "foreign-media"))
         .await
         .unwrap();
 
@@ -3837,22 +3348,7 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
         .unwrap();
 
     let media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: None,
-            room_id: room.id,
-            name: "notify-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_media(room.id, owner.id, None, "notify-media"))
         .await
         .unwrap();
 
@@ -3910,43 +3406,12 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
         .unwrap();
 
     let media1 = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: None,
-            room_id: room.id,
-            name: "clear-notify-1".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_media(room.id, owner.id, None, "clear-notify-1"))
         .await
         .unwrap();
-    let media2 = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: None,
-            room_id: room.id,
-            name: "clear-notify-2".to_string(),
-            description: String::new(),
-            position: 1.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
-        .await
-        .unwrap();
+    let mut media2_template = make_media(room.id, owner.id, None, "clear-notify-2");
+    media2_template.position = 1.0;
+    let media2 = media_repo.create(&media2_template).await.unwrap();
 
     let mut event_rx = room_service.notification_service().subscribe();
 
@@ -4004,22 +3469,7 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
         .unwrap();
 
     let media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: None,
-            room_id: room.id,
-            name: "playing-root-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_media(room.id, owner.id, None, "playing-root-media"))
         .await
         .unwrap();
 
@@ -4080,80 +3530,30 @@ async fn test_clear_playlist_scope_keeps_target_playlist_and_removes_children() 
         .unwrap();
 
     let parent = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: "Parent".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_playlist(room.id, owner.id, None, "Parent"))
         .await
         .unwrap();
     let child = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: "Child".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: Some(parent.id),
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_playlist(room.id, owner.id, Some(parent.id), "Child"))
         .await
         .unwrap();
 
     let parent_media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: Some(parent.id),
-            room_id: room.id,
-            name: "parent-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_media(
+            room.id,
+            owner.id,
+            Some(parent.id),
+            "parent-media",
+        ))
         .await
         .unwrap();
     let child_media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: Some(child.id),
-            room_id: room.id,
-            name: "child-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_media(
+            room.id,
+            owner.id,
+            Some(child.id),
+            "child-media",
+        ))
         .await
         .unwrap();
 
@@ -4204,81 +3604,30 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
         .unwrap();
 
     let parent = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: "Parent".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_playlist(room.id, owner.id, None, "Parent"))
         .await
         .unwrap();
     let child = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: "Child".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: Some(parent.id),
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_playlist(room.id, owner.id, Some(parent.id), "Child"))
         .await
         .unwrap();
 
-    let now = Utc::now();
     let parent_media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: Some(parent.id),
-            room_id: room.id,
-            name: "parent-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: now,
-            updated_at: now,
-            version: 0,
-        })
+        .create(&make_media(
+            room.id,
+            owner.id,
+            Some(parent.id),
+            "parent-media",
+        ))
         .await
         .unwrap();
     let child_media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: Some(child.id),
-            room_id: room.id,
-            name: "child-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: now,
-            updated_at: now,
-            version: 0,
-        })
+        .create(&make_media(
+            room.id,
+            owner.id,
+            Some(child.id),
+            "child-media",
+        ))
         .await
         .unwrap();
 
@@ -4340,42 +3689,17 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
         .unwrap();
 
     let playlist = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: "Cascade Playlist".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_playlist(room.id, owner.id, None, "Cascade Playlist"))
         .await
         .unwrap();
 
     let media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: Some(playlist.id),
-            room_id: room.id,
-            name: "cascade-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_media(
+            room.id,
+            owner.id,
+            Some(playlist.id),
+            "cascade-media",
+        ))
         .await
         .unwrap();
 
@@ -4433,22 +3757,7 @@ async fn test_delete_entries_notifies_local_playlist_deleted_subscribers() {
         .unwrap();
 
     let playlist = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: "notify-playlist".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_playlist(room.id, owner.id, None, "notify-playlist"))
         .await
         .unwrap();
 
@@ -4484,10 +3793,11 @@ async fn test_delete_entries_notifies_local_playlist_deleted_subscribers() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_entries_rejects_currently_playing_media_without_force() {
+async fn test_delete_entries_rejects_currently_playing_resources_without_force() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
     let owner = user_repo
@@ -4506,22 +3816,7 @@ async fn test_delete_entries_rejects_currently_playing_media_without_force() {
         .unwrap();
 
     let media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: None,
-            room_id: room.id,
-            name: "playing-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_media(room.id, owner.id, None, "playing-media"))
         .await
         .unwrap();
 
@@ -4548,22 +3843,8 @@ async fn test_delete_entries_rejects_currently_playing_media_without_force() {
         "deleting currently playing media without force must be rejected"
     );
     assert!(media_repo.get_by_id(&media.id).await.unwrap().is_some());
-}
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_delete_entries_rejects_ancestor_playlist_of_currently_playing_media_without_force() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let media_repo = MediaRepository::new(pool.clone());
-    let playlist_repo = PlaylistRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("delete_entries_playing_playlist_owner"))
-        .await
-        .unwrap();
-    let (room, _) = room_service
+    let (playlist_room, _) = room_service
         .create_room(
             "Delete Entries Playing Playlist".to_string(),
             String::new(),
@@ -4575,73 +3856,44 @@ async fn test_delete_entries_rejects_ancestor_playlist_of_currently_playing_medi
         .unwrap();
 
     let parent = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: "parent".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_playlist(playlist_room.id, owner.id, None, "parent"))
         .await
         .unwrap();
     let child = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: "child".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: Some(parent.id),
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_playlist(
+            playlist_room.id,
+            owner.id,
+            Some(parent.id),
+            "child",
+        ))
         .await
         .unwrap();
 
-    let media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: Some(child.id),
-            room_id: room.id,
-            name: "deep-playing-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+    let child_media = media_repo
+        .create(&make_media(
+            playlist_room.id,
+            owner.id,
+            Some(child.id),
+            "deep-playing-media",
+        ))
         .await
         .unwrap();
 
     room_service
         .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(
+            playlist_room.id,
+            owner.id,
+            Some(child_media.id),
+            None,
+            Vec::new(),
+        )
         .await
         .unwrap();
 
     let result = room_service
         .delete_entries(
-            room.id,
+            playlist_room.id,
             owner.id,
             synctv_core::service::room::DeleteEntriesRequest {
                 playlist_ids: vec![parent.id],
@@ -4660,10 +3912,11 @@ async fn test_delete_entries_rejects_ancestor_playlist_of_currently_playing_medi
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_media() {
+async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_resources() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
     let owner = user_repo
@@ -4682,22 +3935,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_med
         .unwrap();
 
     let media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: None,
-            room_id: room.id,
-            name: "force-playing-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_media(room.id, owner.id, None, "force-playing-media"))
         .await
         .unwrap();
 
@@ -4732,22 +3970,8 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_med
     assert!(state.playing_playlist_id.is_none());
     assert!(!state.is_playing);
     assert_f64_eq(state.position, 0.0);
-}
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_playlist() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let media_repo = MediaRepository::new(pool.clone());
-    let playlist_repo = PlaylistRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("delete_entries_force_playlist_owner"))
-        .await
-        .unwrap();
-    let (room, _) = room_service
+    let (playlist_room, _) = room_service
         .create_room(
             "Delete Entries Force Playlist".to_string(),
             String::new(),
@@ -4759,72 +3983,42 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
         .unwrap();
 
     let parent = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: "force-parent".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_playlist(
+            playlist_room.id,
+            owner.id,
+            None,
+            "force-parent",
+        ))
         .await
         .unwrap();
     let child = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: "force-child".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: Some(parent.id),
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_playlist(
+            playlist_room.id,
+            owner.id,
+            Some(parent.id),
+            "force-child",
+        ))
         .await
         .unwrap();
     let media = media_repo
-        .create(&Media {
-            id: MediaId::new(),
-            playlist_id: Some(child.id),
-            room_id: room.id,
-            name: "force-deep-playing-media".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
-            provider_instance_name: None,
-            creator_id: Some(owner.id),
-            cover_file_reference_id: None,
-            added_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
+        .create(&make_media(
+            playlist_room.id,
+            owner.id,
+            Some(child.id),
+            "force-deep-playing-media",
+        ))
         .await
         .unwrap();
 
     room_service
         .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(playlist_room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .unwrap();
 
     let result = room_service
         .delete_entries(
-            room.id,
+            playlist_room.id,
             owner.id,
             synctv_core::service::room::DeleteEntriesRequest {
                 playlist_ids: vec![parent.id],
@@ -4846,7 +4040,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
 
     let state = room_service
         .playback_service()
-        .get_state(&room.id)
+        .get_state(&playlist_room.id)
         .await
         .unwrap();
     assert!(state.playing_media_id.is_none());
@@ -4857,7 +4051,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_room_name_unicode_validation() {
+async fn test_create_room_preserves_supported_name_and_description_text() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -4867,9 +4061,8 @@ async fn test_room_name_unicode_validation() {
         .await
         .unwrap();
 
-    // Room name with various Unicode characters
-    let unicode_name = "Room \u{4e2d}\u{6587} \u{65e5}\u{672c}\u{8a9e} \u{c0}\u{e9}\u{f1}"; // Chinese, Japanese, accented
-    let (room, _) = room_service
+    let unicode_name = "Room \u{4e2d}\u{6587} \u{65e5}\u{672c}\u{8a9e} \u{c0}\u{e9}\u{f1}";
+    let (unicode_room, _) = room_service
         .create_room(
             unicode_name.to_string(),
             String::new(),
@@ -4879,23 +4072,10 @@ async fn test_room_name_unicode_validation() {
         )
         .await
         .unwrap();
+    assert_eq!(unicode_room.name, unicode_name);
 
-    assert_eq!(room.name, unicode_name);
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_room_name_whitespace_handling() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo.create(&make_user("ws_owner")).await.unwrap();
-
-    // Room name with leading/trailing whitespace - should be preserved as-is
-    // (validation may trim in the future, but current behavior preserves)
     let name_with_spaces = "  Room with spaces  ";
-    let result = room_service
+    let (spaced_room, _) = room_service
         .create_room(
             name_with_spaces.to_string(),
             String::new(),
@@ -4903,28 +4083,12 @@ async fn test_room_name_whitespace_handling() {
             None,
             None,
         )
-        .await;
+        .await
+        .unwrap();
+    assert_eq!(spaced_room.name, name_with_spaces);
 
-    // The room creation should succeed (validator allows spaces)
-    assert!(
-        result.is_ok(),
-        "Room with whitespace should be created: {:?}",
-        result.err()
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_room_description_with_newlines() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo.create(&make_user("newline_owner")).await.unwrap();
-
-    // Description with newlines (within 500 chars)
     let description = "Line 1\nLine 2\nLine 3\n\nParagraph 2";
-    let (room, _) = room_service
+    let (description_room, _) = room_service
         .create_room(
             "Newline Room".to_string(),
             description.to_string(),
@@ -4935,7 +4099,7 @@ async fn test_room_description_with_newlines() {
         .await
         .unwrap();
 
-    assert_eq!(room.description, description);
+    assert_eq!(description_room.description, description);
 }
 
 #[tokio::test]
@@ -4959,13 +4123,11 @@ async fn test_cannot_join_closed_room() {
         .await
         .unwrap();
 
-    // Close the room via admin operation
     room_service
         .update_room_status(&room.id, synctv_core::models::RoomStatus::Closed)
         .await
         .unwrap();
 
-    // Try to join the closed room
     let result = room_service.join_room(room.id, joiner.id, None).await;
     assert!(result.is_err(), "Should not be able to join closed room");
 
@@ -4977,63 +4139,6 @@ async fn test_cannot_join_closed_room() {
             );
         }
         other => panic!("Expected InvalidInput error, got: {other:?}"),
-    }
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_cannot_join_banned_room() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("banned_room_owner"))
-        .await
-        .unwrap();
-    let joiner = user_repo
-        .create(&make_user("banned_room_joiner"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "To Be Banned Room".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    // First, joiner joins the room
-    room_service
-        .join_room(room.id, joiner.id, None)
-        .await
-        .unwrap();
-
-    // Now kick the joiner from the room
-    room_service
-        .kick_member(room.id, owner.id, joiner.id, 3600)
-        .await
-        .unwrap();
-
-    // Try to join again - should fail because kick cooldown is active
-    let result = room_service.join_room(room.id, joiner.id, None).await;
-    assert!(
-        result.is_err(),
-        "Should not be able to join room during kick cooldown"
-    );
-
-    match result.unwrap_err() {
-        Error::Authorization(msg) => {
-            assert!(
-                msg.contains("recently kicked") || msg.contains("cooldown"),
-                "Error should mention kick cooldown: {msg}"
-            );
-        }
-        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -5056,8 +4161,6 @@ async fn test_room_creation_creates_all_related_records_atomically() {
         )
         .await
         .unwrap();
-
-    // Verify all related records were created
 
     let room_repo = RoomRepository::new(pool.clone());
     assert!(room_repo.exists(&room.id).await.unwrap());
@@ -5112,7 +4215,6 @@ async fn test_non_creator_cannot_delete_room() {
         .await
         .unwrap();
 
-    // Non-creator tries to delete the room
     let result = room_service.delete_room(room.id, other_user.id).await;
     assert!(
         result.is_err(),
@@ -5298,23 +4400,22 @@ async fn test_admin_delete_room_bypasses_permission_check() {
         .await
         .unwrap();
 
-    // Admin delete (bypasses permission check)
     room_service
         .admin_delete_room(&room.id, &admin_user.id)
         .await
         .unwrap();
 
-    // Room should be soft-deleted
     let fetched = room_repo.get_by_id(&room.id).await.unwrap();
     assert!(fetched.is_none(), "Room should be soft-deleted");
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_admin_delete_room_requires_admin_role() {
+async fn test_admin_delete_room_requires_admin_or_root_role() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("owner")).await.unwrap();
     let (room, _) = room_service
@@ -5324,7 +4425,6 @@ async fn test_admin_delete_room_requires_admin_role() {
 
     let regular_user = user_repo.create(&make_user("regular_user")).await.unwrap();
 
-    // Non-admin user should NOT be able to call admin_delete_room
     let result = room_service
         .admin_delete_room(&room.id, &regular_user.id)
         .await;
@@ -5341,15 +4441,12 @@ async fn test_admin_delete_room_requires_admin_role() {
         panic!("Expected Authorization error, got {result:?}");
     }
 
-    // Room should still exist (not deleted)
-    let room_repo = RoomRepository::new(pool.clone());
     let fetched = room_repo.get_by_id(&room.id).await.unwrap();
     assert!(
         fetched.is_some(),
         "Room should still exist after failed admin delete"
     );
 
-    // Now test with an actual admin user
     let mut admin_user = user_repo.create(&make_user("admin_user")).await.unwrap();
     admin_user.role = UserRole::Admin;
     user_repo
@@ -5357,27 +4454,16 @@ async fn test_admin_delete_room_requires_admin_role() {
         .await
         .unwrap();
 
-    // Admin user should be able to call admin_delete_room
     room_service
         .admin_delete_room(&room.id, &admin_user.id)
         .await
         .unwrap();
 
-    // Room should be soft-deleted
     let fetched = room_repo.get_by_id(&room.id).await.unwrap();
     assert!(fetched.is_none(), "Room should be soft-deleted by admin");
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_admin_delete_room_requires_root_role() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("owner2")).await.unwrap();
-    let (room, _) = room_service
+    let (root_room, _) = room_service
         .create_room(
             "Test Room 2".to_string(),
             String::new(),
@@ -5388,7 +4474,6 @@ async fn test_admin_delete_room_requires_root_role() {
         .await
         .unwrap();
 
-    // Root user should also be able to call admin_delete_room
     let mut root_user = user_repo.create(&make_user("root_user")).await.unwrap();
     root_user.role = UserRole::Root;
     user_repo
@@ -5396,14 +4481,12 @@ async fn test_admin_delete_room_requires_root_role() {
         .await
         .unwrap();
 
-    // Root user should be able to call admin_delete_room
     room_service
-        .admin_delete_room(&room.id, &root_user.id)
+        .admin_delete_room(&root_room.id, &root_user.id)
         .await
         .unwrap();
 
-    // Room should be soft-deleted
-    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    let fetched = room_repo.get_by_id(&root_room.id).await.unwrap();
     assert!(fetched.is_none(), "Room should be soft-deleted by root");
 }
 
@@ -5429,10 +4512,8 @@ async fn test_delete_nonexistent_room_returns_error() {
         .await
         .unwrap();
 
-    // Delete the room first
     room_service.delete_room(room.id, owner.id).await.unwrap();
 
-    // Try to delete the already-deleted room - should fail
     let result = room_service.delete_room(room.id, owner.id).await;
     assert!(result.is_err(), "Deleting already-deleted room should fail");
 
@@ -5445,37 +4526,6 @@ async fn test_delete_nonexistent_room_returns_error() {
         }
         other => panic!("Expected NotFound error, got: {other:?}"),
     }
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_double_delete_room_returns_error() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("double_del_owner"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Double Delete Room".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    // First delete should succeed
-    room_service.delete_room(room.id, owner.id).await.unwrap();
-
-    // Second delete should fail
-    let result = room_service.delete_room(room.id, owner.id).await;
-    assert!(result.is_err(), "Double delete should fail");
 }
 
 #[tokio::test]
@@ -5502,14 +4552,12 @@ async fn test_get_member_count_batch_efficient_query() {
         room_ids.push(room.id);
     }
 
-    // Get batch member counts
     let room_id_refs: Vec<_> = room_ids.iter().collect();
     let counts = room_service
         .get_member_count_batch(&room_id_refs)
         .await
         .unwrap();
 
-    // Each room should have 1 member (the creator)
     for room_id in &room_ids {
         assert_eq!(
             counts.get(room_id).unwrap_or(&0),
@@ -5539,12 +4587,10 @@ async fn test_room_exists_is_efficient() {
         .await
         .unwrap();
 
-    // room_exists should return true for existing room
     assert!(room_service.room_exists(&room.id).await.unwrap());
 
-    // room_exists should return false for nonexistent room
-    let fake_room_id = synctv_core::models::RoomId::new();
-    assert!(!room_service.room_exists(&fake_room_id).await.unwrap());
+    let missing_room_id = synctv_core::models::RoomId::new();
+    assert!(!room_service.room_exists(&missing_room_id).await.unwrap());
 }
 
 #[tokio::test]
@@ -5557,7 +4603,6 @@ async fn test_list_rooms_by_creator() {
     let owner = user_repo.create(&make_user("list_owner")).await.unwrap();
     let other = user_repo.create(&make_user("list_other")).await.unwrap();
 
-    // Owner creates 3 rooms
     for i in 0..3 {
         room_service
             .create_room(
@@ -5571,7 +4616,6 @@ async fn test_list_rooms_by_creator() {
             .unwrap();
     }
 
-    // Other creates 2 rooms
     for i in 0..2 {
         room_service
             .create_room(
@@ -5585,7 +4629,6 @@ async fn test_list_rooms_by_creator() {
             .unwrap();
     }
 
-    // List rooms by owner
     let (rooms, total) = room_service
         .list_rooms_by_creator(&owner.id, synctv_core::models::PageParams::default())
         .await
@@ -5763,7 +4806,6 @@ async fn test_list_rooms_pagination() {
             .unwrap();
     }
 
-    // Request first page
     let page1 = synctv_core::models::PageParams {
         page: 1,
         page_size: 10,
@@ -5776,7 +4818,6 @@ async fn test_list_rooms_pagination() {
     assert_eq!(total, 15, "Total should be 15");
     assert_eq!(rooms.len(), 10, "First page should have 10 rooms");
 
-    // Request second page
     let page2 = synctv_core::models::PageParams {
         page: 2,
         page_size: 10,
@@ -5818,7 +4859,6 @@ async fn test_guest_cannot_join_password_protected_room() {
         .await
         .unwrap();
 
-    // Check guest access should fail (password required)
     let result = room_service.check_guest_allowed(&room.id, None).await;
     assert!(
         result.is_err(),
@@ -5864,7 +4904,6 @@ async fn test_check_guest_allowed_when_disabled_globally() {
         .await
         .unwrap();
 
-    // Without settings_registry, should deny guest access (fail-closed)
     let result = room_service.check_guest_allowed(&room.id, None).await;
     assert!(
         result.is_err(),
@@ -5874,13 +4913,17 @@ async fn test_check_guest_allowed_when_disabled_globally() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_room_description_success() {
+async fn test_update_room_description_enforces_permissions_and_length() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
     let owner = user_repo
         .create(&make_user("desc_update_owner"))
+        .await
+        .unwrap();
+    let outsider = user_repo
+        .create(&make_user("desc_perm_outsider"))
         .await
         .unwrap();
 
@@ -5894,85 +4937,21 @@ async fn test_update_room_description_success() {
         )
         .await
         .unwrap();
-
     assert_eq!(room.description, "Original description");
 
-    // Update description
     let new_description = "Updated description with more details";
     let updated_room = room_service
         .update_room_description(&room.id, &owner.id, new_description.to_string())
         .await
         .unwrap();
-
     assert_eq!(updated_room.description, new_description);
-}
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_update_room_description_too_long_fails() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("desc_long_owner"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Description Long Room".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Try to set description longer than 500 chars
     let long_description = "x".repeat(501);
     let result = room_service
         .update_room_description(&room.id, &owner.id, long_description)
         .await;
-
     assert!(result.is_err(), "Description > 500 chars should fail");
-}
 
-/// Test: User without `UPDATE_ROOM_SETTINGS` permission cannot update room description
-///
-/// This verifies that the permission check is enforced for description updates.
-/// Only room owner (or users with `UPDATE_ROOM_SETTINGS` permission) should be able
-/// to modify the room description.
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_update_room_description_permission_denied() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("desc_perm_owner"))
-        .await
-        .unwrap();
-
-    let outsider = user_repo
-        .create(&make_user("desc_perm_outsider"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Permission Check Room".to_string(),
-            "Original description".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Outsider tries to update description - should be denied
     let result = room_service
         .update_room_description(&room.id, &outsider.id, "Hacked description".to_string())
         .await;
@@ -5991,45 +4970,8 @@ async fn test_update_room_description_permission_denied() {
         "Error should indicate permission denied or not a member: {err_str}"
     );
 
-    // Verify description was NOT changed
     let room_after = room_service.get_room(&room.id).await.unwrap();
-    assert_eq!(room_after.description, "Original description");
-}
-
-/// Test: Room owner can update room description (has implicit `UPDATE_ROOM_SETTINGS`)
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_update_room_description_owner_allowed() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("desc_owner_allowed"))
-        .await
-        .unwrap();
-
-    let (room, _) = room_service
-        .create_room(
-            "Owner Update Room".to_string(),
-            "Original".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Owner should be able to update description
-    let updated = room_service
-        .update_room_description(&room.id, &owner.id, "Owner updated this".to_string())
-        .await;
-
-    assert!(
-        updated.is_ok(),
-        "Owner should be able to update description"
-    );
-    assert_eq!(updated.unwrap().description, "Owner updated this");
+    assert_eq!(room_after.description, new_description);
 }
 
 #[tokio::test]
@@ -6054,18 +4996,14 @@ async fn test_join_room_idempotent_same_user() {
         .await
         .unwrap();
 
-    // First join
     let result1 = room_service.join_room(room.id, joiner.id, None).await;
     assert!(result1.is_ok(), "First join should succeed");
 
-    // Get member count after first join
     let count1 = member_repo.count_by_room(&room.id).await.unwrap();
 
-    // Second join (idempotent)
     let result2 = room_service.join_room(room.id, joiner.id, None).await;
     assert!(result2.is_ok(), "Second join should succeed (idempotent)");
 
-    // Member count should be the same
     let count2 = member_repo.count_by_room(&room.id).await.unwrap();
     assert_eq!(
         count1, count2,
@@ -6073,14 +5011,12 @@ async fn test_join_room_idempotent_same_user() {
     );
 }
 
-/// `RoomSettings::max_members` is enforced when joining.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_max_members_read_from_room_settings_on_join() {
+async fn test_create_room_persists_default_max_members_setting() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
     let settings_repo = RoomSettingsRepository::new(pool.clone());
 
     let owner = user_repo
@@ -6099,49 +5035,11 @@ async fn test_max_members_read_from_room_settings_on_join() {
         .await
         .unwrap();
 
-    // Verify default max_members in settings
     let settings = settings_repo.get(&room.id).await.unwrap();
     assert_eq!(
         settings.max_members.0, 100,
         "Default max_members should be 100"
     );
-
-    // Add 99 more members to reach the limit (owner + 99 = 100)
-    for i in 0..99 {
-        let joiner = user_repo
-            .create(&make_user(&format!("settings_joiner_{i}")))
-            .await
-            .unwrap();
-        let result = room_service.join_room(room.id, joiner.id, None).await;
-        assert!(
-            result.is_ok(),
-            "Joiner {} should succeed: {:?}",
-            i,
-            result.err()
-        );
-    }
-
-    // Verify we're at the limit
-    let count = member_repo.count_by_room(&room.id).await.unwrap();
-    assert_eq!(count, 100, "Should have 100 members (owner + 99 joiners)");
-
-    // The 101st member should fail
-    let joiner101 = user_repo
-        .create(&make_user("settings_joiner_101"))
-        .await
-        .unwrap();
-    let result = room_service.join_room(room.id, joiner101.id, None).await;
-    assert!(result.is_err(), "101st joiner should fail (exceeds max)");
-
-    match result.unwrap_err() {
-        Error::InvalidInput(msg) => {
-            assert!(
-                msg.contains("full") || msg.contains("max") || msg.contains("capacity"),
-                "Error should mention room capacity: {msg}"
-            );
-        }
-        other => panic!("Expected InvalidInput error, got: {other:?}"),
-    }
 }
 
 /// Test that concurrent joins cannot exceed `max_members` limit.
@@ -6226,16 +5124,13 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
         handle.await.expect("Join task panicked");
     }
 
-    // Verify final member count
     let final_count = member_repo.count_by_room(&room.id).await.unwrap();
 
-    // The room should have exactly 5 members (max_members limit)
     assert_eq!(
         final_count, 5,
         "Room should have exactly 5 members (max limit)"
     );
 
-    // 4 should succeed (owner + 4 = 5), 16 should fail
     let successes = success_count.load(Ordering::SeqCst);
     let failures = failure_count.load(Ordering::SeqCst);
 
@@ -6248,68 +5143,11 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
         "16 users should have been rejected due to capacity"
     );
 
-    // Total should account for all 20 users
     assert_eq!(
         successes + failures,
         20,
         "All 20 users should have been processed"
     );
-}
-
-/// Test that `max_members=0` in `RoomSettings` means unlimited members.
-///
-/// This verifies that when `RoomSettings.max_members` is explicitly set to 0,
-/// the room accepts unlimited members (no capacity enforcement).
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_max_members_zero_in_settings_means_unlimited() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-    let settings_repo = RoomSettingsRepository::new(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("unlimited_owner"))
-        .await
-        .unwrap();
-
-    let settings = synctv_core::models::RoomSettings {
-        max_members: synctv_core::models::room_settings::MaxMembers(0),
-        ..Default::default()
-    };
-
-    let (room, _) = room_service
-        .create_room(
-            "Unlimited Room Explicit".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            Some(settings),
-        )
-        .await
-        .unwrap();
-
-    // Verify settings have max_members = 0
-    let saved_settings = settings_repo.get(&room.id).await.unwrap();
-    assert_eq!(
-        saved_settings.max_members.0, 0,
-        "max_members should be 0 in settings"
-    );
-
-    // Add 50 members - all should succeed since max_members=0 means unlimited
-    for i in 0..50 {
-        let joiner = user_repo
-            .create(&make_user(&format!("unlimited_explicit_{i}")))
-            .await
-            .unwrap();
-        let result = room_service.join_room(room.id, joiner.id, None).await;
-        assert!(
-            result.is_ok(),
-            "Joiner {} should succeed (unlimited room): {:?}",
-            i,
-            result.err()
-        );
-    }
 }
 
 /// Soft-delete marks the room deleted and removes non-critical room data.
@@ -6337,7 +5175,6 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         .await
         .unwrap();
 
-    // Add a member
     room_service
         .join_room(room.id, member1.id, None)
         .await
@@ -6345,44 +5182,20 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
 
     let playlist_repo = synctv_core::repository::PlaylistRepository::new(pool.clone());
     let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
-    let playlist = synctv_core::models::Playlist {
-        id: synctv_core::models::PlaylistId::new(),
-        room_id: room.id,
-        parent_id: None,
-        name: "Test Playlist".to_string(),
-        description: String::new(),
-        cover_file_reference_id: None,
-        position: 0.0,
-        creator_id: Some(owner.id),
-        source_provider: None,
-        source_config: None,
-        provider_instance_name: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        version: 0,
-    };
-    let playlist = playlist_repo.create(&playlist).await.unwrap();
+    let playlist = playlist_repo
+        .create(&make_playlist(room.id, owner.id, None, "Test Playlist"))
+        .await
+        .unwrap();
+    media_repo
+        .create(&make_media(
+            room.id,
+            owner.id,
+            Some(playlist.id),
+            "Test Media",
+        ))
+        .await
+        .unwrap();
 
-    let now = chrono::Utc::now();
-    let media = synctv_core::models::Media {
-        id: synctv_core::models::MediaId::new(),
-        playlist_id: Some(playlist.id),
-        room_id: room.id,
-        name: "Test Media".to_string(),
-        description: String::new(),
-        position: 0.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({}),
-        provider_instance_name: None,
-        creator_id: Some(owner.id),
-        cover_file_reference_id: None,
-        added_at: now,
-        updated_at: now,
-        version: 0,
-    };
-    media_repo.create(&media).await.unwrap();
-
-    // Verify related data exists before deletion
     let member_count_before: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
             .bind(room.id)
@@ -6426,10 +5239,8 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             .unwrap();
     assert_eq!(playback_count_before, 1, "Should have playback state");
 
-    // Soft-delete the room
     room_service.delete_room(room.id, owner.id).await.unwrap();
 
-    // Verify room row exists but is soft-deleted
     let deleted_at: Option<chrono::DateTime<Utc>> =
         sqlx::query_scalar("SELECT deleted_at FROM rooms WHERE id = $1")
             .bind(room.id)
@@ -6438,10 +5249,8 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             .unwrap();
     assert!(deleted_at.is_some(), "Room should be soft-deleted");
 
-    // VERIFY NON-CRITICAL DATA IS IMMEDIATELY DELETED
     // This is the key optimization - these should be gone, not waiting 90 days
 
-    // Members should be immediately deleted
     let member_count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
             .bind(room.id)
@@ -6453,7 +5262,6 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         "Members should be immediately cleaned up"
     );
 
-    // Playlists should be immediately deleted together with their nested media.
     let playlist_count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
             .bind(room.id)
@@ -6465,7 +5273,6 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         "Playlists should be immediately cleaned up"
     );
 
-    // Media should be immediately deleted
     let media_count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE room_id = $1")
             .bind(room.id)
@@ -6477,7 +5284,6 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         "Media should be immediately cleaned up"
     );
 
-    // Settings should be immediately deleted
     let settings_count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_settings WHERE room_id = $1")
             .bind(room.id)
@@ -6489,7 +5295,6 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         "Settings should be immediately cleaned up"
     );
 
-    // Playback state should be immediately deleted
     let playback_count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_playback_state WHERE room_id = $1")
             .bind(room.id)
@@ -6501,7 +5306,6 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         "Playback state should be immediately cleaned up"
     );
 
-    // Chat messages should be immediately deleted
     let chat_count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE room_id = $1")
             .bind(room.id)
@@ -6513,7 +5317,6 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         "Chat messages should be immediately cleaned up"
     );
 
-    // Verify room row still exists (soft-deleted, not hard-deleted)
     let room_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)")
         .bind(room.id)
         .fetch_one(&pool)
@@ -6527,10 +5330,9 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
+async fn test_admin_delete_orphaned_room_removes_rooms_with_inactive_creators() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let _user_service = make_user_service(&pool);
     let room_service = make_room_service(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
@@ -6558,131 +5360,60 @@ async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
     admin.role = UserRole::Admin;
     let admin = user_repo.update(&admin, 0).await.unwrap();
 
-    // Soft-delete the creator row directly to simulate a pre-existing orphaned room.
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
         .bind(creator.id)
         .execute(&pool)
         .await
         .unwrap();
 
-    // Verify the creator is soft-deleted (get_by_id returns None for soft-deleted users)
     let deleted_creator = user_repo.get_by_id(&creator.id).await.unwrap();
     assert!(
         deleted_creator.is_none(),
         "Soft-deleted user should not be found"
     );
 
-    // Now admin should be able to delete the orphaned room
     room_service
         .admin_delete_orphaned_room(&room.id, &admin.id)
         .await
         .unwrap();
 
-    // Room should be soft-deleted
     let fetched = room_repo.get_by_id(&room.id).await.unwrap();
     assert!(
         fetched.is_none(),
         "Orphaned room should be soft-deleted by admin"
     );
-}
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_admin_delete_orphaned_room_requires_admin_role() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let _user_service = make_user_service(&pool);
-    let room_service = make_room_service(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
-
-    let creator = user_repo
-        .create(&make_user("orphan_creator_non_admin"))
-        .await
-        .unwrap();
-    let (room, _) = room_service
-        .create_room(
-            "Orphaned Room Non Admin".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    let regular_user = user_repo
-        .create(&make_user("regular_orphan_delete"))
-        .await
-        .unwrap();
-
-    sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(creator.id)
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    let result = room_service
-        .admin_delete_orphaned_room(&room.id, &regular_user.id)
-        .await;
-
-    assert!(
-        matches!(result, Err(Error::Authorization(_))),
-        "Non-admin user must not be able to delete orphaned rooms"
-    );
-
-    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
-    assert!(
-        fetched.is_some(),
-        "Room should still exist after failed deletion"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_admin_delete_orphaned_room_creator_banned() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
-
-    let creator = user_repo
+    let banned_creator = user_repo
         .create(&make_user("banned_creator"))
         .await
         .unwrap();
 
-    let (room, _) = room_service
+    let (banned_room, _) = room_service
         .create_room(
             "Banned Creator Room".to_string(),
             String::new(),
-            creator.id,
+            banned_creator.id,
             None,
             None,
         )
         .await
         .unwrap();
 
-    let admin = user_repo.create(&make_user("admin_banned")).await.unwrap();
-    let mut admin = admin;
-    admin.role = UserRole::Admin;
-    let admin = user_repo.update(&admin, 0).await.unwrap();
-
     user_repo
         .ban(
-            &creator.id,
+            &banned_creator.id,
             Some(&admin.id),
             Some("creator banned by admin".to_string()),
         )
         .await
         .unwrap();
 
-    // Now admin should be able to delete the orphaned room
     room_service
-        .admin_delete_orphaned_room(&room.id, &admin.id)
+        .admin_delete_orphaned_room(&banned_room.id, &admin.id)
         .await
         .unwrap();
 
-    // Room should be soft-deleted
-    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    let fetched = room_repo.get_by_id(&banned_room.id).await.unwrap();
     assert!(
         fetched.is_none(),
         "Orphaned room with banned creator should be soft-deleted"
@@ -6691,10 +5422,18 @@ async fn test_admin_delete_orphaned_room_creator_banned() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_admin_delete_orphaned_room_rejects_active_creator() {
+async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+
+    let mut admin = user_repo
+        .create(&make_user("admin_orphan_invalid"))
+        .await
+        .unwrap();
+    admin.role = UserRole::Admin;
+    let admin = user_repo.update(&admin, admin.version).await.unwrap();
 
     let creator = user_repo
         .create(&make_user("active_creator"))
@@ -6712,9 +5451,6 @@ async fn test_admin_delete_orphaned_room_rejects_active_creator() {
         .await
         .unwrap();
 
-    let admin = user_repo.create(&make_user("admin_active")).await.unwrap();
-
-    // Trying to use admin_delete_orphaned_room should fail
     let result = room_service
         .admin_delete_orphaned_room(&room.id, &admin.id)
         .await;
@@ -6724,73 +5460,49 @@ async fn test_admin_delete_orphaned_room_rejects_active_creator() {
         "Should reject orphaned deletion for active creator"
     );
 
-    // Room should still exist
-    let room_repo = RoomRepository::new(pool.clone());
     let fetched = room_repo.get_by_id(&room.id).await.unwrap();
     assert!(
         fetched.is_some(),
         "Room should still exist when creator is active"
     );
-}
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_admin_delete_orphaned_room_rejects_non_admin() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let _user_service = make_user_service(&pool);
-    let room_service = make_room_service(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
-
-    let creator = user_repo
+    let orphan_creator = user_repo
         .create(&make_user("orphan_creator_non_admin"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let (orphan_room, _) = room_service
         .create_room(
             "Orphaned Room Non Admin".to_string(),
             String::new(),
-            creator.id,
+            orphan_creator.id,
             None,
             None,
         )
         .await
         .unwrap();
-
     let regular_user = user_repo
-        .create(&make_user("regular_non_admin"))
+        .create(&make_user("regular_orphan_delete"))
         .await
         .unwrap();
 
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(creator.id)
+        .bind(orphan_creator.id)
         .execute(&pool)
         .await
         .unwrap();
 
     let result = room_service
-        .admin_delete_orphaned_room(&room.id, &regular_user.id)
+        .admin_delete_orphaned_room(&orphan_room.id, &regular_user.id)
         .await;
-
     assert!(
         matches!(result, Err(Error::Authorization(_))),
-        "non-admin users must not be allowed to delete orphaned rooms"
+        "Non-admin user must not be able to delete orphaned rooms"
     );
-
-    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
-    assert!(
-        fetched.is_some(),
-        "room must remain untouched when orphaned delete is attempted by a non-admin"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_admin_delete_orphaned_room_already_deleted_room() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let _user_service = make_user_service(&pool);
-    let room_service = make_room_service(pool.clone());
+    assert!(room_repo
+        .get_by_id(&orphan_room.id)
+        .await
+        .unwrap()
+        .is_some());
 
     let creator = user_repo
         .create(&make_user("orphan_already_del"))
@@ -6807,46 +5519,27 @@ async fn test_admin_delete_orphaned_room_already_deleted_room() {
         .await
         .unwrap();
 
-    let mut admin = user_repo.create(&make_user("admin_already")).await.unwrap();
-    admin.role = UserRole::Admin;
-    user_repo.update(&admin, admin.version).await.unwrap();
-
-    // Soft-delete the creator row directly to leave the room orphaned.
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
         .bind(creator.id)
         .execute(&pool)
         .await
         .unwrap();
 
-    // Delete the room normally
     room_service
         .admin_delete_room(&room.id, &admin.id)
         .await
         .unwrap();
 
-    // Trying to delete again should fail
     let result = room_service
         .admin_delete_orphaned_room(&room.id, &admin.id)
         .await;
 
     assert!(result.is_err(), "Should reject double deletion");
-}
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_admin_delete_orphaned_room_nonexistent_room() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let admin = user_repo
-        .create(&make_user("admin_nonexistent"))
-        .await
-        .unwrap();
-    let fake_room_id = RoomId::new();
+    let missing_room_id = RoomId::new();
 
     let result = room_service
-        .admin_delete_orphaned_room(&fake_room_id, &admin.id)
+        .admin_delete_orphaned_room(&missing_room_id, &admin.id)
         .await;
 
     assert!(
@@ -6884,150 +5577,76 @@ async fn make_settings_registry(pool: PgPool) -> Arc<SettingsRegistry> {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_create_room_rejects_no_password_when_password_policy_required() {
+async fn test_create_room_enforces_password_policy_matrix() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
+    let room_service = make_room_service_with_settings_registry(pool.clone(), registry.clone());
+
+    let owner = user_repo
+        .create(&make_user("pwd_policy_matrix_owner"))
+        .await
+        .unwrap();
 
     registry
         .set_room_password_policy(RoomPasswordPolicy::Required)
         .await
         .unwrap();
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
-
-    let owner = user_repo
-        .create(&make_user("pwd_policy_owner"))
-        .await
-        .unwrap();
 
     let result = room_service
         .create_room(
-            "No Pwd Room".to_string(),
-            "Should fail".to_string(),
+            "Required Policy Open Room".to_string(),
+            String::new(),
             owner.id,
             None,
             None,
         )
         .await;
+    assert!(matches!(
+        result,
+        Err(Error::InvalidInput(ref msg)) if msg.contains("password is required")
+    ));
 
-    assert!(
-        result.is_err(),
-        "Should reject room without password when room password policy is required"
-    );
-    let err = result.unwrap_err();
-    assert!(
-        matches!(err, Error::InvalidInput(ref msg) if msg.contains("password is required")),
-        "Error should mention password requirement, got: {err:?}"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_create_room_allows_password_when_password_policy_required() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
-
-    registry
-        .set_room_password_policy(RoomPasswordPolicy::Required)
-        .await
-        .unwrap();
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
-
-    let owner = user_repo
-        .create(&make_user("pwd_policy_ok_owner"))
-        .await
-        .unwrap();
-
-    // Creating room WITH password should succeed
-    let result = room_service
+    room_service
         .create_room(
-            "Pwd Room".to_string(),
-            "Should succeed".to_string(),
+            "Required Policy Password Room".to_string(),
+            String::new(),
             owner.id,
             Some("StrongPassword123".to_string()),
             None,
         )
-        .await;
-
-    assert!(
-        result.is_ok(),
-        "Should allow room with password when room password policy is required"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_create_room_rejects_password_when_password_policy_forbidden() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
+        .await
+        .expect("required policy should allow password-protected rooms");
 
     registry
         .set_room_password_policy(RoomPasswordPolicy::Forbidden)
         .await
         .unwrap();
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
-
-    let owner = user_repo
-        .create(&make_user("no_pwd_policy_owner"))
-        .await
-        .unwrap();
 
     let result = room_service
         .create_room(
-            "Pwd Room Fail".to_string(),
-            "Should fail".to_string(),
+            "Forbidden Policy Password Room".to_string(),
+            String::new(),
             owner.id,
             Some("UnwantedPassword123".to_string()),
             None,
         )
         .await;
+    assert!(matches!(
+        result,
+        Err(Error::InvalidInput(ref msg)) if msg.contains("not allowed")
+    ));
 
-    assert!(
-        result.is_err(),
-        "Should reject room with password when room password policy is forbidden"
-    );
-    let err = result.unwrap_err();
-    assert!(
-        matches!(err, Error::InvalidInput(ref msg) if msg.contains("not allowed")),
-        "Error should mention passwords not allowed, got: {err:?}"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_create_room_allows_no_password_when_password_policy_forbidden() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
-
-    registry
-        .set_room_password_policy(RoomPasswordPolicy::Forbidden)
-        .await
-        .unwrap();
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
-
-    let owner = user_repo
-        .create(&make_user("no_pwd_policy_ok_owner"))
-        .await
-        .unwrap();
-
-    // Creating room WITHOUT password should succeed
-    let result = room_service
+    room_service
         .create_room(
-            "Open Room".to_string(),
-            "Should succeed".to_string(),
+            "Forbidden Policy Open Room".to_string(),
+            String::new(),
             owner.id,
             None,
             None,
         )
-        .await;
-
-    assert!(
-        result.is_ok(),
-        "Should allow room without password when room password policy is forbidden"
-    );
+        .await
+        .expect("forbidden policy should allow open rooms");
 }
 
 #[tokio::test]

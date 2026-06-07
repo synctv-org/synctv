@@ -9,6 +9,7 @@ use std::path::PathBuf;
 pub mod assertions;
 pub mod constants;
 pub(crate) mod docker;
+pub mod external_service;
 pub mod postgres;
 pub mod redis;
 pub mod services;
@@ -20,6 +21,9 @@ pub(crate) fn test_temp_dir() -> PathBuf {
     path
 }
 
+pub use external_service::{
+    start_external_service, ExternalServiceContainer, ExternalServiceRequest,
+};
 pub use postgres::{
     connect_test_pool_url, create_test_database, create_test_database_url_with_label,
     create_test_database_with_db_and_label, create_test_database_with_options_and_label,
@@ -32,14 +36,16 @@ pub use redis::{
     start_dedicated_redis_url_with_label, start_redis, start_redis_client_manager,
     start_redis_client_manager_with_label, start_redis_client_url_with_label, start_redis_handle,
     start_redis_url, start_redis_url_with_label, start_redis_with_client, test_redis_key_prefix,
-    wait_for_redis_ready, RedisConnectionHandle, RedisConnectionManager, RedisContainer,
+    wait_for_redis_ready, RedisContainer,
 };
 pub use services::{
+    create_empty_provider_instance_manager, create_empty_provider_instance_store,
     create_test_attempt_tracker, create_test_brute_force_protection,
     create_test_brute_force_protection_service, create_test_jwt_service,
     create_test_jwt_service_with_secret, create_test_request_rate_limiter,
     create_test_room_service, create_test_streaming_publish_key_service,
     create_test_token_blacklist_store, create_test_token_blacklist_store_service,
-    create_test_user_service, create_test_websocket_ticket_service, opaque_login_user,
-    opaque_login_user_with_challenge, opaque_register_user, opaque_register_user_with_client_ip,
+    create_test_user_service, create_test_websocket_ticket_service, failing_redis_runtime,
+    opaque_login_user, opaque_login_user_with_challenge, opaque_register_user,
+    opaque_register_user_with_client_ip,
 };

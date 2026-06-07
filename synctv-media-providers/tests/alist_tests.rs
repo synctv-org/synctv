@@ -6,6 +6,9 @@
 use std::collections::HashMap;
 
 use serde_json::json;
+use synctv_core_testing::{
+    start_external_service, ExternalServiceContainer, ExternalServiceRequest,
+};
 use synctv_media_providers::alist::{AlistInterface, AlistService};
 use synctv_media_providers::error::PROVIDER_USER_AGENT;
 use synctv_media_providers::grpc::alist::{
@@ -14,9 +17,6 @@ use synctv_media_providers::grpc::alist::{
 };
 use synctv_media_providers::grpc::AlistService as GrpcAlistService;
 use synctv_media_providers::AlistClient;
-use testcontainers::core::{CmdWaitFor, ExecCommand, IntoContainerPort, WaitFor};
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 use tonic::transport::Server;
 use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -936,7 +936,7 @@ async fn test_alist_service_fs_list_forwards_refresh_password_and_pagination() {
 }
 
 struct OpenListFixture {
-    _container: ContainerAsync<GenericImage>,
+    _container: ExternalServiceContainer,
     host: String,
     token: String,
 }
@@ -974,35 +974,24 @@ async fn login_openlist_when_ready(host: &str, password: &str) -> String {
 async fn start_openlist_fixture() -> OpenListFixture {
     const ADMIN_PASSWORD: &str = "synctv-openlist-test";
     let (image_name, image_tag) = openlist_image();
-    let image = GenericImage::new(image_name, image_tag)
-        .with_exposed_port(5244.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("start HTTP server"));
+    let container = start_external_service(
+        ExternalServiceRequest::new("openlist", "synctv-openlist-", image_name, image_tag, 5244)
+            .with_stdout_ready_message("start HTTP server")
+            .with_user("0:0")
+            .with_env("OPENLIST_ADMIN_PASSWORD", ADMIN_PASSWORD)
+            .with_copy_to(
+                "/srv/openlist-files/video.mp4",
+                b"hello-openlist\n".to_vec(),
+            )
+            .with_copy_to(
+                "/srv/openlist-files/folder/subtitle.srt",
+                b"subtitle\n".to_vec(),
+            )
+            .with_post_start_shell_command("mkdir -p /srv/openlist-files/empty"),
+    )
+    .await;
 
-    let container = image
-        .with_user("0:0")
-        .with_env_var("OPENLIST_ADMIN_PASSWORD", ADMIN_PASSWORD)
-        .with_copy_to(
-            "/srv/openlist-files/video.mp4",
-            b"hello-openlist\n".to_vec(),
-        )
-        .with_copy_to(
-            "/srv/openlist-files/folder/subtitle.srt",
-            b"subtitle\n".to_vec(),
-        )
-        .start()
-        .await
-        .unwrap();
-
-    container
-        .exec(
-            ExecCommand::new(["sh", "-c", "mkdir -p /srv/openlist-files/empty"])
-                .with_cmd_ready_condition(CmdWaitFor::exit_code(0)),
-        )
-        .await
-        .unwrap();
-
-    let port = container.get_host_port_ipv4(5244.tcp()).await.unwrap();
-    let host = format!("http://127.0.0.1:{port}");
+    let host = container.http_url();
     let token = login_openlist_when_ready(&host, ADMIN_PASSWORD).await;
 
     let addition = json!({

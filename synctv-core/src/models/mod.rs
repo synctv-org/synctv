@@ -131,13 +131,12 @@ pub mod user_preferences;
 
 pub use audit::{AuditAction, AuditTargetType};
 pub use chat::{
-    ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatImage, ChatImageBlob, ChatImageObject,
-    ChatImageOwnershipProofRange, ChatImageUploadSession, ChatMessage, ChatMessageContext,
-    ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus, ChatMessageType,
-    ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReaction, ChatReactionSummary,
-    ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState,
-    ChatReadStateWithUnread, CreateChatImageUploadSession, DeleteChatMessage, EditChatMessage,
-    EventCursor, MarkChatRead, NewChatImage, SendChatMessage, SendChatRequest, SetChatReaction,
+    ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatImage, ChatImageUploadSession,
+    ChatMessage, ChatMessageContext, ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus,
+    ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReaction,
+    ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage,
+    ChatReadState, ChatReadStateWithUnread, CreateChatImageUploadSession, DeleteChatMessage,
+    EditChatMessage, EventCursor, MarkChatRead, SendChatMessage, SendChatRequest, SetChatReaction,
 };
 pub use email_token::EmailTokenType;
 pub use file_storage::{

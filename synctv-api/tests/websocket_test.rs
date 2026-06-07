@@ -436,7 +436,7 @@ mod rate_limiter {
 }
 
 mod health_types {
-    use synctv_api::http::health::{HealthDetails, HealthResponse};
+    use synctv_proto::client::{HealthDetails, HealthResponse};
 
     #[test]
     fn test_health_response_ok_serializes() {
@@ -446,7 +446,6 @@ mod health_types {
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["status"], "ok");
-        // details should be skipped when None
         assert!(json.get("details").is_none());
     }
 
@@ -470,7 +469,6 @@ mod health_types {
         assert_eq!(json["status"], "healthy");
         assert_eq!(json["details"]["database"], "healthy");
         assert_eq!(json["details"]["redis"], "healthy");
-        // message should be skipped when None
         assert!(json["details"].get("message").is_none());
     }
 
@@ -506,7 +504,6 @@ mod ws_auth_scenarios {
 
     #[test]
     fn test_missing_all_auth_methods() {
-        // Simulates what extract_user_id returns when no auth is provided
         let err = AppError::unauthorized(
             "Missing authentication: provide token via Authorization header or ?ticket=",
         );
@@ -580,7 +577,7 @@ mod websocket_e2e {
 
     /// Lightweight test infrastructure for E2E tests.
     /// Starts Postgres and Redis containers, runs migrations, and provides connections.
-    struct TestInfra {
+    pub(super) struct TestInfra {
         pool: PgPool,
         redis_url: String,
         redis_key_prefix: String,
@@ -589,7 +586,7 @@ mod websocket_e2e {
     }
 
     impl TestInfra {
-        async fn new() -> Self {
+        pub(super) async fn new() -> Self {
             let (postgres, pool) = create_test_pool_with_options_and_label(
                 "synctv_test",
                 "api-ws-rate-limiter",
@@ -608,7 +605,7 @@ mod websocket_e2e {
             }
         }
 
-        async fn cleanup(mut self) {
+        pub(super) async fn cleanup(mut self) {
             self.pool.close().await;
             if let Some(redis) = self.redis.take() {
                 redis.cleanup();
@@ -620,12 +617,12 @@ mod websocket_e2e {
     }
 
     /// Returned from `setup_e2e_server` so tests can access all shared components.
-    struct E2EServer {
-        addr: String,
-        jwt_service: JwtService,
-        room_service: Arc<RoomService>,
-        user_service: Arc<UserService>,
-        connection_manager: Arc<ConnectionManager>,
+    pub(super) struct E2EServer {
+        pub(super) addr: String,
+        pub(super) jwt_service: JwtService,
+        pub(super) room_service: Arc<RoomService>,
+        pub(super) user_service: Arc<UserService>,
+        pub(super) connection_manager: Arc<ConnectionManager>,
         realtime_manager: Arc<RealtimeManager>,
         ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
         server_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
@@ -633,7 +630,7 @@ mod websocket_e2e {
     }
 
     impl E2EServer {
-        async fn shutdown(&mut self) {
+        pub(super) async fn shutdown(&mut self) {
             if let Some(shutdown_tx) = self.server_shutdown_tx.take() {
                 if let Some(server_handle) = self.server_handle.take() {
                     super::await_server_shutdown(shutdown_tx, server_handle).await;
@@ -780,6 +777,37 @@ mod websocket_e2e {
         cors_allowed_origins: Vec<String>,
         chat_rate_limit_config: synctv_core::service::RateLimitConfig,
     ) -> E2EServer {
+        setup_e2e_server_with_node_origins_chat_rate_limit_and_connection_limits(
+            infra,
+            node_id,
+            cors_allowed_origins,
+            chat_rate_limit_config,
+            ConnectionLimits::default(),
+        )
+        .await
+    }
+
+    pub(super) async fn setup_e2e_server_with_connection_limits(
+        infra: &TestInfra,
+        connection_limits: ConnectionLimits,
+    ) -> E2EServer {
+        setup_e2e_server_with_node_origins_chat_rate_limit_and_connection_limits(
+            infra,
+            "test_node_1",
+            Vec::new(),
+            synctv_core::service::RateLimitConfig::default(),
+            connection_limits,
+        )
+        .await
+    }
+
+    async fn setup_e2e_server_with_node_origins_chat_rate_limit_and_connection_limits(
+        infra: &TestInfra,
+        node_id: &str,
+        cors_allowed_origins: Vec<String>,
+        chat_rate_limit_config: synctv_core::service::RateLimitConfig,
+        connection_limits: ConnectionLimits,
+    ) -> E2EServer {
         let pool = infra.pool.clone();
         let redis_url = infra.redis_url.clone();
         let redis_key_prefix = infra.redis_key_prefix.clone();
@@ -884,7 +912,7 @@ mod websocket_e2e {
             redis_connection_manager(&redis_client_for_connections).await;
         let connection_manager = Arc::new(
             build_connection_manager(
-                ConnectionLimits::default(),
+                connection_limits,
                 &SharedStateProfile::from_runtime(
                     Some(synctv_core::direct_runtime(redis_conn_for_connections)),
                     &redis_key_prefix,
@@ -900,13 +928,8 @@ mod websocket_e2e {
             RateLimiter::local_only(format!("{redis_key_prefix}ws-rate-limit:")),
         );
 
-        // Minimal providers (unused in WebSocket tests but required by AppState)
-        let provider_instance_repo = Arc::new(
-            synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
-        );
-        let provider_instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(
-            provider_instance_repo,
-        ));
+        let provider_instance_manager =
+            synctv_core_testing::create_empty_provider_instance_manager();
         let user_provider_credential_repo =
             Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
         let providers = synctv_core::provider::ProviderSet::new_with_ssrf_guard(
@@ -989,18 +1012,15 @@ mod websocket_e2e {
         let state = synctv_api::http::create_app_state_from_config(router_config)
             .expect("test HTTP app state should build");
 
-        // Build a minimal router with just the WebSocket endpoint
         let app = axum::Router::new()
             .route("/ws/rooms/{room_id}", axum::routing::get(websocket_handler))
             .with_state(state);
 
-        // Bind to a random port
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local_addr");
         let addr_str = format!("127.0.0.1:{}", addr.port());
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-        // Spawn server
         let server_handle = tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -1027,7 +1047,7 @@ mod websocket_e2e {
     }
 
     /// Register a test user and return their `UserId` + access token.
-    async fn register_test_user(
+    pub(super) async fn register_test_user(
         user_service: &UserService,
         jwt_service: &JwtService,
         username: &str,
@@ -1047,7 +1067,7 @@ mod websocket_e2e {
     }
 
     /// Create a test room and add the user as creator/member.
-    async fn create_test_room(
+    pub(super) async fn create_test_room(
         room_service: &RoomService,
         user_id: &UserId,
         room_name: &str,
@@ -1061,7 +1081,7 @@ mod websocket_e2e {
             .expect("room id should encode")
     }
 
-    fn decode_test_room_id(room_id: &str) -> synctv_core::models::RoomId {
+    pub(super) fn decode_test_room_id(room_id: &str) -> synctv_core::models::RoomId {
         synctv_api::PublicIdCodec::plain()
             .decode_room_id(room_id)
             .expect("test room id should decode")
@@ -1279,7 +1299,6 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // The first message should be a UserJoined notification for this user
         let msg = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             recv_server_message(&mut ws),
@@ -1298,7 +1317,6 @@ mod websocket_e2e {
             other => panic!("Expected UserJoined, got: {other:?}"),
         }
 
-        // Graceful close
         ws.close(None).await.expect("close");
     }
 
@@ -1323,7 +1341,6 @@ mod websocket_e2e {
         };
         send_client_message(&mut ws, &heartbeat).await;
 
-        // Expect a HeartbeatAck response
         let ack = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             recv_server_message_skip_membership(&mut ws),
@@ -1366,7 +1383,6 @@ mod websocket_e2e {
         .await
         .expect("close");
 
-        // After close, the next recv should return None or a Close frame
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await;
 
         match result {
@@ -1389,10 +1405,9 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let url = format!("ws://{}/ws/rooms/fake_room", server.addr);
+        let url = format!("ws://{}/ws/rooms/invalid_room", server.addr);
         let result = tokio_tungstenite::connect_async(&url).await;
 
-        // Should fail with a non-101 status (likely 401)
         assert!(
             result.is_err(),
             "Connection without auth should be rejected"
@@ -1405,7 +1420,7 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let url = format!("ws://{}/ws/rooms/fake_room", server.addr);
+        let url = format!("ws://{}/ws/rooms/invalid_room", server.addr);
         let request = tungstenite::http::Request::builder()
             .uri(&url)
             .header("Authorization", "Bearer invalid.jwt.token")
@@ -1568,8 +1583,6 @@ mod websocket_e2e {
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
         drain_until_quiet(&mut ws2, 2000).await;
 
-        // user1 should receive a UserJoined event for user2 (via cluster broadcast)
-        // Read messages from ws1 until we find UserJoined with user2's ID
         let user2_join_event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let msg = recv_server_message(&mut ws1).await.expect("stream ended");
@@ -1594,7 +1607,6 @@ mod websocket_e2e {
             other => panic!("Expected UserJoined for user2, got: {other:?}"),
         }
 
-        // Clean up
         ws1.close(None).await.expect("close ws1");
         ws2.close(None).await.expect("close ws2");
         server.shutdown().await;
@@ -1644,7 +1656,6 @@ mod websocket_e2e {
         // Let subscriptions settle
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-        // user1 sends a chat message
         let chat_msg = ClientMessage {
             message: Some(client_message::Message::Chat(
                 synctv_proto::client::ChatMessageSend {
@@ -1731,7 +1742,6 @@ mod websocket_e2e {
             register_test_user(&server.user_service, &server.jwt_service, "stayer_ul").await;
         let room_id = create_test_room(&server.room_service, &user1_id, "Leave Room").await;
 
-        // Add user2
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "leaver_ul").await;
         let rid = decode_test_room_id(&room_id);
@@ -1749,10 +1759,8 @@ mod websocket_e2e {
             drain_until_quiet(&mut ws2, 1500),
         );
 
-        // user2 disconnects
         ws2.close(None).await.expect("close ws2");
 
-        // user1 should receive UserLeft for user2
         // Read messages, skipping any stale UserJoined that may still be in flight
         let left_event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
@@ -1806,7 +1814,6 @@ mod websocket_e2e {
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        // user1 sends a chat message in Room A
         let chat_msg = ClientMessage {
             message: Some(client_message::Message::Chat(
                 synctv_proto::client::ChatMessageSend {
@@ -1821,7 +1828,6 @@ mod websocket_e2e {
         };
         send_client_message(&mut ws1, &chat_msg).await;
 
-        // user2 in Room B should NOT receive this message
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             recv_server_message(&mut ws2),
@@ -1878,7 +1884,6 @@ mod websocket_e2e {
         // Small delay to let the server process the disconnect
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        // Reconnect with the same token
         let mut ws2 = ws_connect(&server.addr, &room_id, &token).await;
         let rejoined = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -1888,7 +1893,6 @@ mod websocket_e2e {
         .expect("timeout on reconnect")
         .expect("no msg on reconnect");
 
-        // Should get a UserJoined event again
         match rejoined.message {
             Some(server_message::Message::UserJoined(joined)) => {
                 assert_eq!(joined.room_id, room_id);
@@ -1900,7 +1904,6 @@ mod websocket_e2e {
 
         drain_until_quiet(&mut ws2, 500).await;
 
-        // Verify heartbeat still works after reconnection
         let heartbeat = ClientMessage {
             message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
                 timestamp: chrono::Utc::now().timestamp_millis(),
@@ -4141,7 +4144,7 @@ mod websocket_e2e {
         let server = setup_e2e_server(&infra).await;
 
         let url = format!(
-            "ws://{}/ws/rooms/fake_room?ticket=totally_invalid_ticket_xyz123",
+            "ws://{}/ws/rooms/invalid_room?ticket=totally_invalid_ticket_xyz123",
             server.addr
         );
         let result = tokio_tungstenite::connect_async(&url).await;
@@ -4160,14 +4163,14 @@ mod websocket_e2e {
         let server = setup_e2e_server(&infra).await;
 
         let url = format!(
-            "ws://{}/ws/rooms/fake_room?ticket=expired_or_fake_ticket_aabbcc",
+            "ws://{}/ws/rooms/invalid_room?ticket=expired_or_invalid_ticket_aabbcc",
             server.addr
         );
         let result = tokio_tungstenite::connect_async(&url).await;
 
         assert!(
             result.is_err(),
-            "Connection with expired/fake ticket should be rejected"
+            "Connection with expired/invalid ticket should be rejected"
         );
     }
 
@@ -4374,494 +4377,29 @@ mod websocket_e2e {
             Ok(other) => panic!("Unexpected result: {other}"),
         }
     }
-
-    // Heartbeat / Ping message receives Pong / Ack response
-    // This is a dedicated test for the spec requirement; the full heartbeat
-    // cycle (including ack timestamp) is already verified in
-    // test_ws_heartbeat_ping_pong, but we duplicate the core assertion here
-    // so it is clearly labelled for the #73 test-coverage requirement.
-
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    async fn test_ws_heartbeat_receives_ack() {
-        let infra = TestInfra::new().await;
-        let server = setup_e2e_server(&infra).await;
-
-        let (user_id, token) =
-            register_test_user(&server.user_service, &server.jwt_service, "hb_ack_user").await;
-        let room_id = create_test_room(&server.room_service, &user_id, "Heartbeat Ack Room").await;
-
-        let mut ws = ws_connect(&server.addr, &room_id, &token).await;
-
-        drain_until_quiet(&mut ws, 2000).await;
-
-        let now_seconds = chrono::Utc::now().timestamp();
-        let heartbeat = ClientMessage {
-            message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
-                timestamp: now_seconds,
-            })),
-        };
-        send_client_message(&mut ws, &heartbeat).await;
-
-        let ack = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            recv_server_message_skip_membership(&mut ws),
-        )
-        .await
-        .expect("timeout waiting for HeartbeatAck")
-        .expect("stream ended before HeartbeatAck");
-
-        match ack.message {
-            Some(server_message::Message::HeartbeatAck(ack_msg)) => {
-                assert!(
-                    ack_msg.timestamp >= now_seconds,
-                    "HeartbeatAck timestamp ({}) should be >= request timestamp ({})",
-                    ack_msg.timestamp,
-                    now_seconds,
-                );
-            }
-            other => panic!("Expected HeartbeatAck, got: {other:?}"),
-        }
-
-        ws.close(None).await.expect("close");
-    }
 }
-
-// upgrade (HTTP 101), so clients receive a proper HTTP 429 error instead of
-// getting a successful upgrade followed by an immediate disconnect.
-// after the WebSocket upgrade completed. This meant:
-// returning HTTP 429 Too Many Requests if limits are exceeded.
 
 #[cfg(test)]
 mod websocket_connection_limit_timing {
     use super::wait_for_condition;
-    use std::sync::Arc;
-
-    use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite;
 
-    use synctv_api::http::websocket::websocket_handler;
-    use synctv_core::cache::UsernameCache;
-    use synctv_core::models::id::UserId;
-    use synctv_core::service::auth::jwt::JwtService;
-    use synctv_core::service::rate_limit::RateLimiter;
-    use synctv_core::service::user::UserServiceRuntimeOptions;
-    use synctv_core::service::{RoomService, UserService};
-    use synctv_core::SharedStateProfile;
-    use synctv_core_testing::{
-        create_test_pool_with_options_and_label, opaque_register_user, redis_connection_manager,
-        start_redis_url_with_label, test_redis_key_prefix, RedisContainer, TestContainer,
-    };
-    use synctv_realtime::sync::{
-        build_connection_manager, ConnectionLimits, ConnectionManager, RealtimeConfig,
-        RealtimeManager,
+    use synctv_realtime::sync::ConnectionLimits;
+
+    use super::websocket_e2e::{
+        create_test_room, decode_test_room_id, register_test_user,
+        setup_e2e_server_with_connection_limits, TestInfra,
     };
 
-    use sqlx::PgPool;
-
-    const TEST_JWT_SECRET: &str =
-        "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
-    const TEST_DB_MAX_CONNECTIONS: u32 = 5;
-
-    /// Create a minimal `ChatService` for tests.
-    /// Create a minimal `ChatService` for tests.
-    fn build_test_chat_service(
-        pool: &sqlx::PgPool,
-        username_cache: UsernameCache,
-    ) -> Arc<synctv_core::service::ChatService> {
-        let chat_repo = Arc::new(synctv_core::repository::ChatRepository::new(pool.clone()));
-        let chat_rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService> =
-            Arc::new(RateLimiter::local_only("test_chat:".to_string()));
-        let content_filter = synctv_core::service::ContentFilter::new();
-        let member_repo = synctv_core::repository::RoomMemberRepository::new(pool.clone());
-        let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
-        let permission_service =
-            synctv_core::service::PermissionService::new(member_repo, room_repo, None, 1000, 300)
-                .expect("permission service should build");
-        let room_settings_repo = synctv_core::repository::RoomSettingsRepository::new(pool.clone());
-        let notification_service = Arc::new(synctv_core::service::NotificationService::default());
-        let room_settings_service = synctv_core::service::RoomSettingsService::new(
-            room_settings_repo,
-            None,
-            notification_service,
-            None,
-            None,
-        );
-        Arc::new(synctv_core::service::ChatService::new(
-            chat_repo,
-            synctv_core::service::chat::ChatRuntime {
-                rate_limiter: chat_rate_limiter,
-                rate_limit_config: synctv_core::service::RateLimitConfig::default(),
-                content_filter,
-            },
-            synctv_core::service::chat::ChatDependencies {
-                permission_service,
-                room_settings_service,
-                user_service: Arc::new(UserService::new_for_tests(
-                    pool,
-                    JwtService::new(TEST_JWT_SECRET).expect("JwtService"),
-                    username_cache,
-                    Arc::new(
-                        synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                            10_000, 3600, 86400,
-                        ),
-                    ),
-                    synctv_core::cache::KeyBuilder::new("test_chat"),
-                    synctv_core::service::auth::BruteForceProtection::in_memory(
-                        "test_chat:".to_string(),
-                    ),
-                )),
-                file_storage_service: Arc::new(
-                    synctv_core::service::DisabledFileStorageService,
-                ),
-                audit_service: None,
-                notification_service: synctv_core::service::NotificationService::default(),
-            },
-        ))
-    }
-
-    struct TestInfra {
-        pool: PgPool,
-        redis_url: String,
-        redis_key_prefix: String,
-        postgres: Option<TestContainer>,
-        redis: Option<RedisContainer>,
-    }
-
-    impl TestInfra {
-        async fn new() -> Self {
-            let (postgres, pool) = create_test_pool_with_options_and_label(
-                "synctv_test",
-                "api-ws-connection-limit",
-                TEST_DB_MAX_CONNECTIONS,
-                std::time::Duration::from_secs(30),
-            )
-            .await;
-            let (redis, redis_url) = start_redis_url_with_label("api-ws-connection-limit").await;
-
-            Self {
-                pool,
-                redis_url,
-                redis_key_prefix: test_redis_key_prefix("api-ws-connection-limit"),
-                postgres: Some(postgres),
-                redis: Some(redis),
-            }
-        }
-
-        async fn cleanup(mut self) {
-            self.pool.close().await;
-            if let Some(redis) = self.redis.take() {
-                redis.cleanup();
-            }
-            if let Some(postgres) = self.postgres.take() {
-                postgres.cleanup().await;
-            }
-        }
-    }
-
-    struct LimitTestServer {
-        addr: String,
-        jwt_service: JwtService,
-        room_service: Arc<RoomService>,
-        user_service: Arc<UserService>,
-        connection_manager: Arc<ConnectionManager>,
-        server_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
-        server_handle: Option<tokio::task::JoinHandle<()>>,
-    }
-
-    impl LimitTestServer {
-        async fn shutdown(&mut self) {
-            if let Some(shutdown_tx) = self.server_shutdown_tx.take() {
-                if let Some(server_handle) = self.server_handle.take() {
-                    super::await_server_shutdown(shutdown_tx, server_handle).await;
-                }
-            }
-
-            self.connection_manager.shutdown().await;
-        }
-    }
-
-    impl Drop for LimitTestServer {
-        fn drop(&mut self) {
-            if let Some(shutdown_tx) = self.server_shutdown_tx.take() {
-                let _ = shutdown_tx.send(());
-            }
-            if let Some(server_handle) = self.server_handle.take() {
-                server_handle.abort();
-            }
-        }
-    }
-
-    /// Build a server with a very low `max_per_user` limit (1 connection per user)
-    async fn setup_server_with_low_user_limit(infra: &TestInfra) -> LimitTestServer {
-        let pool = infra.pool.clone();
-        let redis_url = infra.redis_url.clone();
-        let redis_key_prefix = infra.redis_key_prefix.clone();
-
-        let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
-        let redis_client = redis::Client::open(infra.redis_url.as_str()).expect("Redis client");
-        let redis_conn = Arc::new(tokio::sync::RwLock::new(
-            redis_connection_manager(&redis_client).await,
-        ));
-
-        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::from_runtime(
-            synctv_core::shared_runtime(redis_conn.clone()),
-        ));
-        let username_cache =
-            UsernameCache::new(l2_backend, format!("{redis_key_prefix}un:"), 100, 300);
-        let username_cache_for_chat = username_cache.clone();
-        let key_builder = synctv_core::cache::KeyBuilder::new(redis_key_prefix.clone());
-        let brute_force = synctv_core::service::auth::BruteForceProtection::new_with_config(
-            redis_key_prefix.clone(),
-            Arc::new(
-                synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
-                    redis_conn.clone(),
-                    50_000,
-                    synctv_core::service::BruteForceConfig::default().attempts_ttl_secs,
-                ),
-            ),
-            Arc::new(
-                synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
-                    redis_conn.clone(),
-                    100_000,
-                    synctv_core::service::BruteForceConfig::default().ip_attempts_ttl_secs,
-                ),
-            ),
-            synctv_core::service::BruteForceConfig::default(),
-        );
-        let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> = Arc::new(
-            synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                10_000, 3600, 86400,
-            ),
-        );
-
-        let user_service = UserService::new_with_runtime(
-            &pool,
-            jwt_service.clone(),
-            username_cache,
-            token_blacklist,
-            key_builder,
-            brute_force,
-            UserServiceRuntimeOptions {
-                password_registration_policy_override: Some(
-                    synctv_core::service::RegistrationPolicy {
-                        enabled: true,
-                        need_review: false,
-                    },
-                ),
-                ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
-            },
-        );
-        let user_service = Arc::new(user_service);
-        let room_service = Arc::new(
-            RoomService::new_for_tests(pool.clone(), (*user_service).clone())
-                .expect("room service should build"),
-        );
-
-        let redis_client_for_cluster =
-            redis::Client::open(redis_url.clone()).expect("Redis client");
-        let redis_conn_for_cluster = redis_connection_manager(&redis_client_for_cluster).await;
-        let shared_runtime: Arc<dyn synctv_core::RedisConnectionRuntime> = Arc::new(
-            synctv_core::DirectRedisConnectionRuntime::new(redis_conn_for_cluster.clone()),
-        );
-        let realtime_config = RealtimeConfig {
-            distributed_transport_factory: Some(
-                synctv_realtime::build_realtime_message_transport_factory(
-                    synctv_core::coordination_runtime_from_client(redis_client_for_cluster),
-                ),
-            ),
-            message_runtime: synctv_realtime::build_room_message_runtime(
-                &SharedStateProfile::from_runtime(Some(shared_runtime), &redis_key_prefix, true),
-            )
-            .expect("shared message runtime should initialize"),
-            node_id: "limit_test_node".to_string(),
-            key_prefix: redis_key_prefix.clone(),
-            ..Default::default()
-        };
-        let realtime_manager = Arc::new(
-            RealtimeManager::new(realtime_config)
-                .await
-                .expect("RealtimeManager"),
-        );
-
-        let connection_limits = ConnectionLimits {
+    fn single_connection_per_user_limits() -> ConnectionLimits {
+        ConnectionLimits {
             webrtc_session_timeout: Default::default(),
             max_per_user: 1,
             max_per_room: 200,
             max_total: 10000,
             idle_timeout: std::time::Duration::from_mins(5),
             max_duration: std::time::Duration::from_hours(24),
-        };
-        let redis_client_for_connections =
-            redis::Client::open(redis_url.clone()).expect("Redis client for connection manager");
-        let redis_conn_for_connections =
-            redis_connection_manager(&redis_client_for_connections).await;
-        let connection_manager = Arc::new(
-            build_connection_manager(
-                connection_limits,
-                &SharedStateProfile::from_runtime(
-                    Some(synctv_core::direct_runtime(redis_conn_for_connections)),
-                    &redis_key_prefix,
-                    true,
-                ),
-            )
-            .expect("shared realtime connection runtime should initialize"),
-        );
-        let connection_manager_ret = connection_manager.clone();
-
-        let rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService> = Arc::new(
-            RateLimiter::local_only(format!("{redis_key_prefix}ws-rate-limit:")),
-        );
-
-        let provider_instance_repo = Arc::new(
-            synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
-        );
-        let provider_instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(
-            provider_instance_repo,
-        ));
-        let user_provider_credential_repo =
-            Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
-        let providers = synctv_core::provider::ProviderSet::new_with_ssrf_guard(
-            provider_instance_manager.clone(),
-            synctv_common::ssrf::SsrfGuard::strict_policy(),
-        )
-        .expect("provider set should build");
-
-        let config = Arc::new(synctv_core::Config::default());
-
-        let router_config = synctv_api::http::RouterConfig {
-            config,
-            user_service: user_service.clone(),
-            user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
-                128,
-                60,
-                300,
-                "test:user:".to_string(),
-            )),
-            room_service: room_service.clone(),
-            content_filter: synctv_core::service::ContentFilter::new(),
-            provider_instance_manager,
-            user_provider_credential_repository: user_provider_credential_repo.clone(),
-            providers: providers.clone(),
-            event_service: realtime_manager,
-            connection_manager,
-            jwt_service: jwt_service.clone(),
-            realtime_fanout_service: synctv_api::realtime_fanout::disabled_realtime_fanout_service(
-            ),
-            oauth2_service: None,
-            passkey_service: None,
-            settings_service: None,
-            settings_registry: None,
-            email_service: None,
-            email_token_service: None,
-            publish_key_service: None,
-            notification_service: None,
-            chat_service: Some(build_test_chat_service(&pool, username_cache_for_chat)),
-            audit_service: {
-                let (audit_svc, _audit_handle) =
-                    synctv_core::service::AuditService::new(pool.clone());
-                Arc::new(audit_svc)
-            },
-            live_streaming_infrastructure: None,
-            rate_limiter,
-            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
-            redis_runtime: None,
-            shared_provider_stores: None,
-            shared_proxy_signing_key: None,
-            builtin_stun_url: None,
-            webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
-            credential_encryption: None,
-            proxy_slice_cache: std::sync::Arc::new(
-                synctv_proxy::slice_cache::SliceCache::new(
-                    synctv_proxy::slice_cache::SliceCacheConfig::default(),
-                )
-                .expect("test slice cache should build"),
-            ),
-            ssrf_guard: synctv_common::ssrf::SsrfGuard::disabled(),
-            proxy_http_client: synctv_proxy::build_proxy_http_client(
-                synctv_common::ssrf::SsrfGuard::disabled(),
-            )
-            .expect("proxy HTTP client should build for tests"),
-            messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
-            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::fixed(
-                std::time::Duration::from_millis(400),
-                std::time::Duration::from_millis(100),
-            ),
-            providers_manager: None,
-        };
-
-        let state = synctv_api::http::create_app_state_from_config(router_config)
-            .expect("test HTTP app state should build");
-
-        let app = axum::Router::new()
-            .route("/ws/rooms/{room_id}", axum::routing::get(websocket_handler))
-            .with_state(state);
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let addr = listener.local_addr().expect("local_addr");
-        let addr_str = format!("127.0.0.1:{}", addr.port());
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-
-        let server_handle = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-            .expect("server error");
-        });
-
-        LimitTestServer {
-            addr: addr_str,
-            jwt_service,
-            room_service,
-            user_service,
-            connection_manager: connection_manager_ret,
-            server_shutdown_tx: Some(shutdown_tx),
-            server_handle: Some(server_handle),
         }
-    }
-
-    async fn register_test_user(
-        user_service: &UserService,
-        jwt_service: &JwtService,
-        username: &str,
-    ) -> (UserId, String) {
-        let (user, _access, _refresh) = opaque_register_user(
-            user_service,
-            username,
-            Some(format!("{username}@test.com")),
-            "TestPassword123!",
-        )
-        .await
-        .expect("register user");
-        let token = jwt_service
-            .sign_access_token(&user.id, 0)
-            .expect("sign token");
-        (user.id, token)
-    }
-
-    async fn create_test_room(
-        room_service: &RoomService,
-        user_id: &UserId,
-        room_name: &str,
-    ) -> String {
-        let (room, _member) = room_service
-            .create_room(room_name.to_string(), String::new(), *user_id, None, None)
-            .await
-            .expect("create room");
-        synctv_api::PublicIdCodec::plain()
-            .encode_room_id(room.id)
-            .expect("room id should encode")
-    }
-
-    fn decode_test_room_id(room_id: &str) -> synctv_core::models::RoomId {
-        synctv_api::PublicIdCodec::plain()
-            .decode_room_id(room_id)
-            .expect("test room id should decode")
     }
 
     /// Build a WebSocket request with Authorization header (no `?token=` query param).
@@ -4886,7 +4424,9 @@ mod websocket_connection_limit_timing {
     #[ignore = "Requires Docker"]
     async fn test_ws_connection_limit_returns_429_before_upgrade() {
         let infra = TestInfra::new().await;
-        let mut server = setup_server_with_low_user_limit(&infra).await;
+        let mut server =
+            setup_e2e_server_with_connection_limits(&infra, single_connection_per_user_limits())
+                .await;
 
         let (user_id, token) =
             register_test_user(&server.user_service, &server.jwt_service, "limit_user").await;
@@ -4940,7 +4480,9 @@ mod websocket_connection_limit_timing {
     #[ignore = "Requires Docker"]
     async fn test_ws_normal_connection_within_limits() {
         let infra = TestInfra::new().await;
-        let mut server = setup_server_with_low_user_limit(&infra).await;
+        let mut server =
+            setup_e2e_server_with_connection_limits(&infra, single_connection_per_user_limits())
+                .await;
 
         let (user_id, token) =
             register_test_user(&server.user_service, &server.jwt_service, "normal_user").await;
@@ -4969,7 +4511,9 @@ mod websocket_connection_limit_timing {
     #[ignore = "Requires Docker"]
     async fn test_ws_different_users_can_connect_within_limits() {
         let infra = TestInfra::new().await;
-        let mut server = setup_server_with_low_user_limit(&infra).await;
+        let mut server =
+            setup_e2e_server_with_connection_limits(&infra, single_connection_per_user_limits())
+                .await;
 
         let (user1_id, user1_token) =
             register_test_user(&server.user_service, &server.jwt_service, "user1").await;
@@ -5020,7 +4564,9 @@ mod websocket_connection_limit_timing {
     #[ignore = "Requires Docker"]
     async fn test_ws_can_reconnect_after_disconnect() {
         let infra = TestInfra::new().await;
-        let mut server = setup_server_with_low_user_limit(&infra).await;
+        let mut server =
+            setup_e2e_server_with_connection_limits(&infra, single_connection_per_user_limits())
+                .await;
 
         let (user_id, token) =
             register_test_user(&server.user_service, &server.jwt_service, "reconnect_user").await;
@@ -5069,213 +4615,3 @@ mod websocket_connection_limit_timing {
         infra.cleanup().await;
     }
 }
-
-// the outbound channel to fill up. When SLOW_CLIENT_DROP_THRESHOLD (10) is
-// exceeded, the client is disconnected.
-
-mod slow_client_disconnect_tests {
-    const THRESHOLD: u32 = 10;
-
-    /// Test that consecutive drop counter logic works correctly.
-    /// This simulates the counter behavior without actual WebSocket.
-    #[test]
-    fn test_consecutive_drop_counter_logic() {
-        use std::sync::atomic::{AtomicU32, Ordering};
-
-        let counter = AtomicU32::new(0);
-
-        for _i in 0..9 {
-            let drops = counter.fetch_add(1, Ordering::Relaxed) + 1;
-            assert!(
-                drops < THRESHOLD,
-                "Drop {drops} should not trigger disconnect"
-            );
-        }
-
-        let drops = counter.fetch_add(1, Ordering::Relaxed) + 1;
-        assert!(drops >= THRESHOLD, "Drop {drops} should trigger disconnect");
-
-        counter.store(0, Ordering::Relaxed);
-        assert_eq!(
-            counter.load(Ordering::Relaxed),
-            0,
-            "Counter should reset to 0"
-        );
-
-        let drops = counter.fetch_add(1, Ordering::Relaxed) + 1;
-        assert_eq!(drops, 1, "Counter should start from 1 after reset");
-    }
-
-    /// Test that the drop counter resets on successful send.
-    #[test]
-    fn test_drop_counter_resets_on_successful_send() {
-        use std::sync::atomic::{AtomicU32, Ordering};
-
-        let counter = AtomicU32::new(5); // Simulate 5 previous drops
-
-        counter.store(0, Ordering::Relaxed);
-
-        assert_eq!(
-            counter.load(Ordering::Relaxed),
-            0,
-            "Counter should reset to 0 after successful send"
-        );
-    }
-
-    /// Test different channel capacities and their effect on slow client detection.
-    #[test]
-    fn test_channel_capacity_vs_threshold_relationship() {
-        // WebSocket channel capacity is typically 32-256 messages.
-        // SLOW_CLIENT_DROP_THRESHOLD is 10.
-        // Relationship:
-        // - With capacity 32: client has ~32 messages buffered before drops start
-        // - After 10 consecutive drops (42 total send attempts): disconnect
-        // - This gives ~3-4 seconds of buffer at 10 msgs/sec
-        // If channel is too small (e.g., 8), clients may disconnect too easily.
-        // If threshold is too high (e.g., 100), slow clients stay connected too long.
-
-        const CHANNEL_CAPACITY: u32 = 32;
-        const DROP_THRESHOLD: u32 = 10;
-        const TOTAL_BUFFER_BEFORE_DISCONNECT: u32 = CHANNEL_CAPACITY + DROP_THRESHOLD;
-
-        assert_eq!(
-            TOTAL_BUFFER_BEFORE_DISCONNECT, 42,
-            "With capacity 32 and threshold 10, client has 42 message buffer"
-        );
-    }
-}
-
-// Critical messages (room kick or platform ban) must be delivered even when the client is slow.
-
-mod slow_client_message_recovery {
-
-    /// Test that critical messages are identified correctly.
-    /// Kick or platform-ban notifications arrive as Error messages which are critical.
-    #[test]
-    fn test_kick_and_platform_ban_are_critical_messages() {
-        use synctv_api::proto::client::{server_message::Message, ErrorMessage, ServerMessage};
-
-        let kick_message = ServerMessage {
-            message: Some(Message::Error(ErrorMessage {
-                message: "You have been kicked from the room".to_string(),
-                code: synctv_proto::common::ErrorCode::Forbidden as i32,
-                detail: String::new(),
-            })),
-        };
-
-        // The is_critical_message function is private, but we verify the behavior
-        // by checking the message type
-        assert!(matches!(kick_message.message, Some(Message::Error(_))));
-    }
-
-    /// Test that pending disconnects are stored when channel is full.
-    /// This verifies the `ConnectionManager` `pending_disconnects` mechanism.
-    #[test]
-    fn test_pending_disconnects_mechanism_exists() {
-        // during temporary channel congestion.
-        const PENDING_DISCONNECT_TTL_SECS: u64 = 60;
-        const RETRY_INTERVAL_SECS: u64 = 5;
-
-        const { assert!(PENDING_DISCONNECT_TTL_SECS > RETRY_INTERVAL_SECS) };
-    }
-
-    /// Test that membership validation serves as fallback for missed signals.
-    /// Even if disconnect signal is missed, heartbeat validation catches kicks and platform bans.
-    #[test]
-    fn test_heartbeat_validates_membership() {
-        // disconnected within 30-65 seconds even if signals are missed.
-        const MEMBERSHIP_CACHE_TTL_SECS: u64 = 30;
-        const HEARTBEAT_INTERVAL_SECS: u64 = 30;
-
-        const { assert!(MEMBERSHIP_CACHE_TTL_SECS >= HEARTBEAT_INTERVAL_SECS) };
-    }
-
-    /// Test the relationship between message channel capacity and recovery.
-    #[test]
-    fn test_message_channel_recovery_relationship() {
-        // - Non-critical messages are dropped (after threshold, client disconnects)
-        // - Critical messages return error, triggering disconnect
-        // (e.g., user is disconnected regardless of whether they saw the message).
-        // - Current playback state
-        // - Room membership status (will be rejected if not allowed)
-        // - Room settings
-
-        const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
-        const { assert!(SLOW_CLIENT_DROP_THRESHOLD > 0) };
-    }
-}
-
-// of kicked or platform-banned users when disconnect signals are missed.
-
-mod membership_cache_ttl_tests {
-
-    /// Test that membership cache TTL is set to 30 seconds.
-    ///
-    /// This was reduced from 60 seconds to improve responsiveness to
-    /// membership changes (room kick or platform ban) when disconnect signals are missed.
-    ///
-    /// With 30-second TTL:
-    /// - Maximum 2 DB queries per minute per connection (vs. every heartbeat without cache)
-    /// - Kicked or platform-banned users disconnected within 30-65 seconds worst case
-    /// - Still provides significant DB load reduction
-    #[test]
-    fn test_membership_cache_ttl_is_30_seconds() {
-        // The TTL is defined in synctv-api/src/impls/messaging.rs
-        const MEMBERSHIP_CACHE_TTL_SECS: u64 = 30;
-
-        // TTL should be 30 seconds for balance between DB load and responsiveness
-        assert_eq!(
-            MEMBERSHIP_CACHE_TTL_SECS, 30,
-            "Membership cache TTL should be 30 seconds for optimal balance"
-        );
-    }
-
-    /// Test that cache TTL allows at least one heartbeat check.
-    ///
-    /// Heartbeat interval is 25-35 seconds. Cache TTL of 30 seconds
-    /// ensures at least one heartbeat can use cached data before expiry.
-    #[test]
-    fn test_cache_ttl_allows_heartbeat_check() {
-        const MEMBERSHIP_CACHE_TTL_SECS: u64 = 30;
-        const MIN_HEARTBEAT_INTERVAL_SECS: u64 = 25;
-
-        // TTL should be at least as long as minimum heartbeat interval
-        const { assert!(MEMBERSHIP_CACHE_TTL_SECS >= MIN_HEARTBEAT_INTERVAL_SECS) };
-    }
-
-    /// Test that worst-case disconnect time is acceptable.
-    ///
-    /// Worst case scenario:
-    /// 1. User gets banned right after heartbeat
-    /// 2. Disconnect signal is missed (channel full/network issue)
-    /// 3. Next heartbeat is at 35 seconds
-    /// 4. Cache expires at 30 seconds, forcing DB query
-    /// 5. Ban detected at next heartbeat (35 seconds)
-    ///
-    /// Total worst case: ~35 seconds (down from ~95 seconds with 60s TTL)
-    #[test]
-    fn test_worst_case_disconnect_time_is_acceptable() {
-        const MEMBERSHIP_CACHE_TTL_SECS: u64 = 30;
-        const MAX_HEARTBEAT_INTERVAL_SECS: u64 = 35;
-
-        // Worst case = cache TTL + max heartbeat interval
-        let worst_case_disconnect_secs = MEMBERSHIP_CACHE_TTL_SECS + MAX_HEARTBEAT_INTERVAL_SECS;
-
-        // Worst case should be under 70 seconds (down from ~95 with 60s TTL)
-        assert!(
-            worst_case_disconnect_secs < 70,
-            "Worst case disconnect time ({worst_case_disconnect_secs}) should be under 70 seconds"
-        );
-
-        // This is a significant improvement from 60s TTL (95s worst case)
-        let old_worst_case = 60 + MAX_HEARTBEAT_INTERVAL_SECS;
-        let improvement = old_worst_case - worst_case_disconnect_secs;
-
-        assert_eq!(
-            improvement, 30,
-            "Should reduce worst case by 30 seconds (from {old_worst_case}s to {worst_case_disconnect_secs}s)"
-        );
-    }
-}
-
-mod chat_sse_tests {}

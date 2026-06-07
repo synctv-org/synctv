@@ -142,8 +142,10 @@ pub struct ProxyRequestContext<'a> {
     /// The proxy base URL (for M3U8 rewriting).
     /// e.g., `"/api/providers/proxy/bilibili"`
     pub proxy_base: &'a str,
-    /// Services for DB access during proxy resolution.
-    pub services: &'a ProxyServices,
+    /// Services for proxy paths that need DB or credential access.
+    pub services: Option<&'a ProxyServices>,
+    /// Public ID codec used by proxy paths that only need identifier parsing.
+    pub public_id_codec: Option<&'a PublicIdCodec>,
     /// Verified claims from the incoming request's HMAC signature (if available).
     /// Providers use these to re-sign M3U8 proxy_base URLs with the same claims.
     pub verified_claims: Option<&'a ProxyUrlClaims>,
@@ -154,6 +156,29 @@ pub struct ProxyRequestContext<'a> {
     /// The proxy executor never forwards these directly. Providers must
     /// explicitly select request headers they want the proxy layer to honor.
     pub request_headers: &'a HeaderMap,
+}
+
+impl ProxyRequestContext<'_> {
+    pub(crate) fn services(&self) -> Result<&ProxyServices, ProviderError> {
+        self.services.ok_or_else(|| {
+            ProviderError::Internal(
+                "Proxy services are required for this provider proxy path".into(),
+            )
+        })
+    }
+
+    pub(crate) fn public_id_codec(&self) -> Result<&PublicIdCodec, ProviderError> {
+        self.public_id_codec
+            .or_else(|| {
+                self.services
+                    .map(|services| services.public_id_codec.as_ref())
+            })
+            .ok_or_else(|| {
+                ProviderError::Internal(
+                    "Public ID codec is required for this provider proxy path".into(),
+                )
+            })
+    }
 }
 
 /// Return the client Range header selected by a provider for stream proxying.

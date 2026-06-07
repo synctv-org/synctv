@@ -14,7 +14,7 @@ use crate::http::{error::map_api_error, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 
 // Proto types already derive serde::Serialize/Deserialize.
-use crate::proto::client::GetIceServersResponse;
+use synctv_proto::client::GetIceServersResponse;
 
 /// Get ICE servers configuration for WebRTC
 ///
@@ -34,10 +34,10 @@ use crate::proto::client::GetIceServersResponse;
         ),
         responses(
             (status = 200, description = "ICE servers for the authenticated room actor", body = GetIceServersResponse),
-            (status = 400, description = "Invalid room ID", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "WebRTC permission required", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid room ID", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "WebRTC permission required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Room not found", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -47,7 +47,7 @@ use crate::proto::client::GetIceServersResponse;
 pub async fn get_ice_servers(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Path(path): Path<crate::proto::client::RoomPathRequest>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
 ) -> AppResult<Json<GetIceServersResponse>> {
     let public_room_id = path.room_id;
     let room_id = crate::impls::proto_validated_room_id(
@@ -77,8 +77,8 @@ pub async fn get_ice_servers(
 mod tests {
     use crate::http::error::map_api_error;
     use crate::impls::ApiError;
-    use crate::proto::client::{GetIceServersResponse, IceServer};
     use axum::http::StatusCode;
+    use synctv_proto::client::{GetIceServersResponse, IceServer};
 
     #[test]
     fn test_stun_ice_server_serialization_never_exposes_auth_fields() {

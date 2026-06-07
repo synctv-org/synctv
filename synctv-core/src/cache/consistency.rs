@@ -1582,6 +1582,7 @@ async fn db_version_for_repair(pool: &PgPool, domain: &CacheDomain) -> Option<i6
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::failing_redis_runtime;
 
     #[derive(Debug, Default)]
     struct CommitFailureRepairStore {
@@ -2081,19 +2082,9 @@ mod tests {
 
     #[test]
     fn best_effort_profile_uses_redis_fence_when_redis_is_configured() {
-        #[derive(Clone)]
-        struct FakeRedisRuntime;
-
-        #[async_trait]
-        impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
-                panic!("unit test should only verify fence store construction");
-            }
-        }
-
         let profile = SharedStateProfile::new(
             SharedStateMode::SharedBestEffort,
-            Some(Arc::new(FakeRedisRuntime)),
+            Some(failing_redis_runtime()),
             "test:",
         );
         let store = version_fence_store_from_shared_state_profile(&profile).unwrap();

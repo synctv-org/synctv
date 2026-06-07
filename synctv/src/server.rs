@@ -2028,9 +2028,7 @@ mod tests {
 
     #[tokio::test]
     async fn management_server_reuses_shared_http_app_state_instances() {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-            .expect("lazy pool");
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let config = Arc::new(Config::default());
         let credential_repo = Arc::new(UserProviderCredentialRepository::new(pool.clone()));
         let shared_runtime = SharedProviderPlaybackRuntime::new(&config, None)
@@ -2639,13 +2637,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown_livestream_state_uses_graceful_shutdown() {
-        struct FakeLivestreamState {
+        struct RecordingLivestreamState {
             called: Arc<AtomicBool>,
             timeout_seen: Arc<std::sync::atomic::AtomicU64>,
         }
 
         #[async_trait]
-        impl LivestreamShutdown for FakeLivestreamState {
+        impl LivestreamShutdown for RecordingLivestreamState {
             async fn cleanup_local_publishers_for_server(&mut self, _timeout: Duration) {}
 
             fn force_shutdown_for_server(&mut self) {}
@@ -2659,7 +2657,7 @@ mod tests {
 
         let called = Arc::new(AtomicBool::new(false));
         let timeout_seen = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let mut livestream_state = Some(FakeLivestreamState {
+        let mut livestream_state = Some(RecordingLivestreamState {
             called: Arc::clone(&called),
             timeout_seen: Arc::clone(&timeout_seen),
         });

@@ -513,33 +513,10 @@ async fn test_create_batch() {
     assert_eq!(fetched.len(), 5);
 }
 
-/// Unit test: Oversized chunks are rejected before any database I/O.
-#[tokio::test]
-async fn test_create_batch_chunk_too_large() {
-    let pool = PgPool::connect_lazy("postgresql://unused:unused@localhost/unused")
-        .expect("lazy pool should accept a syntactically valid URL");
-    let playlist_id = PlaylistId::new();
-    let room_id = RoomId::new();
-    let owner_id = UserId::new();
-    let items: Vec<Media> = (0..1001)
-        .map(|i| {
-            Media::from_provider_with_params(FromProviderParams {
-                playlist_id: Some(playlist_id),
-                room_id,
-                creator_id: Some(owner_id),
-                name: format!("Video {i}"),
-                description: String::new(),
-                source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
-                provider_name: "direct_url".to_string(),
-                provider_instance_name: None,
-                position: f64::from(i),
-            })
-        })
-        .collect();
-
-    let err = MediaRepository::create_batch_chunk(&items, &pool)
-        .await
-        .expect_err("oversized chunks should be rejected before touching the database");
+#[test]
+fn test_create_batch_chunk_too_large() {
+    let err = MediaRepository::validate_create_batch_chunk_len(1001)
+        .expect_err("oversized chunks should be rejected before building a query");
 
     match err {
         crate::Error::InvalidInput(message) => {

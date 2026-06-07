@@ -9,7 +9,7 @@ use opaque_ke::{
 };
 use std::{net::IpAddr, sync::Arc};
 use synctv_core::cache::{KeyBuilder, UsernameCache};
-use synctv_core::models::User;
+use synctv_core::models::{ProviderInstance, ProviderInstanceListQuery, User};
 use synctv_core::repository::SettingsRepository;
 use synctv_core::service::{
     auth::{
@@ -17,12 +17,93 @@ use synctv_core::service::{
         token_blacklist::InMemoryTokenBlacklistStore,
     },
     rate_limit::RequestRateLimiterService,
+    remote_provider_manager::ProviderInstanceStore,
     room::RoomServiceOptions,
     user::{UserServiceDependencies, UserServiceRuntimeOptions},
     AccountRegistrationOutcome, BruteForceProtection, BruteForceProtectionService, RateLimiter,
-    RoomService, SettingsRegistry, SettingsService, StreamingPublishKeyService,
-    TokenBlacklistStore, UserService, WebSocketTicketService, WsTicketService,
+    RemoteProviderManager, RoomService, SettingsRegistry, SettingsService,
+    StreamingPublishKeyService, TokenBlacklistStore, UserService, WebSocketTicketService,
+    WsTicketService,
 };
+
+#[derive(Clone)]
+struct FailingRedisRuntime;
+
+#[async_trait::async_trait]
+impl synctv_core::RedisConnectionRuntime for FailingRedisRuntime {
+    async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
+        panic!("failing_redis_runtime snapshot should not be called")
+    }
+}
+
+pub fn failing_redis_runtime() -> Arc<dyn synctv_core::RedisConnectionRuntime> {
+    Arc::new(FailingRedisRuntime)
+}
+
+#[derive(Debug)]
+struct EmptyProviderInstanceStore;
+
+#[async_trait::async_trait]
+impl ProviderInstanceStore for EmptyProviderInstanceStore {
+    async fn get_all_enabled(&self) -> synctv_core::Result<Vec<ProviderInstance>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_all(&self) -> synctv_core::Result<Vec<ProviderInstance>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_by_name(&self, _name: &str) -> synctv_core::Result<Option<ProviderInstance>> {
+        Ok(None)
+    }
+
+    async fn list_with_total(
+        &self,
+        _query: &ProviderInstanceListQuery,
+    ) -> synctv_core::Result<(Vec<ProviderInstance>, i64)> {
+        Ok((Vec::new(), 0))
+    }
+
+    async fn find_by_provider(
+        &self,
+        _provider: &str,
+    ) -> synctv_core::Result<Vec<ProviderInstance>> {
+        Ok(Vec::new())
+    }
+
+    async fn create(&self, _instance: &ProviderInstance) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn update(&self, _instance: &ProviderInstance) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn delete(&self, _name: &str) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn enable(&self, _name: &str) -> synctv_core::Result<()> {
+        Ok(())
+    }
+
+    async fn disable(&self, _name: &str) -> synctv_core::Result<()> {
+        Ok(())
+    }
+}
+
+#[must_use]
+pub fn create_empty_provider_instance_store() -> Arc<dyn ProviderInstanceStore> {
+    Arc::new(EmptyProviderInstanceStore)
+}
+
+#[must_use]
+pub fn create_empty_provider_instance_manager() -> Arc<RemoteProviderManager> {
+    Arc::new(RemoteProviderManager::new_with_store(
+        create_empty_provider_instance_store(),
+        None,
+    ))
+}
 
 #[derive(Debug)]
 struct TestOpaqueCipherSuite;

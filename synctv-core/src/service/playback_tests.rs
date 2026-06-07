@@ -1,5 +1,7 @@
 use super::*;
-use crate::cache::{CacheInvalidationService, CacheL2Backend, KeyBuilder, UsernameCache};
+use crate::cache::{
+    CacheInvalidationService, CacheL2Backend, InvalidationMessage, KeyBuilder, UsernameCache,
+};
 use crate::models::{RoomId, SignupMethod, User, UserRole, UserStatus};
 use crate::repository::{
     MediaRepository, PlaylistRepository, ProviderInstanceRepository, RoomPlaybackStateRepository,
@@ -116,111 +118,52 @@ fn make_user(username: &str) -> User {
     }
 }
 
-fn make_playback_service_for_lifecycle_tests() -> (PlaybackService, Arc<CacheInvalidationService>) {
-    make_playback_service_for_lifecycle_tests_with_l2(None)
-}
+type PlaybackInvalidationRuntimeParts = (
+    Arc<PlaybackInvalidationRuntime>,
+    Arc<moka::future::Cache<String, RoomPlaybackState>>,
+    Arc<parking_lot::RwLock<Option<PlaybackStateCache>>>,
+    Arc<CacheInvalidationService>,
+);
 
-fn make_playback_service_for_lifecycle_tests_with_l2(
+fn make_playback_invalidation_runtime_for_lifecycle_tests(
     l2_cache: Option<PlaybackStateCache>,
-) -> (PlaybackService, Arc<CacheInvalidationService>) {
-    let pool = PgPool::connect_lazy("postgres://localhost/test")
-        .expect("lazy postgres pool for unit tests should build");
-    let member_repo = crate::repository::RoomMemberRepository::new(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
-    let permission_service = PermissionService::without_cache(member_repo, room_repo, None)
-        .expect("permission service should build");
-    let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
-    let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
-        provider_repo,
-        None,
-    ));
-    let providers_manager = Arc::new(
-        ProvidersManager::new(provider_instance_manager).expect("providers manager should build"),
-    );
-    let media_service = MediaService::new(
-        MediaRepository::new(pool.clone()),
-        PlaylistRepository::new(pool.clone()),
-        permission_service.clone(),
-        providers_manager,
-        NotificationService::default(),
-    );
-    let user_service = make_user_service(&pool);
+) -> PlaybackInvalidationRuntimeParts {
     let invalidation_service = Arc::new(CacheInvalidationService::new(
         "node-test".to_string(),
         "synctv:test:cache:invalidate".to_string(),
     ));
-    let playback_service = PlaybackService::new_with_runtime(
-        RoomPlaybackStateRepository::new(pool.clone()),
-        permission_service,
-        media_service,
-        user_service,
-        Some(invalidation_service.clone()),
-        l2_cache,
-        None,
-        None,
+    let playback_cache = Arc::new(
+        moka::future::CacheBuilder::new(PlaybackService::DEFAULT_CACHE_SIZE)
+            .time_to_live(std::time::Duration::from_secs(
+                PlaybackService::DEFAULT_CACHE_TTL_SECS,
+            ))
+            .build(),
     );
-    (playback_service, invalidation_service)
+    (
+        Arc::new(PlaybackInvalidationRuntime::new()),
+        playback_cache,
+        Arc::new(parking_lot::RwLock::new(l2_cache)),
+        invalidation_service,
+    )
 }
 
 #[tokio::test]
 async fn standalone_playback_service_uses_non_authoritative_fence_by_default() {
-    let pool = PgPool::connect_lazy("postgres://localhost/test")
-        .expect("lazy postgres pool for unit tests should build");
-    let member_repo = crate::repository::RoomMemberRepository::new(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
-    let permission_service = PermissionService::without_cache(member_repo, room_repo, None)
-        .expect("permission service should build");
-    let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
-    let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
-        provider_repo,
-        None,
-    ));
-    let providers_manager = Arc::new(
-        ProvidersManager::new(provider_instance_manager).expect("providers manager should build"),
-    );
-    let media_service = MediaService::new(
-        MediaRepository::new(pool.clone()),
-        PlaylistRepository::new(pool.clone()),
-        permission_service.clone(),
-        providers_manager,
-        NotificationService::default(),
-    );
-    let service = PlaybackService::new(
-        RoomPlaybackStateRepository::new(pool.clone()),
-        permission_service,
-        media_service,
-        make_user_service(&pool),
-    );
+    let consistency = ConsistencyCoordinator::new(PlaybackService::version_fence_or_default(None));
 
     assert!(
-        !service.consistency.is_authoritative(),
+        !consistency.is_authoritative(),
         "standalone playback constructors must not create private authoritative fences"
     );
 }
 
 #[tokio::test]
 async fn write_playback_cache_refreshes_l1_when_l2_is_configured() {
-    let pool = PgPool::connect_lazy("postgres://localhost/test")
-        .expect("lazy postgres pool for unit tests should build");
-    let member_repo = crate::repository::RoomMemberRepository::new(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
-    let permission_service = PermissionService::without_cache(member_repo, room_repo, None)
-        .expect("permission service should build");
-    let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
-    let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
-        provider_repo,
-        None,
-    ));
-    let providers_manager = Arc::new(
-        ProvidersManager::new(provider_instance_manager).expect("providers manager should build"),
-    );
-    let media_service = MediaService::new(
-        MediaRepository::new(pool.clone()),
-        PlaylistRepository::new(pool.clone()),
-        permission_service.clone(),
-        providers_manager,
-        NotificationService::default(),
-    );
+    let playback_cache = moka::future::CacheBuilder::new(PlaybackService::DEFAULT_CACHE_SIZE)
+        .time_to_live(std::time::Duration::from_secs(
+            PlaybackService::DEFAULT_CACHE_TTL_SECS,
+        ))
+        .build();
     let l2_backend = Arc::new(CountingL2Backend::default());
     let l2_cache = PlaybackStateCache::new(
         l2_backend,
@@ -228,16 +171,6 @@ async fn write_playback_cache_refreshes_l1_when_l2_is_configured() {
         PlaybackService::DEFAULT_CACHE_TTL_SECS,
         60,
         "test:playback:l1-refresh:".to_string(),
-    );
-    let service = PlaybackService::new_with_runtime(
-        RoomPlaybackStateRepository::new(pool.clone()),
-        permission_service,
-        media_service,
-        make_user_service(&pool),
-        None,
-        Some(l2_cache),
-        None,
-        None,
     );
 
     let room_id = RoomId::expect_positive(10_004);
@@ -254,10 +187,7 @@ async fn write_playback_cache_refreshes_l1_when_l2_is_configured() {
         updated_at: chrono::Utc::now(),
         version: 3,
     };
-    service
-        .playback_cache
-        .insert(cache_key.clone(), stale_state)
-        .await;
+    playback_cache.insert(cache_key.clone(), stale_state).await;
 
     let fresh_state = RoomPlaybackState {
         room_id,
@@ -271,10 +201,10 @@ async fn write_playback_cache_refreshes_l1_when_l2_is_configured() {
         updated_at: chrono::Utc::now(),
         version: 4,
     };
-    service.write_playback_cache(&fresh_state).await;
+    PlaybackService::write_playback_cache_entry(&playback_cache, Some(l2_cache), &fresh_state)
+        .await;
 
-    let cached = service
-        .playback_cache
+    let cached = playback_cache
         .get(&cache_key)
         .await
         .expect("local L1 cache should be refreshed by local write");
@@ -388,21 +318,26 @@ fn test_switch_target_source_shape_matches_progress_schema() {
 
 #[tokio::test]
 async fn test_invalidation_listener_stops_after_cache_invalidation_service_stop() {
-    let (playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
+    let (runtime, playback_cache, l2_cache, invalidation_service) =
+        make_playback_invalidation_runtime_for_lifecycle_tests(None);
     let room_id = RoomId::expect_positive(10_001);
     let cache_key = room_id.to_string();
 
-    playback_service
-        .start()
+    runtime
+        .start(
+            invalidation_service.clone(),
+            playback_cache.clone(),
+            l2_cache.clone(),
+        )
         .await
         .expect("playback invalidation listener should start");
 
     assert!(
-        playback_service.invalidation_task_started(),
+        runtime.is_started(),
         "start() must mark playback invalidation runtime as running"
     );
 
-    playback_service.shutdown().await;
+    runtime.shutdown().await;
 
     let updated_state = RoomPlaybackState {
         room_id,
@@ -427,26 +362,27 @@ async fn test_invalidation_listener_stops_after_cache_invalidation_service_stop(
     tokio::task::yield_now().await;
 
     assert!(
-        playback_service
-            .playback_cache
-            .get(&cache_key)
-            .await
-            .is_none(),
+        playback_cache.get(&cache_key).await.is_none(),
         "playback invalidation listener must stop processing local broadcasts once shutdown starts"
     );
 }
 
 #[tokio::test]
 async fn test_start_can_restart_playback_invalidation_listener_after_shutdown() {
-    let (playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
+    let (runtime, playback_cache, l2_cache, invalidation_service) =
+        make_playback_invalidation_runtime_for_lifecycle_tests(None);
     let room_id = RoomId::expect_positive(10_002);
     let cache_key = room_id.to_string();
 
-    playback_service
-        .start()
+    runtime
+        .start(
+            invalidation_service.clone(),
+            playback_cache.clone(),
+            l2_cache.clone(),
+        )
         .await
         .expect("initial playback invalidation start should succeed");
-    playback_service.shutdown().await;
+    runtime.shutdown().await;
 
     let updated_state = RoomPlaybackState {
         room_id,
@@ -461,8 +397,12 @@ async fn test_start_can_restart_playback_invalidation_listener_after_shutdown() 
         version: 9,
     };
 
-    playback_service
-        .start()
+    runtime
+        .start(
+            invalidation_service.clone(),
+            playback_cache.clone(),
+            l2_cache.clone(),
+        )
         .await
         .expect("restart after playback invalidation shutdown should succeed");
 
@@ -475,29 +415,33 @@ async fn test_start_can_restart_playback_invalidation_listener_after_shutdown() 
         .expect("local invalidation broadcast should succeed after restart");
     tokio::task::yield_now().await;
 
-    let cached = playback_service
-        .playback_cache
+    let cached = playback_cache
         .get(&cache_key)
         .await
         .expect("restarted listener should populate cache from invalidation broadcast");
     assert_eq!(cached.version, 9);
 
-    playback_service.shutdown().await;
+    runtime.shutdown().await;
 }
 
 #[tokio::test]
 async fn test_start_activates_invalidation_listener_after_wiring_service() {
-    let (playback_service, invalidation_service) = make_playback_service_for_lifecycle_tests();
+    let (runtime, playback_cache, l2_cache, invalidation_service) =
+        make_playback_invalidation_runtime_for_lifecycle_tests(None);
     let room_id = RoomId::expect_positive(10_003);
     let cache_key = room_id.to_string();
 
-    playback_service
-        .start()
+    runtime
+        .start(
+            invalidation_service.clone(),
+            playback_cache.clone(),
+            l2_cache.clone(),
+        )
         .await
         .expect("explicit start should activate playback invalidation listener");
 
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while !playback_service.invalidation_task_started() {
+        while !runtime.is_started() {
             tokio::task::yield_now().await;
         }
     })
@@ -527,7 +471,7 @@ async fn test_start_activates_invalidation_listener_after_wiring_service() {
 
     let cached = tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
-            if let Some(cached) = playback_service.playback_cache.get(&cache_key).await {
+            if let Some(cached) = playback_cache.get(&cache_key).await {
                 break cached;
             }
             tokio::task::yield_now().await;
@@ -538,7 +482,7 @@ async fn test_start_activates_invalidation_listener_after_wiring_service() {
 
     assert_eq!(cached.version, updated_state.version);
 
-    playback_service.shutdown().await;
+    runtime.shutdown().await;
 }
 
 #[tokio::test]
@@ -551,17 +495,21 @@ async fn test_started_invalidation_listener_uses_configured_l2_cache() {
         60,
         "synctv:test:playback:".to_string(),
     );
-    let (playback_service, invalidation_service) =
-        make_playback_service_for_lifecycle_tests_with_l2(Some(l2_cache));
+    let (runtime, playback_cache, l2_cache, invalidation_service) =
+        make_playback_invalidation_runtime_for_lifecycle_tests(Some(l2_cache));
     let room_id = RoomId::expect_positive(10_004);
 
-    playback_service
-        .start()
+    runtime
+        .start(
+            invalidation_service.clone(),
+            playback_cache.clone(),
+            l2_cache.clone(),
+        )
         .await
         .expect("explicit start should activate playback invalidation listener");
 
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while !playback_service.invalidation_task_started() {
+        while !runtime.is_started() {
             tokio::task::yield_now().await;
         }
     })
@@ -583,7 +531,7 @@ async fn test_started_invalidation_listener_uses_configured_l2_cache() {
     .await
     .expect("listener should invalidate configured L2 cache");
 
-    playback_service.shutdown().await;
+    runtime.shutdown().await;
 }
 
 #[tokio::test]

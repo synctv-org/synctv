@@ -3,15 +3,15 @@
 //! Unified implementation for all Emby API operations.
 //! Used by both HTTP and gRPC handlers.
 
-use crate::proto::providers::emby::{
-    BindInfo, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MediaItem,
-};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::sync::Arc;
 use synctv_core::models::{ProviderCredential, UserId, UserProviderCredential};
 use synctv_core::provider::{EmbyProvider, ExecutionControl, ProviderAccessService};
 use synctv_core::repository::UserProviderCredentialRepository;
+use synctv_proto::providers::emby::{
+    BindInfo, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MediaItem,
+};
 
 use super::ProviderApiRuntime;
 use super::{get_provider_binds, publish_provider_credential_changed, resolve_bound_instance_name};
@@ -132,6 +132,7 @@ impl EmbyApiImpl {
                 "Emby username must not be empty".to_string(),
             ));
         }
+        let credential = Self::resolve_login_credential(req.credential)?;
 
         let login_resp = self
             .provider
@@ -139,26 +140,7 @@ impl EmbyApiImpl {
                 synctv_media_providers::grpc::emby::LoginReq {
                     host: req.host,
                     username: req.username,
-                    credential: Some(
-                        match req.credential.ok_or_else(|| {
-                            synctv_core::provider::ProviderError::InvalidConfig(
-                                "Emby login requires exactly one credential".to_string(),
-                            )
-                        })? {
-                            crate::proto::providers::emby::login_request::Credential::Password(
-                                password,
-                            ) => {
-                                synctv_media_providers::grpc::emby::login_req::Credential::Password(
-                                    password,
-                                )
-                            }
-                            crate::proto::providers::emby::login_request::Credential::ApiKey(
-                                api_key,
-                            ) => synctv_media_providers::grpc::emby::login_req::Credential::ApiKey(
-                                api_key,
-                            ),
-                        },
-                    ),
+                    credential: Some(credential),
                 },
                 instance_name,
                 request_context,
@@ -224,6 +206,25 @@ impl EmbyApiImpl {
             is_admin,
             server_id,
         })
+    }
+
+    fn resolve_login_credential(
+        credential: Option<synctv_proto::providers::emby::login_request::Credential>,
+    ) -> Result<
+        synctv_media_providers::grpc::emby::login_req::Credential,
+        synctv_core::provider::ProviderError,
+    > {
+        match credential {
+            Some(synctv_proto::providers::emby::login_request::Credential::Password(password)) => {
+                Ok(synctv_media_providers::grpc::emby::login_req::Credential::Password(password))
+            }
+            Some(synctv_proto::providers::emby::login_request::Credential::ApiKey(api_key)) => {
+                Ok(synctv_media_providers::grpc::emby::login_req::Credential::ApiKey(api_key))
+            }
+            None => Err(synctv_core::provider::ProviderError::InvalidConfig(
+                "Emby login requires exactly one credential".to_string(),
+            )),
+        }
     }
 
     /// List Emby library items using stored credential
@@ -432,17 +433,11 @@ mod tests {
     use super::{EmbyApiImpl, ProviderApiRuntime};
     use std::sync::Arc;
     use synctv_core::provider::{EmbyProvider, ProviderError};
-    use synctv_core::repository::{ProviderInstanceRepository, UserProviderCredentialRepository};
-    use synctv_core::service::RemoteProviderManager;
+    use synctv_core::repository::UserProviderCredentialRepository;
     use synctv_core_testing::create_test_pool;
 
     fn provider() -> Arc<EmbyProvider> {
-        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        Arc::new(
-            EmbyProvider::new(Arc::new(RemoteProviderManager::new(repo)))
-                .expect("provider should build"),
-        )
+        Arc::new(EmbyProvider::new_local_only().expect("provider should build"))
     }
 
     fn test_provider_runtime() -> ProviderApiRuntime {
@@ -459,26 +454,9 @@ mod tests {
         EmbyApiImpl::new_with_runtime(provider, credential_repo, test_provider_runtime())
     }
 
-    #[tokio::test]
-    async fn login_rejects_missing_credential_before_provider_call() {
-        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
-        let api = test_api(
-            provider(),
-            Arc::new(UserProviderCredentialRepository::new(pool)),
-        );
-
-        let err = api
-            .login(
-                &synctv_core::models::UserId::new(),
-                crate::proto::providers::emby::LoginRequest {
-                    host: "https://emby.example.com".to_string(),
-                    username: "alice".to_string(),
-                    credential: None,
-                    instance_name: String::new(),
-                },
-                None,
-            )
-            .await
+    #[test]
+    fn resolve_login_credential_rejects_missing_credential() {
+        let err = EmbyApiImpl::resolve_login_credential(None)
             .expect_err("missing credential must fail before provider login");
 
         match err {
@@ -501,7 +479,7 @@ mod tests {
         let err = api
             .logout(
                 &synctv_core::models::UserId::new(),
-                crate::proto::providers::emby::LogoutRequest {
+                synctv_proto::providers::emby::LogoutRequest {
                     server_id: String::new(),
                     instance_name: String::new(),
                 },

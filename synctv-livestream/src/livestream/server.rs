@@ -1181,7 +1181,7 @@ impl LivestreamServer {
 mod tests {
     use super::*;
     use crate::api::tracker::StreamTracker;
-    use crate::relay::MockStreamRegistry;
+    use crate::relay::TestStreamRegistry;
     use bytes::Bytes;
     use tempfile::tempdir;
     use tokio::time::{timeout, Duration};
@@ -1366,7 +1366,7 @@ mod tests {
     #[tokio::test]
     async fn test_reregister_task_cleanup_on_shutdown() {
         // Create a mock registry
-        let registry = Arc::new(MockStreamRegistry::new());
+        let registry = Arc::new(TestStreamRegistry::new());
 
         let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
@@ -1404,7 +1404,7 @@ mod tests {
     /// This test verifies graceful shutdown properly cancels both tasks.
     #[tokio::test]
     async fn test_reregister_task_respects_cancellation() {
-        let registry = Arc::new(MockStreamRegistry::new());
+        let registry = Arc::new(TestStreamRegistry::new());
 
         let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
@@ -1441,7 +1441,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown_graceful_cleans_local_publishers_from_registry_and_tracker() {
-        let registry = Arc::new(MockStreamRegistry::new());
+        let registry = Arc::new(TestStreamRegistry::new());
         let tracker = test_tracker();
 
         let server = LivestreamServer::new(test_config(), registry.clone(), tracker.clone());
@@ -1489,7 +1489,7 @@ mod tests {
     /// terminated and won't respond to any more notifications.
     #[tokio::test]
     async fn test_reregister_task_no_background_leak() {
-        let registry = Arc::new(MockStreamRegistry::new());
+        let registry = Arc::new(TestStreamRegistry::new());
 
         let server = LivestreamServer::new(test_config(), registry.clone(), test_tracker());
 
@@ -1539,7 +1539,7 @@ mod tests {
     ///
     #[tokio::test]
     async fn test_drop_cleans_up_tasks() {
-        let registry = Arc::new(MockStreamRegistry::new());
+        let registry = Arc::new(TestStreamRegistry::new());
 
         let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
@@ -1593,7 +1593,7 @@ mod tests {
     /// properly terminated when the handle is dropped, preventing memory leaks.
     #[tokio::test]
     async fn test_hls_cleanup_task_terminated_on_drop() {
-        let registry = Arc::new(MockStreamRegistry::new());
+        let registry = Arc::new(TestStreamRegistry::new());
 
         let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
@@ -1623,7 +1623,7 @@ mod tests {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let runtime = tokio::runtime::Runtime::new().expect("runtime");
             let handle = runtime.block_on(async {
-                let registry = Arc::new(MockStreamRegistry::new());
+                let registry = Arc::new(TestStreamRegistry::new());
                 let server = LivestreamServer::new(test_config(), registry, test_tracker());
                 server.start().expect("Failed to start server")
             });
@@ -1646,7 +1646,7 @@ mod tests {
     /// listener and the server starts successfully using that listener.
     #[tokio::test]
     async fn test_rtmp_pre_binding_works() {
-        let registry = Arc::new(MockStreamRegistry::new());
+        let registry = Arc::new(TestStreamRegistry::new());
 
         // Pre-bind to port 0 (let OS assign a free port)
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1694,7 +1694,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_failure_on_hls_storage_validation_does_not_spawn_rtmp() {
-        let registry = Arc::new(MockStreamRegistry::new());
+        let registry = Arc::new(TestStreamRegistry::new());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("Failed to pre-bind RTMP port");
@@ -1728,7 +1728,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_failure_on_empty_node_id_does_not_spawn_rtmp() {
-        let registry = Arc::new(MockStreamRegistry::new());
+        let registry = Arc::new(TestStreamRegistry::new());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("Failed to pre-bind RTMP port");
@@ -1761,7 +1761,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown_releases_rtmp_port_for_rebind() {
-        let registry = Arc::new(MockStreamRegistry::new());
+        let registry = Arc::new(TestStreamRegistry::new());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1809,7 +1809,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown_graceful_releases_rtmp_port_for_rebind() {
-        let registry = Arc::new(MockStreamRegistry::new());
+        let registry = Arc::new(TestStreamRegistry::new());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1891,7 +1891,7 @@ mod tests {
     /// This verifies the supported construction path where the server owns listener binding.
     #[tokio::test]
     async fn test_livestream_server_without_prebound_listener() {
-        let registry = Arc::new(MockStreamRegistry::new());
+        let registry = Arc::new(TestStreamRegistry::new());
 
         // Use port 0 to let OS assign a free port
         let server = LivestreamServer::new(test_config(), registry, test_tracker());

@@ -10,32 +10,11 @@
 // shared durable cache invalidation stream so other replicas can invalidate
 // their local channel cache even across restarts and transient disconnects.
 
-use crate::cache::{CacheInvalidationRuntime, InvalidationMessage};
-use crate::models::{validate_provider_instance_name, ProviderInstance, ProviderInstanceListQuery};
+use crate::cache::CacheInvalidationRuntime;
+use crate::models::{ProviderInstance, ProviderInstanceListQuery};
 use crate::provider::provider_client::{validate_auth_secret, RemoteProviderConnection};
 use crate::provider::{AlistProvider, BilibiliProvider, EmbyProvider, ProviderError};
 use crate::repository::ProviderInstanceRepository;
-#[cfg(any(
-    feature = "tls-aws-lc",
-    feature = "tls-ring",
-    feature = "tls-webpki-roots",
-    feature = "tls-native-roots"
-))]
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-#[cfg(any(
-    feature = "tls-aws-lc",
-    feature = "tls-ring",
-    feature = "tls-webpki-roots",
-    feature = "tls-native-roots"
-))]
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-#[cfg(any(
-    feature = "tls-aws-lc",
-    feature = "tls-ring",
-    feature = "tls-webpki-roots",
-    feature = "tls-native-roots"
-))]
-use rustls::{ClientConfig, DigitallySignedStruct, Error as TlsError, SignatureScheme};
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -43,88 +22,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use synctv_common::ExecutionControl;
 use tokio::task::JoinHandle;
-#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
-use tonic::transport::{Certificate, ClientTlsConfig};
-use tonic::transport::{Channel, Endpoint, Uri};
+use tonic::transport::Channel;
 use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
 
-/// A certificate verifier that accepts any server certificate.
-#[cfg(any(
-    feature = "tls-aws-lc",
-    feature = "tls-ring",
-    feature = "tls-webpki-roots",
-    feature = "tls-native-roots"
-))]
-#[derive(Debug)]
-struct NoVerifier;
-
-#[cfg(any(
-    feature = "tls-aws-lc",
-    feature = "tls-ring",
-    feature = "tls-webpki-roots",
-    feature = "tls-native-roots"
-))]
-impl ServerCertVerifier for NoVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, TlsError> {
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, TlsError> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, TlsError> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::ECDSA_NISTP521_SHA512,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::ED25519,
-            SignatureScheme::ED448,
-        ]
-    }
-}
-
-#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
-fn apply_default_grpc_roots(mut tls_config: ClientTlsConfig) -> ClientTlsConfig {
-    #[cfg(feature = "tls-webpki-roots")]
-    {
-        tls_config = tls_config.with_webpki_roots();
-    }
-
-    #[cfg(feature = "tls-native-roots")]
-    {
-        tls_config = tls_config.with_native_roots();
-    }
-
-    tls_config
-}
+mod invalidation;
+mod management;
+mod transport;
+mod validation;
 
 /// Default channel cache TTL (5 minutes)
 const CHANNEL_CACHE_TTL_SECS: u64 = 300;
@@ -132,9 +36,132 @@ const CHANNEL_CACHE_TTL_SECS: u64 = 300;
 /// Maximum number of cached channels
 const MAX_CACHED_CHANNELS: u64 = 1_000;
 
-/// Match the remote provider server's HTTP/2 frame budget for large provider
-/// directory/listing responses.
-const PROVIDER_GRPC_FRAME_SIZE_LIMIT: u32 = 4 * 1024 * 1024;
+#[async_trait::async_trait]
+pub trait ProviderInstanceStore: Send + Sync + std::fmt::Debug {
+    async fn get_all_enabled(&self) -> crate::Result<Vec<ProviderInstance>>;
+    async fn get_all(&self) -> crate::Result<Vec<ProviderInstance>>;
+    async fn get_by_name(&self, name: &str) -> crate::Result<Option<ProviderInstance>>;
+    async fn list_with_total(
+        &self,
+        query: &ProviderInstanceListQuery,
+    ) -> crate::Result<(Vec<ProviderInstance>, i64)>;
+    async fn find_by_provider(&self, provider: &str) -> crate::Result<Vec<ProviderInstance>>;
+    async fn create(&self, instance: &ProviderInstance) -> crate::Result<()>;
+    async fn update(&self, instance: &ProviderInstance) -> crate::Result<()>;
+    async fn delete(&self, name: &str) -> crate::Result<()>;
+    async fn enable(&self, name: &str) -> crate::Result<()>;
+    async fn disable(&self, name: &str) -> crate::Result<()>;
+}
+
+#[async_trait::async_trait]
+impl ProviderInstanceStore for ProviderInstanceRepository {
+    async fn get_all_enabled(&self) -> crate::Result<Vec<ProviderInstance>> {
+        self.get_all_enabled().await
+    }
+
+    async fn get_all(&self) -> crate::Result<Vec<ProviderInstance>> {
+        self.get_all().await
+    }
+
+    async fn get_by_name(&self, name: &str) -> crate::Result<Option<ProviderInstance>> {
+        self.get_by_name(name).await
+    }
+
+    async fn list_with_total(
+        &self,
+        query: &ProviderInstanceListQuery,
+    ) -> crate::Result<(Vec<ProviderInstance>, i64)> {
+        self.list_with_total(query).await
+    }
+
+    async fn find_by_provider(&self, provider: &str) -> crate::Result<Vec<ProviderInstance>> {
+        self.find_by_provider(provider).await
+    }
+
+    async fn create(&self, instance: &ProviderInstance) -> crate::Result<()> {
+        self.create(instance).await
+    }
+
+    async fn update(&self, instance: &ProviderInstance) -> crate::Result<()> {
+        self.update(instance).await
+    }
+
+    async fn delete(&self, name: &str) -> crate::Result<()> {
+        self.delete(name).await
+    }
+
+    async fn enable(&self, name: &str) -> crate::Result<()> {
+        self.enable(name).await
+    }
+
+    async fn disable(&self, name: &str) -> crate::Result<()> {
+        self.disable(name).await
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct EmptyProviderInstanceStore;
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl ProviderInstanceStore for EmptyProviderInstanceStore {
+    async fn get_all_enabled(&self) -> crate::Result<Vec<ProviderInstance>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_all(&self) -> crate::Result<Vec<ProviderInstance>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_by_name(&self, _name: &str) -> crate::Result<Option<ProviderInstance>> {
+        Ok(None)
+    }
+
+    async fn list_with_total(
+        &self,
+        _query: &ProviderInstanceListQuery,
+    ) -> crate::Result<(Vec<ProviderInstance>, i64)> {
+        Ok((Vec::new(), 0))
+    }
+
+    async fn find_by_provider(&self, _provider: &str) -> crate::Result<Vec<ProviderInstance>> {
+        Ok(Vec::new())
+    }
+
+    async fn create(&self, _instance: &ProviderInstance) -> crate::Result<()> {
+        Ok(())
+    }
+
+    async fn update(&self, _instance: &ProviderInstance) -> crate::Result<()> {
+        Ok(())
+    }
+
+    async fn delete(&self, _name: &str) -> crate::Result<()> {
+        Ok(())
+    }
+
+    async fn enable(&self, _name: &str) -> crate::Result<()> {
+        Ok(())
+    }
+
+    async fn disable(&self, _name: &str) -> crate::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn empty_provider_instance_store() -> Arc<dyn ProviderInstanceStore> {
+    Arc::new(EmptyProviderInstanceStore)
+}
+
+#[cfg(test)]
+pub(crate) fn empty_provider_instance_manager() -> Arc<RemoteProviderManager> {
+    Arc::new(RemoteProviderManager::new_with_store(
+        empty_provider_instance_store(),
+        None,
+    ))
+}
 
 /// Remote Provider Manager
 ///
@@ -156,7 +183,7 @@ pub struct RemoteProviderManager {
     channel_cache: Arc<moka::future::Cache<String, RemoteProviderConnection>>,
 
     /// Repository for database operations
-    repository: Arc<ProviderInstanceRepository>,
+    repository: Arc<dyn ProviderInstanceStore>,
 
     /// Shared durable invalidation bus for cross-replica cache invalidation.
     cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
@@ -409,7 +436,7 @@ impl RemoteProviderManager {
     /// Create a new `RemoteProviderManager` without shared durable invalidation.
     #[must_use]
     pub fn new(repository: Arc<ProviderInstanceRepository>) -> Self {
-        Self::new_with_invalidation(repository, None)
+        Self::new_with_store(repository, None)
     }
 
     /// Create a new `RemoteProviderManager` with the shared durable invalidation service.
@@ -418,8 +445,16 @@ impl RemoteProviderManager {
         repository: Arc<ProviderInstanceRepository>,
         cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
     ) -> Self {
-        Self::new_with_options(
-            repository,
+        Self::new_with_store(repository, cache_invalidation)
+    }
+
+    #[must_use]
+    pub fn new_with_store(
+        store: Arc<dyn ProviderInstanceStore>,
+        cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
+    ) -> Self {
+        Self::new_with_store_and_options(
+            store,
             cache_invalidation,
             RemoteProviderManagerOptions::default(),
         )
@@ -431,7 +466,7 @@ impl RemoteProviderManager {
         cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
         address_overrides: HashMap<String, SocketAddr>,
     ) -> Self {
-        Self::new_with_options(
+        Self::new_with_store_and_options(
             repository,
             cache_invalidation,
             RemoteProviderManagerOptions {
@@ -448,7 +483,7 @@ impl RemoteProviderManager {
         address_overrides: HashMap<String, SocketAddr>,
         ssrf_guard: synctv_common::ssrf::SsrfGuard,
     ) -> Self {
-        Self::new_with_options(
+        Self::new_with_store_and_options(
             repository,
             cache_invalidation,
             RemoteProviderManagerOptions {
@@ -462,6 +497,15 @@ impl RemoteProviderManager {
     #[must_use]
     pub fn new_with_options(
         repository: Arc<ProviderInstanceRepository>,
+        cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
+        options: RemoteProviderManagerOptions,
+    ) -> Self {
+        Self::new_with_store_and_options(repository, cache_invalidation, options)
+    }
+
+    #[must_use]
+    pub fn new_with_store_and_options(
+        repository: Arc<dyn ProviderInstanceStore>,
         cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
         options: RemoteProviderManagerOptions,
     ) -> Self {
@@ -547,353 +591,6 @@ impl RemoteProviderManager {
         );
 
         Ok(())
-    }
-
-    /// Start the durable provider invalidation subscriber for cross-replica cache invalidation.
-    ///
-    /// Subscribes to the shared `CacheInvalidationService`, which is backed by
-    /// Redis Streams in cluster mode and therefore replays pending invalidations
-    /// after reconnect/restart.
-    /// Returns immediately if cross-replica invalidation is not configured.
-    pub async fn start_invalidation_listener(&self) -> crate::Result<()> {
-        let Some(ref invalidation_service) = self.cache_invalidation else {
-            tracing::debug!("No durable invalidation service configured, skipping listener");
-            return Ok(());
-        };
-
-        let mut guard = self.invalidation_listener_task.lock().await;
-        if guard.is_some() {
-            tracing::debug!("Provider invalidation listener already running");
-            return Ok(());
-        }
-
-        let cache = Arc::clone(&self.channel_cache);
-        let cancel = self.invalidation_cancel.child_token();
-        let mut receiver = invalidation_service.subscribe();
-
-        // The shared invalidation service may already have consumed durable
-        // stream entries before this manager attaches its local broadcast
-        // receiver. Drop all cached channels now so the next access reloads the
-        // latest DB state instead of serving a stale pre-listener snapshot.
-        self.channel_cache.invalidate_all();
-
-        let handle = crate::spawn::spawn_monitored("provider_invalidation_listener", async move {
-            loop {
-                tokio::select! {
-                    () = cancel.cancelled() => {
-                        tracing::info!("Provider invalidation listener shutting down");
-                        break;
-                    }
-                    result = receiver.recv() => {
-                        match result {
-                            Ok(InvalidationMessage::ProviderInstance { instance_name }) => {
-                                tracing::info!(
-                                    "Received provider change notification for '{}', invalidating cache",
-                                    instance_name
-                                );
-                                cache.invalidate(&instance_name).await;
-                            }
-                            Ok(_) => {}
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                tracing::warn!(
-                                    "cache invalidation service closed provider invalidation subscription"
-                                );
-                                break;
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                tracing::warn!(
-                                    skipped,
-                                    "Provider invalidation listener lagged; invalidating all cached provider channels"
-                                );
-                                cache.invalidate_all();
-                            }
-                        }
-                    }
-                }
-            }
-        });
-        *guard = Some(handle);
-        drop(guard);
-
-        tracing::info!("Provider instance cache invalidation listener started (durable stream)");
-        Ok(())
-    }
-
-    /// Cancel and join the provider invalidation listener.
-    pub async fn shutdown(&self) {
-        self.invalidation_cancel.cancel();
-
-        let mut guard = self.invalidation_listener_task.lock().await;
-        if let Some(handle) = guard.take() {
-            match handle.await {
-                Ok(()) => {}
-                Err(error) if error.is_cancelled() => {}
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        "Provider invalidation listener ended with join error during shutdown"
-                    );
-                }
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn invalidation_listener_task(&self) -> Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>> {
-        Arc::clone(&self.invalidation_listener_task)
-    }
-
-    #[must_use]
-    pub fn invalidation_cancel_token(&self) -> tokio_util::sync::CancellationToken {
-        self.invalidation_cancel.clone()
-    }
-
-    /// Publish a durable cache invalidation notification so other replicas
-    /// evict the stale entry for `instance_name`.
-    async fn notify_change(
-        &self,
-        operation: &'static str,
-        instance_name: &str,
-    ) -> crate::Result<()> {
-        let Some(ref invalidation_service) = self.cache_invalidation else {
-            return Ok(());
-        };
-
-        invalidation_service
-            .invalidate_provider_instance(instance_name)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    operation,
-                    instance_name,
-                    error = %e,
-                    "Failed to publish provider change notification"
-                );
-                crate::Error::ServiceUnavailable(format!(
-                    "Failed to publish provider invalidation for {operation} '{instance_name}': {e}"
-                ))
-            })
-    }
-
-    async fn restore_cached_connection(
-        &self,
-        instance_name: &str,
-        previous_connection: Option<RemoteProviderConnection>,
-    ) {
-        if let Some(connection) = previous_connection {
-            self.channel_cache
-                .insert(instance_name.to_string(), connection)
-                .await;
-        } else {
-            self.channel_cache.invalidate(instance_name).await;
-        }
-    }
-
-    fn rollback_failure(
-        operation: &'static str,
-        instance_name: &str,
-        notify_error: &crate::Error,
-        rollback_error: &crate::Error,
-    ) -> crate::Error {
-        crate::Error::Internal(format!(
-            "Failed to roll back provider instance {operation} for '{instance_name}' after invalidation publish failure. publish_error: {notify_error}; rollback_error: {rollback_error}"
-        ))
-    }
-
-    /// Validate endpoint URL structure and apply the configured runtime SSRF
-    /// policy to hostnames and IP literals.
-    ///
-    /// Only validates hostnames and IP literals statically. Does NOT resolve DNS,
-    /// because DNS results can change between validation and connection (DNS rebinding),
-    /// and VPN/proxy environments may return unexpected IPs for public hostnames.
-    /// SyncTV's default policy is permissive for self-hosted/private deployments;
-    /// strict private-address blocking only happens when the shared guard is strict.
-    fn validate_endpoint_ssrf(
-        endpoint: &str,
-        guard: &synctv_common::ssrf::SsrfGuard,
-    ) -> crate::Result<()> {
-        let url = url::Url::parse(endpoint).map_err(|e| {
-            crate::Error::InvalidInput(format!("SSRF validation: invalid URL: {e}"))
-        })?;
-
-        match url.scheme() {
-            "http" | "https" => {}
-            scheme => {
-                return Err(crate::Error::InvalidInput(format!(
-                    "Remote provider endpoint scheme '{scheme}' is not supported; use http:// for plaintext gRPC, or https:// for TLS"
-                )))
-            }
-        }
-
-        let host = url.host_str().ok_or_else(|| {
-            crate::Error::InvalidInput("SSRF validation: missing host".to_string())
-        })?;
-
-        // Check if the configured policy blocks the hostname itself.
-        if guard.is_host_blocked(host) {
-            return Err(crate::Error::InvalidInput(format!(
-                "SSRF validation: host '{host}' is blocked (internal/reserved)"
-            )));
-        }
-
-        // If the host is an IP address, check it directly against the configured policy.
-        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-            if guard.is_ip_blocked(&ip) {
-                return Err(crate::Error::InvalidInput(format!(
-                    "SSRF validation: IP '{ip}' is blocked (internal/private)"
-                )));
-            }
-        }
-        // Note: For hostnames, we do NOT resolve DNS here. DNS results can change
-        // between validation and connection; the gRPC transport applies the same
-        // configured policy to resolved addresses at connection time.
-
-        // Validate port range
-        if let Some(port) = url.port() {
-            if port == 0 {
-                return Err(crate::Error::InvalidInput(
-                    "SSRF validation: port 0 is not valid".to_string(),
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
-    fn normalized_transport_endpoint(config: &ProviderInstance) -> crate::Result<String> {
-        let url = url::Url::parse(&config.endpoint).map_err(|e| {
-            crate::Error::InvalidInput(format!("Remote provider endpoint is invalid: {e}"))
-        })?;
-
-        let normalized_scheme = match url.scheme() {
-            "http" => "http",
-            "https" => "https",
-            scheme => {
-                return Err(crate::Error::InvalidInput(format!(
-                    "Remote provider endpoint scheme '{scheme}' is not supported; use http:// for plaintext gRPC, or https:// for TLS"
-                )))
-            }
-        };
-
-        let host = url.host_str().ok_or_else(|| {
-            crate::Error::InvalidInput("Remote provider endpoint is missing host".to_string())
-        })?;
-        let mut normalized = format!("{normalized_scheme}://{host}");
-        if let Some(port) = url.port() {
-            normalized.push(':');
-            normalized.push_str(&port.to_string());
-        }
-        let path = url.path();
-        if !path.is_empty() && path != "/" {
-            normalized.push_str(path);
-        }
-        if let Some(query) = url.query() {
-            normalized.push('?');
-            normalized.push_str(query);
-        }
-
-        Ok(normalized)
-    }
-
-    /// Validate endpoint and timeout without creating or connecting a channel.
-    fn validate_config_with_ssrf_guard(
-        config: &ProviderInstance,
-        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
-    ) -> crate::Result<()> {
-        validate_provider_instance_name(&config.name).map_err(crate::Error::InvalidInput)?;
-        config.parse_timeout().map_err(crate::Error::Internal)?;
-        for provider in &config.providers {
-            if !Self::is_supported_remote_provider(provider) {
-                return Err(crate::Error::InvalidInput(format!(
-                    "Remote provider instance '{}' declares unsupported provider '{}'; supported providers are: {}",
-                    config.name,
-                    provider,
-                    Self::SUPPORTED_REMOTE_PROVIDERS.join(", ")
-                )));
-            }
-        }
-        if Self::requires_remote_connection(config) {
-            Self::validate_endpoint_ssrf(&config.endpoint, ssrf_guard)?;
-            let endpoint = url::Url::parse(&config.endpoint).map_err(|e| {
-                crate::Error::InvalidInput(format!("Remote provider endpoint is invalid: {e}"))
-            })?;
-
-            match (endpoint.scheme(), config.tls) {
-                ("https", false) => {
-                    return Err(crate::Error::InvalidInput(format!(
-                        "Remote provider endpoint '{}' requires tls=true to match its https:// scheme",
-                        config.endpoint
-                    )));
-                }
-                ("http", true) => {
-                    return Err(crate::Error::InvalidInput(format!(
-                        "Remote provider endpoint '{}' requires tls=false to match its {}:// scheme",
-                        config.endpoint,
-                        endpoint.scheme()
-                    )));
-                }
-                _ => {}
-            }
-
-            if config.insecure_tls && !config.tls {
-                return Err(crate::Error::InvalidInput(
-                    "insecure_tls=true requires tls=true for remote provider instances".to_string(),
-                ));
-            }
-
-            if config.custom_ca.is_some() && !config.tls {
-                return Err(crate::Error::InvalidInput(
-                    "custom_ca requires tls=true for remote provider instances".to_string(),
-                ));
-            }
-
-            if config.insecure_tls && config.custom_ca.is_some() {
-                return Err(crate::Error::InvalidInput(
-                    "insecure_tls cannot be combined with custom_ca for remote provider instances"
-                        .to_string(),
-                ));
-            }
-            validate_auth_secret(Some(Self::required_auth_secret(config)?))
-                .map_err(|e| crate::Error::InvalidInput(e.to_string()))?;
-        }
-        Ok(())
-    }
-
-    #[cfg(test)]
-    fn validate_config(config: &ProviderInstance) -> crate::Result<()> {
-        Self::validate_config_with_ssrf_guard(
-            config,
-            &synctv_common::ssrf::SsrfGuard::strict_policy(),
-        )
-    }
-
-    fn requires_remote_connection(config: &ProviderInstance) -> bool {
-        config
-            .providers
-            .iter()
-            .any(|provider| Self::is_supported_remote_provider(provider))
-    }
-
-    fn is_supported_remote_provider(provider: &str) -> bool {
-        let trimmed = provider.trim();
-        Self::SUPPORTED_REMOTE_PROVIDERS.contains(&trimmed)
-    }
-
-    fn required_auth_secret(config: &ProviderInstance) -> crate::Result<&str> {
-        let secret = config.jwt_secret.as_deref().ok_or_else(|| {
-            crate::Error::InvalidInput(format!(
-                "Remote provider instance '{}' requires a non-empty jwt_secret",
-                config.name
-            ))
-        })?;
-        let trimmed = secret.trim();
-        if trimmed.is_empty() {
-            return Err(crate::Error::InvalidInput(format!(
-                "Remote provider instance '{}' requires a non-empty jwt_secret",
-                config.name
-            )));
-        }
-        Ok(trimmed)
     }
 
     fn build_remote_connection(
@@ -983,252 +680,6 @@ impl RemoteProviderManager {
         }
 
         Ok(())
-    }
-
-    fn resolve_ssrf_validated_address(
-        address_overrides: Arc<HashMap<String, SocketAddr>>,
-        uri: &Uri,
-        guard: &synctv_common::ssrf::SsrfGuard,
-    ) -> impl std::future::Future<Output = std::io::Result<(String, std::net::SocketAddr)>> + Send
-    {
-        let uri = uri.clone();
-        let guard = guard.clone();
-        async move {
-            let host = uri.host().ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing host")
-            })?;
-
-            if let Some(address) = address_overrides.get(host).copied() {
-                tracing::debug!(
-                    host,
-                    ip = %address.ip(),
-                    port = address.port(),
-                    "Connecting to remote provider via explicit test address override"
-                );
-                return Ok((host.to_string(), address));
-            }
-
-            if guard.is_host_blocked(host) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    format!("SSRF validation: host '{host}' is blocked at connection time"),
-                ));
-            }
-
-            let port = uri.port_u16().unwrap_or_else(|| {
-                if uri.scheme_str() == Some("https") {
-                    443
-                } else {
-                    80
-                }
-            });
-
-            let mut resolved = tokio::net::lookup_host((host, port)).await?;
-            let address = resolved.find(|addr| {
-                let blocked = guard.is_ip_blocked_for_host(host, &addr.ip());
-                if blocked {
-                    tracing::warn!(
-                        host,
-                        ip = %addr.ip(),
-                        "Blocked remote provider connection due to SSRF policy during DNS resolution"
-                    );
-                }
-                !blocked
-            });
-
-            let address = address.ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    format!("SSRF validation: all resolved addresses for '{host}' are blocked"),
-                )
-            })?;
-
-            tracing::debug!(
-                host,
-                ip = %address.ip(),
-                port = address.port(),
-                "Connecting to remote provider after SSRF DNS validation"
-            );
-
-            Ok((host.to_string(), address))
-        }
-    }
-
-    /// Create a gRPC channel for the given provider instance
-    ///
-    /// Establishes gRPC connection with configured TLS settings, timeout, and middleware.
-    #[cfg_attr(
-        not(any(
-            feature = "tls-aws-lc",
-            feature = "tls-ring",
-            feature = "tls-webpki-roots",
-            feature = "tls-native-roots"
-        )),
-        allow(clippy::unused_async)
-    )]
-    async fn create_grpc_channel(&self, config: &ProviderInstance) -> crate::Result<Channel> {
-        // Apply the configured SSRF policy to the endpoint before connecting.
-        Self::validate_endpoint_ssrf(&config.endpoint, &self.ssrf_guard)?;
-
-        // Parse timeout
-        let timeout = config.parse_timeout().map_err(crate::Error::Internal)?;
-
-        // Create endpoint
-        let transport_endpoint = Self::normalized_transport_endpoint(config)?;
-        let endpoint = Endpoint::from_shared(transport_endpoint)
-            .map_err(|error| {
-                Self::provider_connection_setup_error(
-                    "Remote provider endpoint configuration is invalid.",
-                    error,
-                )
-            })?
-            .timeout(timeout)
-            .max_frame_size(PROVIDER_GRPC_FRAME_SIZE_LIMIT)
-            .tcp_keepalive(Some(Duration::from_secs(30)))
-            .http2_keep_alive_interval(Duration::from_secs(30))
-            .keep_alive_timeout(Duration::from_secs(10));
-        #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
-        let mut endpoint = endpoint;
-
-        if config.tls {
-            if config.insecure_tls {
-                tracing::warn!(
-                    "Instance '{}' configured with insecure TLS (skips certificate verification)",
-                    config.name
-                );
-
-                #[cfg(not(any(
-                    feature = "tls-aws-lc",
-                    feature = "tls-ring",
-                    feature = "tls-webpki-roots",
-                    feature = "tls-native-roots"
-                )))]
-                {
-                    let _ = endpoint;
-                    return Err(crate::Error::InvalidInput(
-                        "Remote provider insecure TLS requires a TLS provider feature".to_string(),
-                    ));
-                }
-
-                #[cfg(any(
-                    feature = "tls-aws-lc",
-                    feature = "tls-ring",
-                    feature = "tls-webpki-roots",
-                    feature = "tls-native-roots"
-                ))]
-                {
-                    let channel = self.connect_insecure_tls(endpoint).await.map_err(|error| {
-                        Self::provider_connection_setup_error(
-                            "Remote provider TLS connection setup failed.",
-                            error,
-                        )
-                    })?;
-
-                    tracing::info!(
-                        "Established insecure-TLS gRPC connection to {} (timeout: {:?})",
-                        config.endpoint,
-                        timeout,
-                    );
-
-                    return Ok(channel);
-                }
-            }
-
-            #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
-            {
-                let mut tls_config = ClientTlsConfig::new();
-
-                // Use custom CA certificate if provided
-                if let Some(ref ca_pem) = config.custom_ca {
-                    let cert = Certificate::from_pem(ca_pem);
-                    tls_config = tls_config.ca_certificate(cert);
-                } else {
-                    tls_config = apply_default_grpc_roots(tls_config);
-                }
-
-                endpoint = endpoint.tls_config(tls_config).map_err(|error| {
-                    Self::provider_connection_setup_error(
-                        "Remote provider TLS connection setup failed.",
-                        error,
-                    )
-                })?;
-            }
-
-            #[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
-            {
-                return Err(crate::Error::InvalidInput(
-                    "Remote provider TLS requires a TLS root feature".to_string(),
-                ));
-            }
-        }
-
-        let guard = self.ssrf_guard.clone();
-        let address_overrides = Arc::clone(&self.address_overrides);
-        let connector = tower::service_fn(move |uri: Uri| {
-            let guard = guard.clone();
-            let address_overrides = address_overrides.clone();
-            async move {
-                let (_, address) =
-                    Self::resolve_ssrf_validated_address(address_overrides, &uri, &guard).await?;
-                let stream = tokio::net::TcpStream::connect(address).await?;
-                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
-            }
-        });
-
-        // Create lazy gRPC channel (connects on first use, not eagerly).
-        // The custom connector re-validates DNS resolution at connection time to
-        // block hostname-based SSRF and DNS rebinding.
-        let channel = endpoint.connect_with_connector_lazy(connector);
-
-        tracing::info!(
-            "Established gRPC connection to {} (timeout: {:?}, TLS: {})",
-            config.endpoint,
-            timeout,
-            config.tls
-        );
-
-        Ok(channel)
-    }
-
-    /// Connect to a gRPC endpoint with TLS certificate verification disabled.
-    #[cfg(any(
-        feature = "tls-aws-lc",
-        feature = "tls-ring",
-        feature = "tls-webpki-roots",
-        feature = "tls-native-roots"
-    ))]
-    async fn connect_insecure_tls(
-        &self,
-        endpoint: Endpoint,
-    ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
-        crate::install_process_crypto_provider();
-
-        let guard = self.ssrf_guard.clone();
-        let address_overrides = Arc::clone(&self.address_overrides);
-
-        let tls_config = ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(NoVerifier))
-            .with_no_client_auth();
-
-        let connector = tower::service_fn(move |uri: Uri| {
-            let tls_config = tls_config.clone();
-            let guard = guard.clone();
-            let address_overrides = address_overrides.clone();
-            async move {
-                let (host, address) =
-                    Self::resolve_ssrf_validated_address(address_overrides, &uri, &guard).await?;
-                let tcp = tokio::net::TcpStream::connect(address).await?;
-                let server_name = rustls::pki_types::ServerName::try_from(host)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-                let tls = tokio_rustls::TlsConnector::from(Arc::new(tls_config));
-                let stream = tls.connect(server_name, tcp).await?;
-                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
-            }
-        });
-
-        let channel = endpoint.connect_with_connector(connector).await?;
-        Ok(channel)
     }
 
     /// Get a remote provider instance channel by name for best-effort probes.
@@ -1371,344 +822,6 @@ impl RemoteProviderManager {
             .map_err(|e| Self::provider_registry_unavailable("find instances by provider", e))
     }
 
-    /// Add a new provider instance
-    ///
-    /// 1. Creates gRPC connection
-    /// 2. Saves to database
-    /// 3. Caches the channel locally
-    /// 4. Notifies other replicas via Redis
-    pub async fn add(&self, config: ProviderInstance) -> crate::Result<()> {
-        Box::pin(self.add_with_control(config, None)).await
-    }
-
-    pub async fn add_with_control(
-        &self,
-        config: ProviderInstance,
-        control: Option<&ExecutionControl>,
-    ) -> crate::Result<()> {
-        Self::validate_config_with_ssrf_guard(&config, &self.ssrf_guard)?;
-
-        let connection = if config.enabled && Self::requires_remote_connection(&config) {
-            Some(
-                Box::pin(
-                    self.build_management_validated_remote_connection_with_control(
-                        &config, control,
-                    ),
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
-
-        // Save to database
-        self.repository.create(&config).await?;
-
-        if let Some(connection) = connection {
-            self.channel_cache
-                .insert(config.name.clone(), connection)
-                .await;
-        } else {
-            self.channel_cache.invalidate(&config.name).await;
-        }
-
-        // Notify other replicas
-        if let Err(notify_error) = self.notify_change("add", &config.name).await {
-            if let Err(rollback_error) = self.repository.delete(&config.name).await {
-                return Err(Self::rollback_failure(
-                    "add",
-                    &config.name,
-                    &notify_error,
-                    &rollback_error,
-                ));
-            }
-            self.channel_cache.invalidate(&config.name).await;
-            return Err(notify_error);
-        }
-
-        tracing::info!("Added provider instance: {}", config.name);
-        Ok(())
-    }
-
-    /// Update an existing provider instance
-    ///
-    /// 1. Creates new gRPC connection
-    /// 2. Updates database
-    /// 3. Replaces cached channel
-    /// 4. Notifies other replicas via Redis
-    pub async fn update(&self, config: ProviderInstance) -> crate::Result<()> {
-        Box::pin(self.update_with_control(config, None)).await
-    }
-
-    pub async fn update_with_control(
-        &self,
-        config: ProviderInstance,
-        control: Option<&ExecutionControl>,
-    ) -> crate::Result<()> {
-        let previous_config = self
-            .repository
-            .get_by_name(&config.name)
-            .await?
-            .ok_or_else(|| {
-                crate::Error::NotFound(format!("Instance '{}' not found", config.name))
-            })?;
-        let previous_connection = self.channel_cache.get(&config.name).await;
-
-        Self::validate_config_with_ssrf_guard(&config, &self.ssrf_guard)?;
-
-        let connection = if config.enabled && Self::requires_remote_connection(&config) {
-            Some(
-                Box::pin(
-                    self.build_management_validated_remote_connection_with_control(
-                        &config, control,
-                    ),
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
-
-        // Update database
-        self.repository.update(&config).await?;
-
-        if let Some(connection) = connection {
-            self.channel_cache
-                .insert(config.name.clone(), connection)
-                .await;
-        } else {
-            self.channel_cache.invalidate(&config.name).await;
-        }
-
-        // Notify other replicas
-        if let Err(notify_error) = self.notify_change("update", &config.name).await {
-            if let Err(rollback_error) = self.repository.update(&previous_config).await {
-                return Err(Self::rollback_failure(
-                    "update",
-                    &config.name,
-                    &notify_error,
-                    &rollback_error,
-                ));
-            }
-            self.restore_cached_connection(&config.name, previous_connection)
-                .await;
-            return Err(notify_error);
-        }
-
-        tracing::info!("Updated provider instance: {}", config.name);
-        Ok(())
-    }
-
-    /// Delete a provider instance
-    ///
-    /// 1. Removes from database
-    /// 2. Invalidates cached channel
-    /// 3. Notifies other replicas via Redis
-    pub async fn delete(&self, name: &str) -> crate::Result<()> {
-        let previous_config = self
-            .repository
-            .get_by_name(name)
-            .await?
-            .ok_or_else(|| crate::Error::NotFound(format!("Instance '{name}' not found")))?;
-        let previous_connection = self.channel_cache.get(name).await;
-
-        // Remove from database
-        self.repository.delete(name).await?;
-
-        // Invalidate cache
-        self.channel_cache.invalidate(name).await;
-
-        // Notify other replicas
-        if let Err(notify_error) = self.notify_change("delete", name).await {
-            if let Err(rollback_error) = self.repository.create(&previous_config).await {
-                return Err(Self::rollback_failure(
-                    "delete",
-                    name,
-                    &notify_error,
-                    &rollback_error,
-                ));
-            }
-            self.restore_cached_connection(name, previous_connection)
-                .await;
-            return Err(notify_error);
-        }
-
-        tracing::info!("Deleted provider instance: {}", name);
-        Ok(())
-    }
-
-    /// Enable a provider instance
-    ///
-    /// Loads config from DB, creates channel, caches it, and notifies replicas.
-    pub async fn enable(&self, name: &str) -> crate::Result<()> {
-        Box::pin(self.enable_with_control(name, None)).await
-    }
-
-    pub async fn enable_with_control(
-        &self,
-        name: &str,
-        control: Option<&ExecutionControl>,
-    ) -> crate::Result<()> {
-        let mut config = self
-            .repository
-            .get_by_name(name)
-            .await?
-            .ok_or_else(|| crate::Error::NotFound(format!("Instance '{name}' not found")))?;
-        let previous_connection = self.channel_cache.get(name).await;
-
-        if config.enabled {
-            if Self::requires_remote_connection(&config) {
-                let connection = self
-                    .build_management_validated_remote_connection_with_control(&config, control);
-                let connection = Box::pin(connection).await?;
-                self.channel_cache
-                    .insert(config.name.clone(), connection)
-                    .await;
-            } else {
-                self.channel_cache.invalidate(&config.name).await;
-            }
-            if let Err(notify_error) = self.notify_change("enable", name).await {
-                self.restore_cached_connection(name, previous_connection)
-                    .await;
-                return Err(notify_error);
-            }
-            tracing::info!("Enabled provider instance: {}", name);
-            return Ok(());
-        }
-
-        Self::validate_config_with_ssrf_guard(&config, &self.ssrf_guard)?;
-
-        config.enabled = true;
-        if Self::requires_remote_connection(&config) {
-            let connection =
-                self.build_management_validated_remote_connection_with_control(&config, control);
-            let connection = Box::pin(connection).await?;
-
-            // Persist only after a valid channel can be constructed.
-            self.repository.enable(name).await?;
-            self.channel_cache
-                .insert(config.name.clone(), connection)
-                .await;
-        } else {
-            self.repository.enable(name).await?;
-            self.channel_cache.invalidate(&config.name).await;
-        }
-
-        // Notify other replicas
-        if let Err(notify_error) = self.notify_change("enable", name).await {
-            if let Err(rollback_error) = self.repository.disable(name).await {
-                return Err(Self::rollback_failure(
-                    "enable",
-                    name,
-                    &notify_error,
-                    &rollback_error,
-                ));
-            }
-            self.restore_cached_connection(name, previous_connection)
-                .await;
-            return Err(notify_error);
-        }
-
-        tracing::info!("Enabled provider instance: {}", name);
-        Ok(())
-    }
-
-    /// Disable a provider instance
-    ///
-    /// Invalidates cached channel and notifies replicas.
-    pub async fn disable(&self, name: &str) -> crate::Result<()> {
-        let previous_config = self
-            .repository
-            .get_by_name(name)
-            .await?
-            .ok_or_else(|| crate::Error::NotFound(format!("Instance '{name}' not found")))?;
-        let previous_connection = self.channel_cache.get(name).await;
-
-        // Update database
-        self.repository.disable(name).await?;
-
-        // Invalidate cache
-        self.channel_cache.invalidate(name).await;
-
-        // Notify other replicas
-        if let Err(notify_error) = self.notify_change("disable", name).await {
-            if let Err(rollback_error) = self.repository.enable(name).await {
-                return Err(Self::rollback_failure(
-                    "disable",
-                    name,
-                    &notify_error,
-                    &rollback_error,
-                ));
-            }
-            if previous_config.enabled {
-                self.restore_cached_connection(name, previous_connection)
-                    .await;
-            } else {
-                self.channel_cache.invalidate(name).await;
-            }
-            return Err(notify_error);
-        }
-
-        tracing::info!("Disabled provider instance: {}", name);
-        Ok(())
-    }
-
-    /// Reconnect a provider instance atomically.
-    ///
-    /// Invalidates the cached channel and re-creates it from the current DB
-    /// config. If the re-creation fails, the instance remains disabled so
-    /// callers observe a consistent state rather than a half-connected instance.
-    pub async fn reconnect(&self, name: &str) -> crate::Result<()> {
-        Box::pin(self.reconnect_with_control(name, None)).await
-    }
-
-    pub async fn reconnect_with_control(
-        &self,
-        name: &str,
-        control: Option<&ExecutionControl>,
-    ) -> crate::Result<()> {
-        let previous_connection = self.channel_cache.get(name).await;
-
-        // Invalidate the cached channel first
-        self.channel_cache.invalidate(name).await;
-
-        // Reload config from DB and create a fresh channel
-        let config = self
-            .repository
-            .get_by_name(name)
-            .await?
-            .ok_or_else(|| crate::Error::NotFound(format!("Instance '{name}' not found")))?;
-
-        if !config.enabled {
-            return Err(crate::Error::InvalidInput(format!(
-                "Instance '{name}' is disabled; enable it before reconnecting"
-            )));
-        }
-
-        if !Self::requires_remote_connection(&config) {
-            return Err(crate::Error::InvalidInput(format!(
-                "Instance '{name}' is local-only and does not support remote reconnect"
-            )));
-        }
-
-        let connection =
-            self.build_management_validated_remote_connection_with_control(&config, control);
-        let connection = Box::pin(connection).await?;
-        self.channel_cache
-            .insert(config.name.clone(), connection)
-            .await;
-
-        // Notify other replicas
-        if let Err(notify_error) = self.notify_change("reconnect", name).await {
-            self.restore_cached_connection(name, previous_connection)
-                .await;
-            return Err(notify_error);
-        }
-
-        tracing::info!("Reconnected provider instance: {}", name);
-        Ok(())
-    }
-
     /// Health check all remote instances
     ///
     /// Returns a map of instance name to health status.
@@ -1791,249 +904,4 @@ impl RemoteProviderManager {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::cache::CacheInvalidationService;
-    use crate::models::ProviderInstance;
-    use crate::repository::ProviderInstanceRepository;
-    use chrono::Utc;
-
-    fn remote_instance(endpoint: &str) -> ProviderInstance {
-        ProviderInstance {
-            name: "remote".to_string(),
-            endpoint: endpoint.to_string(),
-            comment: None,
-            jwt_secret: Some("remote-provider-test-secret".to_string()),
-            custom_ca: None,
-            timeout: "5s".to_string(),
-            tls: false,
-            insecure_tls: false,
-            providers: vec!["alist".to_string()],
-            enabled: true,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn start_invalidation_listener_does_not_wait_for_fake_readiness() {
-        let pool = sqlx::PgPool::connect_lazy("postgresql://test")
-            .expect("lazy pool should build without a live database");
-        let repository = Arc::new(ProviderInstanceRepository::new(pool));
-        let invalidation = Arc::new(CacheInvalidationService::new(
-            "test-node".to_string(),
-            "test:provider:invalidate".to_string(),
-        ));
-        let manager = RemoteProviderManager::new_with_invalidation(repository, Some(invalidation));
-
-        let start = tokio::time::Instant::now();
-        manager
-            .start_invalidation_listener()
-            .await
-            .expect("listener should start");
-
-        assert_eq!(
-            tokio::time::Instant::now().duration_since(start),
-            Duration::ZERO,
-            "listener startup should not advance time via a fake readiness sleep"
-        );
-
-        manager.shutdown().await;
-    }
-
-    #[test]
-    fn validate_config_accepts_http_endpoint_scheme() {
-        let config = remote_instance("http://provider.example.com:50051");
-
-        RemoteProviderManager::validate_config(&config)
-            .expect("http:// endpoint should remain valid");
-    }
-
-    #[test]
-    fn validate_config_rejects_invalid_provider_instance_name() {
-        let mut config = remote_instance("http://provider.example.com:50051");
-        config.name = "bad name".to_string();
-
-        let err = RemoteProviderManager::validate_config(&config)
-            .expect_err("provider instance names must match the core naming contract");
-
-        assert!(
-            err.to_string().contains("provider instance name"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_config_rejects_unsupported_provider_type() {
-        let mut config = remote_instance("http://provider.example.com:50051");
-        config.providers = vec!["custom_local".to_string()];
-
-        let err = RemoteProviderManager::validate_config(&config)
-            .expect_err("unsupported remote provider types must be rejected");
-
-        assert!(
-            err.to_string().contains("unsupported provider"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_config_rejects_http_endpoint_with_tls_enabled() {
-        let mut config = remote_instance("http://provider.example.com:50051");
-        config.tls = true;
-
-        let err = RemoteProviderManager::validate_config(&config)
-            .expect_err("plaintext http endpoints must require tls=false");
-
-        assert!(
-            err.to_string().contains("tls=false"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_config_rejects_https_endpoint_without_tls() {
-        let config = remote_instance("https://provider.example.com:50051");
-
-        let err = RemoteProviderManager::validate_config(&config)
-            .expect_err("https endpoints must require tls=true");
-
-        assert!(
-            err.to_string().contains("tls=true"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_config_rejects_custom_ca_without_tls() {
-        let mut config = remote_instance("http://provider.example.com:50051");
-        config.custom_ca =
-            Some("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----".to_string());
-
-        let err = RemoteProviderManager::validate_config(&config)
-            .expect_err("custom CA must not be accepted for plaintext endpoints");
-
-        assert!(
-            err.to_string().contains("custom_ca requires tls=true"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_config_rejects_insecure_tls_with_custom_ca() {
-        let mut config = remote_instance("https://provider.example.com:50051");
-        config.tls = true;
-        config.insecure_tls = true;
-        config.custom_ca =
-            Some("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----".to_string());
-
-        let err = RemoteProviderManager::validate_config(&config)
-            .expect_err("custom CA and insecure TLS express conflicting trust policies");
-
-        assert!(
-            err.to_string().contains("insecure_tls cannot be combined"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_config_accepts_https_endpoint_with_tls() {
-        let mut config = remote_instance("https://provider.example.com:50051");
-        config.tls = true;
-
-        RemoteProviderManager::validate_config(&config)
-            .expect("https endpoint with tls=true should pass validation");
-    }
-
-    #[test]
-    fn normalized_transport_endpoint_preserves_http() {
-        let config = remote_instance("http://provider.example.com:50051");
-
-        let normalized = RemoteProviderManager::normalized_transport_endpoint(&config)
-            .expect("http:// endpoint should normalize to a tonic transport URL");
-
-        assert_eq!(normalized, "http://provider.example.com:50051");
-    }
-
-    #[test]
-    fn map_remote_resolution_error_hides_database_details() {
-        let err = RemoteProviderManager::map_remote_resolution_error(crate::Error::Database(
-            sqlx::Error::PoolTimedOut,
-        ));
-
-        assert!(matches!(
-            err,
-            ProviderError::ApiError(ref message)
-                if message == "Provider configuration service is temporarily unavailable."
-        ));
-    }
-
-    #[test]
-    fn map_remote_resolution_error_hides_redis_details() {
-        let err = RemoteProviderManager::map_remote_resolution_error(crate::Error::Redis(
-            redis::RedisError::from((redis::ErrorKind::Io, "connection reset by peer")),
-        ));
-
-        assert!(matches!(
-            err,
-            ProviderError::ApiError(ref message)
-                if message == "Provider configuration service is temporarily unavailable."
-        ));
-    }
-
-    #[test]
-    fn provider_connection_setup_error_hides_invalid_endpoint_details() {
-        let err = RemoteProviderManager::provider_connection_setup_error(
-            "Remote provider endpoint configuration is invalid.",
-            "relative URL without a base",
-        );
-
-        assert!(matches!(
-            err,
-            crate::Error::Internal(ref message)
-                if message == "Remote provider endpoint configuration is invalid."
-        ));
-    }
-
-    #[test]
-    fn provider_connection_setup_error_hides_tls_connect_details() {
-        let err = RemoteProviderManager::provider_connection_setup_error(
-            "Remote provider TLS connection setup failed.",
-            "certificate verify failed",
-        );
-
-        assert!(matches!(
-            err,
-            crate::Error::Internal(ref message)
-                if message == "Remote provider TLS connection setup failed."
-        ));
-    }
-
-    #[test]
-    fn probe_execution_control_preserves_tighter_parent_deadline_and_cancellation() {
-        let cancellation = tokio_util::sync::CancellationToken::new();
-        let parent_deadline = std::time::Instant::now() + Duration::from_secs(1);
-        let parent = ExecutionControl::from_parts(Some(parent_deadline), cancellation.clone());
-
-        let probe =
-            RemoteProviderManager::probe_execution_control(Some(&parent), Duration::from_secs(5));
-
-        assert_eq!(probe.deadline(), Some(parent_deadline));
-        cancellation.cancel();
-        assert!(matches!(
-            probe.check_active(),
-            Err(synctv_common::ExecutionControlError::Cancelled)
-        ));
-    }
-
-    #[test]
-    fn probe_execution_control_applies_probe_timeout_without_parent_control() {
-        let probe = RemoteProviderManager::probe_execution_control(None, Duration::from_secs(5));
-
-        let remaining = probe
-            .remaining_timeout()
-            .expect("probe without parent control should still have a deadline");
-        assert!(remaining <= Duration::from_secs(5));
-        assert!(remaining > Duration::ZERO);
-    }
-}
+mod tests;

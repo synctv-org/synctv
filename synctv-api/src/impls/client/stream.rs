@@ -1,7 +1,7 @@
 use synctv_core::models::{MediaId, UserId};
 
 use crate::impls::{ApiError, ClientApiImpl};
-use crate::proto::client::{
+use synctv_proto::client::{
     GetRoomStreamInfoRequest, GetRoomStreamInfoResponse, KickRoomStreamRequest,
     ListRoomStreamsRequest, ListRoomStreamsResponse, RoomStreamPublisherInfo, SortDirection,
     StreamEntry,
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn build_room_streams_request_rejects_invalid_proto_request() {
-        let error = build_room_streams_request(crate::proto::client::ListRoomStreamsRequest {
+        let error = build_room_streams_request(synctv_proto::client::ListRoomStreamsRequest {
             page: -1,
             page_size: 101,
             search: "a".repeat(101),
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn build_room_streams_request_normalizes_defaults() {
-        let req = build_room_streams_request(crate::proto::client::ListRoomStreamsRequest {
+        let req = build_room_streams_request(synctv_proto::client::ListRoomStreamsRequest {
             page: 0,
             page_size: 0,
             search: " beta ".to_string(),
@@ -295,12 +295,12 @@ mod tests {
         expected_ids.reverse();
         let response = build_room_streams_response(
             media_ids,
-            &crate::proto::client::ListRoomStreamsRequest {
+            &synctv_proto::client::ListRoomStreamsRequest {
                 page: 2,
                 page_size: 1,
                 search: String::new(),
-                sort_by: crate::proto::client::RoomStreamListSortBy::MediaId as i32,
-                sort_direction: crate::proto::client::SortDirection::Desc as i32,
+                sort_by: synctv_proto::client::RoomStreamListSortBy::MediaId as i32,
+                sort_direction: synctv_proto::client::SortDirection::Desc as i32,
             },
             &public_id_codec,
         )

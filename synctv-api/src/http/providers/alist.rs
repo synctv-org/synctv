@@ -12,10 +12,10 @@ use futures::FutureExt;
 
 use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
 use crate::impls::{ApiError, EndpointRateLimitCategory};
-use crate::proto::providers::alist::{
+use synctv_proto::providers::alist::{
     GetBindsResponse, GetMeRequest, ListRequest, LogoutRequest, SearchRequest,
 };
-use crate::proto::providers::common::ProviderInstanceQuery;
+use synctv_proto::providers::common::ProviderInstanceQuery;
 
 use super::common::{
     execute_provider_user_endpoint, execute_provider_user_endpoint_with_control,
@@ -49,15 +49,15 @@ pub fn alist_read_routes() -> Router<AppState> {
         tag = "Provider",
         request_body = synctv_proto::http_serde::AlistLoginRequestDef,
         responses(
-            (status = 200, description = "Alist login succeeded", body = crate::proto::providers::alist::LoginResponse),
-            (status = 400, description = "Invalid login request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Alist login succeeded", body = synctv_proto::providers::alist::LoginResponse),
+            (status = 400, description = "Invalid login request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -68,10 +68,10 @@ pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<synctv_proto::http_serde::AlistLoginRequestDef>,
-) -> AppResult<Json<crate::proto::providers::alist::LoginResponse>> {
+) -> AppResult<Json<synctv_proto::providers::alist::LoginResponse>> {
     tracing::info!("Alist login request");
 
-    let req = crate::proto::providers::alist::LoginRequest::try_from(req)
+    let req = synctv_proto::providers::alist::LoginRequest::try_from(req)
         .map_err(ApiError::InvalidInput)?;
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
     let api = state.shared_api_runtime.alist_api.clone();
@@ -114,15 +114,15 @@ pub(crate) async fn login(
             ("instance_name" = Option<String>, Query, description = "Optional provider instance name")
         ),
         responses(
-            (status = 200, description = "Alist directory listing", body = crate::proto::providers::alist::ListResponse),
-            (status = 400, description = "Invalid list request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Alist directory listing", body = synctv_proto::providers::alist::ListResponse),
+            (status = 400, description = "Invalid list request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -133,7 +133,7 @@ pub(crate) async fn list(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<ListRequest>,
-) -> AppResult<Json<crate::proto::providers::alist::ListResponse>> {
+) -> AppResult<Json<synctv_proto::providers::alist::ListResponse>> {
     tracing::info!("Alist list request");
 
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
@@ -171,15 +171,15 @@ pub(crate) async fn list(
         tag = "Provider",
         request_body = SearchRequest,
         responses(
-            (status = 200, description = "Alist search results", body = crate::proto::providers::alist::SearchResponse),
-            (status = 400, description = "Invalid search request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Alist search results", body = synctv_proto::providers::alist::SearchResponse),
+            (status = 400, description = "Invalid search request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -190,7 +190,7 @@ pub(crate) async fn search(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<SearchRequest>,
-) -> AppResult<Json<crate::proto::providers::alist::SearchResponse>> {
+) -> AppResult<Json<synctv_proto::providers::alist::SearchResponse>> {
     tracing::info!("Alist search request");
 
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
@@ -228,15 +228,15 @@ pub(crate) async fn search(
         tag = "Provider",
         request_body = GetMeRequest,
         responses(
-            (status = 200, description = "Alist account info", body = crate::proto::providers::alist::GetMeResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Alist account info", body = synctv_proto::providers::alist::GetMeResponse),
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -247,7 +247,7 @@ pub(crate) async fn me(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<GetMeRequest>,
-) -> AppResult<Json<crate::proto::providers::alist::GetMeResponse>> {
+) -> AppResult<Json<synctv_proto::providers::alist::GetMeResponse>> {
     tracing::info!("Alist me request");
 
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
@@ -285,15 +285,15 @@ pub(crate) async fn me(
         tag = "Provider",
         request_body = LogoutRequest,
         responses(
-            (status = 200, description = "Alist credential removed", body = crate::proto::providers::alist::LogoutResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Alist credential removed", body = synctv_proto::providers::alist::LogoutResponse),
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -304,7 +304,7 @@ pub(crate) async fn logout(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<LogoutRequest>,
-) -> AppResult<Json<crate::proto::providers::alist::LogoutResponse>> {
+) -> AppResult<Json<synctv_proto::providers::alist::LogoutResponse>> {
     tracing::info!("Alist logout request");
 
     provider_instance_name_from_body(&req.instance_name)?;
@@ -331,12 +331,12 @@ pub(crate) async fn logout(
         params(ProviderInstanceQuery),
         responses(
             (status = 200, description = "Saved Alist credentials", body = GetBindsResponse),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 400, description = "Invalid provider instance query", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider bind request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider bind information unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 400, description = "Invalid provider instance query", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider bind request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider bind information unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])

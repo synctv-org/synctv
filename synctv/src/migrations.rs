@@ -197,7 +197,6 @@ mod tests {
         classify_embedded_migrations, describe_migration_error, inspect_embedded_migrations,
         EmbeddedMigrationsStatus, MigrationHistoryIssue,
     };
-    use sqlx::postgres::PgPoolOptions;
 
     #[test]
     fn version_mismatch_error_includes_rebuild_guidance() {
@@ -250,11 +249,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn embedded_migration_status_surfaces_pool_acquire_failures() {
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
-            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/invalid")
-            .expect("connect_lazy should succeed");
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        pool.close().await;
 
         let err = inspect_embedded_migrations(&pool)
             .await

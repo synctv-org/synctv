@@ -7,7 +7,7 @@ use crate::{
         ChatMessageContext, ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus,
         ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReactionSummary,
         ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState,
-        EventCursor, NewChatImage, RoomId, SetChatReaction, UserId,
+        EventCursor, NewStoredFile, RoomId, SetChatReaction, UserId,
     },
     repository::FileStorageRepository,
     Error, Result,
@@ -77,7 +77,7 @@ impl ChatRepository {
     pub async fn insert_message_event_idempotent(
         &self,
         message: &ChatMessage,
-        images: &[NewChatImage],
+        images: &[NewStoredFile],
         request_hash: &str,
         event_id: &str,
         occurred_at: DateTime<Utc>,
@@ -1891,7 +1891,7 @@ impl ChatRepository {
         &self,
         tx: &mut Transaction<'_, Postgres>,
         message: &ChatMessage,
-        images: &[NewChatImage],
+        images: &[NewStoredFile],
     ) -> Result<Vec<ChatImage>> {
         let mut inserted = Vec::with_capacity(images.len());
         for image in images {

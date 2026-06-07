@@ -303,6 +303,7 @@ pub mod error_codes {
 /// Maps keyword patterns in error strings to semantic error categories.
 /// Used by both HTTP and gRPC error mapping functions to ensure consistent
 /// behavior across transports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
     NotFound,
     Unauthenticated,
@@ -633,14 +634,14 @@ impl ApiError {
     ///
     /// The detail field is left empty to avoid leaking sensitive information.
     #[must_use]
-    pub fn to_proto_error(&self) -> crate::proto::client::ErrorMessage {
+    pub fn to_proto_error(&self) -> synctv_proto::client::ErrorMessage {
         // Sanitize Internal errors to avoid leaking sensitive implementation details
         // (e.g. database connection strings, stack traces) to clients.
         let message = match self {
             Self::Internal(_) => "Internal error".to_string(),
             _ => self.message().to_string(),
         };
-        crate::proto::client::ErrorMessage {
+        synctv_proto::client::ErrorMessage {
             message,
             code: self.code(),
             detail: String::new(),
@@ -767,7 +768,7 @@ mod tests {
 
     #[test]
     fn test_validate_proto_request_maps_protovalidate_error_to_invalid_input() {
-        let request = crate::proto::client::StartOpaqueRegistrationRequest {
+        let request = synctv_proto::client::StartOpaqueRegistrationRequest {
             username: "ab".to_string(),
             email: Some("not-an-email".to_string()),
             registration_request: Vec::new(),
@@ -801,19 +802,19 @@ mod tests {
     #[test]
     fn test_validate_proto_request_rejects_empty_admin_batch_ids() {
         assert_invalid_proto_request(
-            &crate::proto::admin::BatchBanUsersRequest::default(),
+            &synctv_proto::admin::BatchBanUsersRequest::default(),
             "user_ids",
         );
         assert_invalid_proto_request(
-            &crate::proto::admin::BatchDeleteUsersRequest::default(),
+            &synctv_proto::admin::BatchDeleteUsersRequest::default(),
             "user_ids",
         );
         assert_invalid_proto_request(
-            &crate::proto::admin::BatchBanRoomsRequest::default(),
+            &synctv_proto::admin::BatchBanRoomsRequest::default(),
             "room_ids",
         );
         assert_invalid_proto_request(
-            &crate::proto::admin::BatchDeleteRoomsRequest::default(),
+            &synctv_proto::admin::BatchDeleteRoomsRequest::default(),
             "room_ids",
         );
     }
@@ -821,14 +822,14 @@ mod tests {
     #[test]
     fn test_validate_proto_request_rejects_admin_batch_ban_reason_over_limit() {
         assert_invalid_proto_request(
-            &crate::proto::admin::BatchBanUsersRequest {
+            &synctv_proto::admin::BatchBanUsersRequest {
                 user_ids: vec!["usr_abc123".to_string()],
                 reason: "x".repeat(501),
             },
             "reason",
         );
         assert_invalid_proto_request(
-            &crate::proto::admin::BatchBanRoomsRequest {
+            &synctv_proto::admin::BatchBanRoomsRequest {
                 room_ids: vec!["room_abc123".to_string()],
                 reason: "x".repeat(501),
             },
@@ -839,7 +840,7 @@ mod tests {
     #[test]
     fn test_validate_proto_request_rejects_invalid_settings_group() {
         assert_invalid_proto_request(
-            &crate::proto::admin::GetSettingsGroupRequest {
+            &synctv_proto::admin::GetSettingsGroupRequest {
                 group: "bad/group".to_string(),
             },
             "group",

@@ -1258,49 +1258,31 @@ impl StreamRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synctv_core_testing::wait_for_redis_ready;
-    use testcontainers::core::ImageExt;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers_modules::redis::Redis;
+    use synctv_core_testing::{
+        start_redis_client_manager_with_label, test_redis_key_prefix, RedisContainer,
+    };
 
-    /// Default Redis version for test containers
-    const REDIS_VERSION: &str = "8";
-
-    /// Type alias for the Redis container type
-    type RedisContainer = testcontainers::ContainerAsync<Redis>;
-
-    async fn setup_redis() -> (RedisContainer, redis::Client, RedisConnectionManager) {
-        let redis_container = Redis::default()
-            .with_tag(REDIS_VERSION)
-            .start()
-            .await
-            .expect("Failed to start Redis container");
-
-        let redis_host = redis_container
-            .get_host()
-            .await
-            .expect("Failed to get Redis host");
-        let redis_port = redis_container
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Failed to get Redis port");
-
-        let redis_url = format!("redis://{redis_host}:{redis_port}");
-        let redis_client =
-            redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
-        wait_for_redis_ready(&redis_client).await;
-        let conn_mgr = RedisConnectionManager::new(redis_client.clone())
-            .await
-            .expect("Failed to create ConnectionManager");
-
-        (redis_container, redis_client, conn_mgr)
+    async fn setup_redis() -> (
+        RedisContainer,
+        redis::Client,
+        RedisConnectionManager,
+        String,
+    ) {
+        let (container, client, manager) =
+            start_redis_client_manager_with_label("livestream-registry").await;
+        (
+            container,
+            client,
+            manager,
+            test_redis_key_prefix("livestream-registry"),
+        )
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_register_publisher_success() {
-        let (_container, _client, redis) = setup_redis().await;
-        let registry = StreamRegistry::new(redis);
+        let (_container, _client, redis, prefix) = setup_redis().await;
+        let registry = StreamRegistry::with_key_prefix(redis, prefix);
 
         // First registration should succeed (use with_user variant with api_address)
         let registered = registry
@@ -1355,8 +1337,8 @@ mod tests {
     async fn test_key_prefix_isolation_prevents_cross_instance_pollution() {
         use redis::AsyncCommands;
 
-        let (_container, client, redis) = setup_redis().await;
-        let registry = StreamRegistry::with_key_prefix(redis, "tenant-a:");
+        let (_container, client, redis, prefix) = setup_redis().await;
+        let registry = StreamRegistry::with_key_prefix(redis, prefix.clone());
 
         registry
             .try_register_publisher_with_user(
@@ -1371,7 +1353,7 @@ mod tests {
 
         let mut verify_conn = RedisConnectionManager::new(client).await.unwrap();
         let namespaced_exists: bool = verify_conn
-            .exists("tenant-a:stream:publisher:room123:media456")
+            .exists(format!("{prefix}stream:publisher:room123:media456"))
             .await
             .unwrap();
         let unprefixed_exists: bool = verify_conn
@@ -1394,8 +1376,8 @@ mod tests {
     async fn test_refresh_publisher_ttl_repairs_missing_reverse_indexes() {
         use redis::AsyncCommands;
 
-        let (_container, client, redis) = setup_redis().await;
-        let registry = StreamRegistry::new(redis);
+        let (_container, client, redis, prefix) = setup_redis().await;
+        let registry = StreamRegistry::with_key_prefix(redis, prefix);
 
         registry
             .try_register_publisher_with_user(
@@ -1494,9 +1476,9 @@ mod tests {
         use std::sync::Arc;
         use tokio::sync::RwLock;
 
-        let (_container, client, redis) = setup_redis().await;
+        let (_container, client, redis, prefix) = setup_redis().await;
         let shared = Arc::new(RwLock::new(redis));
-        let registry = StreamRegistry::with_shared_conn_and_key_prefix(shared.clone(), "tenant-b:");
+        let registry = StreamRegistry::with_shared_conn_and_key_prefix(shared.clone(), prefix);
 
         let registered = registry
             .try_register_publisher_with_user(
@@ -1531,8 +1513,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_register_publisher_duplicate() {
-        let (_container, _client, redis) = setup_redis().await;
-        let registry = StreamRegistry::new(redis);
+        let (_container, _client, redis, prefix) = setup_redis().await;
+        let registry = StreamRegistry::with_key_prefix(redis, prefix);
 
         // First registration should succeed
         let registered = registry
@@ -1570,8 +1552,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_try_register_publisher() {
-        let (_container, _client, redis) = setup_redis().await;
-        let registry = StreamRegistry::new(redis);
+        let (_container, _client, redis, prefix) = setup_redis().await;
+        let registry = StreamRegistry::with_key_prefix(redis, prefix);
 
         // First try_register should succeed
         let result = registry
@@ -1609,8 +1591,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_unregister_publisher() {
-        let (_container, _client, redis) = setup_redis().await;
-        let registry = StreamRegistry::new(redis);
+        let (_container, _client, redis, prefix) = setup_redis().await;
+        let registry = StreamRegistry::with_key_prefix(redis, prefix);
 
         // Register publisher
         registry
@@ -1646,8 +1628,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_get_publisher_not_found() {
-        let (_container, _client, redis) = setup_redis().await;
-        let registry = StreamRegistry::new(redis);
+        let (_container, _client, redis, prefix) = setup_redis().await;
+        let registry = StreamRegistry::with_key_prefix(redis, prefix);
 
         // Non-existent publisher should return None
         let result = registry
@@ -1660,8 +1642,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_list_active_streams() {
-        let (_container, _client, redis) = setup_redis().await;
-        let registry = StreamRegistry::new(redis);
+        let (_container, _client, redis, prefix) = setup_redis().await;
+        let registry = StreamRegistry::with_key_prefix(redis, prefix);
 
         // Register multiple publishers
         registry
@@ -1705,8 +1687,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_unregister_publisher_cleans_node_reverse_index() {
-        let (_container, client, redis) = setup_redis().await;
-        let registry = StreamRegistry::new(redis);
+        let (_container, client, redis, prefix) = setup_redis().await;
+        let registry = StreamRegistry::with_key_prefix(redis, prefix);
 
         registry
             .try_register_publisher_with_user(
@@ -1739,8 +1721,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_cleanup_all_publishers_for_node_prunes_stale_reverse_index_members() {
-        let (_container, client, redis) = setup_redis().await;
-        let registry = StreamRegistry::new(redis);
+        let (_container, client, redis, prefix) = setup_redis().await;
+        let registry = StreamRegistry::with_key_prefix(redis, prefix);
 
         registry
             .try_register_publisher_with_user(
@@ -1793,8 +1775,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_list_queries_prune_stale_active_room_and_user_indexes() {
-        let (_container, client, redis) = setup_redis().await;
-        let registry = StreamRegistry::new(redis);
+        let (_container, client, redis, prefix) = setup_redis().await;
+        let registry = StreamRegistry::with_key_prefix(redis, prefix);
 
         registry
             .try_register_publisher_with_user(
@@ -1887,8 +1869,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_publisher_info_serialization() {
-        let (_container, _client, redis) = setup_redis().await;
-        let registry = StreamRegistry::new(redis);
+        let (_container, _client, redis, prefix) = setup_redis().await;
+        let registry = StreamRegistry::with_key_prefix(redis, prefix);
 
         // Register publisher
         registry

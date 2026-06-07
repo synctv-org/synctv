@@ -30,16 +30,31 @@ pub mod emby;
 pub mod live_proxy;
 pub mod rtmp;
 
-pub use access::*;
-pub use context::*;
-pub use credential_resolver::*;
-pub use error::*;
-pub use playback_profile::*;
+pub use access::{
+    AlistAccess, AlistBinding, BilibiliAccess, CachedProviderAccessService, EmbyAccess,
+    ProviderAccessService, ProviderCredentialReader,
+};
+pub use context::ProviderContext;
+pub use error::ProviderError;
+pub use playback_profile::{
+    PlaybackAudioCapability, PlaybackClientProfile, PlaybackContainer, PlaybackDeliveryPreference,
+    PlaybackSubtitlePreference, PlaybackVideoCodec,
+};
 pub use provider_client::ProviderClientManager;
-pub use proxy::*;
-pub use store::*;
+pub use proxy::{
+    ProviderProxy, ProxyAction, ProxyProviderRegistry, ProxyRequestContext, ProxyServices,
+};
+pub use store::{
+    InMemoryProviderStore, PrefixedProviderStore, ProviderStore, ProviderStoreExt,
+    ProviderStoreRegistry, ProviderStoreResolver, RedisProviderStore, StoreError, StoreLockGuard,
+    VersionedPlayback,
+};
 pub use synctv_common::{ExecutionControl, ExecutionControlError};
-pub use traits::*;
+pub use traits::{
+    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
+    MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderCredentialDependency,
+    SourceConfig, SourceConfigKind, SubtitleTrack,
+};
 
 use crate::models::{normalize_provider_instance_name, MediaId, RoomId};
 use crate::proxy_signature::{build_signed_proxy_url, ProxySigningKey, SignedProxyUrlRequest};
@@ -465,7 +480,7 @@ async fn persist_versioned_mapping(
     versioned: &VersionedPlayback,
     ttl: std::time::Duration,
     provider_name: &str,
-) -> Result<()> {
+) -> std::result::Result<(), ProviderError> {
     store
         .set(&format!("v:{}", versioned.version), versioned, ttl)
         .await
@@ -480,7 +495,7 @@ pub async fn maybe_sign_cached_versioned_playback(
     versioned: VersionedPlayback,
     provider_name: &str,
     ctx: &ProviderContext<'_>,
-) -> Result<PlaybackResult> {
+) -> std::result::Result<PlaybackResult, ProviderError> {
     if signed_proxy_playback_requested(ctx) {
         let store = ctx.store.as_ref().ok_or_else(|| {
             ProviderError::Internal(format!(
@@ -511,7 +526,7 @@ pub async fn finalize_versioned_playback(
     cache_key: &str,
     cache_ttl: std::time::Duration,
     ctx: &ProviderContext<'_>,
-) -> Result<PlaybackResult> {
+) -> std::result::Result<PlaybackResult, ProviderError> {
     let ttl_secs = i64::try_from(cache_ttl.as_secs()).map_err(|_| {
         ProviderError::Internal(format!(
             "Provider '{provider_name}' playback cache TTL exceeds i64::MAX seconds"
@@ -572,8 +587,6 @@ mod tests {
     use crate::models::{RoomId, UserId};
     use crate::provider::store::{InMemoryProviderStore, StoreError, StoreLockGuard};
     use crate::proxy_signature::ProxySigningKey;
-    use crate::repository::ProviderInstanceRepository;
-    use crate::service::RemoteProviderManager;
     use std::sync::Arc;
 
     struct FailVersionMappingStore {
@@ -988,29 +1001,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_set_uses_explicit_ssrf_guard_for_builtin_url_validators() {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-            .expect("lazy pool");
-        let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
-            ProviderInstanceRepository::new(pool),
-        )));
-        let providers = ProviderSet::new_with_ssrf_guard(
-            provider_instance_manager,
-            synctv_common::ssrf::SsrfGuard::disabled(),
-        )
-        .expect("provider set should build");
+        let direct_url =
+            DirectUrlProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
+        let live_proxy =
+            LiveProxyProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
         let ctx = ProviderContext::new("test");
 
-        providers
-            .direct_url
+        direct_url
             .validate_source_config(
                 &ctx,
                 SourceConfig::media(&serde_json::json!({ "url": "http://127.0.0.1/video.mp4" })),
             )
             .await
             .expect("explicit disabled SSRF guard should allow DirectUrl loopback");
-        providers
-            .live_proxy
+        live_proxy
             .validate_source_config(
                 &ctx,
                 SourceConfig::media(&serde_json::json!({ "url": "http://127.0.0.1/live.flv" })),

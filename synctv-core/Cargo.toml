@@ -121,6 +121,7 @@ urlencoding.workspace = true
 [features]
 default = []
 k8s = []
+test-support = []
 tls-aws-lc = [
     "synctv-proto/tls-aws-lc",
     "synctv-media-providers/tls-aws-lc",
@@ -175,8 +176,6 @@ tokio = { workspace = true, features = ["test-util"] }
 tokio-stream.workspace = true
 criterion.workspace = true
 rand.workspace = true
-testcontainers.workspace = true
-testcontainers-modules.workspace = true
 synctv-core-testing.workspace = true
 tempfile.workspace = true
 

@@ -478,21 +478,21 @@ impl GrpcConnectionPool {
     }
 
     #[cfg(test)]
-    pub(crate) fn insert_test_channel_with_age(
-        &self,
-        address: &str,
-        channel: Channel,
-        age: Duration,
-    ) {
+    pub(crate) fn insert_test_channel_with_age(&self, address: &str, age: Duration) {
         let created_at = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
         self.connections.insert(
             address.to_string(),
             PooledChannel {
-                channel,
+                channel: Self::test_channel(),
                 created_at,
                 consecutive_errors: AtomicU32::new(0),
             },
         );
+    }
+
+    #[cfg(test)]
+    fn test_channel() -> Channel {
+        Channel::from_static("http://livestream-test-channel.invalid").connect_lazy()
     }
 }
 
@@ -613,7 +613,7 @@ mod tests {
 
         // Manually insert entries with staggered creation times.
         // node-0 is the oldest (created_at furthest in the past).
-        let channel = Channel::from_static("http://[::1]:50051").connect_lazy();
+        let channel = GrpcConnectionPool::test_channel();
         let now = Instant::now();
         for i in 0..3u32 {
             pool.connections.insert(
@@ -645,7 +645,7 @@ mod tests {
         // Test that evict_stale does NOT remove circuit breaker state.
         // Circuit breakers should be cleaned up separately via evict_idle_circuit_breakers().
         let pool = GrpcConnectionPool::new(Duration::from_millis(1), 100);
-        let channel = Channel::from_static("http://[::1]:50051").connect_lazy();
+        let channel = GrpcConnectionPool::test_channel();
 
         // Insert a connection created 10 seconds ago (well past 1ms TTL)
         pool.connections.insert(
@@ -715,9 +715,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_task_stops_after_cancellation() {
         let pool = GrpcConnectionPool::new(Duration::from_millis(5), 8);
-        let channel = Channel::from_static("http://[::1]:50051").connect_lazy();
-
-        pool.insert_test_channel_with_age("node-a:50051", channel.clone(), Duration::from_secs(1));
+        pool.insert_test_channel_with_age("node-a:50051", Duration::from_secs(1));
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let handle = pool.spawn_cleanup_task(Duration::from_millis(10), cancel.clone());
@@ -728,7 +726,7 @@ mod tests {
             "cleanup task should evict stale pooled connections while active"
         );
 
-        pool.insert_test_channel_with_age("node-b:50051", channel, Duration::from_secs(1));
+        pool.insert_test_channel_with_age("node-b:50051", Duration::from_secs(1));
         cancel.cancel();
         handle.await.expect("cleanup task should join cleanly");
 

@@ -105,7 +105,7 @@ pub struct OAuth2UserInfo {
 /// Each provider type registers a factory function that knows how to
 /// create instances of that provider with configuration.
 /// All parameters (`client_id`, `client_secret`, `redirect_url`, etc.) are in config.
-pub type ProviderFactory =
+pub type OAuth2ProviderFactory =
     Arc<dyn Fn(&serde_json::Value) -> Result<Box<dyn Provider>, Error> + Send + Sync>;
 
 /// Instance-based provider registry.
@@ -120,7 +120,7 @@ pub type ProviderFactory =
 /// rather than relying on a global static.
 #[derive(Clone)]
 pub struct ProviderRegistry {
-    factories: Arc<parking_lot::RwLock<HashMap<String, ProviderFactory>>>,
+    factories: Arc<parking_lot::RwLock<HashMap<String, OAuth2ProviderFactory>>>,
 }
 
 impl ProviderRegistry {
@@ -133,14 +133,14 @@ impl ProviderRegistry {
     }
 
     /// Register a provider factory function.
-    pub fn register(&self, provider_type: &str, factory: ProviderFactory) {
+    pub fn register(&self, provider_type: &str, factory: OAuth2ProviderFactory) {
         let mut registry = self.factories.write();
         registry.insert(provider_type.to_string(), factory);
     }
 
     /// Get a registered factory function by type.
     #[must_use]
-    pub fn get_factory(&self, provider_type: &str) -> Option<ProviderFactory> {
+    pub fn get_factory(&self, provider_type: &str) -> Option<OAuth2ProviderFactory> {
         let registry = self.factories.read();
         registry.get(provider_type).cloned()
     }

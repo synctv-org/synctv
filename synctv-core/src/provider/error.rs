@@ -69,5 +69,3 @@ pub enum ProviderError {
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
 }
-
-pub type Result<T> = std::result::Result<T, ProviderError>;

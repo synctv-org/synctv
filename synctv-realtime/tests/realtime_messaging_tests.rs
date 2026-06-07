@@ -12,8 +12,8 @@ use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedSt
 use synctv_core_testing::{redis_connection_manager, start_redis_client_manager, RedisContainer};
 use synctv_realtime::sync::events::{CacheTarget, NotificationLevel, RealtimeEvent};
 use synctv_realtime::{
-    build_room_message_runtime, DedupKey, MessageDeduplicator, RealtimeConfig, RealtimeManager,
-    RoomMessageHub,
+    build_room_message_runtime, ConnectionId, DedupKey, MessageDeduplicator, RealtimeConfig,
+    RealtimeManager, RoomMessageHub,
 };
 mod integration_test_helpers;
 use integration_test_helpers::{broadcast_until_admin_event, broadcast_until_room_event};
@@ -122,7 +122,7 @@ async fn test_cross_node_broadcast() {
     let room = rid("room1");
     let user = uid("user1");
     let (mut rx, _conn_id) = manager1
-        .subscribe_with_id(room, user, "conn1".to_string())
+        .subscribe_with_id(room, user, ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let received = broadcast_until_room_event(
@@ -303,7 +303,7 @@ async fn test_single_node_mode_without_redis() {
     let room = rid("room1");
     let user = uid("user1");
     let (mut rx, _conn_id) = manager
-        .subscribe_with_id(room, user, "conn1".to_string())
+        .subscribe_with_id(room, user, ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
 
@@ -346,7 +346,7 @@ async fn test_pubsub_subscription_tracking() {
 
     // Subscribe
     let (_rx, conn_id) = manager
-        .subscribe_with_id(room, user, "conn1".to_string())
+        .subscribe_with_id(room, user, ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
 
@@ -378,11 +378,11 @@ async fn test_multiple_subscriptions_same_room() {
 
     // Subscribe with multiple connections
     let (mut rx1, _) = manager
-        .subscribe_with_id(room, uid("user1"), "conn1".to_string())
+        .subscribe_with_id(room, uid("user1"), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let (mut rx2, _) = manager
-        .subscribe_with_id(room, uid("user2"), "conn2".to_string())
+        .subscribe_with_id(room, uid("user2"), ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
 
@@ -448,7 +448,7 @@ async fn test_critical_event_delivery() {
 
     // Subscribe to room on node1
     let (mut room_rx, _) = manager1
-        .subscribe_with_id(room, user, "conn1".to_string())
+        .subscribe_with_id(room, user, ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
 
@@ -653,15 +653,15 @@ async fn test_broadcast_recipient_count() {
 
     // Subscribe 3 connections
     let (_rx1, _) = manager
-        .subscribe_with_id(room, uid("user1"), "conn1".to_string())
+        .subscribe_with_id(room, uid("user1"), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let (_rx2, _) = manager
-        .subscribe_with_id(room, uid("user2"), "conn2".to_string())
+        .subscribe_with_id(room, uid("user2"), ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
     let (_rx3, _) = manager
-        .subscribe_with_id(room, uid("user3"), "conn3".to_string())
+        .subscribe_with_id(room, uid("user3"), ConnectionId::new("conn3"))
         .await
         .expect("subscribe should succeed");
 
@@ -824,11 +824,11 @@ async fn test_get_room_subscribers() {
     let room = rid("room1");
 
     let (_rx1, _) = manager
-        .subscribe_with_id(room, uid("user1"), "conn1".to_string())
+        .subscribe_with_id(room, uid("user1"), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let (_rx2, _) = manager
-        .subscribe_with_id(room, uid("user2"), "conn2".to_string())
+        .subscribe_with_id(room, uid("user2"), ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
 
@@ -856,7 +856,7 @@ async fn test_cluster_metrics() {
 
     let room = rid("room1");
     let (_rx, _) = manager
-        .subscribe_with_id(room, uid("user1"), "conn1".to_string())
+        .subscribe_with_id(room, uid("user1"), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
 

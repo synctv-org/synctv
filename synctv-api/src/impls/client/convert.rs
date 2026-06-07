@@ -203,8 +203,8 @@ fn required_cover_url(
 pub(crate) fn stored_file_reference_to_resource_cover(
     file: &synctv_core::models::StoredFileReference,
     url: Option<&str>,
-) -> Result<crate::proto::client::ResourceCover, crate::impls::ApiError> {
-    Ok(crate::proto::client::ResourceCover {
+) -> Result<synctv_proto::client::ResourceCover, crate::impls::ApiError> {
+    Ok(synctv_proto::client::ResourceCover {
         storage_backend: file.storage_backend.clone(),
         object_key: file.object_key.clone(),
         url: required_cover_url(url, "resource cover")?,
@@ -215,8 +215,8 @@ pub(crate) fn stored_file_reference_to_resource_cover(
 pub(crate) fn stored_file_reference_to_video_cover(
     file: &synctv_core::models::StoredFileReference,
     url: Option<&str>,
-) -> Result<crate::proto::client::VideoCover, crate::impls::ApiError> {
-    Ok(crate::proto::client::VideoCover {
+) -> Result<synctv_proto::client::VideoCover, crate::impls::ApiError> {
+    Ok(synctv_proto::client::VideoCover {
         id: file.file_reference_id.to_string(),
         storage_backend: file.storage_backend.clone(),
         object_key: file.object_key.clone(),
@@ -243,9 +243,9 @@ pub(crate) fn member_status_to_proto(status: synctv_core::models::MemberStatus) 
 
 pub(crate) const fn resource_availability_to_proto(is_available: bool) -> i32 {
     if is_available {
-        crate::proto::client::ResourceAvailability::Available as i32
+        synctv_proto::client::ResourceAvailability::Available as i32
     } else {
-        crate::proto::client::ResourceAvailability::CreatorInactive as i32
+        synctv_proto::client::ResourceAvailability::CreatorInactive as i32
     }
 }
 
@@ -254,36 +254,36 @@ pub(crate) const fn resource_availability_enum_to_proto(
 ) -> i32 {
     match availability {
         ClientResourceAvailability::Available => {
-            crate::proto::client::ResourceAvailability::Available as i32
+            synctv_proto::client::ResourceAvailability::Available as i32
         }
         ClientResourceAvailability::CreatorInactive => {
-            crate::proto::client::ResourceAvailability::CreatorInactive as i32
+            synctv_proto::client::ResourceAvailability::CreatorInactive as i32
         }
     }
 }
 
 pub(crate) fn playback_client_profile_from_proto(
-    profile: Option<&crate::proto::client::PlaybackClientProfile>,
+    profile: Option<&synctv_proto::client::PlaybackClientProfile>,
 ) -> Result<Option<synctv_core::provider::PlaybackClientProfile>, crate::impls::ApiError> {
     let Some(profile) = profile else {
         return Ok(None);
     };
 
     let default_profile = synctv_core::provider::PlaybackClientProfile::default();
-    let delivery_preference = match crate::proto::client::PlaybackDeliveryPreference::try_from(
+    let delivery_preference = match synctv_proto::client::PlaybackDeliveryPreference::try_from(
         profile.delivery_preference,
     )
     .map_err(|_| {
         crate::impls::ApiError::InvalidInput("Unsupported playback delivery preference".to_string())
     })? {
-        crate::proto::client::PlaybackDeliveryPreference::Unspecified
-        | crate::proto::client::PlaybackDeliveryPreference::Auto => {
+        synctv_proto::client::PlaybackDeliveryPreference::Unspecified
+        | synctv_proto::client::PlaybackDeliveryPreference::Auto => {
             synctv_core::provider::PlaybackDeliveryPreference::Auto
         }
-        crate::proto::client::PlaybackDeliveryPreference::DirectPlay => {
+        synctv_proto::client::PlaybackDeliveryPreference::DirectPlay => {
             synctv_core::provider::PlaybackDeliveryPreference::DirectPlay
         }
-        crate::proto::client::PlaybackDeliveryPreference::Transcode => {
+        synctv_proto::client::PlaybackDeliveryPreference::Transcode => {
             synctv_core::provider::PlaybackDeliveryPreference::Transcode
         }
     };
@@ -296,18 +296,18 @@ pub(crate) fn playback_client_profile_from_proto(
             .iter()
             .filter_map(|codec| {
                 Some(
-                    match crate::proto::client::PlaybackVideoCodec::try_from(*codec) {
-                        Ok(crate::proto::client::PlaybackVideoCodec::Unspecified) => return None,
-                        Ok(crate::proto::client::PlaybackVideoCodec::H264) => {
+                    match synctv_proto::client::PlaybackVideoCodec::try_from(*codec) {
+                        Ok(synctv_proto::client::PlaybackVideoCodec::Unspecified) => return None,
+                        Ok(synctv_proto::client::PlaybackVideoCodec::H264) => {
                             Ok(synctv_core::provider::PlaybackVideoCodec::H264)
                         }
-                        Ok(crate::proto::client::PlaybackVideoCodec::Hevc) => {
+                        Ok(synctv_proto::client::PlaybackVideoCodec::Hevc) => {
                             Ok(synctv_core::provider::PlaybackVideoCodec::Hevc)
                         }
-                        Ok(crate::proto::client::PlaybackVideoCodec::Vp9) => {
+                        Ok(synctv_proto::client::PlaybackVideoCodec::Vp9) => {
                             Ok(synctv_core::provider::PlaybackVideoCodec::Vp9)
                         }
-                        Ok(crate::proto::client::PlaybackVideoCodec::Av1) => {
+                        Ok(synctv_proto::client::PlaybackVideoCodec::Av1) => {
                             Ok(synctv_core::provider::PlaybackVideoCodec::Av1)
                         }
                         Err(_) => Err(crate::impls::ApiError::InvalidInput(
@@ -327,15 +327,15 @@ pub(crate) fn playback_client_profile_from_proto(
             .iter()
             .filter_map(|container| {
                 Some(
-                    match crate::proto::client::PlaybackContainer::try_from(*container) {
-                        Ok(crate::proto::client::PlaybackContainer::Unspecified) => return None,
-                        Ok(crate::proto::client::PlaybackContainer::Mp4) => {
+                    match synctv_proto::client::PlaybackContainer::try_from(*container) {
+                        Ok(synctv_proto::client::PlaybackContainer::Unspecified) => return None,
+                        Ok(synctv_proto::client::PlaybackContainer::Mp4) => {
                             Ok(synctv_core::provider::PlaybackContainer::Mp4)
                         }
-                        Ok(crate::proto::client::PlaybackContainer::Mkv) => {
+                        Ok(synctv_proto::client::PlaybackContainer::Mkv) => {
                             Ok(synctv_core::provider::PlaybackContainer::Mkv)
                         }
-                        Ok(crate::proto::client::PlaybackContainer::Webm) => {
+                        Ok(synctv_proto::client::PlaybackContainer::Webm) => {
                             Ok(synctv_core::provider::PlaybackContainer::Webm)
                         }
                         Err(_) => Err(crate::impls::ApiError::InvalidInput(
@@ -348,40 +348,40 @@ pub(crate) fn playback_client_profile_from_proto(
     };
 
     let audio_capability =
-        match crate::proto::client::PlaybackAudioCapability::try_from(profile.audio_capability)
+        match synctv_proto::client::PlaybackAudioCapability::try_from(profile.audio_capability)
             .map_err(|_| {
                 crate::impls::ApiError::InvalidInput(
                     "Unsupported playback audio capability".to_string(),
                 )
             })? {
-            crate::proto::client::PlaybackAudioCapability::Unspecified => {
+            synctv_proto::client::PlaybackAudioCapability::Unspecified => {
                 default_profile.audio_capability
             }
-            crate::proto::client::PlaybackAudioCapability::Stereo => {
+            synctv_proto::client::PlaybackAudioCapability::Stereo => {
                 synctv_core::provider::PlaybackAudioCapability::Stereo
             }
-            crate::proto::client::PlaybackAudioCapability::Surround => {
+            synctv_proto::client::PlaybackAudioCapability::Surround => {
                 synctv_core::provider::PlaybackAudioCapability::Surround
             }
-            crate::proto::client::PlaybackAudioCapability::LosslessSurround => {
+            synctv_proto::client::PlaybackAudioCapability::LosslessSurround => {
                 synctv_core::provider::PlaybackAudioCapability::LosslessSurround
             }
         };
 
-    let subtitle_preference = match crate::proto::client::PlaybackSubtitlePreference::try_from(
+    let subtitle_preference = match synctv_proto::client::PlaybackSubtitlePreference::try_from(
         profile.subtitle_preference,
     )
     .map_err(|_| {
         crate::impls::ApiError::InvalidInput("Unsupported playback subtitle preference".to_string())
     })? {
-        crate::proto::client::PlaybackSubtitlePreference::Unspecified
-        | crate::proto::client::PlaybackSubtitlePreference::External => {
+        synctv_proto::client::PlaybackSubtitlePreference::Unspecified
+        | synctv_proto::client::PlaybackSubtitlePreference::External => {
             synctv_core::provider::PlaybackSubtitlePreference::External
         }
-        crate::proto::client::PlaybackSubtitlePreference::EmbeddedOrExternal => {
+        synctv_proto::client::PlaybackSubtitlePreference::EmbeddedOrExternal => {
             synctv_core::provider::PlaybackSubtitlePreference::EmbeddedOrExternal
         }
-        crate::proto::client::PlaybackSubtitlePreference::None => {
+        synctv_proto::client::PlaybackSubtitlePreference::None => {
             synctv_core::provider::PlaybackSubtitlePreference::None
         }
     };
@@ -444,8 +444,8 @@ pub(crate) fn try_user_to_proto(
     user: &synctv_core::models::User,
     email: Option<&str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::User, crate::impls::ApiError> {
-    Ok(crate::proto::client::User {
+) -> Result<synctv_proto::client::User, crate::impls::ApiError> {
+    Ok(synctv_proto::client::User {
         id: public_id_codec
             .encode_user_id(user.id)
             .map_err(|error| proto_encode_error("user", &error))?,
@@ -465,7 +465,7 @@ pub(crate) fn try_room_to_proto_basic(
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::Room, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::Room, crate::impls::ApiError> {
     try_room_to_proto_with_availability(
         room,
         settings,
@@ -482,7 +482,7 @@ pub(crate) fn try_room_to_proto_basic_with_cover(
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_url: Option<&str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::Room, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::Room, crate::impls::ApiError> {
     let mut proto = try_room_to_proto_basic(room, settings, member_count, public_id_codec)?;
     proto.cover = cover
         .map(|file| stored_file_reference_to_resource_cover(file, cover_url))
@@ -496,9 +496,9 @@ pub(crate) fn try_room_to_proto_with_availability(
     member_count: Option<i32>,
     availability: ClientResourceAvailability,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::Room, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::Room, crate::impls::ApiError> {
     let room_settings = settings.cloned().unwrap_or_default();
-    Ok(crate::proto::client::Room {
+    Ok(synctv_proto::client::Room {
         id: encode_room_id_for_proto(room.id, public_id_codec)?,
         name: room.name.clone(),
         description: room.description.clone(),
@@ -523,7 +523,7 @@ pub(crate) fn try_room_to_proto_with_availability_and_cover(
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_url: Option<&str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::Room, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::Room, crate::impls::ApiError> {
     let mut proto = try_room_to_proto_with_availability(
         room,
         settings,
@@ -544,8 +544,8 @@ pub(super) fn hot_room_to_proto(
     online_count: i32,
     total_members: i32,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::RoomWithStats, crate::impls::ApiError> {
-    Ok(crate::proto::client::RoomWithStats {
+) -> Result<synctv_proto::client::RoomWithStats, crate::impls::ApiError> {
+    Ok(synctv_proto::client::RoomWithStats {
         room: Some(try_room_to_proto_basic(
             room,
             settings,
@@ -567,7 +567,7 @@ pub(crate) fn normalize_created_room_settings(
 pub fn try_media_to_proto(
     media: &synctv_core::models::Media,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::Media, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
     try_media_to_proto_for_viewer(media, true, None, public_id_codec)
 }
 
@@ -575,7 +575,7 @@ pub fn try_media_to_proto_with_availability(
     media: &synctv_core::models::Media,
     is_available: bool,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::Media, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
     try_media_to_proto_for_viewer(media, is_available, None, public_id_codec)
 }
 
@@ -584,7 +584,7 @@ pub fn try_media_to_proto_for_viewer(
     is_available: bool,
     viewer_id: Option<synctv_core::models::UserId>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::Media, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
     let metadata_bytes = if can_view_media_source_config(media, viewer_id) {
         media
             .source_config
@@ -596,7 +596,7 @@ pub fn try_media_to_proto_for_viewer(
         Vec::new()
     };
 
-    Ok(crate::proto::client::Media {
+    Ok(synctv_proto::client::Media {
         id: encode_media_id_for_proto(media.id, public_id_codec)?,
         room_id: encode_room_id_for_proto(media.room_id, public_id_codec)?,
         source_provider: media.source_provider.clone(),
@@ -625,7 +625,7 @@ pub fn try_media_to_proto_for_viewer_with_cover(
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_url: Option<&str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::Media, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
     let mut proto = try_media_to_proto_for_viewer(media, is_available, viewer_id, public_id_codec)?;
     proto.cover = cover
         .map(|file| stored_file_reference_to_video_cover(file, cover_url))
@@ -637,7 +637,7 @@ pub(crate) fn try_playlist_to_proto(
     playlist: &synctv_core::models::Playlist,
     item_count: i32,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::Playlist, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
     try_playlist_to_proto_with_availability(playlist, item_count, true, public_id_codec)
 }
 
@@ -646,7 +646,7 @@ pub(crate) fn try_playlist_to_proto_with_availability(
     item_count: i32,
     is_available: bool,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::Playlist, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
     try_playlist_to_proto_for_viewer(playlist, item_count, is_available, None, public_id_codec)
 }
 
@@ -656,8 +656,8 @@ pub(crate) fn try_playlist_to_proto_for_viewer(
     is_available: bool,
     viewer_id: Option<synctv_core::models::UserId>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::Playlist, crate::impls::ApiError> {
-    Ok(crate::proto::client::Playlist {
+) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
+    Ok(synctv_proto::client::Playlist {
         id: encode_playlist_id_for_proto(playlist.id, public_id_codec)?,
         room_id: encode_room_id_for_proto(playlist.room_id, public_id_codec)?,
         name: playlist.name.clone(),
@@ -689,7 +689,7 @@ pub(crate) fn try_playlist_to_proto_for_viewer_with_cover(
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_url: Option<&str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::Playlist, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
     let mut proto = try_playlist_to_proto_for_viewer(
         playlist,
         item_count,
@@ -706,8 +706,8 @@ pub(crate) fn try_playlist_to_proto_for_viewer_with_cover(
 pub(crate) fn try_playlist_path_node_to_proto(
     playlist: &synctv_core::models::Playlist,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::PlaylistBrowsePathNode, crate::impls::ApiError> {
-    Ok(crate::proto::client::PlaylistBrowsePathNode {
+) -> Result<synctv_proto::client::PlaylistBrowsePathNode, crate::impls::ApiError> {
+    Ok(synctv_proto::client::PlaylistBrowsePathNode {
         playlist_id: encode_playlist_id_for_proto(playlist.id, public_id_codec)?,
         name: playlist.name.clone(),
         target: Vec::new(),
@@ -717,8 +717,8 @@ pub(crate) fn try_playlist_path_node_to_proto(
 pub(crate) fn try_playback_state_to_proto(
     state: &synctv_core::models::RoomPlaybackState,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::PlaybackState, crate::impls::ApiError> {
-    Ok(crate::proto::client::PlaybackState {
+) -> Result<synctv_proto::client::PlaybackState, crate::impls::ApiError> {
+    Ok(synctv_proto::client::PlaybackState {
         room_id: encode_room_id_for_proto(state.room_id, public_id_codec)?,
         playing_media_id: state
             .playing_media_id
@@ -776,17 +776,17 @@ pub(crate) fn try_members_to_proto(
 pub(crate) fn try_media_list_to_proto(
     media: &[synctv_core::models::Media],
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<Vec<crate::proto::client::Media>, crate::impls::ApiError> {
+) -> Result<Vec<synctv_proto::client::Media>, crate::impls::ApiError> {
     try_map_slice_preserve_order(media, |media| try_media_to_proto(media, public_id_codec))
 }
 
 pub(crate) fn try_playlist_list_to_proto<T, F>(
     items: &[T],
     map: F,
-) -> Result<Vec<crate::proto::client::Playlist>, crate::impls::ApiError>
+) -> Result<Vec<synctv_proto::client::Playlist>, crate::impls::ApiError>
 where
     T: Sync,
-    F: Fn(&T) -> Result<crate::proto::client::Playlist, crate::impls::ApiError> + Sync + Send,
+    F: Fn(&T) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> + Sync + Send,
 {
     try_map_slice_preserve_order(items, map)
 }
@@ -926,7 +926,7 @@ pub(crate) fn sign_local_bilibili_danmaku_urls(
 pub(crate) fn try_playback_to_proto(
     result: &synctv_core::models::media::PlaybackResult,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::Playback, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::Playback, crate::impls::ApiError> {
     validate_playback_result_shape(result)?;
 
     let playback_infos = result
@@ -941,7 +941,7 @@ pub(crate) fn try_playback_to_proto(
         .map(|(key, value)| Ok((key.clone(), json_to_string(value, "playback metadata")?)))
         .collect::<Result<_, crate::impls::ApiError>>()?;
 
-    Ok(crate::proto::client::Playback {
+    Ok(synctv_proto::client::Playback {
         media_id: result
             .id
             .map(|id| encode_media_id_for_proto(id, public_id_codec))
@@ -998,13 +998,13 @@ fn validate_playback_result_shape(
 /// Convert models `PlaybackInfo` to proto `PlaybackInfo`
 fn playback_info_to_proto(
     info: &synctv_core::models::media::PlaybackInfo,
-) -> Result<crate::proto::client::PlaybackInfo, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::PlaybackInfo, crate::impls::ApiError> {
     if info.urls.is_empty() {
         return Err(crate::impls::ApiError::Internal(
             "playback mode has no URLs".to_string(),
         ));
     }
-    Ok(crate::proto::client::PlaybackInfo {
+    Ok(synctv_proto::client::PlaybackInfo {
         urls: try_map_slice_preserve_order(&info.urls, playback_url_to_proto)?,
         default_url_index: checked_index_i32(
             info.default_url_index,
@@ -1024,8 +1024,8 @@ fn playback_info_to_proto(
 /// Convert models `PlaybackUrl` to proto `PlaybackUrl`
 fn playback_url_to_proto(
     url: &synctv_core::models::media::PlaybackUrl,
-) -> Result<crate::proto::client::PlaybackUrl, crate::impls::ApiError> {
-    Ok(crate::proto::client::PlaybackUrl {
+) -> Result<synctv_proto::client::PlaybackUrl, crate::impls::ApiError> {
+    Ok(synctv_proto::client::PlaybackUrl {
         name: url.name.clone(),
         url: require_non_empty_url(&url.url, "playback")?,
         headers: client_visible_headers(&url.url, &url.headers),
@@ -1041,14 +1041,14 @@ fn playback_url_to_proto(
 /// Convert models `PlaybackUrlMetadata` to proto `PlaybackUrlMetadata`
 fn playback_url_metadata_to_proto(
     metadata: &synctv_core::models::media::PlaybackUrlMetadata,
-) -> Result<crate::proto::client::PlaybackUrlMetadata, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::PlaybackUrlMetadata, crate::impls::ApiError> {
     let extra = metadata
         .extra
         .iter()
         .map(|(key, value)| Ok((key.clone(), json_to_string(value, "playback URL metadata")?)))
         .collect::<Result<_, crate::impls::ApiError>>()?;
 
-    Ok(crate::proto::client::PlaybackUrlMetadata {
+    Ok(synctv_proto::client::PlaybackUrlMetadata {
         resolution: metadata.resolution.clone(),
         bitrate: metadata.bitrate,
         codec: metadata.codec.clone(),
@@ -1060,13 +1060,13 @@ fn playback_url_metadata_to_proto(
 /// Convert models Subtitle to proto Subtitle
 fn subtitle_to_proto(
     subtitle: &synctv_core::models::media::Subtitle,
-) -> Result<crate::proto::client::Subtitle, crate::impls::ApiError> {
+) -> Result<synctv_proto::client::Subtitle, crate::impls::ApiError> {
     if subtitle.urls.is_empty() {
         return Err(crate::impls::ApiError::Internal(
             "subtitle has no URLs".to_string(),
         ));
     }
-    Ok(crate::proto::client::Subtitle {
+    Ok(synctv_proto::client::Subtitle {
         name: subtitle.name.clone(),
         language: subtitle.language.clone(),
         urls: try_map_slice_preserve_order(&subtitle.urls, subtitle_url_to_proto)?,
@@ -1081,8 +1081,8 @@ fn subtitle_to_proto(
 /// Convert models `SubtitleUrl` to proto `SubtitleUrl`
 fn subtitle_url_to_proto(
     url: &synctv_core::models::media::SubtitleUrl,
-) -> Result<crate::proto::client::SubtitleUrl, crate::impls::ApiError> {
-    Ok(crate::proto::client::SubtitleUrl {
+) -> Result<synctv_proto::client::SubtitleUrl, crate::impls::ApiError> {
+    Ok(synctv_proto::client::SubtitleUrl {
         name: url.name.clone(),
         url: require_non_empty_url(&url.url, "subtitle")?,
         headers: client_visible_headers(&url.url, &url.headers),
@@ -1093,8 +1093,8 @@ fn subtitle_url_to_proto(
 /// Convert models Danmaku to proto Danmaku
 fn danmaku_to_proto(
     danmaku: &synctv_core::models::media::Danmaku,
-) -> Result<crate::proto::client::Danmaku, crate::impls::ApiError> {
-    Ok(crate::proto::client::Danmaku {
+) -> Result<synctv_proto::client::Danmaku, crate::impls::ApiError> {
+    Ok(synctv_proto::client::Danmaku {
         name: danmaku.name.clone(),
         url: require_non_empty_url(&danmaku.url, "danmaku")?,
         format: danmaku.format.clone(),
@@ -1607,15 +1607,15 @@ mod tests {
 
     #[test]
     fn playback_client_profile_from_proto_applies_defaults_for_omitted_repeated_capabilities() {
-        let proto = crate::proto::client::PlaybackClientProfile {
-            delivery_preference: crate::proto::client::PlaybackDeliveryPreference::Unspecified
+        let proto = synctv_proto::client::PlaybackClientProfile {
+            delivery_preference: synctv_proto::client::PlaybackDeliveryPreference::Unspecified
                 as i32,
             max_streaming_bitrate: Some(12_000_000),
             max_audio_channels: Some(2),
             supported_video_codecs: Vec::new(),
             supported_containers: Vec::new(),
-            audio_capability: crate::proto::client::PlaybackAudioCapability::Unspecified as i32,
-            subtitle_preference: crate::proto::client::PlaybackSubtitlePreference::Unspecified
+            audio_capability: synctv_proto::client::PlaybackAudioCapability::Unspecified as i32,
+            subtitle_preference: synctv_proto::client::PlaybackSubtitlePreference::Unspecified
                 as i32,
         };
 
@@ -1647,21 +1647,21 @@ mod tests {
 
     #[test]
     fn playback_client_profile_from_proto_maps_explicit_capabilities() {
-        let proto = crate::proto::client::PlaybackClientProfile {
-            delivery_preference: crate::proto::client::PlaybackDeliveryPreference::DirectPlay
+        let proto = synctv_proto::client::PlaybackClientProfile {
+            delivery_preference: synctv_proto::client::PlaybackDeliveryPreference::DirectPlay
                 as i32,
             max_streaming_bitrate: None,
             max_audio_channels: Some(6),
             supported_video_codecs: vec![
-                crate::proto::client::PlaybackVideoCodec::H264 as i32,
-                crate::proto::client::PlaybackVideoCodec::Vp9 as i32,
+                synctv_proto::client::PlaybackVideoCodec::H264 as i32,
+                synctv_proto::client::PlaybackVideoCodec::Vp9 as i32,
             ],
             supported_containers: vec![
-                crate::proto::client::PlaybackContainer::Mp4 as i32,
-                crate::proto::client::PlaybackContainer::Webm as i32,
+                synctv_proto::client::PlaybackContainer::Mp4 as i32,
+                synctv_proto::client::PlaybackContainer::Webm as i32,
             ],
-            audio_capability: crate::proto::client::PlaybackAudioCapability::Surround as i32,
-            subtitle_preference: crate::proto::client::PlaybackSubtitlePreference::None as i32,
+            audio_capability: synctv_proto::client::PlaybackAudioCapability::Surround as i32,
+            subtitle_preference: synctv_proto::client::PlaybackSubtitlePreference::None as i32,
         };
 
         let converted = playback_client_profile_from_proto(Some(&proto))
@@ -1700,14 +1700,14 @@ mod tests {
 
     #[test]
     fn playback_client_profile_from_proto_rejects_unknown_enums() {
-        let mut proto = crate::proto::client::PlaybackClientProfile {
-            delivery_preference: crate::proto::client::PlaybackDeliveryPreference::Auto as i32,
+        let mut proto = synctv_proto::client::PlaybackClientProfile {
+            delivery_preference: synctv_proto::client::PlaybackDeliveryPreference::Auto as i32,
             max_streaming_bitrate: None,
             max_audio_channels: None,
             supported_video_codecs: Vec::new(),
             supported_containers: Vec::new(),
-            audio_capability: crate::proto::client::PlaybackAudioCapability::Unspecified as i32,
-            subtitle_preference: crate::proto::client::PlaybackSubtitlePreference::Unspecified
+            audio_capability: synctv_proto::client::PlaybackAudioCapability::Unspecified as i32,
+            subtitle_preference: synctv_proto::client::PlaybackSubtitlePreference::Unspecified
                 as i32,
         };
 
@@ -1718,7 +1718,7 @@ mod tests {
                 if message.contains("delivery preference")
         ));
 
-        proto.delivery_preference = crate::proto::client::PlaybackDeliveryPreference::Auto as i32;
+        proto.delivery_preference = synctv_proto::client::PlaybackDeliveryPreference::Auto as i32;
         proto.supported_video_codecs = vec![99];
         assert!(matches!(
             playback_client_profile_from_proto(Some(&proto)),
@@ -1742,7 +1742,7 @@ mod tests {
                 if message.contains("audio capability")
         ));
 
-        proto.audio_capability = crate::proto::client::PlaybackAudioCapability::Unspecified as i32;
+        proto.audio_capability = synctv_proto::client::PlaybackAudioCapability::Unspecified as i32;
         proto.subtitle_preference = 99;
         assert!(matches!(
             playback_client_profile_from_proto(Some(&proto)),

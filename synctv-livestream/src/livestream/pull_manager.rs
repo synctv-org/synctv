@@ -342,12 +342,11 @@ impl Drop for PullStreamManager {
 mod tests {
     use super::*;
     use crate::livestream::managed_stream::ManagedStream;
-    use crate::relay::MockStreamRegistry;
-    use tonic::transport::Channel;
+    use crate::relay::TestStreamRegistry;
 
     #[tokio::test]
     async fn test_pull_stream_manager_creation() {
-        let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
+        let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
 
         let manager = PullStreamManager::new(registry, stream_hub_event_sender);
@@ -357,7 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_stream_creation() {
-        let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
+        let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
 
         let pull_stream = PullStream::new(
@@ -377,7 +376,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscriber_count() {
-        let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
+        let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
 
         let pull_stream = PullStream::new(
@@ -404,7 +403,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_key() {
-        let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
+        let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
 
         let pull_stream = PullStream::new(
@@ -426,7 +425,7 @@ mod tests {
     async fn test_subscriber_count_rollback_on_unhealthy_stream() {
         let pool: StreamPool<PullStream> =
             StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
-        let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
+        let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
 
         let pull_stream = Arc::new(PullStream::new(
@@ -459,16 +458,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_connection_pool_rebuilds_cleanup_for_replaced_pool() {
-        let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
+        let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
         let shared_pool = GrpcConnectionPool::new(Duration::from_millis(5), 8);
-        let channel = Channel::from_static("http://[::1]:50051").connect_lazy();
 
-        shared_pool.insert_test_channel_with_age(
-            "publisher-node:50051",
-            channel,
-            Duration::from_secs(1),
-        );
+        shared_pool.insert_test_channel_with_age("publisher-node:50051", Duration::from_secs(1));
 
         let manager = PullStreamManager::with_timeouts(registry, stream_hub_event_sender, 1, 300)
             .with_connection_pool(shared_pool.clone());

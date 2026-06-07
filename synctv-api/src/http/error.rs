@@ -7,7 +7,7 @@ use axum::{
 };
 use std::fmt;
 
-use crate::proto::client::ApiErrorResponse;
+use synctv_proto::client::ApiErrorResponse;
 
 /// Result type for HTTP handlers
 pub type AppResult<T> = Result<T, AppError>;

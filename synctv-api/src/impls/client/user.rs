@@ -1,9 +1,6 @@
 //! User operations: `get_profile`, `set_username`
 
 use crate::impls::ApiError;
-use crate::proto::client::{
-    OpaquePasswordUpdateVerificationMethod, SensitiveOperationVerificationMethod,
-};
 use crate::realtime_lifecycle::DeletedRoomAfterCommitFanout;
 use std::collections::HashMap;
 use synctv_core::models::EmailTokenType;
@@ -13,6 +10,9 @@ use synctv_core::service::{
     TokenAuthContext,
 };
 use synctv_core::validation::UsernameValidator;
+use synctv_proto::client::{
+    OpaquePasswordUpdateVerificationMethod, SensitiveOperationVerificationMethod,
+};
 
 use super::convert::{stored_file_reference_to_video_cover, try_user_to_proto};
 use super::media::{required_stored_file_fields, upload_session_fields};
@@ -51,9 +51,9 @@ pub(crate) fn token_auth_context_from_claims(
 
 fn sensitive_challenge_to_proto(
     challenge: SensitiveVerificationChallenge,
-) -> Result<crate::proto::client::SensitiveOperationVerificationChallenge, ApiError> {
+) -> Result<synctv_proto::client::SensitiveOperationVerificationChallenge, ApiError> {
     Ok(
-        crate::proto::client::SensitiveOperationVerificationChallenge {
+        synctv_proto::client::SensitiveOperationVerificationChallenge {
             session_id: challenge.session_id,
             required_methods: challenge
                 .required_methods
@@ -81,16 +81,16 @@ fn sensitive_challenge_to_proto(
 
 fn sensitive_outcome_to_proto(
     outcome: SensitiveVerificationOutcome,
-) -> Result<crate::proto::client::FinishSensitiveOperationVerificationResponse, ApiError> {
+) -> Result<synctv_proto::client::FinishSensitiveOperationVerificationResponse, ApiError> {
     match outcome {
         SensitiveVerificationOutcome::Pending(challenge) => Ok(
-            crate::proto::client::FinishSensitiveOperationVerificationResponse {
+            synctv_proto::client::FinishSensitiveOperationVerificationResponse {
                 verification_id: String::new(),
                 challenge: Some(sensitive_challenge_to_proto(challenge)?),
             },
         ),
         SensitiveVerificationOutcome::Complete { verification_id } => Ok(
-            crate::proto::client::FinishSensitiveOperationVerificationResponse {
+            synctv_proto::client::FinishSensitiveOperationVerificationResponse {
                 verification_id,
                 challenge: None,
             },
@@ -100,16 +100,16 @@ fn sensitive_outcome_to_proto(
 
 fn sensitive_start_outcome_to_proto(
     outcome: SensitiveVerificationOutcome,
-) -> Result<crate::proto::client::StartSensitiveOperationVerificationResponse, ApiError> {
+) -> Result<synctv_proto::client::StartSensitiveOperationVerificationResponse, ApiError> {
     match outcome {
         SensitiveVerificationOutcome::Pending(challenge) => Ok(
-            crate::proto::client::StartSensitiveOperationVerificationResponse {
+            synctv_proto::client::StartSensitiveOperationVerificationResponse {
                 challenge: Some(sensitive_challenge_to_proto(challenge)?),
                 verification_id: String::new(),
             },
         ),
         SensitiveVerificationOutcome::Complete { verification_id } => Ok(
-            crate::proto::client::StartSensitiveOperationVerificationResponse {
+            synctv_proto::client::StartSensitiveOperationVerificationResponse {
                 challenge: None,
                 verification_id,
             },
@@ -119,9 +119,9 @@ fn sensitive_start_outcome_to_proto(
 
 fn new_file_to_avatar_proto(
     file: &NewStoredFile,
-) -> Result<crate::proto::client::UserAvatar, ApiError> {
+) -> Result<synctv_proto::client::UserAvatar, ApiError> {
     let fields = required_stored_file_fields(file, "user avatar metadata")?;
-    Ok(crate::proto::client::UserAvatar {
+    Ok(synctv_proto::client::UserAvatar {
         id: file.id.clone(),
         storage_backend: file.storage_backend.clone(),
         object_key: file.object_key.clone(),
@@ -135,7 +135,7 @@ fn new_file_to_avatar_proto(
 }
 
 fn avatar_proto_to_new_file(
-    avatar: crate::proto::client::UserAvatar,
+    avatar: synctv_proto::client::UserAvatar,
 ) -> Result<NewStoredFile, ApiError> {
     let metadata = if avatar.metadata.is_empty() {
         serde_json::Value::Object(Default::default())
@@ -163,9 +163,9 @@ fn avatar_proto_to_new_file(
 
 fn avatar_upload_session_to_proto(
     session: FileUploadSession,
-) -> Result<crate::proto::client::UserAvatarUploadSession, ApiError> {
+) -> Result<synctv_proto::client::UserAvatarUploadSession, ApiError> {
     let fields = upload_session_fields(&session)?;
-    Ok(crate::proto::client::UserAvatarUploadSession {
+    Ok(synctv_proto::client::UserAvatarUploadSession {
         avatar: Some(new_file_to_avatar_proto(&session.file)?),
         upload_required: session.upload_required,
         upload_url: fields.upload_url,
@@ -179,7 +179,7 @@ fn avatar_upload_session_to_proto(
             .ownership_proof_ranges
             .into_iter()
             .map(
-                |range| crate::proto::client::UserAvatarOwnershipProofRange {
+                |range| synctv_proto::client::UserAvatarOwnershipProofRange {
                     offset: range.offset,
                     length: range.length,
                 },
@@ -189,8 +189,8 @@ fn avatar_upload_session_to_proto(
     })
 }
 
-fn avatar_object_to_proto(blob: &FileBlob) -> crate::proto::client::UserAvatarObjectResponse {
-    crate::proto::client::UserAvatarObjectResponse {
+fn avatar_object_to_proto(blob: &FileBlob) -> synctv_proto::client::UserAvatarObjectResponse {
+    synctv_proto::client::UserAvatarObjectResponse {
         object_key: blob.object_key.clone(),
         mime_type: blob.mime_type.clone(),
         checksum_sha256: blob.checksum_sha256.clone(),
@@ -200,8 +200,8 @@ fn avatar_object_to_proto(blob: &FileBlob) -> crate::proto::client::UserAvatarOb
 
 fn auth_factors_to_proto(
     factors: &synctv_core::models::UserAuthFactors,
-) -> Result<crate::proto::client::UserAuthFactors, ApiError> {
-    Ok(crate::proto::client::UserAuthFactors {
+) -> Result<synctv_proto::client::UserAuthFactors, ApiError> {
+    Ok(synctv_proto::client::UserAuthFactors {
         password: factors.password,
         webauthn: factors.webauthn,
         email: factors.email,
@@ -213,8 +213,8 @@ fn auth_factors_to_proto(
 
 fn user_preferences_to_proto(
     preferences: &synctv_core::models::UserPreferences,
-) -> Result<crate::proto::client::UserPreferences, ApiError> {
-    Ok(crate::proto::client::UserPreferences {
+) -> Result<synctv_proto::client::UserPreferences, ApiError> {
+    Ok(synctv_proto::client::UserPreferences {
         two_factor_enabled: preferences.two_factor_enabled,
         notifications: Some(user_notification_preferences_to_proto(
             &preferences.notifications,
@@ -227,8 +227,8 @@ fn user_preferences_to_proto(
 
 pub(crate) fn user_notification_preferences_to_proto(
     preferences: &synctv_core::models::UserNotificationPreferences,
-) -> crate::proto::client::UserNotificationPreferences {
-    crate::proto::client::UserNotificationPreferences {
+) -> synctv_proto::client::UserNotificationPreferences {
+    synctv_proto::client::UserNotificationPreferences {
         room_invitation_in_app: preferences.room_invitation_in_app,
         room_event_in_app: preferences.room_event_in_app,
         system_announcement_in_app: preferences.system_announcement_in_app,
@@ -239,7 +239,7 @@ pub(crate) fn user_notification_preferences_to_proto(
 }
 
 pub(crate) fn user_preferences_update_from_proto(
-    req: crate::proto::client::UpdateUserPreferencesRequest,
+    req: synctv_proto::client::UpdateUserPreferencesRequest,
 ) -> synctv_core::models::UserPreferencesUpdate {
     synctv_core::models::UserPreferencesUpdate {
         two_factor_enabled: req.two_factor_enabled,
@@ -321,7 +321,7 @@ impl ClientApiImpl {
     async fn user_to_proto_with_avatar(
         &self,
         user: &synctv_core::models::User,
-    ) -> Result<crate::proto::client::User, ApiError> {
+    ) -> Result<synctv_proto::client::User, ApiError> {
         let email = self
             .user_service
             .get_email(&user.id)
@@ -339,7 +339,7 @@ impl ClientApiImpl {
                 )?
                 .unwrap_or_default();
             let file = stored_file_reference_to_video_cover(&file, Some(url.as_str()))?;
-            proto.avatar = Some(crate::proto::client::UserAvatar {
+            proto.avatar = Some(synctv_proto::client::UserAvatar {
                 id: file.id,
                 storage_backend: file.storage_backend,
                 object_key: file.object_key,
@@ -357,7 +357,7 @@ impl ClientApiImpl {
     pub async fn close_account(
         &self,
         user_id: &UserId,
-    ) -> Result<crate::proto::client::CloseAccountResponse, ApiError> {
+    ) -> Result<synctv_proto::client::CloseAccountResponse, ApiError> {
         let uid = *user_id;
         let owned_room_ids = list_owned_room_ids(self, &uid).await?;
         let (deleted_room_outbox_events, deleted_room_fanout) =
@@ -378,14 +378,14 @@ impl ClientApiImpl {
             )
             .await;
 
-        Ok(crate::proto::client::CloseAccountResponse { success: true })
+        Ok(synctv_proto::client::CloseAccountResponse { success: true })
     }
 
     pub async fn update_profile(
         &self,
         user_id: &UserId,
         username: Option<String>,
-    ) -> Result<crate::proto::client::GetProfileResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetProfileResponse, ApiError> {
         let normalized_username = username.as_ref().map(|value| value.trim().to_string());
         if normalized_username.is_none() {
             return Err(ApiError::InvalidInput(
@@ -394,7 +394,7 @@ impl ClientApiImpl {
         }
 
         if let Some(ref username) = normalized_username {
-            let request = crate::proto::client::SetUsernameRequest {
+            let request = synctv_proto::client::SetUsernameRequest {
                 new_username: username.clone(),
             };
             crate::impls::validate_proto_request(&request)?;
@@ -410,7 +410,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::GetProfileResponse {
+        Ok(synctv_proto::client::GetProfileResponse {
             user: Some(self.user_to_proto_with_avatar(&updated_user).await?),
         })
     }
@@ -418,7 +418,7 @@ impl ClientApiImpl {
     pub async fn get_profile(
         &self,
         user_id: &UserId,
-    ) -> Result<crate::proto::client::GetProfileResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetProfileResponse, ApiError> {
         let uid = *user_id;
         let user = self
             .user_service
@@ -426,7 +426,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::GetProfileResponse {
+        Ok(synctv_proto::client::GetProfileResponse {
             user: Some(self.user_to_proto_with_avatar(&user).await?),
         })
     }
@@ -434,14 +434,14 @@ impl ClientApiImpl {
     pub async fn get_user_preferences(
         &self,
         user_id: &UserId,
-    ) -> Result<crate::proto::client::GetUserPreferencesResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetUserPreferencesResponse, ApiError> {
         let (preferences, auth_factors) = self
             .user_service
             .get_user_preferences(user_id)
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::GetUserPreferencesResponse {
+        Ok(synctv_proto::client::GetUserPreferencesResponse {
             preferences: Some(user_preferences_to_proto(&preferences)?),
             auth_factors: Some(auth_factors_to_proto(&auth_factors)?),
         })
@@ -450,8 +450,8 @@ impl ClientApiImpl {
     pub async fn update_user_preferences(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::UpdateUserPreferencesRequest,
-    ) -> Result<crate::proto::client::UpdateUserPreferencesResponse, ApiError> {
+        req: synctv_proto::client::UpdateUserPreferencesRequest,
+    ) -> Result<synctv_proto::client::UpdateUserPreferencesResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let update = user_preferences_update_from_proto(req);
         if update.is_empty() {
@@ -465,7 +465,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::UpdateUserPreferencesResponse {
+        Ok(synctv_proto::client::UpdateUserPreferencesResponse {
             preferences: Some(user_preferences_to_proto(&preferences)?),
             auth_factors: Some(auth_factors_to_proto(&auth_factors)?),
         })
@@ -474,13 +474,13 @@ impl ClientApiImpl {
     pub async fn set_username(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::SetUsernameRequest,
-    ) -> Result<crate::proto::client::SetUsernameResponse, ApiError> {
+        req: synctv_proto::client::SetUsernameRequest,
+    ) -> Result<synctv_proto::client::SetUsernameResponse, ApiError> {
         let response = self
             .update_profile(user_id, Some(req.new_username.trim().to_string()))
             .await?;
 
-        Ok(crate::proto::client::SetUsernameResponse {
+        Ok(synctv_proto::client::SetUsernameResponse {
             user: response.user,
         })
     }
@@ -488,8 +488,8 @@ impl ClientApiImpl {
     pub async fn create_user_avatar_upload_session(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::CreateUserAvatarUploadSessionRequest,
-    ) -> Result<crate::proto::client::CreateUserAvatarUploadSessionResponse, ApiError> {
+        req: synctv_proto::client::CreateUserAvatarUploadSessionRequest,
+    ) -> Result<synctv_proto::client::CreateUserAvatarUploadSessionResponse, ApiError> {
         let metadata = if req.metadata.is_empty() {
             serde_json::Value::Object(Default::default())
         } else {
@@ -516,7 +516,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         Ok(
-            crate::proto::client::CreateUserAvatarUploadSessionResponse {
+            synctv_proto::client::CreateUserAvatarUploadSessionResponse {
                 session: Some(avatar_upload_session_to_proto(session)?),
             },
         )
@@ -524,8 +524,8 @@ impl ClientApiImpl {
 
     pub async fn upload_user_avatar_object(
         &self,
-        req: crate::proto::client::UploadUserAvatarObjectRequest,
-    ) -> Result<crate::proto::client::UploadUserAvatarObjectResponse, ApiError> {
+        req: synctv_proto::client::UploadUserAvatarObjectRequest,
+    ) -> Result<synctv_proto::client::UploadUserAvatarObjectResponse, ApiError> {
         let blob = self
             .user_service
             .store_avatar_upload_object(
@@ -536,15 +536,15 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        Ok(crate::proto::client::UploadUserAvatarObjectResponse {
+        Ok(synctv_proto::client::UploadUserAvatarObjectResponse {
             object: Some(avatar_object_to_proto(&blob)),
         })
     }
 
     pub async fn get_user_avatar_object(
         &self,
-        req: crate::proto::client::GetUserAvatarObjectRequest,
-    ) -> Result<crate::proto::client::UserAvatarObjectResponse, ApiError> {
+        req: synctv_proto::client::GetUserAvatarObjectRequest,
+    ) -> Result<synctv_proto::client::UserAvatarObjectResponse, ApiError> {
         let blob = self
             .user_service
             .get_avatar_object(&req.encoded_object_key, &req.token)
@@ -556,8 +556,8 @@ impl ClientApiImpl {
     pub async fn update_user_avatar(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::UpdateUserAvatarRequest,
-    ) -> Result<crate::proto::client::GetProfileResponse, ApiError> {
+        req: synctv_proto::client::UpdateUserAvatarRequest,
+    ) -> Result<synctv_proto::client::GetProfileResponse, ApiError> {
         let avatar = req
             .avatar
             .ok_or_else(|| ApiError::InvalidInput("avatar is required".to_string()))?;
@@ -566,7 +566,7 @@ impl ClientApiImpl {
             .update_avatar(user_id, avatar_proto_to_new_file(avatar)?)
             .await
             .map_err(ApiError::from)?;
-        Ok(crate::proto::client::GetProfileResponse {
+        Ok(synctv_proto::client::GetProfileResponse {
             user: Some(self.user_to_proto_with_avatar(&updated).await?),
         })
     }
@@ -574,13 +574,13 @@ impl ClientApiImpl {
     pub async fn clear_user_avatar(
         &self,
         user_id: &UserId,
-    ) -> Result<crate::proto::client::GetProfileResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetProfileResponse, ApiError> {
         let updated = self
             .user_service
             .clear_avatar(user_id)
             .await
             .map_err(ApiError::from)?;
-        Ok(crate::proto::client::GetProfileResponse {
+        Ok(synctv_proto::client::GetProfileResponse {
             user: Some(self.user_to_proto_with_avatar(&updated).await?),
         })
     }
@@ -588,8 +588,8 @@ impl ClientApiImpl {
     pub async fn start_email_bind(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::StartEmailBindRequest,
-    ) -> Result<crate::proto::client::StartEmailBindResponse, ApiError> {
+        req: synctv_proto::client::StartEmailBindRequest,
+    ) -> Result<synctv_proto::client::StartEmailBindResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let email_api = self.email_api.as_ref().ok_or_else(|| {
             ApiError::ServiceUnavailable(
@@ -624,7 +624,7 @@ impl ClientApiImpl {
             return Err(ApiError::from(error));
         }
 
-        Ok(crate::proto::client::StartEmailBindResponse {
+        Ok(synctv_proto::client::StartEmailBindResponse {
             masked_email: synctv_core::service::mask_email(&email),
         })
     }
@@ -632,8 +632,8 @@ impl ClientApiImpl {
     pub async fn confirm_email_bind(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::ConfirmEmailBindRequest,
-    ) -> Result<crate::proto::client::ConfirmEmailBindResponse, ApiError> {
+        req: synctv_proto::client::ConfirmEmailBindRequest,
+    ) -> Result<synctv_proto::client::ConfirmEmailBindResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let email = crate::impls::validation::validate_email(&req.email)
             .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
@@ -648,7 +648,7 @@ impl ClientApiImpl {
                 other => ApiError::from(other),
             })?;
 
-        Ok(crate::proto::client::ConfirmEmailBindResponse {
+        Ok(synctv_proto::client::ConfirmEmailBindResponse {
             user: Some(try_user_to_proto(
                 &updated_user,
                 Some(&email),
@@ -660,15 +660,15 @@ impl ClientApiImpl {
     pub async fn unbind_email(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::UnbindEmailRequest,
-    ) -> Result<crate::proto::client::UnbindEmailResponse, ApiError> {
+        req: synctv_proto::client::UnbindEmailRequest,
+    ) -> Result<synctv_proto::client::UnbindEmailResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let updated_user = self
             .user_service
             .unbind_email(user_id, &req.verification_id)
             .await?;
 
-        Ok(crate::proto::client::UnbindEmailResponse {
+        Ok(synctv_proto::client::UnbindEmailResponse {
             user: Some(try_user_to_proto(
                 &updated_user,
                 None,
@@ -681,8 +681,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         auth_context: Option<TokenAuthContext>,
-        req: crate::proto::client::StartSensitiveOperationVerificationRequest,
-    ) -> Result<crate::proto::client::StartSensitiveOperationVerificationResponse, ApiError> {
+        req: synctv_proto::client::StartSensitiveOperationVerificationRequest,
+    ) -> Result<synctv_proto::client::StartSensitiveOperationVerificationResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let outcome = self
             .user_service
@@ -695,8 +695,8 @@ impl ClientApiImpl {
     pub async fn start_sensitive_operation_passkey(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::StartSensitiveOperationPasskeyRequest,
-    ) -> Result<crate::proto::client::StartSensitiveOperationPasskeyResponse, ApiError> {
+        req: synctv_proto::client::StartSensitiveOperationPasskeyRequest,
+    ) -> Result<synctv_proto::client::StartSensitiveOperationPasskeyResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let user = self
             .user_service
@@ -715,7 +715,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         let options = super::passkey::passkey_options_to_json_bytes(challenge.options_json)?;
         Ok(
-            crate::proto::client::StartSensitiveOperationPasskeyResponse {
+            synctv_proto::client::StartSensitiveOperationPasskeyResponse {
                 passkey_session_id: challenge.session_id,
                 options,
             },
@@ -725,8 +725,8 @@ impl ClientApiImpl {
     pub async fn request_sensitive_operation_email_code(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::RequestSensitiveOperationEmailCodeRequest,
-    ) -> Result<crate::proto::client::RequestSensitiveOperationEmailCodeResponse, ApiError> {
+        req: synctv_proto::client::RequestSensitiveOperationEmailCodeRequest,
+    ) -> Result<synctv_proto::client::RequestSensitiveOperationEmailCodeResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let email_api = self.email_api.as_ref().ok_or_else(|| {
             ApiError::ServiceUnavailable(
@@ -763,7 +763,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         Ok(
-            crate::proto::client::RequestSensitiveOperationEmailCodeResponse {
+            synctv_proto::client::RequestSensitiveOperationEmailCodeResponse {
                 message: "Verification code sent".to_string(),
                 masked_email: synctv_core::service::mask_email(&email),
             },
@@ -773,10 +773,10 @@ impl ClientApiImpl {
     pub async fn finish_sensitive_operation_verification(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::FinishSensitiveOperationVerificationRequest,
+        req: synctv_proto::client::FinishSensitiveOperationVerificationRequest,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_core::provider::ExecutionControl>,
-    ) -> Result<crate::proto::client::FinishSensitiveOperationVerificationResponse, ApiError> {
+    ) -> Result<synctv_proto::client::FinishSensitiveOperationVerificationResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let method = sensitive_method_from_proto(req.method)?;
         let session_user = self
@@ -852,8 +852,8 @@ impl ClientApiImpl {
     pub async fn start_opaque_password_update(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::StartOpaquePasswordUpdateRequest,
-    ) -> Result<crate::proto::client::StartOpaquePasswordUpdateResponse, ApiError> {
+        req: synctv_proto::client::StartOpaquePasswordUpdateRequest,
+    ) -> Result<synctv_proto::client::StartOpaquePasswordUpdateResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let method = OpaquePasswordUpdateVerificationMethod::try_from(req.verification_method)
             .map_err(|_| ApiError::InvalidInput("Invalid verification_method".to_string()))?;
@@ -909,7 +909,7 @@ impl ClientApiImpl {
                     )
                     .await
                     .map_err(ApiError::from)?;
-                return Ok(crate::proto::client::StartOpaquePasswordUpdateResponse {
+                return Ok(synctv_proto::client::StartOpaquePasswordUpdateResponse {
                     session_id: challenge.session_id,
                     credential_response: Vec::new(),
                     registration_response: challenge.registration_response,
@@ -924,7 +924,7 @@ impl ClientApiImpl {
             }
         };
 
-        Ok(crate::proto::client::StartOpaquePasswordUpdateResponse {
+        Ok(synctv_proto::client::StartOpaquePasswordUpdateResponse {
             session_id: challenge.session_id,
             credential_response: challenge.credential_response,
             registration_response: challenge.registration_response,
@@ -936,8 +936,8 @@ impl ClientApiImpl {
     pub async fn finish_opaque_password_update(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::FinishOpaquePasswordUpdateRequest,
-    ) -> Result<crate::proto::client::FinishOpaquePasswordUpdateResponse, ApiError> {
+        req: synctv_proto::client::FinishOpaquePasswordUpdateRequest,
+    ) -> Result<synctv_proto::client::FinishOpaquePasswordUpdateResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let user = if !req.passkey_session_id.is_empty() || !req.passkey_credential.is_empty() {
             self.passkey_service()?
@@ -973,7 +973,7 @@ impl ClientApiImpl {
                 .map_err(ApiError::from)?
         };
 
-        Ok(crate::proto::client::FinishOpaquePasswordUpdateResponse {
+        Ok(synctv_proto::client::FinishOpaquePasswordUpdateResponse {
             user: Some(self.user_to_proto_with_avatar(&user).await?),
         })
     }

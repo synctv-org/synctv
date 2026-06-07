@@ -3,12 +3,6 @@
 //! Unified implementation for all Bilibili API operations.
 //! Used by both HTTP and gRPC handlers.
 
-use crate::proto::providers::bilibili::{
-    BindInfo, CheckQrRequest, GetBindsResponse, LoginQrRequest, LoginSmsRequest, LoginSmsResponse,
-    LogoutRequest, LogoutResponse, ParseRequest, ParseResponse, QrCodeResponse, QrStatusResponse,
-    SendSmsRequest, SendSmsResponse, StartSmsLoginRequest, StartSmsLoginResponse, UserInfoRequest,
-    UserInfoResponse, VideoInfo,
-};
 use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::{
     aead::{Aead, KeyInit as AeadKeyInit, OsRng},
@@ -27,6 +21,12 @@ use synctv_core::models::{
 };
 use synctv_core::provider::{BilibiliProvider, ExecutionControl, ProviderAccessService};
 use synctv_core::repository::UserProviderCredentialRepository;
+use synctv_proto::providers::bilibili::{
+    BindInfo, CheckQrRequest, GetBindsResponse, LoginQrRequest, LoginSmsRequest, LoginSmsResponse,
+    LogoutRequest, LogoutResponse, ParseRequest, ParseResponse, QrCodeResponse, QrStatusResponse,
+    SendSmsRequest, SendSmsResponse, StartSmsLoginRequest, StartSmsLoginResponse, UserInfoRequest,
+    UserInfoResponse, VideoInfo,
+};
 
 use super::ProviderApiRuntime;
 use super::{
@@ -900,7 +900,8 @@ impl BilibiliApiImpl {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_login_cookies_present, BilibiliApiImpl, BilibiliSmsLoginSession, ProviderApiRuntime,
+        ensure_login_cookies_present, BilibiliApiImpl, BilibiliSmsLoginSession,
+        BilibiliSmsLoginTokenCodec, ProviderApiRuntime,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -912,16 +913,10 @@ mod tests {
     use synctv_core::repository::{
         ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository,
     };
-    use synctv_core::service::RemoteProviderManager;
     use synctv_core_testing::create_test_pool;
 
     fn provider() -> Arc<BilibiliProvider> {
-        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        Arc::new(
-            BilibiliProvider::new(Arc::new(RemoteProviderManager::new(repo)))
-                .expect("provider should build"),
-        )
+        Arc::new(BilibiliProvider::new_local_only().expect("provider should build"))
     }
 
     fn test_encryption() -> CredentialEncryption {
@@ -1062,18 +1057,10 @@ mod tests {
 
     #[tokio::test]
     async fn sms_login_session_token_decodes_across_api_instances() {
-        let api_one = test_api(
-            provider(),
-            Arc::new(UserProviderCredentialRepository::new(
-                sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool"),
-            )),
-        );
-        let api_two = test_api(
-            provider(),
-            Arc::new(UserProviderCredentialRepository::new(
-                sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool"),
-            )),
-        );
+        let codec_one = BilibiliSmsLoginTokenCodec::derive_from(test_sms_login_secret())
+            .expect("session codec should derive");
+        let codec_two = BilibiliSmsLoginTokenCodec::derive_from(test_sms_login_secret())
+            .expect("session codec should derive");
         let session = BilibiliSmsLoginSession {
             token: "captcha-token".to_string(),
             challenge: "captcha-challenge".to_string(),
@@ -1083,8 +1070,8 @@ mod tests {
             expires_at: chrono::Utc::now().timestamp() + 60,
         };
 
-        let encoded = api_one
-            .encode_sms_session(&session)
+        let encoded = codec_one
+            .encode(&session)
             .expect("session token should encode");
         assert!(
             !encoded.contains("captcha-token")
@@ -1093,8 +1080,8 @@ mod tests {
                 && !encoded.contains("13800000000"),
             "session token must not expose Bilibili SMS login secrets or phone number"
         );
-        let decoded = api_two
-            .decode_sms_session(&encoded)
+        let decoded = codec_two
+            .decode(&encoded)
             .expect("session token should decode with the same deployment secret");
 
         assert_eq!(decoded.token, session.token);
@@ -1106,12 +1093,8 @@ mod tests {
 
     #[tokio::test]
     async fn sms_login_session_token_rejects_tampering_and_expiry() {
-        let api = test_api(
-            provider(),
-            Arc::new(UserProviderCredentialRepository::new(
-                sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool"),
-            )),
-        );
+        let codec = BilibiliSmsLoginTokenCodec::derive_from(test_sms_login_secret())
+            .expect("session codec should derive");
         let valid = BilibiliSmsLoginSession {
             token: "captcha-token".to_string(),
             challenge: "captcha-challenge".to_string(),
@@ -1125,19 +1108,15 @@ mod tests {
             ..valid.clone()
         };
 
-        let encoded = api
-            .encode_sms_session(&valid)
-            .expect("session token should encode");
+        let encoded = codec.encode(&valid).expect("session token should encode");
         let mut tampered = encoded.clone();
         tampered.push('x');
 
-        assert!(api.decode_sms_session(&tampered).is_err());
-        assert!(api
-            .decode_sms_session(
-                &api.encode_sms_session(&expired)
-                    .expect("expired session should still encode")
-            )
-            .is_err());
+        assert!(codec.decode(&tampered).is_err());
+        let expired_token = codec
+            .encode(&expired)
+            .expect("expired session should still encode");
+        assert!(codec.decode(&expired_token).is_err());
     }
 
     #[tokio::test]
@@ -1152,7 +1131,7 @@ mod tests {
         let response = api
             .get_user_info(
                 &synctv_core::models::UserId::new(),
-                crate::proto::providers::bilibili::UserInfoRequest {
+                synctv_proto::providers::bilibili::UserInfoRequest {
                     instance_name: String::new(),
                 },
                 None,
@@ -1176,7 +1155,7 @@ mod tests {
         let response = api
             .logout(
                 &synctv_core::models::UserId::new(),
-                crate::proto::providers::bilibili::LogoutRequest {
+                synctv_proto::providers::bilibili::LogoutRequest {
                     instance_name: String::new(),
                 },
             )

@@ -9,8 +9,8 @@ use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
 use synctv_core::Config;
 
 // Import generated proto types from synctv_proto
-use crate::proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderService;
-use crate::proto::providers::bilibili::{
+use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderService;
+use synctv_proto::providers::bilibili::{
     CheckQrRequest, GetBindsRequest, GetBindsResponse, LoginQrRequest, LoginSmsRequest,
     LoginSmsResponse, LogoutRequest, LogoutResponse, ParseRequest, ParseResponse, QrCodeResponse,
     QrStatusResponse, SendSmsRequest, SendSmsResponse, StartSmsLoginRequest, StartSmsLoginResponse,

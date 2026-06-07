@@ -10,7 +10,7 @@ use synctv_core::Config;
 
 use crate::impls::NotificationApiImpl;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
-use crate::proto::client::{
+use synctv_proto::client::{
     notification_service_server::NotificationService, DeleteAllReadRequest, DeleteAllReadResponse,
     DeleteNotificationRequest, DeleteNotificationResponse, GetNotificationRequest,
     GetNotificationResponse, ListNotificationsRequest, ListNotificationsResponse,

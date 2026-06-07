@@ -1,10 +1,10 @@
 // Stream relay module for multi-replica coordination
 pub mod in_memory_registry;
-#[cfg(test)]
-pub mod mock_registry;
 pub mod publisher_manager;
 pub mod registry;
 pub mod registry_trait;
+#[cfg(test)]
+pub(crate) mod test_registry;
 
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ pub use registry::{
 pub use registry_trait::{ActivePublisherEntry, StreamRegistryTrait};
 
 #[cfg(test)]
-pub use mock_registry::MockStreamRegistry;
+pub(crate) use test_registry::TestStreamRegistry;
 
 pub use publisher_manager::PublisherManager;
 

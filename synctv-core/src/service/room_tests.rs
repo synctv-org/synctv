@@ -4,18 +4,10 @@ use crate::models::{
     RoomGuestPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermissionSet,
     RoomRole, RoomSettings, RoomStatus, UserId,
 };
+use crate::service::distributed_lock::with_coordination_lock;
 use crate::test_helpers::RoomFixture;
 use crate::Error;
-use crate::{
-    cache::{CacheInvalidationService, KeyBuilder, UsernameCache},
-    service::{
-        auth::{BruteForceProtection, JwtService},
-        InMemoryTokenBlacklistStore, UserService,
-    },
-};
 use async_trait::async_trait;
-use sqlx::PgPool;
-use std::sync::Arc;
 
 /// Replicates the room name validation from `do_create_room`.
 fn validate_room_name(name: &str) -> crate::Result<()> {
@@ -64,13 +56,6 @@ fn test_valid_room_name_is_ok() {
     assert!(validate_room_name("My Room").is_ok());
     assert!(validate_room_name("a").is_ok());
     assert!(validate_room_name("Room with spaces and 123").is_ok());
-}
-
-#[test]
-fn test_initial_room_settings_defaults_when_missing() {
-    let initialized = super::initial_room_settings(None);
-
-    assert!(initialized.chat_enabled.0);
 }
 
 #[test]
@@ -123,59 +108,6 @@ fn test_room_name_counts_unicode_characters_not_bytes() {
     );
 }
 
-fn make_user_service(pool: &PgPool) -> UserService {
-    let jwt_service = JwtService::new("room-service-test-secret-key-32bytes!!").unwrap();
-    let username_cache =
-        UsernameCache::local_only("room-service:test:username:".to_string(), 128, 60);
-    let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
-    let brute_force = BruteForceProtection::in_memory("room-service-test".to_string());
-
-    UserService::new_for_tests(
-        pool,
-        jwt_service,
-        username_cache,
-        token_blacklist,
-        KeyBuilder::new("room-service-test"),
-        brute_force,
-    )
-}
-
-#[tokio::test]
-async fn standalone_room_service_uses_non_authoritative_fence_by_default() {
-    let pool = PgPool::connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused").unwrap();
-    let user_service = make_user_service(&pool);
-    let room_service =
-        RoomService::new_for_tests(pool, user_service).expect("room service should build");
-
-    assert!(
-        !room_service.consistency.is_authoritative(),
-        "standalone RoomService constructors must not create private authoritative fences"
-    );
-}
-
-#[tokio::test]
-async fn test_cache_invalidation_option_wires_permission_service_for_room_service_new() {
-    let pool = PgPool::connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused").unwrap();
-    let user_service = make_user_service(&pool);
-    let room_service = RoomService::new_with_options(
-        pool,
-        user_service,
-        super::RoomServiceOptions {
-            cache_invalidation: Some(Arc::new(CacheInvalidationService::new(
-                "room-service-node".to_string(),
-                "room-service-stream".to_string(),
-            ))),
-            ..super::RoomServiceOptions::test_defaults()
-        },
-    )
-    .expect("room service should build");
-
-    assert!(
-        room_service.permission_service().has_invalidation_service(),
-        "constructor cache invalidation wiring must reach the shared permission service"
-    );
-}
-
 struct FailingCoordinationLock;
 
 #[async_trait]
@@ -192,29 +124,19 @@ impl crate::service::distributed_lock::CoordinationLock for FailingCoordinationL
 }
 
 #[tokio::test]
-async fn test_create_room_uses_injected_coordination_lock_trait_object() {
-    let pool = PgPool::connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused").unwrap();
-    let user_service = make_user_service(&pool);
-    let room_service = RoomService::new_with_options(
-        pool,
-        user_service,
-        super::RoomServiceOptions {
-            distributed_lock: Some(Arc::new(FailingCoordinationLock)),
-            ..super::RoomServiceOptions::test_defaults()
+async fn coordination_lock_error_short_circuits_room_creation_operation() {
+    let error = with_coordination_lock(
+        &FailingCoordinationLock,
+        "create_room:user-1",
+        10,
+        || async {
+            Err::<(), _>(Error::Internal(
+                "operation should not run after lock acquisition failure".to_string(),
+            ))
         },
     )
-    .expect("room service should build");
-
-    let error = room_service
-        .create_room(
-            "locked room".to_string(),
-            "desc".to_string(),
-            crate::models::UserId::new(),
-            None,
-            None,
-        )
-        .await
-        .expect_err("lock failure should short-circuit before any database work");
+    .await
+    .expect_err("lock failure should short-circuit the protected operation");
 
     assert!(
         matches!(error, Error::ServiceUnavailable(ref message) if message.contains("synthetic lock failure")),

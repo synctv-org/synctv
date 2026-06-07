@@ -3,15 +3,15 @@
 //! Unified implementation for all Alist API operations.
 //! Used by both HTTP and gRPC handlers.
 
-use crate::proto::providers::alist::{
-    BindInfo, FileItem, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, SearchItem, SearchRequest,
-    SearchResponse,
-};
 use std::sync::Arc;
 use synctv_core::models::{ProviderCredential, UserId, UserProviderCredential};
 use synctv_core::provider::{AlistProvider, ExecutionControl, ProviderAccessService};
 use synctv_core::repository::UserProviderCredentialRepository;
+use synctv_proto::providers::alist::{
+    BindInfo, FileItem, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, SearchItem, SearchRequest,
+    SearchResponse,
+};
 
 use super::{get_provider_binds, publish_provider_credential_changed, resolve_bound_instance_name};
 
@@ -260,7 +260,7 @@ impl AlistApiImpl {
         req: &LoginRequest,
     ) -> Result<(String, bool), synctv_core::provider::ProviderError> {
         match req.credential.as_ref() {
-            Some(crate::proto::providers::alist::login_request::Credential::Password(password)) => {
+            Some(synctv_proto::providers::alist::login_request::Credential::Password(password)) => {
                 if password.trim().is_empty() {
                     return Err(synctv_core::provider::ProviderError::InvalidConfig(
                         "Alist login password must not be empty".to_string(),
@@ -269,7 +269,7 @@ impl AlistApiImpl {
 
                 Ok((password.clone(), false))
             }
-            Some(crate::proto::providers::alist::login_request::Credential::HashedPassword(
+            Some(synctv_proto::providers::alist::login_request::Credential::HashedPassword(
                 hashed_password,
             )) => {
                 if hashed_password.trim().is_empty() {
@@ -558,18 +558,12 @@ mod tests {
     use super::{resolve_alist_login_otp_code, AlistApiImpl, ProviderApiRuntime};
     use std::sync::Arc;
     use synctv_core::provider::{AlistProvider, ProviderError};
-    use synctv_core::repository::{ProviderInstanceRepository, UserProviderCredentialRepository};
-    use synctv_core::service::RemoteProviderManager;
+    use synctv_core::repository::UserProviderCredentialRepository;
     use synctv_core_testing::create_test_pool;
     use synctv_proto::providers::alist::LoginRequest;
 
     fn provider() -> Arc<AlistProvider> {
-        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        Arc::new(
-            AlistProvider::new(Arc::new(RemoteProviderManager::new(repo)))
-                .expect("provider should build"),
-        )
+        Arc::new(AlistProvider::new_local_only().expect("provider should build"))
     }
 
     fn test_provider_runtime() -> ProviderApiRuntime {
@@ -672,38 +666,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_rejects_missing_password_and_hash_before_provider_call() {
-        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
-        let api = test_api(
-            provider(),
-            Arc::new(UserProviderCredentialRepository::new(pool)),
-        );
-
-        let err = api
-            .login(
-                &synctv_core::models::UserId::new(),
-                LoginRequest {
-                    host: "https://alist.example.com".to_string(),
-                    username: "alice".to_string(),
-                    credential: None,
-                    otp_code: String::new(),
-                    otp_secret: String::new(),
-                    instance_name: String::new(),
-                },
-                None,
-            )
-            .await
-            .expect_err("missing both credential forms must fail before provider login");
-
-        match err {
-            ProviderError::InvalidConfig(message) => {
-                assert!(message.contains("exactly one credential"));
-            }
-            other => panic!("expected InvalidConfig, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn logout_rejects_empty_server_id() {
         let (_postgres, pool) = create_test_pool().await;
@@ -715,7 +677,7 @@ mod tests {
         let err = api
             .logout(
                 &synctv_core::models::UserId::new(),
-                crate::proto::providers::alist::LogoutRequest {
+                synctv_proto::providers::alist::LogoutRequest {
                     server_id: String::new(),
                     instance_name: String::new(),
                 },

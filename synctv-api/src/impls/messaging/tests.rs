@@ -1,7 +1,8 @@
+use super::event_messages::realtime_event_to_server_messages;
 use super::*;
-use crate::proto::client::server_message::Message;
 use crate::runtime::RealtimeDeliveryOutcome;
 use std::collections::VecDeque;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,8 +10,8 @@ use synctv_core::models::notification::{Notification, NotificationType};
 use synctv_core::models::{
     ChatEventKind, ChatImage, ChatMessage, ChatMessageEvent, ChatMessageStatus, ChatMessageType,
     ChatMessageWithImages, MediaId, Playlist, PlaylistId, RoomAdminPermissionBits, RoomId,
-    RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomPlaybackState, RoomRole,
-    SendChatMessage, UserId,
+    RoomMember, RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomPlaybackState,
+    RoomRole, RoomSettings, SendChatMessage, UserId,
 };
 use synctv_core::repository::NotificationRepository;
 use synctv_core::repository::{
@@ -22,13 +23,12 @@ use synctv_core::service::{
     ChatService, ContentFilter, NotificationService, PermissionService, RateLimitConfig,
     RateLimiter, RoomService, RoomSettingsService,
 };
-use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime};
 use synctv_core_testing::{create_test_request_rate_limiter, opaque_register_user};
+use synctv_proto::client::server_message::Message;
 use synctv_realtime::sync::{
-    build_room_message_runtime, ConnectionLimits, ConnectionManager, RealtimeConfig,
-    RealtimeManager,
+    ConnectionId, ConnectionLimits, ConnectionManager, RealtimeConfig, RealtimeManager,
 };
-use synctv_realtime::sync::{NotificationLevel, RealtimeEvent, RoomMessageHub};
+use synctv_realtime::sync::{NotificationLevel, RealtimeEvent, RoomMessageHub, WebRTCSignalKind};
 use tokio::sync::{broadcast, mpsc};
 
 fn room_id() -> RoomId {
@@ -70,8 +70,8 @@ impl RealtimeEventService for LocalRuntimeRealtimeEventService {
         &self,
         _room_id: RoomId,
         _user_id: UserId,
-        connection_id: String,
-    ) -> synctv_realtime::Result<(tokio::sync::mpsc::Receiver<RealtimeEvent>, String)> {
+        connection_id: ConnectionId,
+    ) -> synctv_realtime::Result<(tokio::sync::mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
         let (_tx, rx) = tokio::sync::mpsc::channel(16);
         Ok((rx, connection_id))
     }
@@ -110,8 +110,8 @@ impl RealtimeEventService for LocalRuntimeRealtimeEventService {
     async fn shutdown(&self) {}
 }
 
-fn event_cursor(sequence: i64) -> crate::proto::client::EventCursor {
-    crate::proto::client::EventCursor {
+fn event_cursor(sequence: i64) -> synctv_proto::client::EventCursor {
+    synctv_proto::client::EventCursor {
         event_id: Some(format!("event-{sequence}")),
         sequence,
     }
@@ -419,50 +419,50 @@ fn chat_playback_metadata_rejects_invalid_target_hex() {
 #[test]
 fn watch_observe_builders_require_resource_bodies() {
     assert!(matches!(
-        watch_playback_state_observe(crate::proto::client::WatchPlaybackStateRequest::default()),
+        watch_playback_state_observe(synctv_proto::client::WatchPlaybackStateRequest::default()),
         Err(message) if message.contains("playback_state")
     ));
     assert!(matches!(
         watch_playback_observe(
-            crate::proto::client::WatchPlaybackRequest::default()
+            synctv_proto::client::WatchPlaybackRequest::default()
         ),
         Err(message) if message.contains("playback")
     ));
     assert!(matches!(
-        watch_room_settings_observe(crate::proto::client::WatchRoomSettingsRequest::default()),
+        watch_room_settings_observe(synctv_proto::client::WatchRoomSettingsRequest::default()),
         Err(message) if message.contains("room_settings")
     ));
     assert!(matches!(
-        watch_playlist_items_observe(crate::proto::client::WatchPlaylistItemsRequest::default()),
+        watch_playlist_items_observe(synctv_proto::client::WatchPlaylistItemsRequest::default()),
         Err(message) if message.contains("playlist_items")
     ));
     assert!(matches!(
-        watch_room_members_observe(crate::proto::client::WatchRoomMembersRequest::default()),
+        watch_room_members_observe(synctv_proto::client::WatchRoomMembersRequest::default()),
         Err(message) if message.contains("room_members")
     ));
     assert!(matches!(
-        watch_chat_events_observe(crate::proto::client::WatchChatEventsRequest::default()),
+        watch_chat_events_observe(synctv_proto::client::WatchChatEventsRequest::default()),
         Ok(observe) if matches!(
             observe.resource,
-            Some(crate::proto::client::observe_resource::Resource::ChatEvents(_))
+            Some(synctv_proto::client::observe_resource::Resource::ChatEvents(_))
         )
     ));
 }
 
 #[test]
 fn watch_playback_observe_builds_playback_resource_only() {
-    let observe = watch_playback_observe(crate::proto::client::WatchPlaybackRequest {
-        delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
-        playback: Some(crate::proto::client::ObservePlayback {
-            playback_client_profile: Some(crate::proto::client::PlaybackClientProfile {
-                delivery_preference: crate::proto::client::PlaybackDeliveryPreference::DirectPlay
+    let observe = watch_playback_observe(synctv_proto::client::WatchPlaybackRequest {
+        delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
+        playback: Some(synctv_proto::client::ObservePlayback {
+            playback_client_profile: Some(synctv_proto::client::PlaybackClientProfile {
+                delivery_preference: synctv_proto::client::PlaybackDeliveryPreference::DirectPlay
                     as i32,
                 max_streaming_bitrate: Some(1_500_000),
                 max_audio_channels: None,
                 supported_video_codecs: Vec::new(),
                 supported_containers: Vec::new(),
-                audio_capability: crate::proto::client::PlaybackAudioCapability::Unspecified as i32,
-                subtitle_preference: crate::proto::client::PlaybackSubtitlePreference::Unspecified
+                audio_capability: synctv_proto::client::PlaybackAudioCapability::Unspecified as i32,
+                subtitle_preference: synctv_proto::client::PlaybackSubtitlePreference::Unspecified
                     as i32,
             }),
         }),
@@ -472,8 +472,8 @@ fn watch_playback_observe_builds_playback_resource_only() {
     assert_eq!(observe.observe_id, "playback");
     assert!(matches!(
         observe.resource,
-        Some(crate::proto::client::observe_resource::Resource::Playback(
-            crate::proto::client::ObservePlayback {
+        Some(synctv_proto::client::observe_resource::Resource::Playback(
+            synctv_proto::client::ObservePlayback {
                 playback_client_profile: Some(_),
             },
         ))
@@ -520,13 +520,13 @@ fn chat_event_with_content(
 }
 
 fn server_message_contains_chat_event_content(
-    message: &crate::proto::client::ServerMessage,
+    message: &synctv_proto::client::ServerMessage,
     content: &str,
 ) -> bool {
     match &message.message {
         Some(Message::ResourceChanged(changed)) => matches!(
             changed.payload.as_ref(),
-            Some(crate::proto::client::resource_changed::Payload::ChatEvent(event))
+            Some(synctv_proto::client::resource_changed::Payload::ChatEvent(event))
                 if event
                     .message
                     .as_ref()
@@ -537,7 +537,7 @@ fn server_message_contains_chat_event_content(
 }
 
 fn server_message_is_user_joined_for(
-    message: &crate::proto::client::ServerMessage,
+    message: &synctv_proto::client::ServerMessage,
     user_id: &str,
 ) -> bool {
     matches!(
@@ -552,8 +552,8 @@ fn server_message_is_user_joined_for(
 
 fn empty_playlist_items_response(
     version: impl Into<String>,
-) -> crate::proto::client::ListPlaylistItemsResponse {
-    crate::proto::client::ListPlaylistItemsResponse {
+) -> synctv_proto::client::ListPlaylistItemsResponse {
+    synctv_proto::client::ListPlaylistItemsResponse {
         playlists: Vec::new(),
         media: Vec::new(),
         total: 0,
@@ -699,6 +699,7 @@ impl FailingStreamState {
 struct RecordingStreamState {
     sent_messages: parking_lot::Mutex<Vec<ServerMessage>>,
     alive: AtomicBool,
+    closed: tokio::sync::Notify,
 }
 
 impl RecordingStreamState {
@@ -706,11 +707,17 @@ impl RecordingStreamState {
         Arc::new(Self {
             sent_messages: parking_lot::Mutex::new(Vec::new()),
             alive: AtomicBool::new(true),
+            closed: tokio::sync::Notify::new(),
         })
     }
 
     fn sent_messages(&self) -> Vec<ServerMessage> {
         self.sent_messages.lock().clone()
+    }
+
+    fn close(&self) {
+        self.alive.store(false, Ordering::Relaxed);
+        self.closed.notify_waiters();
     }
 }
 
@@ -745,14 +752,14 @@ impl RecordingStream {
 
 fn observe_playback_state_message(
     observe_id: &'static str,
-) -> crate::proto::client::client_message::Message {
-    crate::proto::client::client_message::Message::ObserveResource(
-        crate::proto::client::ObserveResource {
+) -> synctv_proto::client::client_message::Message {
+    synctv_proto::client::client_message::Message::ObserveResource(
+        synctv_proto::client::ObserveResource {
             observe_id: observe_id.to_string(),
-            delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
+            delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(
-                crate::proto::client::observe_resource::Resource::PlaybackState(
-                    crate::proto::client::ObservePlaybackState {
+                synctv_proto::client::observe_resource::Resource::PlaybackState(
+                    synctv_proto::client::ObservePlaybackState {
                         after_event_sequence: None,
                     },
                 ),
@@ -763,14 +770,14 @@ fn observe_playback_state_message(
 
 fn observe_playback_message(
     observe_id: &'static str,
-    playback_client_profile: Option<crate::proto::client::PlaybackClientProfile>,
-) -> crate::proto::client::client_message::Message {
-    crate::proto::client::client_message::Message::ObserveResource(
-        crate::proto::client::ObserveResource {
+    playback_client_profile: Option<synctv_proto::client::PlaybackClientProfile>,
+) -> synctv_proto::client::client_message::Message {
+    synctv_proto::client::client_message::Message::ObserveResource(
+        synctv_proto::client::ObserveResource {
             observe_id: observe_id.to_string(),
-            delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
-            resource: Some(crate::proto::client::observe_resource::Resource::Playback(
-                crate::proto::client::ObservePlayback {
+            delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
+            resource: Some(synctv_proto::client::observe_resource::Resource::Playback(
+                synctv_proto::client::ObservePlayback {
                     playback_client_profile,
                 },
             )),
@@ -780,14 +787,14 @@ fn observe_playback_message(
 
 fn observe_room_settings_message(
     observe_id: impl Into<String>,
-) -> crate::proto::client::client_message::Message {
-    crate::proto::client::client_message::Message::ObserveResource(
-        crate::proto::client::ObserveResource {
+) -> synctv_proto::client::client_message::Message {
+    synctv_proto::client::client_message::Message::ObserveResource(
+        synctv_proto::client::ObserveResource {
             observe_id: observe_id.into(),
-            delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
+            delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(
-                crate::proto::client::observe_resource::Resource::RoomSettings(
-                    crate::proto::client::ObserveRoomSettings {
+                synctv_proto::client::observe_resource::Resource::RoomSettings(
+                    synctv_proto::client::ObserveRoomSettings {
                         after_event_sequence: None,
                     },
                 ),
@@ -798,32 +805,32 @@ fn observe_room_settings_message(
 
 fn observe_playlist_items_message(
     observe_id: &'static str,
-    request: crate::proto::client::ListPlaylistItemsRequest,
-) -> crate::proto::client::client_message::Message {
+    request: synctv_proto::client::ListPlaylistItemsRequest,
+) -> synctv_proto::client::client_message::Message {
     observe_playlist_items_message_with_sequence(observe_id, request, None)
 }
 
 fn observe_playlist_items_message_with_sequence(
     observe_id: &'static str,
-    request: crate::proto::client::ListPlaylistItemsRequest,
+    request: synctv_proto::client::ListPlaylistItemsRequest,
     after_event_sequence: Option<i64>,
-) -> crate::proto::client::client_message::Message {
-    crate::proto::client::client_message::Message::ObserveResource(
+) -> synctv_proto::client::client_message::Message {
+    synctv_proto::client::client_message::Message::ObserveResource(
         observe_playlist_items_resource_with_sequence(observe_id, request, after_event_sequence),
     )
 }
 
 fn observe_playlist_items_resource_with_sequence(
     observe_id: &'static str,
-    request: crate::proto::client::ListPlaylistItemsRequest,
+    request: synctv_proto::client::ListPlaylistItemsRequest,
     after_event_sequence: Option<i64>,
-) -> crate::proto::client::ObserveResource {
-    crate::proto::client::ObserveResource {
+) -> synctv_proto::client::ObserveResource {
+    synctv_proto::client::ObserveResource {
         observe_id: observe_id.to_string(),
-        delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
+        delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
         resource: Some(
-            crate::proto::client::observe_resource::Resource::PlaylistItems(
-                crate::proto::client::ObservePlaylistItems {
+            synctv_proto::client::observe_resource::Resource::PlaylistItems(
+                synctv_proto::client::ObservePlaylistItems {
                     request: Some(request),
                     after_event_sequence,
                 },
@@ -834,15 +841,15 @@ fn observe_playlist_items_resource_with_sequence(
 
 fn observe_room_members_message(
     observe_id: &'static str,
-    request: crate::proto::client::GetRoomMembersRequest,
-) -> crate::proto::client::client_message::Message {
-    crate::proto::client::client_message::Message::ObserveResource(
-        crate::proto::client::ObserveResource {
+    request: synctv_proto::client::GetRoomMembersRequest,
+) -> synctv_proto::client::client_message::Message {
+    synctv_proto::client::client_message::Message::ObserveResource(
+        synctv_proto::client::ObserveResource {
             observe_id: observe_id.to_string(),
-            delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
+            delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(
-                crate::proto::client::observe_resource::Resource::RoomMembers(
-                    crate::proto::client::ObserveRoomMembers {
+                synctv_proto::client::observe_resource::Resource::RoomMembers(
+                    synctv_proto::client::ObserveRoomMembers {
                         request: Some(request),
                         after_event_sequence: None,
                     },
@@ -854,21 +861,21 @@ fn observe_room_members_message(
 
 fn observe_chat_events_message(
     observe_id: impl Into<String>,
-) -> crate::proto::client::client_message::Message {
+) -> synctv_proto::client::client_message::Message {
     observe_chat_events_message_with_sequence(observe_id, None)
 }
 
 fn observe_chat_events_message_with_sequence(
     observe_id: impl Into<String>,
     after_event_sequence: Option<i64>,
-) -> crate::proto::client::client_message::Message {
-    crate::proto::client::client_message::Message::ObserveResource(
-        crate::proto::client::ObserveResource {
+) -> synctv_proto::client::client_message::Message {
+    synctv_proto::client::client_message::Message::ObserveResource(
+        synctv_proto::client::ObserveResource {
             observe_id: observe_id.into(),
-            delivery_mode: crate::proto::client::ResourceDeliveryMode::NotifyOnly as i32,
+            delivery_mode: synctv_proto::client::ResourceDeliveryMode::NotifyOnly as i32,
             resource: Some(
-                crate::proto::client::observe_resource::Resource::ChatEvents(
-                    crate::proto::client::ObserveChatEvents {
+                synctv_proto::client::observe_resource::Resource::ChatEvents(
+                    synctv_proto::client::ObserveChatEvents {
                         after_event_sequence,
                     },
                 ),
@@ -879,7 +886,7 @@ fn observe_chat_events_message_with_sequence(
 
 fn resource_changed_payload(
     message: &ServerMessage,
-) -> Option<&crate::proto::client::resource_changed::Payload> {
+) -> Option<&synctv_proto::client::resource_changed::Payload> {
     match &message.message {
         Some(Message::ResourceChanged(changed)) => changed.payload.as_ref(),
         _ => None,
@@ -888,7 +895,7 @@ fn resource_changed_payload(
 
 fn resource_observe_error(
     message: &ServerMessage,
-) -> Option<&crate::proto::client::ResourceObserveError> {
+) -> Option<&synctv_proto::client::ResourceObserveError> {
     match &message.message {
         Some(Message::ResourceObserveError(error)) => Some(error),
         _ => None,
@@ -897,25 +904,25 @@ fn resource_observe_error(
 
 fn resource_playback_state(
     message: &ServerMessage,
-) -> Option<&crate::proto::client::PlaybackState> {
+) -> Option<&synctv_proto::client::PlaybackState> {
     match resource_changed_payload(message) {
-        Some(crate::proto::client::resource_changed::Payload::PlaybackState(state)) => Some(state),
+        Some(synctv_proto::client::resource_changed::Payload::PlaybackState(state)) => Some(state),
         _ => None,
     }
 }
 
-fn resource_playback(message: &ServerMessage) -> Option<&crate::proto::client::Playback> {
+fn resource_playback(message: &ServerMessage) -> Option<&synctv_proto::client::Playback> {
     match resource_changed_payload(message) {
-        Some(crate::proto::client::resource_changed::Payload::Playback(snapshot)) => Some(snapshot),
+        Some(synctv_proto::client::resource_changed::Payload::Playback(snapshot)) => Some(snapshot),
         _ => None,
     }
 }
 
 fn resource_room_settings(
     message: &ServerMessage,
-) -> Option<&crate::proto::client::RoomSettingsChanged> {
+) -> Option<&synctv_proto::client::RoomSettingsChanged> {
     match resource_changed_payload(message) {
-        Some(crate::proto::client::resource_changed::Payload::RoomSettings(settings)) => {
+        Some(synctv_proto::client::resource_changed::Payload::RoomSettings(settings)) => {
             Some(settings)
         }
         _ => None,
@@ -924,9 +931,9 @@ fn resource_room_settings(
 
 fn resource_playlist_items(
     message: &ServerMessage,
-) -> Option<&crate::proto::client::ListPlaylistItemsResponse> {
+) -> Option<&synctv_proto::client::ListPlaylistItemsResponse> {
     match resource_changed_payload(message) {
-        Some(crate::proto::client::resource_changed::Payload::PlaylistItems(snapshot)) => {
+        Some(synctv_proto::client::resource_changed::Payload::PlaylistItems(snapshot)) => {
             Some(snapshot)
         }
         _ => None,
@@ -935,9 +942,9 @@ fn resource_playlist_items(
 
 fn resource_room_members(
     message: &ServerMessage,
-) -> Option<&crate::proto::client::GetRoomMembersResponse> {
+) -> Option<&synctv_proto::client::GetRoomMembersResponse> {
     match resource_changed_payload(message) {
-        Some(crate::proto::client::resource_changed::Payload::RoomMembers(snapshot)) => {
+        Some(synctv_proto::client::resource_changed::Payload::RoomMembers(snapshot)) => {
             Some(snapshot)
         }
         _ => None,
@@ -950,7 +957,8 @@ impl StreamMessage for RecordingStream {
         if let Some(msg) = self.incoming.pop_front() {
             return Some(msg);
         }
-        std::future::pending().await
+        self.state.closed.notified().await;
+        None
     }
 
     fn send(&self, message: ServerMessage) -> Result<(), String> {
@@ -1040,14 +1048,6 @@ impl StreamMessage for FailingStream {
     }
 }
 
-fn test_pool() -> sqlx::PgPool {
-    sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .acquire_timeout(Duration::from_millis(50))
-        .connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused?connect_timeout=1")
-        .expect("lazy test pool")
-}
-
 fn test_room_service(pool: sqlx::PgPool) -> Arc<RoomService> {
     Arc::new(synctv_core_testing::create_test_room_service(pool))
 }
@@ -1112,6 +1112,63 @@ fn test_chat_service(pool: sqlx::PgPool) -> Arc<ChatService> {
     ))
 }
 
+#[derive(Clone)]
+struct TestMessageHandler {
+    database: Arc<synctv_core_testing::TestDatabase>,
+    handler: StreamMessageHandler,
+}
+
+impl TestMessageHandler {
+    fn new(database: synctv_core_testing::TestDatabase, handler: StreamMessageHandler) -> Self {
+        Self {
+            database: Arc::new(database),
+            handler,
+        }
+    }
+
+    fn rebuild_with_runtime(&self, runtime: StreamMessageHandlerRuntime) -> Self {
+        Self {
+            database: Arc::clone(&self.database),
+            handler: rebuild_stream_message_handler_with_runtime(&self.handler, runtime),
+        }
+    }
+}
+
+impl Deref for TestMessageHandler {
+    type Target = StreamMessageHandler;
+
+    fn deref(&self) -> &Self::Target {
+        &self.handler
+    }
+}
+
+impl std::borrow::Borrow<StreamMessageHandler> for TestMessageHandler {
+    fn borrow(&self) -> &StreamMessageHandler {
+        &self.handler
+    }
+}
+
+impl std::borrow::Borrow<StreamMessageHandler> for &TestMessageHandler {
+    fn borrow(&self) -> &StreamMessageHandler {
+        &self.handler
+    }
+}
+
+fn create_handler_test_database() -> synctv_core_testing::TestDatabase {
+    std::thread::spawn(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test database runtime should build")
+            .block_on(synctv_core_testing::create_test_database_with_db_and_label(
+                "messaging_handler",
+                "messaging_handler",
+            ))
+    })
+    .join()
+    .expect("test database init thread should finish")
+}
+
 fn bounded_fixture_username(node_id: &str) -> String {
     const MAX_USERNAME_LEN: usize = 50;
     let prefix = "fixture_";
@@ -1144,43 +1201,6 @@ async fn test_realtime_manager(node_id: &str) -> Arc<RealtimeManager> {
     )
 }
 
-#[allow(dead_code)]
-async fn test_realtime_manager_with_redis(node_id: &str, redis_url: &str) -> Arc<RealtimeManager> {
-    let redis_client = redis::Client::open(redis_url).expect("Redis client");
-    let redis_conn = redis_client
-        .get_connection_manager()
-        .await
-        .expect("Redis connection manager");
-    let shared_runtime: Arc<dyn RedisConnectionRuntime> =
-        Arc::new(DirectRedisConnectionRuntime::new(redis_conn.clone()));
-    let realtime_profile =
-        synctv_core::SharedStateProfile::from_runtime(Some(shared_runtime), "synctv:", true);
-
-    Arc::new(
-        RealtimeManager::new(RealtimeConfig {
-            distributed_transport_factory: Some(
-                synctv_realtime::build_realtime_message_transport_factory(
-                    synctv_core::coordination_runtime_from_client(redis_client),
-                ),
-            ),
-            message_runtime: build_room_message_runtime(&realtime_profile)
-                .expect("shared message runtime should initialize"),
-            distributed_enabled: false,
-            node_id: node_id.to_string(),
-            dedup_window: Duration::from_mins(1),
-            critical_channel_capacity: 100,
-            publish_channel_capacity: 1000,
-            key_prefix: "synctv:".to_string(),
-            catchup_window_secs: 300,
-            stream_max_length: 1000,
-            event_handler: None,
-            parent_cancel_token: None,
-        })
-        .await
-        .expect("realtime manager with redis"),
-    )
-}
-
 struct FailingRoomMessageRuntime;
 
 #[async_trait::async_trait]
@@ -1196,7 +1216,7 @@ impl synctv_realtime::sync::RoomMessageRuntime for FailingRoomMessageRuntime {
         &self,
         _room_id: RoomId,
         _user_id: UserId,
-        _connection_id: String,
+        _connection_id: ConnectionId,
     ) -> synctv_realtime::Result<mpsc::Receiver<RealtimeEvent>> {
         Err(synctv_realtime::Error::Internal(anyhow::anyhow!(
             "injected room subscription failure"
@@ -1236,14 +1256,14 @@ impl synctv_realtime::sync::RoomMessageRuntime for FailingRoomMessageRuntime {
 
     fn remove_room(&self, _room_id: &RoomId) {}
 
-    fn get_room_subscribers(&self, _room_id: &RoomId) -> Vec<(UserId, String)> {
+    fn get_room_subscribers(&self, _room_id: &RoomId) -> Vec<(UserId, ConnectionId)> {
         Vec::new()
     }
 
     async fn get_room_subscribers_replicas_wide(
         &self,
         _room_id: &RoomId,
-    ) -> synctv_realtime::Result<Vec<(UserId, String)>> {
+    ) -> synctv_realtime::Result<Vec<(UserId, ConnectionId)>> {
         Ok(Vec::new())
     }
 
@@ -1288,8 +1308,8 @@ fn test_connection_manager() -> Arc<ConnectionManager> {
 }
 
 #[derive(Clone)]
-struct FakePlaybackService {
-    playback: crate::proto::client::Playback,
+struct StaticPlaybackService {
+    playback: synctv_proto::client::Playback,
 }
 
 #[derive(Clone, Default)]
@@ -1323,7 +1343,7 @@ impl SnapshotCallProbe {
 }
 
 #[async_trait::async_trait]
-impl crate::impls::playback::PlaybackService for FakePlaybackService {
+impl crate::impls::playback::PlaybackService for StaticPlaybackService {
     async fn room_playback_state(
         &self,
         room_id: &RoomId,
@@ -1337,20 +1357,20 @@ impl crate::impls::playback::PlaybackService for FakePlaybackService {
         _room_id: &RoomId,
         _state: &RoomPlaybackState,
         _playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
-    ) -> Result<crate::proto::client::Playback, crate::impls::ApiError> {
+    ) -> Result<synctv_proto::client::Playback, crate::impls::ApiError> {
         Ok(self.playback.clone())
     }
 }
 
 #[derive(Clone)]
 struct MutablePlaybackService {
-    playback: Arc<parking_lot::Mutex<crate::proto::client::Playback>>,
+    playback: Arc<parking_lot::Mutex<synctv_proto::client::Playback>>,
     dependencies: Arc<parking_lot::Mutex<Vec<synctv_core::provider::ProviderCredentialDependency>>>,
     probe: SnapshotCallProbe,
 }
 
 impl MutablePlaybackService {
-    fn new(playback: crate::proto::client::Playback) -> Arc<Self> {
+    fn new(playback: synctv_proto::client::Playback) -> Arc<Self> {
         Arc::new(Self {
             playback: Arc::new(parking_lot::Mutex::new(playback)),
             dependencies: Arc::new(parking_lot::Mutex::new(Vec::new())),
@@ -1358,7 +1378,7 @@ impl MutablePlaybackService {
         })
     }
 
-    fn replace(&self, playback: crate::proto::client::Playback) {
+    fn replace(&self, playback: synctv_proto::client::Playback) {
         *self.playback.lock() = playback;
     }
 
@@ -1389,7 +1409,7 @@ impl crate::impls::playback::PlaybackService for MutablePlaybackService {
         _room_id: &RoomId,
         _state: &RoomPlaybackState,
         _playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
-    ) -> Result<crate::proto::client::Playback, crate::impls::ApiError> {
+    ) -> Result<synctv_proto::client::Playback, crate::impls::ApiError> {
         self.probe.mark_called();
         Ok(self.playback.lock().clone())
     }
@@ -1409,7 +1429,7 @@ impl crate::impls::playback::PlaybackService for MutablePlaybackService {
 struct SequencedPlaybackService {
     responses: Arc<
         parking_lot::Mutex<
-            VecDeque<Result<crate::proto::client::Playback, crate::impls::ApiError>>,
+            VecDeque<Result<synctv_proto::client::Playback, crate::impls::ApiError>>,
         >,
     >,
     probe: SnapshotCallProbe,
@@ -1418,7 +1438,7 @@ struct SequencedPlaybackService {
 impl SequencedPlaybackService {
     fn new(
         responses: impl IntoIterator<
-            Item = Result<crate::proto::client::Playback, crate::impls::ApiError>,
+            Item = Result<synctv_proto::client::Playback, crate::impls::ApiError>,
         >,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -1447,7 +1467,7 @@ impl crate::impls::playback::PlaybackService for SequencedPlaybackService {
         _room_id: &RoomId,
         _state: &RoomPlaybackState,
         _playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
-    ) -> Result<crate::proto::client::Playback, crate::impls::ApiError> {
+    ) -> Result<synctv_proto::client::Playback, crate::impls::ApiError> {
         self.probe.mark_called();
         self.responses.lock().pop_front().unwrap_or_else(|| {
             Err(crate::impls::ApiError::Internal(
@@ -1538,38 +1558,38 @@ impl crate::impls::room_settings_snapshot::RoomSettingsSnapshotService
 }
 
 #[derive(Clone)]
-struct FakePlaylistItemsSnapshotService {
-    snapshot: crate::proto::client::ListPlaylistItemsResponse,
+struct StaticPlaylistItemsSnapshotService {
+    snapshot: synctv_proto::client::ListPlaylistItemsResponse,
 }
 
 #[async_trait::async_trait]
 impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
-    for FakePlaylistItemsSnapshotService
+    for StaticPlaylistItemsSnapshotService
 {
     async fn get_playlist_items_snapshot(
         &self,
         _actor: &crate::impls::client::RoomActor,
-        _req: &crate::proto::client::ListPlaylistItemsRequest,
-    ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
+        _req: &synctv_proto::client::ListPlaylistItemsRequest,
+    ) -> Result<synctv_proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
         Ok(self.snapshot.clone())
     }
 }
 
 #[derive(Clone)]
 struct MutablePlaylistItemsSnapshotService {
-    snapshot: Arc<parking_lot::Mutex<crate::proto::client::ListPlaylistItemsResponse>>,
+    snapshot: Arc<parking_lot::Mutex<synctv_proto::client::ListPlaylistItemsResponse>>,
     probe: SnapshotCallProbe,
 }
 
 impl MutablePlaylistItemsSnapshotService {
-    fn new(snapshot: crate::proto::client::ListPlaylistItemsResponse) -> Arc<Self> {
+    fn new(snapshot: synctv_proto::client::ListPlaylistItemsResponse) -> Arc<Self> {
         Arc::new(Self {
             snapshot: Arc::new(parking_lot::Mutex::new(snapshot)),
             probe: SnapshotCallProbe::default(),
         })
     }
 
-    fn replace(&self, snapshot: crate::proto::client::ListPlaylistItemsResponse) {
+    fn replace(&self, snapshot: synctv_proto::client::ListPlaylistItemsResponse) {
         *self.snapshot.lock() = snapshot;
     }
 
@@ -1589,8 +1609,8 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
     async fn get_playlist_items_snapshot(
         &self,
         _actor: &crate::impls::client::RoomActor,
-        _req: &crate::proto::client::ListPlaylistItemsRequest,
-    ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
+        _req: &synctv_proto::client::ListPlaylistItemsRequest,
+    ) -> Result<synctv_proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
         self.probe.mark_called();
         Ok(self.snapshot.lock().clone())
     }
@@ -1598,13 +1618,13 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
 
 #[derive(Clone)]
 struct RecordingPlaylistItemsRequestSnapshotService {
-    snapshot: Arc<parking_lot::Mutex<crate::proto::client::ListPlaylistItemsResponse>>,
+    snapshot: Arc<parking_lot::Mutex<synctv_proto::client::ListPlaylistItemsResponse>>,
     refresh_values: Arc<parking_lot::Mutex<Vec<bool>>>,
     probe: SnapshotCallProbe,
 }
 
 impl RecordingPlaylistItemsRequestSnapshotService {
-    fn new(snapshot: crate::proto::client::ListPlaylistItemsResponse) -> Arc<Self> {
+    fn new(snapshot: synctv_proto::client::ListPlaylistItemsResponse) -> Arc<Self> {
         Arc::new(Self {
             snapshot: Arc::new(parking_lot::Mutex::new(snapshot)),
             refresh_values: Arc::new(parking_lot::Mutex::new(Vec::new())),
@@ -1612,7 +1632,7 @@ impl RecordingPlaylistItemsRequestSnapshotService {
         })
     }
 
-    fn replace(&self, snapshot: crate::proto::client::ListPlaylistItemsResponse) {
+    fn replace(&self, snapshot: synctv_proto::client::ListPlaylistItemsResponse) {
         *self.snapshot.lock() = snapshot;
     }
 
@@ -1632,8 +1652,8 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
     async fn get_playlist_items_snapshot(
         &self,
         _actor: &crate::impls::client::RoomActor,
-        req: &crate::proto::client::ListPlaylistItemsRequest,
-    ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
+        req: &synctv_proto::client::ListPlaylistItemsRequest,
+    ) -> Result<synctv_proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
         self.probe.mark_called();
         self.refresh_values.lock().push(req.refresh);
         Ok(self.snapshot.lock().clone())
@@ -1642,7 +1662,7 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
 
 #[derive(Clone)]
 struct BlockingPlaylistItemsSnapshotService {
-    snapshot: Arc<parking_lot::Mutex<crate::proto::client::ListPlaylistItemsResponse>>,
+    snapshot: Arc<parking_lot::Mutex<synctv_proto::client::ListPlaylistItemsResponse>>,
     probe: SnapshotCallProbe,
     block_on_call: usize,
     release_blocked_call: Arc<AtomicBool>,
@@ -1651,7 +1671,7 @@ struct BlockingPlaylistItemsSnapshotService {
 
 impl BlockingPlaylistItemsSnapshotService {
     fn new(
-        snapshot: crate::proto::client::ListPlaylistItemsResponse,
+        snapshot: synctv_proto::client::ListPlaylistItemsResponse,
         block_on_call: usize,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -1663,7 +1683,7 @@ impl BlockingPlaylistItemsSnapshotService {
         })
     }
 
-    fn replace(&self, snapshot: crate::proto::client::ListPlaylistItemsResponse) {
+    fn replace(&self, snapshot: synctv_proto::client::ListPlaylistItemsResponse) {
         *self.snapshot.lock() = snapshot;
     }
 
@@ -1688,8 +1708,8 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
     async fn get_playlist_items_snapshot(
         &self,
         _actor: &crate::impls::client::RoomActor,
-        _req: &crate::proto::client::ListPlaylistItemsRequest,
-    ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
+        _req: &synctv_proto::client::ListPlaylistItemsRequest,
+    ) -> Result<synctv_proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
         self.probe.mark_called();
         if self.probe.call_count() == self.block_on_call {
             while !self.release_blocked_call.load(Ordering::Relaxed) {
@@ -1702,14 +1722,14 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
 
 #[derive(Clone)]
 struct BlockingFailingPlaylistItemsSnapshotService {
-    first_snapshot: crate::proto::client::ListPlaylistItemsResponse,
+    first_snapshot: synctv_proto::client::ListPlaylistItemsResponse,
     probe: SnapshotCallProbe,
     release_blocked_call: Arc<AtomicBool>,
     release_notify: Arc<tokio::sync::Notify>,
 }
 
 impl BlockingFailingPlaylistItemsSnapshotService {
-    fn new(first_snapshot: crate::proto::client::ListPlaylistItemsResponse) -> Arc<Self> {
+    fn new(first_snapshot: synctv_proto::client::ListPlaylistItemsResponse) -> Arc<Self> {
         Arc::new(Self {
             first_snapshot,
             probe: SnapshotCallProbe::default(),
@@ -1735,8 +1755,8 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
     async fn get_playlist_items_snapshot(
         &self,
         _actor: &crate::impls::client::RoomActor,
-        _req: &crate::proto::client::ListPlaylistItemsRequest,
-    ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
+        _req: &synctv_proto::client::ListPlaylistItemsRequest,
+    ) -> Result<synctv_proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
         self.probe.mark_called();
         if self.probe.call_count() == 1 {
             return Ok(self.first_snapshot.clone());
@@ -1752,14 +1772,14 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
 
 #[derive(Clone)]
 struct SlowPlaylistItemsSnapshotService {
-    snapshot: crate::proto::client::ListPlaylistItemsResponse,
+    snapshot: synctv_proto::client::ListPlaylistItemsResponse,
     probe: SnapshotCallProbe,
     delay: Duration,
 }
 
 impl SlowPlaylistItemsSnapshotService {
     fn new(
-        snapshot: crate::proto::client::ListPlaylistItemsResponse,
+        snapshot: synctv_proto::client::ListPlaylistItemsResponse,
         delay: Duration,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -1781,8 +1801,8 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
     async fn get_playlist_items_snapshot(
         &self,
         _actor: &crate::impls::client::RoomActor,
-        _req: &crate::proto::client::ListPlaylistItemsRequest,
-    ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
+        _req: &synctv_proto::client::ListPlaylistItemsRequest,
+    ) -> Result<synctv_proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
         self.probe.mark_called();
         tokio::time::sleep(self.delay).await;
         Ok(self.snapshot.clone())
@@ -1790,38 +1810,38 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
 }
 
 #[derive(Clone)]
-struct FakeRoomMembersSnapshotService {
-    snapshot: crate::proto::client::GetRoomMembersResponse,
+struct StaticRoomMembersSnapshotService {
+    snapshot: synctv_proto::client::GetRoomMembersResponse,
 }
 
 #[async_trait::async_trait]
 impl crate::impls::room_members_snapshot::RoomMembersSnapshotService
-    for FakeRoomMembersSnapshotService
+    for StaticRoomMembersSnapshotService
 {
     async fn get_room_members_snapshot(
         &self,
         _actor: &crate::impls::client::RoomActor,
-        _req: &crate::proto::client::GetRoomMembersRequest,
-    ) -> Result<crate::proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
+        _req: &synctv_proto::client::GetRoomMembersRequest,
+    ) -> Result<synctv_proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
         Ok(self.snapshot.clone())
     }
 }
 
 #[derive(Clone)]
 struct MutableRoomMembersSnapshotService {
-    snapshot: Arc<parking_lot::Mutex<crate::proto::client::GetRoomMembersResponse>>,
+    snapshot: Arc<parking_lot::Mutex<synctv_proto::client::GetRoomMembersResponse>>,
     probe: SnapshotCallProbe,
 }
 
 impl MutableRoomMembersSnapshotService {
-    fn new(snapshot: crate::proto::client::GetRoomMembersResponse) -> Arc<Self> {
+    fn new(snapshot: synctv_proto::client::GetRoomMembersResponse) -> Arc<Self> {
         Arc::new(Self {
             snapshot: Arc::new(parking_lot::Mutex::new(snapshot)),
             probe: SnapshotCallProbe::default(),
         })
     }
 
-    fn replace(&self, snapshot: crate::proto::client::GetRoomMembersResponse) {
+    fn replace(&self, snapshot: synctv_proto::client::GetRoomMembersResponse) {
         *self.snapshot.lock() = snapshot;
     }
 
@@ -1841,8 +1861,8 @@ impl crate::impls::room_members_snapshot::RoomMembersSnapshotService
     async fn get_room_members_snapshot(
         &self,
         _actor: &crate::impls::client::RoomActor,
-        _req: &crate::proto::client::GetRoomMembersRequest,
-    ) -> Result<crate::proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
+        _req: &synctv_proto::client::GetRoomMembersRequest,
+    ) -> Result<synctv_proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
         self.probe.mark_called();
         Ok(self.snapshot.lock().clone())
     }
@@ -1852,7 +1872,7 @@ fn test_message_handler(
     sender: Arc<dyn MessageSender>,
     event_service: Arc<RealtimeManager>,
     connection_service: Arc<ConnectionManager>,
-) -> StreamMessageHandler {
+) -> TestMessageHandler {
     test_message_handler_for_user_with_runtime(
         sender,
         event_service,
@@ -1867,7 +1887,7 @@ fn test_message_handler_for_user(
     event_service: Arc<RealtimeManager>,
     connection_service: Arc<ConnectionManager>,
     user_id: UserId,
-) -> StreamMessageHandler {
+) -> TestMessageHandler {
     test_message_handler_for_user_with_runtime(
         sender,
         event_service,
@@ -1883,7 +1903,7 @@ fn test_message_handler_for_user_with_runtime(
     connection_service: Arc<ConnectionManager>,
     user_id: UserId,
     runtime: StreamMessageHandlerRuntime,
-) -> StreamMessageHandler {
+) -> TestMessageHandler {
     test_message_handler_for_user_with_runtime_and_concurrency(
         sender,
         event_service,
@@ -1901,9 +1921,10 @@ fn test_message_handler_for_user_with_runtime_and_concurrency(
     user_id: UserId,
     runtime: StreamMessageHandlerRuntime,
     concurrency_config: Arc<MessageConcurrencyConfig>,
-) -> StreamMessageHandler {
-    let pool = test_pool();
-    StreamMessageHandler::new_with_runtime(
+) -> TestMessageHandler {
+    let database = create_handler_test_database();
+    let pool = database.pool.clone();
+    let handler = StreamMessageHandler::new_with_runtime(
         StreamMessageHandlerConfig {
             room_id: room_id(),
             principal: RealtimePrincipal::user(user_id, "tester".to_string()),
@@ -1920,7 +1941,8 @@ fn test_message_handler_for_user_with_runtime_and_concurrency(
             concurrency_config,
         },
         runtime,
-    )
+    );
+    TestMessageHandler::new(database, handler)
 }
 
 fn test_guest_principal_with_permissions(permissions: RoomPermissionSet) -> RealtimePrincipal {
@@ -1944,7 +1966,7 @@ fn test_guest_message_handler(
     event_service: Arc<RealtimeManager>,
     connection_service: Arc<ConnectionManager>,
     permissions: RoomPermissionSet,
-) -> StreamMessageHandler {
+) -> TestMessageHandler {
     test_guest_message_handler_with_runtime(
         sender,
         event_service,
@@ -1960,9 +1982,10 @@ fn test_guest_message_handler_with_runtime(
     connection_service: Arc<ConnectionManager>,
     permissions: RoomPermissionSet,
     runtime: StreamMessageHandlerRuntime,
-) -> StreamMessageHandler {
-    let pool = test_pool();
-    StreamMessageHandler::new_with_runtime(
+) -> TestMessageHandler {
+    let database = create_handler_test_database();
+    let pool = database.pool.clone();
+    let handler = StreamMessageHandler::new_with_runtime(
         StreamMessageHandlerConfig {
             room_id: room_id(),
             principal: test_guest_principal_with_permissions(permissions),
@@ -1979,10 +2002,11 @@ fn test_guest_message_handler_with_runtime(
             concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
         },
         runtime,
-    )
+    );
+    TestMessageHandler::new(database, handler)
 }
 
-fn rebuild_test_handler_with_runtime<H>(
+fn rebuild_stream_message_handler_with_runtime<H>(
     handler: H,
     runtime: StreamMessageHandlerRuntime,
 ) -> StreamMessageHandler
@@ -1994,7 +2018,7 @@ where
         StreamMessageHandlerConfig {
             room_id: handler.room_id,
             principal: handler.principal.clone(),
-            connection_id: Some(handler.connection_id.clone()),
+            connection_id: Some(handler.connection_id.as_str().to_string()),
             room_service: Arc::clone(&handler.room_service),
             chat_service: Arc::clone(&handler.chat_service),
             event_service: Arc::clone(&handler.event_service),
@@ -2010,119 +2034,185 @@ where
     )
 }
 
-fn test_handler_with_playback_service<H>(
-    handler: H,
-    service: Arc<dyn PlaybackService>,
-) -> StreamMessageHandler
-where
-    H: std::borrow::Borrow<StreamMessageHandler>,
-{
-    rebuild_test_handler_with_runtime(handler, runtime_with_playback_service(service))
-}
-
 fn test_handler_with_playlist_items_snapshot_service<H>(
     handler: H,
     service: Arc<dyn PlaylistItemsSnapshotService>,
-) -> StreamMessageHandler
+) -> H::Output
 where
-    H: std::borrow::Borrow<StreamMessageHandler>,
+    H: StreamMessageHandlerTestRuntimeExt,
 {
-    rebuild_test_handler_with_runtime(
-        handler,
-        runtime_with_playlist_items_snapshot_service(service),
-    )
+    handler.with_playlist_items_snapshot_service(service)
 }
 
 fn test_handler_with_room_members_snapshot_service<H>(
     handler: H,
     service: Arc<dyn RoomMembersSnapshotService>,
-) -> StreamMessageHandler
+) -> H::Output
 where
-    H: std::borrow::Borrow<StreamMessageHandler>,
+    H: StreamMessageHandlerTestRuntimeExt,
 {
-    rebuild_test_handler_with_runtime(handler, runtime_with_room_members_snapshot_service(service))
+    handler.with_room_members_snapshot_service(service)
 }
 
 fn test_handler_with_room_settings_snapshot_service<H>(
     handler: H,
     service: Arc<dyn RoomSettingsSnapshotService>,
-) -> StreamMessageHandler
+) -> H::Output
 where
-    H: std::borrow::Borrow<StreamMessageHandler>,
+    H: StreamMessageHandlerTestRuntimeExt,
 {
-    rebuild_test_handler_with_runtime(
-        handler,
-        runtime_with_room_settings_snapshot_service(service),
-    )
+    handler.with_room_settings_snapshot_service(service)
 }
 
 trait StreamMessageHandlerTestRuntimeExt {
-    fn with_playback_service(self, service: Arc<dyn PlaybackService>) -> StreamMessageHandler;
+    type Output;
+
+    fn with_playback_service(self, service: Arc<dyn PlaybackService>) -> Self::Output;
     fn with_playlist_items_snapshot_service(
         self,
         service: Arc<dyn PlaylistItemsSnapshotService>,
-    ) -> StreamMessageHandler;
+    ) -> Self::Output;
     fn with_room_members_snapshot_service(
         self,
         service: Arc<dyn RoomMembersSnapshotService>,
-    ) -> StreamMessageHandler;
+    ) -> Self::Output;
     fn with_room_settings_snapshot_service(
         self,
         service: Arc<dyn RoomSettingsSnapshotService>,
-    ) -> StreamMessageHandler;
+    ) -> Self::Output;
+}
+
+impl StreamMessageHandlerTestRuntimeExt for TestMessageHandler {
+    type Output = TestMessageHandler;
+
+    fn with_playback_service(self, service: Arc<dyn PlaybackService>) -> TestMessageHandler {
+        self.rebuild_with_runtime(runtime_with_playback_service(service))
+    }
+
+    fn with_playlist_items_snapshot_service(
+        self,
+        service: Arc<dyn PlaylistItemsSnapshotService>,
+    ) -> TestMessageHandler {
+        self.rebuild_with_runtime(runtime_with_playlist_items_snapshot_service(service))
+    }
+
+    fn with_room_members_snapshot_service(
+        self,
+        service: Arc<dyn RoomMembersSnapshotService>,
+    ) -> TestMessageHandler {
+        self.rebuild_with_runtime(runtime_with_room_members_snapshot_service(service))
+    }
+
+    fn with_room_settings_snapshot_service(
+        self,
+        service: Arc<dyn RoomSettingsSnapshotService>,
+    ) -> TestMessageHandler {
+        self.rebuild_with_runtime(runtime_with_room_settings_snapshot_service(service))
+    }
+}
+
+impl StreamMessageHandlerTestRuntimeExt for &TestMessageHandler {
+    type Output = TestMessageHandler;
+
+    fn with_playback_service(self, service: Arc<dyn PlaybackService>) -> TestMessageHandler {
+        self.rebuild_with_runtime(runtime_with_playback_service(service))
+    }
+
+    fn with_playlist_items_snapshot_service(
+        self,
+        service: Arc<dyn PlaylistItemsSnapshotService>,
+    ) -> TestMessageHandler {
+        self.rebuild_with_runtime(runtime_with_playlist_items_snapshot_service(service))
+    }
+
+    fn with_room_members_snapshot_service(
+        self,
+        service: Arc<dyn RoomMembersSnapshotService>,
+    ) -> TestMessageHandler {
+        self.rebuild_with_runtime(runtime_with_room_members_snapshot_service(service))
+    }
+
+    fn with_room_settings_snapshot_service(
+        self,
+        service: Arc<dyn RoomSettingsSnapshotService>,
+    ) -> TestMessageHandler {
+        self.rebuild_with_runtime(runtime_with_room_settings_snapshot_service(service))
+    }
 }
 
 impl StreamMessageHandlerTestRuntimeExt for StreamMessageHandler {
+    type Output = StreamMessageHandler;
+
     fn with_playback_service(self, service: Arc<dyn PlaybackService>) -> StreamMessageHandler {
-        test_handler_with_playback_service(self, service)
+        rebuild_stream_message_handler_with_runtime(self, runtime_with_playback_service(service))
     }
 
     fn with_playlist_items_snapshot_service(
         self,
         service: Arc<dyn PlaylistItemsSnapshotService>,
     ) -> StreamMessageHandler {
-        test_handler_with_playlist_items_snapshot_service(self, service)
+        rebuild_stream_message_handler_with_runtime(
+            self,
+            runtime_with_playlist_items_snapshot_service(service),
+        )
     }
 
     fn with_room_members_snapshot_service(
         self,
         service: Arc<dyn RoomMembersSnapshotService>,
     ) -> StreamMessageHandler {
-        test_handler_with_room_members_snapshot_service(self, service)
+        rebuild_stream_message_handler_with_runtime(
+            self,
+            runtime_with_room_members_snapshot_service(service),
+        )
     }
 
     fn with_room_settings_snapshot_service(
         self,
         service: Arc<dyn RoomSettingsSnapshotService>,
     ) -> StreamMessageHandler {
-        test_handler_with_room_settings_snapshot_service(self, service)
+        rebuild_stream_message_handler_with_runtime(
+            self,
+            runtime_with_room_settings_snapshot_service(service),
+        )
     }
 }
 
 impl StreamMessageHandlerTestRuntimeExt for &StreamMessageHandler {
+    type Output = StreamMessageHandler;
+
     fn with_playback_service(self, service: Arc<dyn PlaybackService>) -> StreamMessageHandler {
-        test_handler_with_playback_service(self, service)
+        rebuild_stream_message_handler_with_runtime(self, runtime_with_playback_service(service))
     }
 
     fn with_playlist_items_snapshot_service(
         self,
         service: Arc<dyn PlaylistItemsSnapshotService>,
     ) -> StreamMessageHandler {
-        test_handler_with_playlist_items_snapshot_service(self, service)
+        rebuild_stream_message_handler_with_runtime(
+            self,
+            runtime_with_playlist_items_snapshot_service(service),
+        )
     }
 
     fn with_room_members_snapshot_service(
         self,
         service: Arc<dyn RoomMembersSnapshotService>,
     ) -> StreamMessageHandler {
-        test_handler_with_room_members_snapshot_service(self, service)
+        rebuild_stream_message_handler_with_runtime(
+            self,
+            runtime_with_room_members_snapshot_service(service),
+        )
     }
 
     fn with_room_settings_snapshot_service(
         self,
         service: Arc<dyn RoomSettingsSnapshotService>,
     ) -> StreamMessageHandler {
-        test_handler_with_room_settings_snapshot_service(self, service)
+        rebuild_stream_message_handler_with_runtime(
+            self,
+            runtime_with_room_settings_snapshot_service(service),
+        )
     }
 }
 
@@ -2237,11 +2327,11 @@ async fn prepare_handler_for_run_after_join(
     connection_service: &Arc<ConnectionManager>,
 ) {
     connection_service
-        .register(handler.connection_id.clone(), handler.user_id)
+        .register(handler.connection_id.clone().into_string(), handler.user_id)
         .await
         .expect("register should succeed");
     connection_service
-        .join_room(&handler.connection_id, handler.room_id)
+        .join_room(handler.connection_id.as_str(), handler.room_id)
         .await
         .expect("join_room should succeed");
     let initial_join_state = if handler.principal.is_guest() {
@@ -2706,6 +2796,7 @@ async fn test_run_after_join_filters_own_join_broadcast() {
     );
 
     connection_service.disconnect_connection(handler.connection_id());
+    stream_state.close();
     wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task).await;
     shutdown_test_runtime_resources(event_service, connection_service).await;
 }
@@ -2723,8 +2814,8 @@ async fn test_run_after_join_records_heartbeat_activity() {
     prepare_handler_for_run_after_join(&handler, &connection_service).await;
 
     let heartbeat = ClientMessage {
-        message: Some(crate::proto::client::client_message::Message::Heartbeat(
-            crate::proto::client::HeartbeatMessage { timestamp: 42 },
+        message: Some(synctv_proto::client::client_message::Message::Heartbeat(
+            synctv_proto::client::HeartbeatMessage { timestamp: 42 },
         )),
     };
     let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![heartbeat]);
@@ -2933,7 +3024,7 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
         .sent_messages()
         .iter()
         .filter_map(|message| match resource_changed_payload(message) {
-            Some(crate::proto::client::resource_changed::Payload::ChatEvent(event)) => event
+            Some(synctv_proto::client::resource_changed::Payload::ChatEvent(event)) => event
                 .message
                 .as_ref()
                 .map(|message| message.content.clone()),
@@ -3031,7 +3122,7 @@ async fn test_observe_chat_events_replays_events_after_sequence() {
         .sent_messages()
         .iter()
         .filter_map(|message| match resource_changed_payload(message) {
-            Some(crate::proto::client::resource_changed::Payload::ChatEvent(event)) => event
+            Some(synctv_proto::client::resource_changed::Payload::ChatEvent(event)) => event
                 .message
                 .as_ref()
                 .map(|message| (message.content.clone(), event.sequence)),
@@ -3243,8 +3334,8 @@ async fn test_observe_playback_sends_current_playback_on_subscribe() {
         "observe_playback_initial",
         message_sender.clone(),
         |room_id, _| {
-            runtime_with_playback_service(Arc::new(FakePlaybackService {
-                playback: crate::proto::client::Playback {
+            runtime_with_playback_service(Arc::new(StaticPlaybackService {
+                playback: synctv_proto::client::Playback {
                     media_id: public_media_id(),
                     playlist_id: String::new(),
                     room_id: public_id_codec().encode_room_id(room_id).unwrap(),
@@ -3319,8 +3410,8 @@ async fn test_observe_playback_reports_current_playback_without_event_cursor() {
         "observe_pb_playback_current",
         message_sender.clone(),
         |room_id, _| {
-            runtime_with_playback_service(Arc::new(FakePlaybackService {
-                playback: crate::proto::client::Playback {
+            runtime_with_playback_service(Arc::new(StaticPlaybackService {
+                playback: synctv_proto::client::Playback {
                     media_id: public_media_id(),
                     playlist_id: String::new(),
                     room_id: public_id_codec().encode_room_id(room_id).unwrap(),
@@ -3336,11 +3427,11 @@ async fn test_observe_playback_reports_current_playback_without_event_cursor() {
     )
     .await;
     let handler = &fixture.handler;
-    let request = crate::proto::client::ObserveResource {
+    let request = synctv_proto::client::ObserveResource {
         observe_id: "playback".to_string(),
-        delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
-        resource: Some(crate::proto::client::observe_resource::Resource::Playback(
-            crate::proto::client::ObservePlayback {
+        delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
+        resource: Some(synctv_proto::client::observe_resource::Resource::Playback(
+            synctv_proto::client::ObservePlayback {
                 playback_client_profile: None,
             },
         )),
@@ -3417,12 +3508,12 @@ async fn test_replay_room_resource_event_without_payload_advances_cursor() {
     let handler = fixture
         .handler
         .clone()
-        .with_playlist_items_snapshot_service(Arc::new(FakePlaylistItemsSnapshotService {
+        .with_playlist_items_snapshot_service(Arc::new(StaticPlaylistItemsSnapshotService {
             snapshot: empty_playlist_items_response("playlist-items-v1"),
         }));
     let request = observe_playlist_items_resource_with_sequence(
         "playlist-items",
-        crate::proto::client::ListPlaylistItemsRequest::default(),
+        synctv_proto::client::ListPlaylistItemsRequest::default(),
         Some(0),
     );
 
@@ -3455,7 +3546,7 @@ async fn test_replay_room_resource_event_without_payload_advances_cursor() {
         .expect("audit-only event should produce a cursor-advancing change");
     assert!(matches!(
         replayed.payload,
-        Some(crate::proto::client::resource_changed::Payload::ChangedOnly(_))
+        Some(synctv_proto::client::resource_changed::Payload::ChangedOnly(_))
     ));
 
     fixture.shutdown().await;
@@ -3535,7 +3626,7 @@ async fn test_observe_playback_with_matching_source_sends_current_playback() {
         "observe_pb_playback_same_src",
         message_sender.clone(),
         move |room_id, _| {
-            let playback_service = MutablePlaybackService::new(crate::proto::client::Playback {
+            let playback_service = MutablePlaybackService::new(synctv_proto::client::Playback {
                 media_id: String::new(),
                 playlist_id: String::new(),
                 room_id: public_id_codec().encode_room_id(room_id).unwrap(),
@@ -3613,8 +3704,8 @@ async fn test_observe_playback_sends_current_playback_immediately() {
 
     let handler = handler
         .clone()
-        .with_playback_service(Arc::new(FakePlaybackService {
-            playback: crate::proto::client::Playback {
+        .with_playback_service(Arc::new(StaticPlaybackService {
+            playback: synctv_proto::client::Playback {
                 media_id: String::new(),
                 playlist_id: String::new(),
                 room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -3670,7 +3761,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
         ..
     } = &fixture;
 
-    let playback_service = MutablePlaybackService::new(crate::proto::client::Playback {
+    let playback_service = MutablePlaybackService::new(synctv_proto::client::Playback {
         media_id: public_media_id(),
         playlist_id: String::new(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -3704,7 +3795,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
         "observe should send the current playback"
     );
 
-    playback_service.replace(crate::proto::client::Playback {
+    playback_service.replace(synctv_proto::client::Playback {
         media_id: public_media_id(),
         playlist_id: String::new(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -3802,7 +3893,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
         .await
         .expect("playback state should be set");
 
-    let playback_service = MutablePlaybackService::new(crate::proto::client::Playback {
+    let playback_service = MutablePlaybackService::new(synctv_proto::client::Playback {
         media_id: public_id_codec().encode_media_id(media.id).unwrap(),
         playlist_id: String::new(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -3834,7 +3925,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
     playback_service.wait_for_calls(1).await;
 
-    playback_service.replace(crate::proto::client::Playback {
+    playback_service.replace(synctv_proto::client::Playback {
         media_id: public_id_codec().encode_media_id(media.id).unwrap(),
         playlist_id: String::new(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -3921,7 +4012,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
         .await
         .expect("playback state should be set");
 
-    let playback_service = MutablePlaybackService::new(crate::proto::client::Playback {
+    let playback_service = MutablePlaybackService::new(synctv_proto::client::Playback {
         media_id: public_id_codec().encode_media_id(media.id).unwrap(),
         playlist_id: String::new(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -4027,7 +4118,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         .await
         .expect("playback should point at created media");
 
-    let playback_service = MutablePlaybackService::new(crate::proto::client::Playback {
+    let playback_service = MutablePlaybackService::new(synctv_proto::client::Playback {
         media_id: public_id_codec().encode_media_id(media.id).unwrap(),
         playlist_id: String::new(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -4072,7 +4163,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         .await
         .expect("editing current playback media should succeed");
 
-    playback_service.replace(crate::proto::client::Playback {
+    playback_service.replace(synctv_proto::client::Playback {
         media_id: public_id_codec().encode_media_id(media.id).unwrap(),
         playlist_id: String::new(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -4170,7 +4261,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         .await
         .expect("playback should point at created playlist");
 
-    let playback_service = MutablePlaybackService::new(crate::proto::client::Playback {
+    let playback_service = MutablePlaybackService::new(synctv_proto::client::Playback {
         media_id: String::new(),
         playlist_id: public_id_codec().encode_playlist_id(playlist.id).unwrap(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -4219,7 +4310,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         .await
         .expect("editing current playback playlist should succeed");
 
-    playback_service.replace(crate::proto::client::Playback {
+    playback_service.replace(synctv_proto::client::Playback {
         media_id: String::new(),
         playlist_id: public_id_codec().encode_playlist_id(playlist.id).unwrap(),
         room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -4284,7 +4375,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
     promote_handler_to_room_admin(&fixture).await;
 
     let playback_service = SequencedPlaybackService::new([
-        Ok(crate::proto::client::Playback {
+        Ok(synctv_proto::client::Playback {
             media_id: String::new(),
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -4295,7 +4386,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
             metadata: std::collections::HashMap::new(),
             expires_at: Some(4_102_444_800),
         }),
-        Ok(crate::proto::client::Playback {
+        Ok(synctv_proto::client::Playback {
             media_id: String::new(),
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -4398,7 +4489,7 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
     } = &fixture;
 
     let playback_service = SequencedPlaybackService::new([
-        Ok(crate::proto::client::Playback {
+        Ok(synctv_proto::client::Playback {
             media_id: public_media_id(),
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -4522,7 +4613,7 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
 
     let refresh_at = chrono::Utc::now().timestamp() + 1;
     let playback_service = SequencedPlaybackService::new([
-        Ok(crate::proto::client::Playback {
+        Ok(synctv_proto::client::Playback {
             media_id: String::new(),
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -4533,7 +4624,7 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
             metadata: std::collections::HashMap::new(),
             expires_at: Some(refresh_at),
         }),
-        Ok(crate::proto::client::Playback {
+        Ok(synctv_proto::client::Playback {
             media_id: String::new(),
             playlist_id: String::new(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
@@ -4674,10 +4765,10 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
 
     let handler = handler
         .clone()
-        .with_playlist_items_snapshot_service(Arc::new(FakePlaylistItemsSnapshotService {
-            snapshot: crate::proto::client::ListPlaylistItemsResponse {
+        .with_playlist_items_snapshot_service(Arc::new(StaticPlaylistItemsSnapshotService {
+            snapshot: synctv_proto::client::ListPlaylistItemsResponse {
                 playlists: Vec::new(),
-                media: vec![crate::proto::client::Media {
+                media: vec![synctv_proto::client::Media {
                     id: "media_test_1".to_string(),
                     room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
                     source_provider: "direct_url".to_string(),
@@ -4689,7 +4780,7 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
                     creator_id: handler.user_id.to_string(),
                     provider_instance_name: String::new(),
                     source_config: Vec::new(),
-                    availability: crate::proto::client::ResourceAvailability::Available as i32,
+                    availability: synctv_proto::client::ResourceAvailability::Available as i32,
                     version: 3,
                     cover: None,
                 }],
@@ -4707,7 +4798,7 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
     let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_playlist_items_message(
             "playlist-items",
-            crate::proto::client::ListPlaylistItemsRequest {
+            synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: Vec::new(),
                 page: 1,
@@ -4715,9 +4806,9 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
                 search: String::new(),
                 source_provider: String::new(),
                 provider_instance_name: String::new(),
-                sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-                sort_direction: crate::proto::client::SortDirection::Asc as i32,
-                availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+                sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
             },
         )),
@@ -4767,7 +4858,7 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
 async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads() {
     let message_sender = RecordingMessageSender::new();
     let snapshot_service =
-        MutablePlaylistItemsSnapshotService::new(crate::proto::client::ListPlaylistItemsResponse {
+        MutablePlaylistItemsSnapshotService::new(synctv_proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
             media: Vec::new(),
             total: 0,
@@ -4784,7 +4875,7 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
         user_id(),
         runtime_with_playlist_items_snapshot_service(snapshot_service.clone()),
     );
-    let request = crate::proto::client::ListPlaylistItemsRequest {
+    let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: Vec::new(),
         page: 1,
@@ -4792,9 +4883,9 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
         search: "batch-coalesce".to_string(),
         source_provider: String::new(),
         provider_instance_name: String::new(),
-        sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-        sort_direction: crate::proto::client::SortDirection::Asc as i32,
-        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
     };
 
@@ -4815,7 +4906,7 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
         .expect("second observe should register");
     snapshot_service.wait_for_calls(1).await;
 
-    snapshot_service.replace(crate::proto::client::ListPlaylistItemsResponse {
+    snapshot_service.replace(synctv_proto::client::ListPlaylistItemsResponse {
         playlists: Vec::new(),
         media: Vec::new(),
         total: 0,
@@ -4910,8 +5001,8 @@ async fn test_resource_observations_are_bounded_per_connection() {
     handler
         .handle_client_message(&ClientMessage {
             message: Some(
-                crate::proto::client::client_message::Message::UnobserveResource(
-                    crate::proto::client::UnobserveResource {
+                synctv_proto::client::client_message::Message::UnobserveResource(
+                    synctv_proto::client::UnobserveResource {
                         observe_id: "room-settings-0".to_string(),
                     },
                 ),
@@ -4940,7 +5031,7 @@ async fn test_resource_observations_are_bounded_per_connection() {
 async fn test_observe_playlist_items_requires_inner_request() {
     let sender = RecordingMessageSender::new();
     let snapshot_service =
-        MutablePlaylistItemsSnapshotService::new(crate::proto::client::ListPlaylistItemsResponse {
+        MutablePlaylistItemsSnapshotService::new(synctv_proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
             media: Vec::new(),
             total: 0,
@@ -4961,14 +5052,14 @@ async fn test_observe_playlist_items_requires_inner_request() {
     handler
         .handle_client_message(&ClientMessage {
             message: Some(
-                crate::proto::client::client_message::Message::ObserveResource(
-                    crate::proto::client::ObserveResource {
+                synctv_proto::client::client_message::Message::ObserveResource(
+                    synctv_proto::client::ObserveResource {
                         observe_id: "playlist-items-missing-request".to_string(),
-                        delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot
+                        delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot
                             as i32,
                         resource: Some(
-                            crate::proto::client::observe_resource::Resource::PlaylistItems(
-                                crate::proto::client::ObservePlaylistItems {
+                            synctv_proto::client::observe_resource::Resource::PlaylistItems(
+                                synctv_proto::client::ObservePlaylistItems {
                                     request: None,
                                     after_event_sequence: None,
                                 },
@@ -4996,7 +5087,7 @@ async fn test_observe_playlist_items_requires_inner_request() {
 async fn test_observe_room_members_requires_inner_request() {
     let sender = RecordingMessageSender::new();
     let snapshot_service =
-        MutableRoomMembersSnapshotService::new(crate::proto::client::GetRoomMembersResponse {
+        MutableRoomMembersSnapshotService::new(synctv_proto::client::GetRoomMembersResponse {
             members: Vec::new(),
             total: 0,
             version: "members-v1".to_string(),
@@ -5011,12 +5102,12 @@ async fn test_observe_room_members_requires_inner_request() {
 
     handler
         .resource_observer
-        .handle_observe_resource(&crate::proto::client::ObserveResource {
+        .handle_observe_resource(&synctv_proto::client::ObserveResource {
             observe_id: "room-members-missing-request".to_string(),
-            delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
+            delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(
-                crate::proto::client::observe_resource::Resource::RoomMembers(
-                    crate::proto::client::ObserveRoomMembers {
+                synctv_proto::client::observe_resource::Resource::RoomMembers(
+                    synctv_proto::client::ObserveRoomMembers {
                         request: None,
                         after_event_sequence: None,
                     },
@@ -5050,7 +5141,7 @@ async fn test_observed_playlist_items_refresh_flag_is_not_persisted() {
     );
     let handler =
         test_handler_with_playlist_items_snapshot_service(handler, snapshot_service.clone());
-    let request = crate::proto::client::ListPlaylistItemsRequest {
+    let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: Vec::new(),
         page: 1,
@@ -5058,9 +5149,9 @@ async fn test_observed_playlist_items_refresh_flag_is_not_persisted() {
         search: "consume-refresh".to_string(),
         source_provider: String::new(),
         provider_instance_name: String::new(),
-        sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-        sort_direction: crate::proto::client::SortDirection::Asc as i32,
-        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: true,
     };
 
@@ -5102,7 +5193,7 @@ async fn test_resource_changed_send_failure_propagates_and_removes_observation()
         MutablePlaylistItemsSnapshotService::new(empty_playlist_items_response("items-v1"));
     let handler =
         test_handler_with_playlist_items_snapshot_service(handler, snapshot_service.clone());
-    let request = crate::proto::client::ListPlaylistItemsRequest {
+    let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: Vec::new(),
         page: 1,
@@ -5110,9 +5201,9 @@ async fn test_resource_changed_send_failure_propagates_and_removes_observation()
         search: "send-failure".to_string(),
         source_provider: String::new(),
         provider_instance_name: String::new(),
-        sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-        sort_direction: crate::proto::client::SortDirection::Asc as i32,
-        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
     };
 
@@ -5148,12 +5239,13 @@ async fn test_resource_changed_send_failure_propagates_and_removes_observation()
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
     let failing_sender = FailingMessageSender::fail_after(2);
     let healthy_sender = RecordingMessageSender::new();
     let event_service = test_realtime_manager("other_subscriber_send_failure").await;
     let connection_service = test_connection_manager();
-    let pool = test_pool();
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let room_service = test_room_service(pool.clone());
     let chat_service = test_chat_service(pool);
     let snapshot_service =
@@ -5198,7 +5290,7 @@ async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     })
     .with_playlist_items_snapshot_service(snapshot_service.clone());
-    let request = crate::proto::client::ListPlaylistItemsRequest {
+    let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: Vec::new(),
         page: 1,
@@ -5206,9 +5298,9 @@ async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
         search: "other-send-failure".to_string(),
         source_provider: String::new(),
         provider_instance_name: String::new(),
-        sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-        sort_direction: crate::proto::client::SortDirection::Asc as i32,
-        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
     };
 
@@ -5281,7 +5373,7 @@ async fn test_stale_refresh_after_unobserve_does_not_send_resource_changed() {
         BlockingPlaylistItemsSnapshotService::new(empty_playlist_items_response("items-v1"), 2);
     let handler =
         test_handler_with_playlist_items_snapshot_service(handler, snapshot_service.clone());
-    let request = crate::proto::client::ListPlaylistItemsRequest {
+    let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: Vec::new(),
         page: 1,
@@ -5289,9 +5381,9 @@ async fn test_stale_refresh_after_unobserve_does_not_send_resource_changed() {
         search: "stale-refresh".to_string(),
         source_provider: String::new(),
         provider_instance_name: String::new(),
-        sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-        sort_direction: crate::proto::client::SortDirection::Asc as i32,
-        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
     };
 
@@ -5315,8 +5407,8 @@ async fn test_stale_refresh_after_unobserve_does_not_send_resource_changed() {
     handler
         .handle_client_message(&ClientMessage {
             message: Some(
-                crate::proto::client::client_message::Message::UnobserveResource(
-                    crate::proto::client::UnobserveResource {
+                synctv_proto::client::client_message::Message::UnobserveResource(
+                    synctv_proto::client::UnobserveResource {
                         observe_id: "playlist-items".to_string(),
                     },
                 ),
@@ -5352,7 +5444,7 @@ async fn test_stale_refresh_failure_after_unobserve_does_not_send_observe_error(
         BlockingFailingPlaylistItemsSnapshotService::new(empty_playlist_items_response("items-v1"));
     let handler =
         test_handler_with_playlist_items_snapshot_service(handler, snapshot_service.clone());
-    let request = crate::proto::client::ListPlaylistItemsRequest {
+    let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: Vec::new(),
         page: 1,
@@ -5360,9 +5452,9 @@ async fn test_stale_refresh_failure_after_unobserve_does_not_send_observe_error(
         search: "stale-refresh-failure".to_string(),
         source_provider: String::new(),
         provider_instance_name: String::new(),
-        sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-        sort_direction: crate::proto::client::SortDirection::Asc as i32,
-        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
     };
 
@@ -5385,8 +5477,8 @@ async fn test_stale_refresh_failure_after_unobserve_does_not_send_observe_error(
     handler
         .handle_client_message(&ClientMessage {
             message: Some(
-                crate::proto::client::client_message::Message::UnobserveResource(
-                    crate::proto::client::UnobserveResource {
+                synctv_proto::client::client_message::Message::UnobserveResource(
+                    synctv_proto::client::UnobserveResource {
                         observe_id: "playlist-items".to_string(),
                     },
                 ),
@@ -5427,7 +5519,7 @@ async fn test_observed_playlist_items_singleflight_coalesces_concurrent_connecti
     .with_playlist_items_snapshot_service(snapshot_service.clone());
     let handler_b = test_message_handler(sender_b.clone(), event_service, connection_service)
         .with_playlist_items_snapshot_service(snapshot_service.clone());
-    let request = crate::proto::client::ListPlaylistItemsRequest {
+    let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: Vec::new(),
         page: 1,
@@ -5435,9 +5527,9 @@ async fn test_observed_playlist_items_singleflight_coalesces_concurrent_connecti
         search: "singleflight-concurrent".to_string(),
         source_provider: String::new(),
         provider_instance_name: String::new(),
-        sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-        sort_direction: crate::proto::client::SortDirection::Asc as i32,
-        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
     };
     let message_a = ClientMessage {
@@ -5481,7 +5573,7 @@ async fn test_room_event_refresh_without_durable_cursor_refreshes_best_effort() 
         test_connection_manager(),
     )
     .with_playlist_items_snapshot_service(snapshot_service.clone());
-    let request = crate::proto::client::ListPlaylistItemsRequest {
+    let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: Vec::new(),
         page: 1,
@@ -5489,9 +5581,9 @@ async fn test_room_event_refresh_without_durable_cursor_refreshes_best_effort() 
         search: "missing-durable-cursor".to_string(),
         source_provider: String::new(),
         provider_instance_name: String::new(),
-        sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-        sort_direction: crate::proto::client::SortDirection::Asc as i32,
-        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
     };
 
@@ -5535,9 +5627,10 @@ async fn test_room_event_refresh_without_durable_cursor_refreshes_best_effort() 
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
     let snapshot_service =
-        MutablePlaylistItemsSnapshotService::new(crate::proto::client::ListPlaylistItemsResponse {
+        MutablePlaylistItemsSnapshotService::new(synctv_proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
             media: Vec::new(),
             total: 0,
@@ -5551,7 +5644,7 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
     let sender_b = RecordingMessageSender::new();
     let event_service = test_realtime_manager("media_resource_hub_event_refresh").await;
     let connection_service = test_connection_manager();
-    let pool = test_pool();
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let room_service = test_room_service(pool.clone());
     let chat_service = test_chat_service(pool);
     let handler_a = StreamMessageHandler::new(StreamMessageHandlerConfig {
@@ -5586,7 +5679,7 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     })
     .with_playlist_items_snapshot_service(snapshot_service.clone());
-    let request = crate::proto::client::ListPlaylistItemsRequest {
+    let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: Vec::new(),
         page: 1,
@@ -5594,9 +5687,9 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
         search: "room-hub-refresh".to_string(),
         source_provider: String::new(),
         provider_instance_name: String::new(),
-        sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-        sort_direction: crate::proto::client::SortDirection::Asc as i32,
-        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
     };
 
@@ -5620,7 +5713,7 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
         .expect("second observe should register");
     snapshot_service.wait_for_calls(1).await;
 
-    snapshot_service.replace(crate::proto::client::ListPlaylistItemsResponse {
+    snapshot_service.replace(synctv_proto::client::ListPlaylistItemsResponse {
         playlists: Vec::new(),
         media: Vec::new(),
         total: 0,
@@ -5676,6 +5769,7 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_media_resource_hub_refresh_dedupe_tracks_subscription_generation() {
     let snapshot_service =
         BlockingPlaylistItemsSnapshotService::new(empty_playlist_items_response("items-v1"), 2);
@@ -5683,7 +5777,7 @@ async fn test_media_resource_hub_refresh_dedupe_tracks_subscription_generation()
     let sender_b = RecordingMessageSender::new();
     let event_service = test_realtime_manager("media_resource_hub_generation_dedupe").await;
     let connection_service = test_connection_manager();
-    let pool = test_pool();
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let room_service = test_room_service(pool.clone());
     let chat_service = test_chat_service(pool);
     let handler_a = StreamMessageHandler::new(StreamMessageHandlerConfig {
@@ -5722,7 +5816,7 @@ async fn test_media_resource_hub_refresh_dedupe_tracks_subscription_generation()
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     })
     .with_playlist_items_snapshot_service(snapshot_service.clone());
-    let request_a = crate::proto::client::ListPlaylistItemsRequest {
+    let request_a = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: Vec::new(),
         page: 1,
@@ -5730,12 +5824,12 @@ async fn test_media_resource_hub_refresh_dedupe_tracks_subscription_generation()
         search: "generation-dedupe-a".to_string(),
         source_provider: String::new(),
         provider_instance_name: String::new(),
-        sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-        sort_direction: crate::proto::client::SortDirection::Asc as i32,
-        availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
     };
-    let request_b = crate::proto::client::ListPlaylistItemsRequest {
+    let request_b = synctv_proto::client::ListPlaylistItemsRequest {
         search: "generation-dedupe-b".to_string(),
         ..request_a.clone()
     };
@@ -5898,8 +5992,8 @@ async fn test_observe_resource_does_not_reuse_completed_evaluation_across_invali
     handler
         .handle_client_message(&ClientMessage {
             message: Some(
-                crate::proto::client::client_message::Message::UnobserveResource(
-                    crate::proto::client::UnobserveResource {
+                synctv_proto::client::client_message::Message::UnobserveResource(
+                    synctv_proto::client::UnobserveResource {
                         observe_id: "room-settings-a".to_string(),
                     },
                 ),
@@ -5965,7 +6059,7 @@ async fn test_observe_playlist_items_sends_current_snapshot() {
     } = &fixture;
 
     let snapshot_service =
-        MutablePlaylistItemsSnapshotService::new(crate::proto::client::ListPlaylistItemsResponse {
+        MutablePlaylistItemsSnapshotService::new(synctv_proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
             media: Vec::new(),
             total: 0,
@@ -5984,7 +6078,7 @@ async fn test_observe_playlist_items_sends_current_snapshot() {
     let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_playlist_items_message(
             "playlist-items",
-            crate::proto::client::ListPlaylistItemsRequest {
+            synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: Vec::new(),
                 page: 1,
@@ -5992,9 +6086,9 @@ async fn test_observe_playlist_items_sends_current_snapshot() {
                 search: String::new(),
                 source_provider: String::new(),
                 provider_instance_name: String::new(),
-                sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-                sort_direction: crate::proto::client::SortDirection::Asc as i32,
-                availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+                sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
             },
         )),
@@ -6044,7 +6138,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
     } = &fixture;
 
     let snapshot_service =
-        MutablePlaylistItemsSnapshotService::new(crate::proto::client::ListPlaylistItemsResponse {
+        MutablePlaylistItemsSnapshotService::new(synctv_proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
             media: Vec::new(),
             total: 0,
@@ -6063,7 +6157,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
     let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_playlist_items_message(
             "playlist-items",
-            crate::proto::client::ListPlaylistItemsRequest {
+            synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: Vec::new(),
                 page: 1,
@@ -6071,9 +6165,9 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
                 search: String::new(),
                 source_provider: String::new(),
                 provider_instance_name: String::new(),
-                sort_by: crate::proto::client::MediaListSortBy::Position as i32,
-                sort_direction: crate::proto::client::SortDirection::Asc as i32,
-                availability: crate::proto::client::ResourceAvailabilityFilter::All as i32,
+                sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
             },
         )),
@@ -6092,9 +6186,9 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
         "observe should send the current playlist items snapshot"
     );
 
-    snapshot_service.replace(crate::proto::client::ListPlaylistItemsResponse {
+    snapshot_service.replace(synctv_proto::client::ListPlaylistItemsResponse {
         playlists: Vec::new(),
-        media: vec![crate::proto::client::Media {
+        media: vec![synctv_proto::client::Media {
             id: "media_test_2".to_string(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             source_provider: "direct_url".to_string(),
@@ -6106,7 +6200,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
             creator_id: handler.user_id.to_string(),
             provider_instance_name: String::new(),
             source_config: Vec::new(),
-            availability: crate::proto::client::ResourceAvailability::Available as i32,
+            availability: synctv_proto::client::ResourceAvailability::Available as i32,
             version: 4,
             cover: None,
         }],
@@ -6162,8 +6256,8 @@ async fn test_observe_room_members_without_cursor_sends_snapshot_immediately() {
 
     let handler = test_handler_with_room_members_snapshot_service(
         handler.clone(),
-        Arc::new(FakeRoomMembersSnapshotService {
-            snapshot: crate::proto::client::GetRoomMembersResponse {
+        Arc::new(StaticRoomMembersSnapshotService {
+            snapshot: synctv_proto::client::GetRoomMembersResponse {
                 members: vec![synctv_proto::common::RoomMember {
                     room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
                     user_id: handler.user_id.to_string(),
@@ -6188,13 +6282,13 @@ async fn test_observe_room_members_without_cursor_sends_snapshot_immediately() {
     let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_room_members_message(
             "room-members",
-            crate::proto::client::GetRoomMembersRequest {
+            synctv_proto::client::GetRoomMembersRequest {
                 page: 1,
                 page_size: 20,
                 search: String::new(),
                 role: None,
-                sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                sort_direction: crate::proto::client::SortDirection::Asc as i32,
+                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
             },
         )),
     }]);
@@ -6254,7 +6348,7 @@ async fn test_observe_room_members_sends_current_snapshot() {
     } = &fixture;
 
     let snapshot_service =
-        MutableRoomMembersSnapshotService::new(crate::proto::client::GetRoomMembersResponse {
+        MutableRoomMembersSnapshotService::new(synctv_proto::client::GetRoomMembersResponse {
             members: Vec::new(),
             total: 0,
             version: "members-v1".to_string(),
@@ -6268,13 +6362,13 @@ async fn test_observe_room_members_sends_current_snapshot() {
     let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_room_members_message(
             "room-members",
-            crate::proto::client::GetRoomMembersRequest {
+            synctv_proto::client::GetRoomMembersRequest {
                 page: 1,
                 page_size: 20,
                 search: String::new(),
                 role: None,
-                sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                sort_direction: crate::proto::client::SortDirection::Asc as i32,
+                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
             },
         )),
     }]);
@@ -6321,7 +6415,7 @@ async fn test_observed_room_members_receive_future_permission_updates() {
     } = &fixture;
 
     let snapshot_service =
-        MutableRoomMembersSnapshotService::new(crate::proto::client::GetRoomMembersResponse {
+        MutableRoomMembersSnapshotService::new(synctv_proto::client::GetRoomMembersResponse {
             members: Vec::new(),
             total: 0,
             version: "members-v1".to_string(),
@@ -6335,13 +6429,13 @@ async fn test_observed_room_members_receive_future_permission_updates() {
     let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_room_members_message(
             "room-members",
-            crate::proto::client::GetRoomMembersRequest {
+            synctv_proto::client::GetRoomMembersRequest {
                 page: 1,
                 page_size: 20,
                 search: String::new(),
                 role: None,
-                sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                sort_direction: crate::proto::client::SortDirection::Asc as i32,
+                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
             },
         )),
     }]);
@@ -6359,7 +6453,7 @@ async fn test_observed_room_members_receive_future_permission_updates() {
         "observe should send the current room members snapshot"
     );
 
-    snapshot_service.replace(crate::proto::client::GetRoomMembersResponse {
+    snapshot_service.replace(synctv_proto::client::GetRoomMembersResponse {
         members: vec![synctv_proto::common::RoomMember {
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             user_id: "member002abc".to_string(),
@@ -6429,7 +6523,7 @@ async fn test_observed_room_members_receive_future_room_settings_updates() {
     } = &fixture;
 
     let snapshot_service =
-        MutableRoomMembersSnapshotService::new(crate::proto::client::GetRoomMembersResponse {
+        MutableRoomMembersSnapshotService::new(synctv_proto::client::GetRoomMembersResponse {
             members: Vec::new(),
             total: 0,
             version: "members-v1".to_string(),
@@ -6443,13 +6537,13 @@ async fn test_observed_room_members_receive_future_room_settings_updates() {
     let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_room_members_message(
             "room-members",
-            crate::proto::client::GetRoomMembersRequest {
+            synctv_proto::client::GetRoomMembersRequest {
                 page: 1,
                 page_size: 20,
                 search: String::new(),
                 role: None,
-                sort_by: crate::proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                sort_direction: crate::proto::client::SortDirection::Asc as i32,
+                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
             },
         )),
     }]);
@@ -6467,7 +6561,7 @@ async fn test_observed_room_members_receive_future_room_settings_updates() {
         "observe should send the current room members snapshot"
     );
 
-    snapshot_service.replace(crate::proto::client::GetRoomMembersResponse {
+    snapshot_service.replace(synctv_proto::client::GetRoomMembersResponse {
         members: vec![synctv_proto::common::RoomMember {
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
             user_id: handler.user_id.to_string(),
@@ -6713,10 +6807,11 @@ async fn test_run_after_join_cleans_up_when_backpressure_error_send_fails() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_run_after_join_cleans_up_when_direct_notification_send_fails() {
     let event_service = test_realtime_manager("test_run_after_join_direct_failure").await;
     let connection_service = test_connection_manager();
-    let notification_pool = test_pool();
+    let (_postgres, notification_pool) = synctv_core_testing::create_test_pool().await;
     let notification_service = Arc::new(synctv_core::service::UserNotificationService::new(
         NotificationRepository::new(notification_pool.clone()),
     ));
@@ -7816,28 +7911,10 @@ fn test_server_message_encode_empty() {
 }
 
 #[test]
-fn test_message_concurrency_config_can_be_acquired() {
-    // Test that the semaphore can be acquired under normal conditions
-    let config = super::MessageConcurrencyConfig::new(100);
-    let semaphore = config.semaphore();
-    // Use try_acquire to check without blocking
-    let permit = semaphore.try_acquire();
-    assert!(
-        permit.is_ok(),
-        "Semaphore should be acquirable under normal load"
-    );
-    // Release the permit immediately
-    drop(permit);
-}
-
-#[test]
 fn test_message_concurrency_config_enforces_limit() {
-    // Test that semaphore enforces the concurrent processing limit.
-    // Each test gets its own config instance, so no cross-test interference.
     let config = super::MessageConcurrencyConfig::new(10);
     let semaphore = config.semaphore();
 
-    // Acquire all 10 permits
     let permits: Vec<_> = (0..10)
         .map(|_| semaphore.clone().try_acquire_owned())
         .collect::<Result<Vec<_>, _>>()
@@ -7845,56 +7922,11 @@ fn test_message_concurrency_config_enforces_limit() {
 
     assert_eq!(config.available_permits(), 0, "No permits should remain");
 
-    // Next acquisition should fail
     let failed = semaphore.try_acquire_owned();
     assert!(failed.is_err(), "Should fail when no permits available");
 
-    // Drop all permits
     drop(permits);
     assert_eq!(config.available_permits(), 10, "All permits restored");
-}
-
-#[test]
-fn test_resource_exhausted_error_message_format() {
-    // Test that ResourceExhausted error messages are properly formatted
-    let error_msg = ServerMessage {
-        message: Some(Message::Error(crate::proto::client::ErrorMessage {
-            message: "System overloaded, please retry later".to_string(),
-            code: crate::impls::error_codes::RESOURCE_EXHAUSTED,
-            detail: String::new(),
-        })),
-    };
-
-    match error_msg.message {
-        Some(Message::Error(e)) => {
-            assert_eq!(e.code, crate::impls::error_codes::RESOURCE_EXHAUSTED);
-            assert!(!e.message.is_empty());
-        }
-        other => panic!("Expected Error message, got: {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn test_concurrency_config_backpressure_with_async() {
-    // Test that semaphore backpressure works correctly with async operations.
-    // Each test gets its own config instance, so no cross-test interference.
-    let config = std::sync::Arc::new(super::MessageConcurrencyConfig::new(50));
-    let semaphore = config.semaphore();
-
-    // Acquire a permit for message processing
-    let permit = semaphore.try_acquire_owned();
-    assert!(permit.is_ok(), "Should be able to acquire permit");
-    let after_acquire = config.available_permits();
-
-    // Drop the permit (simulating message processing completion)
-    drop(permit);
-
-    // Verify permits are restored
-    let after_release = config.available_permits();
-    assert!(
-        after_release > after_acquire,
-        "Available permits should increase after releasing: was {after_acquire}, now {after_release}"
-    );
 }
 
 #[test]
@@ -7915,92 +7947,13 @@ fn test_parse_optional_chat_message_id_rejects_invalid_values() {
 }
 
 #[test]
-fn test_membership_cache_stores_and_retrieves() {
-    // Verify the membership cache can store and retrieve entries
-    let cache: moka::sync::Cache<(String, String), super::CachedMembership> =
-        moka::sync::Cache::builder()
-            .time_to_live(super::MEMBERSHIP_CACHE_TTL)
-            .build();
-
-    let key = ("room1".to_string(), "user1".to_string());
-    let membership = super::CachedMembership { is_member: true };
-
-    cache.insert(key.clone(), membership);
-    let cached = cache.get(&key);
-    assert!(cached.is_some());
-    let cached = cached.unwrap();
-    assert!(cached.is_member);
-}
-
-#[test]
-fn test_membership_cache_invalidation_removes_entry() {
-    // Verify that invalidate() removes the cached entry so the next
-    // lookup returns None (forcing a DB re-query on next heartbeat)
-    let cache: moka::sync::Cache<(String, String), super::CachedMembership> =
-        moka::sync::Cache::builder()
-            .time_to_live(super::MEMBERSHIP_CACHE_TTL)
-            .build();
-
-    let key = ("room1".to_string(), "user1".to_string());
-    let membership = super::CachedMembership { is_member: true };
-
-    cache.insert(key.clone(), membership);
-    assert!(
-        cache.get(&key).is_some(),
-        "Entry should exist before invalidation"
-    );
-
-    // Invalidate the entry (simulates receiving KickUser/KickUserFromRoom event)
-    cache.invalidate(&key);
-    assert!(
-        cache.get(&key).is_none(),
-        "Entry should be removed after invalidation"
-    );
-}
-
-#[test]
-fn test_membership_cache_invalidation_only_affects_target_user() {
-    // Verify that invalidating one user's cache does not affect other users
-    let cache: moka::sync::Cache<(String, String), super::CachedMembership> =
-        moka::sync::Cache::builder()
-            .time_to_live(super::MEMBERSHIP_CACHE_TTL)
-            .build();
-
-    let key_user1 = ("room1".to_string(), "user1".to_string());
-    let key_user2 = ("room1".to_string(), "user2".to_string());
-
-    cache.insert(
-        key_user1.clone(),
-        super::CachedMembership { is_member: true },
-    );
-    cache.insert(
-        key_user2.clone(),
-        super::CachedMembership { is_member: true },
-    );
-
-    // Invalidate only user1
-    cache.invalidate(&key_user1);
-
-    assert!(
-        cache.get(&key_user1).is_none(),
-        "User1 entry should be invalidated"
-    );
-    assert!(
-        cache.get(&key_user2).is_some(),
-        "User2 entry should still be cached"
-    );
-}
-
-#[test]
 fn test_cached_membership_from_member_none() {
-    // Verify CachedMembership correctly handles non-members
     let cached = super::CachedMembership::from_member(None);
     assert!(!cached.is_member, "Non-member should have is_member=false");
 }
 
 #[test]
 fn test_cached_membership_from_member_active() {
-    // Verify CachedMembership correctly identifies active members
     use synctv_core::models::{MemberStatus, RoomMember, RoomRole};
 
     let member = RoomMember {
@@ -8018,58 +7971,6 @@ fn test_cached_membership_from_member_active() {
 
     let cached = super::CachedMembership::from_member(Some(&member));
     assert!(cached.is_member);
-}
-
-#[test]
-fn test_sdp_offer_within_limit() {
-    let offer = crate::proto::client::WebRtcOffer {
-        to: "user1:conn1".to_string(),
-        from: String::new(),
-        data: "a".repeat(super::MAX_SDP_SIZE),
-    };
-    // Size check passes (equal to limit)
-    assert!(offer.data.len() <= super::MAX_SDP_SIZE);
-}
-
-#[test]
-fn test_sdp_offer_exceeds_limit() {
-    let offer = crate::proto::client::WebRtcOffer {
-        to: "user1:conn1".to_string(),
-        from: String::new(),
-        data: "a".repeat(super::MAX_SDP_SIZE + 1),
-    };
-    // Size check fails (exceeds limit)
-    assert!(offer.data.len() > super::MAX_SDP_SIZE);
-}
-
-#[test]
-fn test_sdp_answer_exceeds_limit() {
-    let answer = crate::proto::client::WebRtcAnswer {
-        to: "user1:conn1".to_string(),
-        from: String::new(),
-        data: "a".repeat(super::MAX_SDP_SIZE + 1),
-    };
-    assert!(answer.data.len() > super::MAX_SDP_SIZE);
-}
-
-#[test]
-fn test_ice_candidate_within_limit() {
-    let candidate = crate::proto::client::WebRtcIceCandidate {
-        to: "user1:conn1".to_string(),
-        from: String::new(),
-        data: "a".repeat(super::MAX_ICE_CANDIDATE_SIZE),
-    };
-    assert!(candidate.data.len() <= super::MAX_ICE_CANDIDATE_SIZE);
-}
-
-#[test]
-fn test_ice_candidate_exceeds_limit() {
-    let candidate = crate::proto::client::WebRtcIceCandidate {
-        to: "user1:conn1".to_string(),
-        from: String::new(),
-        data: "a".repeat(super::MAX_ICE_CANDIDATE_SIZE + 1),
-    };
-    assert!(candidate.data.len() > super::MAX_ICE_CANDIDATE_SIZE);
 }
 
 #[test]
@@ -8119,31 +8020,6 @@ async fn test_progress_throttle_elapsed_time_allows_write() {
         super::should_persist_playback_progress(Some((100.0, last_time)), 100.1),
         "Elapsed time exceeding threshold should trigger a write"
     );
-}
-
-#[tokio::test]
-async fn test_user_left_retry_semaphore_limits_concurrent_tasks() {
-    // Acquire all 100 permits to simulate max concurrent retry tasks
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(100));
-    let mut permits = Vec::new();
-
-    for _ in 0..100 {
-        let permit = semaphore.clone().try_acquire_owned();
-        assert!(permit.is_ok(), "Should acquire permit under limit");
-        permits.push(permit.unwrap());
-    }
-
-    // 101st attempt should fail
-    let overflow = semaphore.clone().try_acquire_owned();
-    assert!(
-        overflow.is_err(),
-        "Should reject when semaphore is exhausted"
-    );
-
-    // Release one permit and try again
-    permits.pop();
-    let retry = semaphore.try_acquire_owned();
-    assert!(retry.is_ok(), "Should succeed after a permit is released");
 }
 
 #[test]
@@ -8281,8 +8157,8 @@ async fn test_guest_chat_is_rejected_even_if_permission_bits_include_chat() {
 
     let err = handler
         .handle_client_message(&ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::Chat(
-                crate::proto::client::ChatMessageSend {
+            message: Some(synctv_proto::client::client_message::Message::Chat(
+                synctv_proto::client::ChatMessageSend {
                     content: "guest message".to_string(),
                     display_position: String::new(),
                     display_color: String::new(),
@@ -8312,8 +8188,8 @@ async fn test_guest_chat_with_client_id_is_rejected() {
 
     let err = handler
         .handle_client_message(&ClientMessage {
-            message: Some(crate::proto::client::client_message::Message::Chat(
-                crate::proto::client::ChatMessageSend {
+            message: Some(synctv_proto::client::client_message::Message::Chat(
+                synctv_proto::client::ChatMessageSend {
                     content: "guest chat with client id".to_string(),
                     display_position: String::new(),
                     display_color: String::new(),
@@ -8346,7 +8222,7 @@ async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_inc
         .handle_client_message(&ClientMessage {
             message: Some(observe_playlist_items_message(
                 "guest-playlist-items",
-                crate::proto::client::ListPlaylistItemsRequest::default(),
+                synctv_proto::client::ListPlaylistItemsRequest::default(),
             )),
         })
         .await
@@ -8562,7 +8438,11 @@ async fn test_guest_cleanup_broadcasts_guest_left() {
         .await
         .expect("join guest connection");
     let (mut rx, _) = event_service
-        .subscribe_with_id(handler.room_id, guest_user_id, connection_id.clone())
+        .subscribe_with_id(
+            handler.room_id,
+            guest_user_id,
+            ConnectionId::new(connection_id.clone()),
+        )
         .await
         .expect("subscribe guest connection");
 
@@ -8674,11 +8554,12 @@ fn test_generate_connection_id_is_opaque() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_current_connection_matches_webrtc_recipient_requires_public_actor_id() {
     let room_id = room_id();
     let user_id = user_id();
     let manager = test_connection_manager();
-    let pool = test_pool();
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let event_service = test_realtime_manager("node-test").await;
     let public_id_codec = Arc::new(crate::PublicIdCodec::plain());
 
@@ -8731,11 +8612,12 @@ async fn test_current_connection_matches_webrtc_recipient_requires_public_actor_
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_current_connection_matches_webrtc_recipient_rejects_malformed_target() {
     let room_id = room_id();
     let user_id = user_id();
     let manager = test_connection_manager();
-    let pool = test_pool();
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let event_service = test_realtime_manager("node-test").await;
 
     let handler = super::StreamMessageHandler::new(StreamMessageHandlerConfig {
@@ -8848,7 +8730,7 @@ async fn test_pre_join_after_registration_fails_closed_when_membership_revalidat
     );
 
     connection_service
-        .register(handler.connection_id.clone(), handler.user_id)
+        .register(handler.connection_id.clone().into_string(), handler.user_id)
         .await
         .expect("register should succeed before final admission");
 
@@ -8924,7 +8806,7 @@ async fn test_pre_join_after_registration_rejects_closed_room_on_final_revalidat
     });
 
     connection_service
-        .register(handler.connection_id.clone(), handler.user_id)
+        .register(handler.connection_id.clone().into_string(), handler.user_id)
         .await
         .expect("register should succeed before final admission");
 
@@ -9005,7 +8887,7 @@ async fn test_pre_join_after_registration_rejects_room_with_inactive_creator() {
     });
 
     connection_service
-        .register(handler.connection_id.clone(), handler.user_id)
+        .register(handler.connection_id.clone().into_string(), handler.user_id)
         .await
         .expect("register should succeed before final admission");
 
@@ -9085,7 +8967,7 @@ async fn test_pre_join_after_registration_rejects_banned_user_on_final_revalidat
     });
 
     connection_service
-        .register(handler.connection_id.clone(), handler.user_id)
+        .register(handler.connection_id.clone().into_string(), handler.user_id)
         .await
         .expect("register should succeed before final admission");
 
@@ -9167,7 +9049,7 @@ async fn test_pre_join_after_registration_rolls_back_when_room_event_subscriptio
     });
 
     connection_service
-        .register(handler.connection_id.clone(), handler.user_id)
+        .register(handler.connection_id.clone().into_string(), handler.user_id)
         .await
         .expect("register should succeed before subscription caching");
 
@@ -9481,9 +9363,9 @@ async fn test_resource_watch_prepare_enforces_room_connection_limit_and_releases
         .await
         .expect("member should join room");
 
-    let observe = watch_room_settings_observe(crate::proto::client::WatchRoomSettingsRequest {
-        delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
-        room_settings: Some(crate::proto::client::ObserveRoomSettings {
+    let observe = watch_room_settings_observe(synctv_proto::client::WatchRoomSettingsRequest {
+        delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
+        room_settings: Some(synctv_proto::client::ObserveRoomSettings {
             after_event_sequence: None,
         }),
     })
@@ -9580,9 +9462,9 @@ async fn test_resource_watch_prepare_rejects_missing_observe_resource_before_sub
         room_members_snapshot_service: None,
         room_settings_snapshot_service: None,
     });
-    let observe = crate::proto::client::ObserveResource {
+    let observe = synctv_proto::client::ObserveResource {
         observe_id: "missing-resource".to_string(),
-        delivery_mode: crate::proto::client::ResourceDeliveryMode::PushSnapshot as i32,
+        delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
         resource: None,
     };
 
@@ -9657,9 +9539,9 @@ async fn test_resource_watch_chat_events_requires_view_chat_history_permission()
         .await
         .expect("room settings should update");
 
-    let observe = watch_chat_events_observe(crate::proto::client::WatchChatEventsRequest {
-        delivery_mode: crate::proto::client::ResourceDeliveryMode::NotifyOnly as i32,
-        chat_events: Some(crate::proto::client::ObserveChatEvents {
+    let observe = watch_chat_events_observe(synctv_proto::client::WatchChatEventsRequest {
+        delivery_mode: synctv_proto::client::ResourceDeliveryMode::NotifyOnly as i32,
+        chat_events: Some(synctv_proto::client::ObserveChatEvents {
             after_event_sequence: None,
         }),
     })

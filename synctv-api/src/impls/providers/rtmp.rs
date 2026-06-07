@@ -2,7 +2,7 @@ use std::sync::Arc;
 use synctv_core::models::{MediaId, Room, UserId};
 
 use crate::impls::{AdminApiImpl, ApiError, ClientApiImpl};
-use crate::proto::providers::rtmp::{
+use synctv_proto::providers::rtmp::{
     CreatePublishKeyRequest, CreatePublishKeyResponse, GetStreamInfoRequest, GetStreamInfoResponse,
     StreamPublisherInfo,
 };

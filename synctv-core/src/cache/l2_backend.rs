@@ -1199,21 +1199,19 @@ impl CacheL2Backend for NoopCacheL2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RedisConnectionRuntime;
-    use async_trait::async_trait;
+    use crate::test_helpers::failing_redis_runtime;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
-    /// A mock L2 backend that can simulate slow operations for testing timeouts.
-    struct SlowMockBackend {
+    struct DelayedTestBackend {
         delay: Duration,
         get_count: Arc<AtomicU64>,
         set_count: Arc<AtomicU64>,
         delete_count: Arc<AtomicU64>,
     }
 
-    impl SlowMockBackend {
+    impl DelayedTestBackend {
         fn new(delay: Duration) -> Self {
             Self {
                 delay,
@@ -1226,17 +1224,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_redis_cache_l2_accepts_trait_object_runtime() {
-        #[derive(Clone)]
-        struct FakeRedisRuntime;
-
-        #[async_trait]
-        impl RedisConnectionRuntime for FakeRedisRuntime {
-            async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
-                panic!("snapshot should not be called in constructor-only test");
-            }
-        }
-
-        let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
+        let runtime = failing_redis_runtime();
         let cache = RedisCacheL2::from_runtime(runtime.clone());
 
         assert!(
@@ -1246,7 +1234,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl CacheL2Backend for SlowMockBackend {
+    impl CacheL2Backend for DelayedTestBackend {
         async fn get(&self, _key: &str) -> Result<Option<String>> {
             self.get_count.fetch_add(1, Ordering::SeqCst);
             tokio::time::sleep(self.delay).await;
@@ -1354,7 +1342,7 @@ mod tests {
     /// Test that get() times out when operation takes too long
     #[tokio::test]
     async fn test_get_timeout() {
-        let backend = SlowMockBackend::new(Duration::from_secs(2));
+        let backend = DelayedTestBackend::new(Duration::from_secs(2));
         let start = std::time::Instant::now();
 
         let result = tokio::time::timeout(TEST_TIMEOUT, backend.get("test_key")).await;
@@ -1371,7 +1359,7 @@ mod tests {
     /// Test that set() times out when operation takes too long
     #[tokio::test]
     async fn test_set_timeout() {
-        let backend = SlowMockBackend::new(Duration::from_secs(2));
+        let backend = DelayedTestBackend::new(Duration::from_secs(2));
         let start = std::time::Instant::now();
 
         let result = tokio::time::timeout(TEST_TIMEOUT, backend.set("key", "{}", 60)).await;
@@ -1388,7 +1376,7 @@ mod tests {
     /// Test that delete() times out when operation takes too long
     #[tokio::test]
     async fn test_delete_timeout() {
-        let backend = SlowMockBackend::new(Duration::from_secs(2));
+        let backend = DelayedTestBackend::new(Duration::from_secs(2));
         let start = std::time::Instant::now();
 
         let result = tokio::time::timeout(TEST_TIMEOUT, backend.delete("key")).await;
@@ -1405,7 +1393,7 @@ mod tests {
     /// Test that get_batch() times out when operation takes too long
     #[tokio::test]
     async fn test_get_batch_timeout() {
-        let backend = SlowMockBackend::new(Duration::from_secs(2));
+        let backend = DelayedTestBackend::new(Duration::from_secs(2));
         let keys: Vec<String> = vec!["key1".to_string(), "key2".to_string()];
         let start = std::time::Instant::now();
 
@@ -1423,7 +1411,7 @@ mod tests {
     /// Test that set_if_newer() times out when operation takes too long
     #[tokio::test]
     async fn test_set_if_newer_timeout() {
-        let backend = SlowMockBackend::new(Duration::from_secs(2));
+        let backend = DelayedTestBackend::new(Duration::from_secs(2));
         let start = std::time::Instant::now();
 
         let result = tokio::time::timeout(
@@ -1444,7 +1432,7 @@ mod tests {
     /// Test that delete_by_prefix() times out when operation takes too long
     #[tokio::test]
     async fn test_delete_by_prefix_timeout() {
-        let backend = SlowMockBackend::new(Duration::from_secs(2));
+        let backend = DelayedTestBackend::new(Duration::from_secs(2));
         let start = std::time::Instant::now();
 
         let result = tokio::time::timeout(TEST_TIMEOUT, backend.delete_by_prefix("prefix")).await;
@@ -1461,7 +1449,7 @@ mod tests {
     /// Test that fast operations complete successfully within timeout
     #[tokio::test]
     async fn test_fast_operations_succeed() {
-        let backend = SlowMockBackend::new(Duration::from_millis(10));
+        let backend = DelayedTestBackend::new(Duration::from_millis(10));
 
         // All these should complete quickly
         let get_result = tokio::time::timeout(TEST_TIMEOUT, backend.get("key")).await;

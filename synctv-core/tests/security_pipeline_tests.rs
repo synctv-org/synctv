@@ -201,8 +201,8 @@ async fn test_db_error_propagates_not_swallowed() {
 
     // Use a user_id that doesn't exist -> get_user returns NotFound,
     // which should be mapped to Authentication error
-    let fake_id = UserId::new();
-    let claims = make_claims(&fake_id, 0);
+    let missing_user_id = UserId::new();
+    let claims = make_claims(&missing_user_id, 0);
 
     let result = pipeline.check(&claims).await;
     assert!(result.is_err());
@@ -213,8 +213,8 @@ async fn test_db_error_propagates_not_swallowed() {
         "NotFound should become generic Authentication failure, got: {err}"
     );
 
-    let fake_id2 = UserId::new();
-    let claims2 = make_claims(&fake_id2, 0);
+    let db_error_user_id = UserId::new();
+    let claims2 = make_claims(&db_error_user_id, 0);
     // Now close the pool to simulate a DB error (not NotFound).
     // Using a closed real pool fails immediately and avoids slow network
     // connection timeouts from an invalid DSN.

@@ -209,6 +209,43 @@ impl ProviderInstanceRepository {
                 .is_some_and(|value| !value.trim().is_empty())
     }
 
+    fn ensure_encryption_for_sensitive_fields_with(
+        encryption: Option<&CredentialEncryption>,
+        instance: &ProviderInstance,
+    ) -> Result<()> {
+        if encryption.is_none() && Self::sensitive_fields_present(instance) {
+            return Err(crate::Error::Internal(
+                "Credential encryption must be configured before storing provider instance secrets"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn decrypt_field_with(
+        encryption: Option<&CredentialEncryption>,
+        stored: Option<&str>,
+    ) -> Result<Option<String>> {
+        match (encryption, stored) {
+            (Some(enc), Some(value)) if value.starts_with("enc:") => {
+                let decrypted = enc.decrypt(value)?;
+                match decrypted {
+                    serde_json::Value::String(s) => Ok(Some(s)),
+                    other => Ok(Some(other.to_string())),
+                }
+            }
+            (Some(_), Some(value)) if !value.is_empty() => Err(crate::Error::Internal(
+                "Provider instance contains plaintext sensitive data while credential encryption is enabled"
+                    .to_string(),
+            )),
+            (None, Some(value)) if !value.trim().is_empty() => Err(crate::Error::Internal(
+                "Credential encryption must be configured before reading provider instance secrets"
+                    .to_string(),
+            )),
+            _ => Ok(None),
+        }
+    }
+
     /// Create a new repository without encryption
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
@@ -243,36 +280,11 @@ impl ProviderInstanceRepository {
     }
 
     fn ensure_encryption_for_sensitive_fields(&self, instance: &ProviderInstance) -> Result<()> {
-        if self.encryption.is_none() && Self::sensitive_fields_present(instance) {
-            return Err(crate::Error::Internal(
-                "Credential encryption must be configured before storing provider instance secrets"
-                    .to_string(),
-            ));
-        }
-        Ok(())
+        Self::ensure_encryption_for_sensitive_fields_with(self.encryption.as_ref(), instance)
     }
 
     fn decrypt_field(&self, stored: Option<&str>) -> Result<Option<String>> {
-        match (&self.encryption, stored) {
-            (Some(enc), Some(value)) if value.starts_with("enc:") => {
-                let decrypted = enc.decrypt(value)?;
-                match decrypted {
-                    serde_json::Value::String(s) => Ok(Some(s)),
-                    other => Ok(Some(other.to_string())),
-                }
-            }
-            (Some(_), Some(value)) if !value.is_empty() => Err(crate::Error::Internal(
-                "Provider instance contains plaintext sensitive data while credential encryption is enabled"
-                    .to_string(),
-            )),
-            (None, Some(value)) if !value.trim().is_empty() => {
-                Err(crate::Error::Internal(
-                    "Credential encryption must be configured before reading provider instance secrets"
-                        .to_string(),
-                ))
-            }
-            _ => Ok(None),
-        }
+        Self::decrypt_field_with(self.encryption.as_ref(), stored)
     }
 
     /// Decrypt sensitive fields on a `ProviderInstance` after reading from DB.
@@ -570,6 +582,32 @@ impl UserProviderCredentialRepository {
         normalize_provider_instance_name(provider_instance_name)
     }
 
+    fn encrypt_credential_with(
+        encryption: Option<&CredentialEncryption>,
+        data: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        match encryption {
+            Some(enc) => enc.encrypt_to_value(data),
+            None => Err(crate::Error::Internal(
+                "Credential encryption must be configured before storing provider credentials"
+                    .to_string(),
+            )),
+        }
+    }
+
+    fn decrypt_credential_with(
+        encryption: Option<&CredentialEncryption>,
+        data: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        match encryption {
+            Some(enc) => enc.decrypt_value(data),
+            None => Err(crate::Error::Internal(
+                "Credential encryption must be configured before reading provider credentials"
+                    .to_string(),
+            )),
+        }
+    }
+
     /// Create a new repository without encryption
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
@@ -589,23 +627,11 @@ impl UserProviderCredentialRepository {
     }
 
     fn encrypt_credential(&self, data: &serde_json::Value) -> Result<serde_json::Value> {
-        match &self.encryption {
-            Some(enc) => enc.encrypt_to_value(data),
-            None => Err(crate::Error::Internal(
-                "Credential encryption must be configured before storing provider credentials"
-                    .to_string(),
-            )),
-        }
+        Self::encrypt_credential_with(self.encryption.as_ref(), data)
     }
 
     fn decrypt_credential(&self, data: &serde_json::Value) -> Result<serde_json::Value> {
-        match &self.encryption {
-            Some(enc) => enc.decrypt_value(data),
-            None => Err(crate::Error::Internal(
-                "Credential encryption must be configured before reading provider credentials"
-                    .to_string(),
-            )),
-        }
+        Self::decrypt_credential_with(self.encryption.as_ref(), data)
     }
 
     /// Decrypt credentials on a `UserProviderCredential` in place.

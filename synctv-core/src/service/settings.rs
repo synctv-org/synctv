@@ -61,8 +61,8 @@ impl SettingsValidationContext {
 /// System settings service
 #[derive(Clone)]
 pub struct SettingsService {
-    repository: SettingsRepository,
-    pool: PgPool,
+    repository: Option<SettingsRepository>,
+    pool: Option<PgPool>,
     // Lock-free cache using DashMap for concurrent reads.
     cache: Arc<DashMap<String, SettingsGroup>>,
     // Broadcast channel for notifying SettingsStorage of remote reload events.
@@ -139,8 +139,8 @@ impl SettingsService {
             runtime.cache_key_prefix,
         );
         Self {
-            repository,
-            pool,
+            repository: Some(repository),
+            pool: Some(pool),
             cache: Arc::new(DashMap::new()),
             reload_sender,
             setting_providers: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
@@ -148,6 +148,43 @@ impl SettingsService {
             consistency: ConsistencyCoordinator::new(version_fence),
             runtime_cache,
         }
+    }
+
+    #[cfg(test)]
+    fn new_without_backend_for_tests(runtime: SettingsServiceRuntime) -> Self {
+        let (reload_sender, _) = broadcast::channel(256);
+        let version_fence = runtime
+            .version_fence
+            .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
+        let runtime_cache = RuntimeSettingsCache::new(
+            runtime.l2_cache.unwrap_or_else(|| Arc::new(NoopCacheL2)),
+            normalize_cache_capacity(runtime.cache_max_capacity),
+            normalize_cache_ttl(runtime.cache_ttl_secs),
+            normalize_cache_ttl(runtime.cache_l2_ttl_secs),
+            runtime.cache_key_prefix,
+        );
+        Self {
+            repository: None,
+            pool: None,
+            cache: Arc::new(DashMap::new()),
+            reload_sender,
+            setting_providers: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+            batch_validators: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            consistency: ConsistencyCoordinator::new(version_fence),
+            runtime_cache,
+        }
+    }
+
+    fn repository(&self) -> Result<&SettingsRepository, Error> {
+        self.repository
+            .as_ref()
+            .ok_or_else(|| Error::Internal("Settings service has no repository backend".into()))
+    }
+
+    fn pool(&self) -> Result<&PgPool, Error> {
+        self.pool
+            .as_ref()
+            .ok_or_else(|| Error::Internal("Settings service has no database pool backend".into()))
     }
 
     pub(crate) fn providers(&self) -> SettingProviders {
@@ -226,7 +263,7 @@ impl SettingsService {
         info!("Initializing settings service");
 
         let settings = self
-            .repository
+            .repository()?
             .get_all()
             .await
             .map_err(|e| Error::Internal(format!("Failed to load settings: {e}")))?;
@@ -367,7 +404,7 @@ impl SettingsService {
         let group_name = group_name_from_setting_key(key);
 
         let observed_version = i64::from(
-            self.repository
+            self.repository()?
                 .current_version(key)
                 .await
                 .internal_with_err("Failed to read current setting version")?,
@@ -382,7 +419,7 @@ impl SettingsService {
             .map_or(observed_version + 1, |reservation| reservation.version);
 
         let write_result = self
-            .repository
+            .repository()?
             .upsert_with_exact_version(
                 key,
                 &group_name,
@@ -459,7 +496,7 @@ impl SettingsService {
         let mut fences = Vec::with_capacity(updates.len());
         for (key, _) in &updates {
             let observed_version =
-                i64::from(self.repository.current_version(key).await.map_err(|e| {
+                i64::from(self.repository()?.current_version(key).await.map_err(|e| {
                     Error::Internal(format!("Failed to read setting '{key}': {e}"))
                 })?);
             let domain = Self::runtime_setting_domain(key);
@@ -492,7 +529,7 @@ impl SettingsService {
         }
 
         let mut tx =
-            self.pool.begin().await.map_err(|e| {
+            self.pool()?.begin().await.map_err(|e| {
                 Error::Internal(format!("Failed to start settings transaction: {e}"))
             })?;
 
@@ -611,7 +648,7 @@ impl SettingsService {
             group_name,
             value
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool()?)
         .await
         .map_err(|error| {
             Error::Internal(format!("Failed to initialize setting '{key}': {error}"))
@@ -649,6 +686,10 @@ impl SettingsService {
 
         crate::spawn::spawn_monitored("settings_pg_listen", async move {
             info!("Starting PostgreSQL LISTEN for settings hot reload");
+            let Some(pool) = pool else {
+                error!("Settings listen task cannot start without a PostgreSQL pool");
+                return;
+            };
 
             loop {
                 if cancel.is_cancelled() {
@@ -746,8 +787,16 @@ impl SettingsService {
     async fn reload_setting(&self, key: &str) -> Result<(), Error> {
         debug!("Reloading setting from database: {}", key);
 
-        // Try to fetch from database
-        match self.repository.get(key).await {
+        let result = self.repository()?.get(key).await;
+        self.apply_reload_result(key, result).await
+    }
+
+    async fn apply_reload_result(
+        &self,
+        key: &str,
+        result: Result<SettingsGroup, Error>,
+    ) -> Result<(), Error> {
+        match result {
             Ok(setting) => {
                 // Update cache (lock-free via DashMap)
                 self.store_cache_entry(setting.clone()).await;
@@ -835,7 +884,7 @@ impl SettingsService {
 
     async fn get_refresh(&self, key: &str) -> Result<SettingsGroup, Error> {
         let setting = self
-            .repository
+            .repository()?
             .get(key)
             .await
             .internal_with_err("Failed to get setting")?;
@@ -888,11 +937,10 @@ mod tests {
         assert!(get_default_settings("").is_none());
     }
 
-    /// A mock `SettingProvider` that rejects any value not equal to "valid".
-    struct MockProvider;
+    struct TestSettingProvider;
 
     #[async_trait::async_trait]
-    impl crate::service::settings_vars::SettingProvider for MockProvider {
+    impl crate::service::settings_vars::SettingProvider for TestSettingProvider {
         fn key(&self) -> &'static str {
             "test.mock"
         }
@@ -1002,19 +1050,26 @@ mod tests {
         }
     }
 
-    fn service_with_mock_provider(key: &str) -> SettingsService {
-        let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
-        let pool = pool_opts
-            .connect_lazy("postgres://fake:fake@localhost/fake")
-            .unwrap();
-        let repo = crate::repository::SettingsRepository::new(pool.clone());
-        let service = SettingsService::new(repo, pool);
-        let providers = service.providers();
+    fn provider_map_with_test_provider(key: &str) -> SettingProviders {
+        let providers = Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
         providers.write().insert(
             key.to_string(),
-            Arc::new(MockProvider) as Arc<dyn crate::service::settings_vars::SettingProvider>,
+            Arc::new(TestSettingProvider)
+                as Arc<dyn crate::service::settings_vars::SettingProvider>,
         );
-        service
+        providers
+    }
+
+    fn validate_setting_with_providers(
+        providers: &SettingProviders,
+        key: &str,
+        value: &str,
+    ) -> Result<(), Error> {
+        let providers = providers.read();
+        let provider = providers
+            .get(key)
+            .ok_or_else(|| Error::InvalidInput(format!("Unknown setting key: {key}")))?;
+        provider.is_valid_raw(value)
     }
 
     fn service_with_fence_store(
@@ -1023,27 +1078,18 @@ mod tests {
         SettingsService,
         broadcast::Receiver<(String, Option<String>)>,
     ) {
-        let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
-        let pool = pool_opts
-            .connect_lazy("postgres://fake:fake@localhost/fake")
-            .unwrap();
-        let repo = crate::repository::SettingsRepository::new(pool.clone());
-        let service = SettingsService::new_with_runtime(
-            repo,
-            pool,
-            SettingsServiceRuntime {
-                version_fence: Some(store),
-                ..SettingsServiceRuntime::default()
-            },
-        );
+        let service = SettingsService::new_without_backend_for_tests(SettingsServiceRuntime {
+            version_fence: Some(store),
+            ..SettingsServiceRuntime::default()
+        });
         let receiver = service.subscribe_reloads();
         (service, receiver)
     }
 
-    #[tokio::test]
-    async fn test_validate_setting_rejects_invalid_value() {
-        let service = service_with_mock_provider("test.key");
-        let result = service.validate_setting("test.key", "invalid");
+    #[test]
+    fn test_validate_setting_rejects_invalid_value() {
+        let providers = provider_map_with_test_provider("test.key");
+        let result = validate_setting_with_providers(&providers, "test.key", "invalid");
         assert!(result.is_err(), "Should reject invalid values");
         let err = result.unwrap_err();
         assert!(
@@ -1052,10 +1098,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_validate_setting_accepts_valid_value() {
-        let service = service_with_mock_provider("test.key");
-        let result = service.validate_setting("test.key", "valid");
+    #[test]
+    fn test_validate_setting_accepts_valid_value() {
+        let providers = provider_map_with_test_provider("test.key");
+        let result = validate_setting_with_providers(&providers, "test.key", "valid");
         assert!(result.is_ok(), "Should accept valid values");
     }
 
@@ -1168,25 +1214,17 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_validate_setting_rejects_unknown_keys() {
-        let service = service_with_mock_provider("test.key");
-        let result = service.validate_setting("unknown.key", "anything");
+    #[test]
+    fn test_validate_setting_rejects_unknown_keys() {
+        let providers = provider_map_with_test_provider("test.key");
+        let result = validate_setting_with_providers(&providers, "unknown.key", "anything");
         assert!(result.is_err(), "Unknown keys must be rejected");
     }
 
-    #[tokio::test]
-    async fn test_validate_setting_no_providers_set() {
-        // Build a SettingsService without any providers wired up
-        let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
-        let pool = pool_opts
-            .connect_lazy("postgres://fake:fake@localhost/fake")
-            .unwrap();
-        let repo = crate::repository::SettingsRepository::new(pool.clone());
-        let service = SettingsService::new(repo, pool);
-        // No set_providers call - providers is None
-
-        let result = service.validate_setting("any.key", "any_value");
+    #[test]
+    fn test_validate_setting_no_providers_set() {
+        let providers = Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
+        let result = validate_setting_with_providers(&providers, "any.key", "any_value");
         assert!(
             result.is_err(),
             "Validation must fail closed when providers are not registered"
@@ -1195,14 +1233,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reload_setting_preserves_cache_on_non_not_found_error() {
-        let pool_opts = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .acquire_timeout(std::time::Duration::from_secs(1));
-        let pool = pool_opts
-            .connect_lazy("postgres://fake:fake@localhost/fake")
-            .unwrap();
-        let repo = crate::repository::SettingsRepository::new(pool.clone());
-        let service = SettingsService::new(repo, pool);
+        let service =
+            SettingsService::new_without_backend_for_tests(SettingsServiceRuntime::default());
 
         let existing = SettingsGroup::new(
             "server".to_string(),
@@ -1210,7 +1242,14 @@ mod tests {
         );
         service.cache.insert(existing.key.clone(), existing.clone());
 
-        let result = service.reload_setting("server.default").await;
+        let result = service
+            .apply_reload_result(
+                "server.default",
+                Err(Error::Internal(
+                    "injected transient database failure".to_string(),
+                )),
+            )
+            .await;
 
         assert!(
             result.is_err(),

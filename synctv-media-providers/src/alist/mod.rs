@@ -33,4 +33,8 @@ pub mod types;
 pub use client::AlistClient;
 pub use error::AlistError;
 pub use service::{AlistInterface, AlistService};
-pub use types::*;
+pub use types::{
+    AlistResp, HttpFsGetRelated, HttpFsGetResp, HttpFsListContent, HttpFsListResp, HttpFsOtherResp,
+    HttpFsSearchContent, HttpFsSearchResp, HttpMeResp, HttpSubtitleTask, HttpTranscodingTask,
+    HttpVideoMeta, HttpVideoPreviewPlayInfo, LoginData,
+};

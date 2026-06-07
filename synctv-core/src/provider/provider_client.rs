@@ -966,12 +966,6 @@ impl BilibiliInterface for GrpcBilibiliClient {
     );
 }
 
-// Note: Local moka-based `CachedBilibiliClient` was removed.
-// Caching is handled solely by the Redis cache-aside layer in the API/service
-// tier, which ensures consistency across replicas in a multi-node deployment.
-// A local in-process cache would serve stale data after another node invalidates
-// the cache, leading to subtle inconsistencies.
-
 // Emby Client
 
 use synctv_media_providers::emby::{EmbyError, EmbyInterface};

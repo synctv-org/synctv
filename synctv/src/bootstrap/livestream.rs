@@ -241,12 +241,12 @@ mod tests {
         assert!(!runtime.user_stream_index_shared);
     }
 
-    struct MockRedisRuntime;
+    struct TestRedisRuntime;
 
     #[async_trait::async_trait]
-    impl RedisConnectionRuntime for MockRedisRuntime {
+    impl RedisConnectionRuntime for TestRedisRuntime {
         async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
-            panic!("mock redis runtime snapshot should not be called in factory tests");
+            panic!("test redis runtime snapshot should not be called in factory tests");
         }
     }
 
@@ -254,7 +254,7 @@ mod tests {
     fn test_build_livestream_runtime_bindings_keeps_standalone_mode_local_even_with_runtime() {
         let profile = SharedStateProfile::new(
             SharedStateMode::SharedBestEffort,
-            Some(Arc::new(MockRedisRuntime)),
+            Some(Arc::new(TestRedisRuntime)),
             "test:",
         );
 
@@ -285,7 +285,7 @@ mod tests {
     fn test_build_livestream_runtime_bindings_uses_shared_backends_in_cluster_mode() {
         let profile = SharedStateProfile::new(
             SharedStateMode::SharedRequired,
-            Some(Arc::new(MockRedisRuntime)),
+            Some(Arc::new(TestRedisRuntime)),
             "test:",
         );
 

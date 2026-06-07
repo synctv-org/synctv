@@ -8,6 +8,6 @@ pub trait PlaylistItemsSnapshotService: Send + Sync {
     async fn get_playlist_items_snapshot(
         &self,
         actor: &RoomActor,
-        req: &crate::proto::client::ListPlaylistItemsRequest,
-    ) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError>;
+        req: &synctv_proto::client::ListPlaylistItemsRequest,
+    ) -> Result<synctv_proto::client::ListPlaylistItemsResponse, ApiError>;
 }

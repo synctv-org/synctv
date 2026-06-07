@@ -91,7 +91,7 @@ mod tests {
     #[test]
     fn protobuf_json_serde_accepts_proto3_int64_strings() {
         let req =
-            serde_json::from_str::<crate::proto::client::CreateUserAvatarUploadSessionRequest>(
+            serde_json::from_str::<synctv_proto::client::CreateUserAvatarUploadSessionRequest>(
                 r#"{
                     "client_avatar_id":"avatar-1",
                     "mime_type":"image/png",

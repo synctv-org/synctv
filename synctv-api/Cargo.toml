@@ -171,7 +171,7 @@ tower = { workspace = true, features = ["util"] }
 http-body-util.workspace = true
 futures.workspace = true
 synctv-proto = { workspace = true, default-features = false }
-synctv-core = { workspace = true, default-features = false }
+synctv-core = { workspace = true, default-features = false, features = ["test-support"] }
 synctv-core-testing.workspace = true
 synctv-cluster = { workspace = true, default-features = false }
 synctv-realtime = { workspace = true, default-features = false }
@@ -179,6 +179,4 @@ serde_json.workspace = true
 chrono.workspace = true
 axum = { workspace = true, features = ["ws"] }
 tokio-tungstenite.workspace = true
-testcontainers.workspace = true
-testcontainers-modules.workspace = true
 prost.workspace = true

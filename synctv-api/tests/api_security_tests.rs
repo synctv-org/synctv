@@ -1,7 +1,4 @@
-//! API Security Tests //!
-//! Tests for API security behavior:
-//! - Guest-token validation must use GuestTokenValidator (blacklist check)
-//! - sqlx::Error must not leak DB details in gRPC responses
+//! API security tests.
 
 #![allow(clippy::unwrap_used)]
 
@@ -12,10 +9,6 @@ use synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore;
 use synctv_core::service::auth::{GuestTokenValidator, JwtService, TokenBlacklistStore};
 use synctv_core::Error;
 
-/// A blacklisted guest token MUST be rejected by validate_async.
-/// This tests the core requirement that shared guest-token validation must use
-/// GuestTokenValidator::validate_async() (which checks blacklist) instead of
-/// just jwt_service.verify_guest_token() (which only checks JWT signature).
 #[tokio::test]
 async fn test_blacklisted_guest_token_rejected_by_validator() {
     let jwt = create_test_jwt_service();
@@ -27,14 +20,11 @@ async fn test_blacklisted_guest_token_rejected_by_validator() {
     let room_id = RoomId::new();
     let token = jwt.sign_guest_token(&room_id).unwrap();
 
-    // First validate succeeds
     let claims = validator.validate_async(&token).await.unwrap();
     assert!(claims.is_guest());
 
-    // Blacklist the token
     validator.blacklist_token(&claims.jti, 3600).await.unwrap();
 
-    // Now validate_async must reject it
     let result = validator.validate_async(&token).await;
     assert!(result.is_err(), "Blacklisted guest token must be rejected");
     let err_msg = result.unwrap_err().to_string();
@@ -44,9 +34,6 @@ async fn test_blacklisted_guest_token_rejected_by_validator() {
     );
 }
 
-/// Shared guest-token validation must use validate_async (not
-/// verify_guest_token). We verify this by checking that the
-/// GuestTokenValidator path catches blacklisted tokens.
 #[tokio::test]
 async fn test_non_blacklisted_guest_token_passes() {
     let jwt = create_test_jwt_service();
@@ -58,7 +45,6 @@ async fn test_non_blacklisted_guest_token_passes() {
     let room_id = RoomId::new();
     let token = jwt.sign_guest_token(&room_id).unwrap();
 
-    // Not blacklisted - should pass
     let result = validator.validate_async(&token).await;
     assert!(result.is_ok(), "Non-blacklisted guest token should pass");
 }
@@ -114,19 +100,14 @@ async fn test_guest_blacklist_storage_error_surfaces_service_unavailable() {
     );
 }
 
-/// Internal errors (including sqlx::Error) must be sanitized before
-/// returning to gRPC clients. The map_api_error function should return
-/// a generic "Internal error" message, not the raw error string.
 #[test]
 fn test_api_error_internal_sanitized_for_grpc() {
     use synctv_api::impls::ApiError;
 
-    // Simulate a sqlx::Error being converted to ApiError::Internal
     let api_err = ApiError::Internal(
         "error returned from database: connection refused (os error 111)".to_string(),
     );
 
-    // The proto error message should be sanitized
     let proto_err = api_err.to_proto_error();
     assert_eq!(
         proto_err.message, "Internal error",
@@ -137,8 +118,6 @@ fn test_api_error_internal_sanitized_for_grpc() {
         "DB connection details must not leak"
     );
 }
-
-// Test helpers
 
 fn create_test_jwt_service() -> Arc<JwtService> {
     Arc::new(

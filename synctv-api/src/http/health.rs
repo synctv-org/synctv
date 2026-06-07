@@ -20,8 +20,8 @@ use tracing::warn;
 
 use crate::http::AppState;
 use crate::observability::metrics;
-pub use crate::proto::client::{HealthDetails, HealthResponse, MemoryHealth};
 use crate::webrtc_status;
+use synctv_proto::client::{HealthDetails, HealthResponse, MemoryHealth};
 
 /// Timeout for individual health check probes (DB, Redis).
 /// Prevents a hung dependency from blocking the readiness endpoint indefinitely.
@@ -657,10 +657,10 @@ mod tests {
         }
     }
 
-    struct SharedMockTicketStore;
+    struct SharedTestTicketStore;
 
     #[async_trait]
-    impl synctv_core::service::TicketStore for SharedMockTicketStore {
+    impl synctv_core::service::TicketStore for SharedTestTicketStore {
         async fn store(
             &self,
             _ticket: &str,
@@ -898,7 +898,7 @@ mod tests {
         );
 
         let shared_tickets = synctv_core::service::WsTicketService::from_store(
-            Arc::new(SharedMockTicketStore),
+            Arc::new(SharedTestTicketStore),
             None,
         );
         let mut standalone = synctv_core::Config::default();

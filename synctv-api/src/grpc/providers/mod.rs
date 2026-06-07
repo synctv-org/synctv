@@ -10,7 +10,7 @@ pub mod rtmp;
 
 pub(crate) fn provider_instance_name(instance_name: &str) -> Result<Option<String>, tonic::Status> {
     crate::impls::providers::common::provider_instance_name_from_query(
-        &crate::proto::providers::common::ProviderInstanceQuery {
+        &synctv_proto::providers::common::ProviderInstanceQuery {
             instance_name: instance_name.to_string(),
         },
     )

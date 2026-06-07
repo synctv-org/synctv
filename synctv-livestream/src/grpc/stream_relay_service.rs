@@ -19,7 +19,7 @@ use super::proto::{
     GetHlsSegmentRequest, GetHlsSegmentResponse, PullRtmpStreamRequest, RtmpPacket,
 };
 use crate::livestream::SegmentManager;
-use crate::protocols::hls::StreamRegistry as HlsStreamRegistry;
+use crate::protocols::hls::{PublisherActivityCallback, StreamRegistry as HlsStreamRegistry};
 use crate::relay::StreamRegistryTrait;
 use crate::util::{
     validate_hls_segment_name, validate_hls_segment_url_base, validate_hls_segment_url_suffix,
@@ -74,19 +74,13 @@ fn require_expected_epoch(expected_epoch: u64) -> Result<(), Status> {
     Ok(())
 }
 
-/// Callback invoked when the relay service forwards frames from a local publisher.
-///
-/// Used to record publisher data activity so that silent publisher detection does not
-/// incorrectly time out publishers that are actively sending data via gRPC relay.
-pub type RelayActivityCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
-
 async fn forward_rtmp_packets(
     mut frame_receiver: synctv_xiu::streamhub::define::FrameDataReceiver,
     tx: mpsc::Sender<Result<RtmpPacket, Status>>,
     cancel_token: CancellationToken,
     room_id: &str,
     media_id: &str,
-    activity_callback: Option<RelayActivityCallback>,
+    activity_callback: Option<PublisherActivityCallback>,
 ) {
     info!("Streaming live data to puller");
     let mut frame_count: u64 = 0;
@@ -168,7 +162,7 @@ pub struct StreamRelayServiceImpl {
     /// This extends silent publisher detection (LS-5) to the gRPC relay path,
     /// preventing false timeouts when a publisher has remote viewers via gRPC
     /// but no local HLS consumers.
-    activity_callback: Option<RelayActivityCallback>,
+    activity_callback: Option<PublisherActivityCallback>,
 }
 
 impl StreamRelayServiceImpl {
@@ -194,7 +188,7 @@ impl StreamRelayServiceImpl {
     /// Set a callback to record publisher activity when forwarding frames.
     /// This extends LS-5 silent publisher detection to the FLV/gRPC relay path.
     #[must_use]
-    pub fn with_activity_callback(mut self, callback: RelayActivityCallback) -> Self {
+    pub fn with_activity_callback(mut self, callback: PublisherActivityCallback) -> Self {
         self.activity_callback = Some(callback);
         self
     }

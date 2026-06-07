@@ -13,7 +13,7 @@ use chrono::Utc;
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_realtime::sync::events::RealtimeEvent;
 use synctv_realtime::sync::redis_pubsub::RedisPubSub;
-use synctv_realtime::{MessageDeduplicator, RoomMessageHub};
+use synctv_realtime::{ConnectionId, MessageDeduplicator, RoomMessageHub};
 use tokio::sync::broadcast;
 
 mod integration_test_helpers;
@@ -155,7 +155,7 @@ async fn test_redis_stream_catchup() {
 
     // Subscribe a user to the room in the hub
     let mut rx = message_hub
-        .subscribe(room_id, user_id, "catchup_conn".to_string())
+        .subscribe(room_id, user_id, ConnectionId::new("catchup_conn"))
         .await
         .expect("subscribe should succeed");
 

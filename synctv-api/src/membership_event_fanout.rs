@@ -186,74 +186,11 @@ pub fn default_membership_event_fanout_service(
 mod tests {
     use super::*;
     use crate::realtime_fanout::disabled_realtime_fanout_service;
-    use crate::runtime::{RealtimeEventService, RealtimeMetrics};
-    use crate::test_support::channel_realtime_fanout_service;
-    use async_trait::async_trait;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use crate::test_support::{channel_realtime_fanout_service, RecordingRealtimeEventService};
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
     use synctv_core::models::{RoomId, UserId};
-    use synctv_realtime::sync::{BroadcastResult, ConnectionId, RealtimeEvent};
-    use tokio::sync::{broadcast, mpsc};
-
-    #[derive(Default)]
-    struct RecordingRealtimeEventService {
-        broadcast_calls: AtomicUsize,
-        broadcast_local_calls: AtomicUsize,
-        local_events: Mutex<Vec<(String, RealtimeEvent)>>,
-    }
-
-    #[async_trait]
-    impl RealtimeEventService for RecordingRealtimeEventService {
-        async fn subscribe_with_id(
-            &self,
-            _room_id: RoomId,
-            _user_id: UserId,
-            _connection_id: String,
-        ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
-            panic!("subscribe_with_id should not be called in membership fanout tests");
-        }
-
-        fn unsubscribe(&self, _connection_id: &str) {
-            panic!("unsubscribe should not be called in membership fanout tests");
-        }
-
-        fn broadcast(&self, _event: RealtimeEvent) -> BroadcastResult {
-            self.broadcast_calls.fetch_add(1, Ordering::SeqCst);
-            BroadcastResult {
-                local_sent: 0,
-                redis_sent: false,
-            }
-        }
-
-        fn publish_only(&self, _event: RealtimeEvent) -> bool {
-            panic!("publish_only should not be called in membership fanout tests");
-        }
-
-        fn broadcast_local(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize {
-            self.broadcast_local_calls.fetch_add(1, Ordering::SeqCst);
-            self.local_events
-                .lock()
-                .expect("recorded local events mutex should not be poisoned")
-                .push((room_id.to_string(), event.clone()));
-            1
-        }
-
-        fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
-            panic!("subscribe_admin_events should not be called in membership fanout tests");
-        }
-
-        fn metrics(&self) -> RealtimeMetrics {
-            RealtimeMetrics {
-                distributed_enabled: false,
-            }
-        }
-
-        fn node_id(&self) -> &'static str {
-            "membership-fanout-test-node"
-        }
-
-        async fn shutdown(&self) {}
-    }
+    use synctv_realtime::sync::RealtimeEvent;
 
     fn room_id() -> RoomId {
         RoomId::expect_positive(102_001)
@@ -304,10 +241,7 @@ mod tests {
         assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
 
-        assert_eq!(
-            event_service.broadcast_local_calls.load(Ordering::SeqCst),
-            1
-        );
+        assert_eq!(event_service.room_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

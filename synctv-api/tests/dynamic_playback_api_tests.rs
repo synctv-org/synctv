@@ -84,7 +84,7 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
     )
 }
 
-fn make_fake_alist_providers_manager(pool: &sqlx::PgPool) -> Arc<ProvidersManager> {
+fn make_test_alist_providers_manager(pool: &sqlx::PgPool) -> Arc<ProvidersManager> {
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         ProviderInstanceRepository::new(pool.clone()),
     )));
@@ -93,7 +93,7 @@ fn make_fake_alist_providers_manager(pool: &sqlx::PgPool) -> Arc<ProvidersManage
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
-            Ok(Arc::new(FakeDynamicProvider::new(instance_id)))
+            Ok(Arc::new(StubDynamicProvider::new(instance_id)))
         }),
     );
     Arc::new(providers_manager)
@@ -128,11 +128,11 @@ fn make_room_service_with_provider_credentials(
 }
 
 #[derive(Debug)]
-struct FakeDynamicProvider {
+struct StubDynamicProvider {
     instance_id: String,
 }
 
-impl FakeDynamicProvider {
+impl StubDynamicProvider {
     fn new(instance_id: impl Into<String>) -> Self {
         Self {
             instance_id: instance_id.into(),
@@ -184,7 +184,7 @@ impl FakeDynamicProvider {
 }
 
 #[async_trait]
-impl MediaProvider for FakeDynamicProvider {
+impl MediaProvider for StubDynamicProvider {
     fn name(&self) -> &'static str {
         "alist"
     }
@@ -225,7 +225,7 @@ impl MediaProvider for FakeDynamicProvider {
 }
 
 #[async_trait]
-impl DynamicFolder for FakeDynamicProvider {
+impl DynamicFolder for StubDynamicProvider {
     async fn list_playlist(
         &self,
         _ctx: &ProviderContext<'_>,
@@ -404,7 +404,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
 
     let user_service = Arc::new(make_user_service(&pool));
 
-    let providers_manager = make_fake_alist_providers_manager(&pool);
+    let providers_manager = make_test_alist_providers_manager(&pool);
     let room_service = make_room_service_with_provider_credentials(
         &pool,
         &user_service,
@@ -461,7 +461,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         .start_playback(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::StartPlaybackRequest {
+            synctv_proto::client::StartPlaybackRequest {
                 media_id: String::new(),
                 playlist_id: playlist_public_id.clone(),
                 target: br#"{"relative_path":"/episode-1.mp4"}"#.to_vec(),
@@ -474,7 +474,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         .get_playback(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::GetPlaybackRequest {
+            synctv_proto::client::GetPlaybackRequest {
                 playback_client_profile: None,
             },
         )
@@ -516,8 +516,8 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         .update_playback(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::UpdatePlaybackRequest {
-                r#type: synctv_api::proto::client::PlaybackUpdateType::Seek as i32,
+            synctv_proto::client::UpdatePlaybackRequest {
+                r#type: synctv_proto::client::PlaybackUpdateType::Seek as i32,
                 playing: None,
                 position: Some(12.5),
                 speed: None,
@@ -560,7 +560,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
     let user_repo = UserRepository::new(pool.clone());
     let user_service = Arc::new(make_user_service(&pool));
 
-    let providers_manager = make_fake_alist_providers_manager(&pool);
+    let providers_manager = make_test_alist_providers_manager(&pool);
     let room_service = make_room_service_with_provider_credentials(
         &pool,
         &user_service,
@@ -618,7 +618,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
         .list_playlist_items(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::ListPlaylistItemsRequest {
+            synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: playlist_public_id.clone(),
                 target: br#"{"relative_path":"season-1"}"#.to_vec(),
                 page: 1,
@@ -626,9 +626,9 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
                 search: String::new(),
                 source_provider: String::new(),
                 provider_instance_name: String::new(),
-                sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
-                sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
-                availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
+                sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
             },
         )
@@ -662,7 +662,7 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
     let user_repo = UserRepository::new(pool.clone());
     let user_service = Arc::new(make_user_service(&pool));
 
-    let providers_manager = make_fake_alist_providers_manager(&pool);
+    let providers_manager = make_test_alist_providers_manager(&pool);
     let room_service = make_room_service_with_provider_credentials(
         &pool,
         &user_service,
@@ -724,7 +724,7 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
         .start_playback(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::StartPlaybackRequest {
+            synctv_proto::client::StartPlaybackRequest {
                 media_id: String::new(),
                 playlist_id: playlist_public_id,
                 target: br#"{"relative_path":"/bound-episode-1.mp4"}"#.to_vec(),
@@ -737,7 +737,7 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
         .get_playback(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::GetPlaybackRequest {
+            synctv_proto::client::GetPlaybackRequest {
                 playback_client_profile: None,
             },
         )
@@ -849,7 +849,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         .start_playback(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::StartPlaybackRequest {
+            synctv_proto::client::StartPlaybackRequest {
                 media_id: media_public_id.clone(),
                 playlist_id: String::new(),
                 target: Vec::new(),
@@ -862,7 +862,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         .get_playback(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::GetPlaybackRequest {
+            synctv_proto::client::GetPlaybackRequest {
                 playback_client_profile: None,
             },
         )
@@ -942,7 +942,7 @@ async fn test_get_playback_without_active_media_returns_idle_playback_info() {
         .get_playback(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::GetPlaybackRequest {
+            synctv_proto::client::GetPlaybackRequest {
                 playback_client_profile: None,
             },
         )
@@ -1029,7 +1029,7 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
         .start_playback(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::StartPlaybackRequest {
+            synctv_proto::client::StartPlaybackRequest {
                 media_id: media_public_id.clone(),
                 playlist_id: String::new(),
                 target: Vec::new(),
@@ -1042,7 +1042,7 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
         .get_playback(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::GetPlaybackRequest {
+            synctv_proto::client::GetPlaybackRequest {
                 playback_client_profile: None,
             },
         )
@@ -1067,7 +1067,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
     let user_repo = UserRepository::new(pool.clone());
     let user_service = Arc::new(make_user_service(&pool));
 
-    let providers_manager = make_fake_alist_providers_manager(&pool);
+    let providers_manager = make_test_alist_providers_manager(&pool);
     let room_service = make_room_service_with_provider_credentials(
         &pool,
         &user_service,
@@ -1129,7 +1129,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
         .list_playlist_items(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::ListPlaylistItemsRequest {
+            synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: playlist_public_id,
                 target: Vec::new(),
                 page: 1,
@@ -1137,9 +1137,9 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
                 search: String::new(),
                 source_provider: String::new(),
                 provider_instance_name: String::new(),
-                sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
-                sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
-                availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
+                sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
             },
         )
@@ -1244,7 +1244,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
         .list_playlist_items(
             &owner.id,
             &room_public_id,
-            synctv_api::proto::client::ListPlaylistItemsRequest {
+            synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: Vec::new(),
                 page: 1,
@@ -1252,9 +1252,9 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
                 search: String::new(),
                 source_provider: String::new(),
                 provider_instance_name: String::new(),
-                sort_by: synctv_api::proto::client::MediaListSortBy::Position as i32,
-                sort_direction: synctv_api::proto::client::SortDirection::Asc as i32,
-                availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
+                sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
             },
         )

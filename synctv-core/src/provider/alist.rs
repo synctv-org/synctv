@@ -237,7 +237,7 @@ fn signed_m3u8_segment_proxy_base(
 ///
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
 pub struct AlistProvider {
-    provider_instance_manager: Arc<RemoteProviderManager>,
+    provider_instance_manager: Option<Arc<RemoteProviderManager>>,
     client_manager: Arc<ProviderClientManager>,
 }
 
@@ -255,14 +255,25 @@ impl AlistProvider {
         provider_instance_manager: Arc<RemoteProviderManager>,
     ) -> Result<Self, ProviderError> {
         Ok(Self {
-            provider_instance_manager,
+            provider_instance_manager: Some(provider_instance_manager),
             client_manager: Arc::new(ProviderClientManager::new()?),
         })
     }
 
     #[must_use]
-    pub const fn with_client_manager(
+    pub fn with_client_manager(
         provider_instance_manager: Arc<RemoteProviderManager>,
+        client_manager: Arc<ProviderClientManager>,
+    ) -> Self {
+        Self::with_optional_manager_and_client_manager(
+            Some(provider_instance_manager),
+            client_manager,
+        )
+    }
+
+    #[must_use]
+    pub fn with_optional_manager_and_client_manager(
+        provider_instance_manager: Option<Arc<RemoteProviderManager>>,
         client_manager: Arc<ProviderClientManager>,
     ) -> Self {
         Self {
@@ -271,19 +282,35 @@ impl AlistProvider {
         }
     }
 
+    pub fn new_local_only() -> Result<Self, ProviderError> {
+        Ok(Self {
+            provider_instance_manager: None,
+            client_manager: Arc::new(ProviderClientManager::new()?),
+        })
+    }
+
     async fn get_client_with_context(
         &self,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
     ) -> Result<AlistClientArc, ProviderError> {
-        self.provider_instance_manager
-            .resolve_client_required_with_context(
-                instance_name,
-                request_context,
-                create_remote_alist_client,
-                || self.client_manager.local_alist_client(),
-            )
-            .await
+        match (instance_name, self.provider_instance_manager.as_ref()) {
+            (None, _) => Ok(self.client_manager.local_alist_client()),
+            (Some(_), Some(manager)) => {
+                manager
+                    .resolve_client_required_with_context(
+                        instance_name,
+                        request_context,
+                        create_remote_alist_client,
+                        || self.client_manager.local_alist_client(),
+                    )
+                    .await
+            }
+            (Some(_), None) => Err(ProviderError::Internal(
+                "provider instance manager is required for remote Alist playback resolution"
+                    .to_string(),
+            )),
+        }
     }
 
     /// Detect file format from extension
@@ -1821,7 +1848,6 @@ mod tests {
     use super::*;
     use crate::models::UserId;
     use crate::provider::provider_client::AlistTranscodingTask;
-    use crate::repository::ProviderInstanceRepository;
     use async_trait::async_trait;
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -1831,11 +1857,11 @@ mod tests {
         FsSearchReq, FsSearchResp, LoginReq, MeReq, MeResp,
     };
 
-    struct FakeAlistSubtitleClient {
+    struct RecordingAlistSubtitleClient {
         requested_paths: Mutex<Vec<String>>,
     }
 
-    impl FakeAlistSubtitleClient {
+    impl RecordingAlistSubtitleClient {
         fn new() -> Self {
             Self {
                 requested_paths: Mutex::new(Vec::new()),
@@ -1843,8 +1869,15 @@ mod tests {
         }
     }
 
+    fn unconfigured_test_response() -> AlistError {
+        AlistError::Api {
+            code: 501,
+            message: "test alist method is not configured".to_string(),
+        }
+    }
+
     #[async_trait]
-    impl AlistInterface for FakeAlistSubtitleClient {
+    impl AlistInterface for RecordingAlistSubtitleClient {
         async fn fs_get(&self, request: FsGetReq) -> Result<FsGetResp, AlistError> {
             assert_eq!(
                 request.headers.get("User-Agent").map(String::as_str),
@@ -1878,32 +1911,32 @@ mod tests {
         }
 
         async fn fs_list(&self, _request: FsListReq) -> Result<FsListResp, AlistError> {
-            Err(AlistError::InvalidConfig("not implemented".to_string()))
+            Err(unconfigured_test_response())
         }
 
         async fn fs_other(&self, _request: FsOtherReq) -> Result<FsOtherResp, AlistError> {
-            Err(AlistError::InvalidConfig("not implemented".to_string()))
+            Err(unconfigured_test_response())
         }
 
         async fn fs_search(&self, _request: FsSearchReq) -> Result<FsSearchResp, AlistError> {
-            Err(AlistError::InvalidConfig("not implemented".to_string()))
+            Err(unconfigured_test_response())
         }
 
         async fn me(&self, _request: MeReq) -> Result<MeResp, AlistError> {
-            Err(AlistError::InvalidConfig("not implemented".to_string()))
+            Err(unconfigured_test_response())
         }
 
         async fn login(&self, _request: LoginReq) -> Result<String, AlistError> {
-            Err(AlistError::InvalidConfig("not implemented".to_string()))
+            Err(unconfigured_test_response())
         }
     }
 
-    struct FakeAlistSearchUnavailableClient;
+    struct SearchUnavailableAlistClient;
 
     #[async_trait]
-    impl AlistInterface for FakeAlistSearchUnavailableClient {
+    impl AlistInterface for SearchUnavailableAlistClient {
         async fn fs_get(&self, _request: FsGetReq) -> Result<FsGetResp, AlistError> {
-            Err(AlistError::InvalidConfig("not implemented".to_string()))
+            Err(unconfigured_test_response())
         }
 
         async fn fs_list(&self, request: FsListReq) -> Result<FsListResp, AlistError> {
@@ -1939,7 +1972,7 @@ mod tests {
         }
 
         async fn fs_other(&self, _request: FsOtherReq) -> Result<FsOtherResp, AlistError> {
-            Err(AlistError::InvalidConfig("not implemented".to_string()))
+            Err(unconfigured_test_response())
         }
 
         async fn fs_search(&self, _request: FsSearchReq) -> Result<FsSearchResp, AlistError> {
@@ -1950,20 +1983,13 @@ mod tests {
         }
 
         async fn me(&self, _request: MeReq) -> Result<MeResp, AlistError> {
-            Err(AlistError::InvalidConfig("not implemented".to_string()))
+            Err(unconfigured_test_response())
         }
 
         async fn login(&self, _request: LoginReq) -> Result<String, AlistError> {
-            Err(AlistError::InvalidConfig("not implemented".to_string()))
+            Err(unconfigured_test_response())
         }
     }
-
-    fn fake_provider_instance_manager() -> Arc<RemoteProviderManager> {
-        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        Arc::new(RemoteProviderManager::new(repo))
-    }
-
     #[test]
     fn test_detect_format() {
         assert_eq!(AlistProvider::detect_format("video.mp4"), "mp4");
@@ -2015,8 +2041,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_alist_credential_dependencies_use_creator_credential() {
-        let provider =
-            AlistProvider::new(fake_provider_instance_manager()).expect("provider should build");
+        let provider = AlistProvider::new_local_only().expect("provider should build");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_credential_owner_id(UserId::expect_positive(2));
@@ -2042,8 +2067,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_alist_credential_dependencies_require_explicit_creator_credential_owner() {
-        let provider =
-            AlistProvider::new(fake_provider_instance_manager()).expect("provider should build");
+        let provider = AlistProvider::new_local_only().expect("provider should build");
         let ctx = ProviderContext::new("test").with_user_id(UserId::expect_positive(1));
         let err = provider
             .credential_dependencies(
@@ -2066,12 +2090,12 @@ mod tests {
         let default_clients = ProviderClientManager::new_for_tests()
             .expect("default provider HTTP client should build");
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
-            Arc::new(FakeAlistSearchUnavailableClient),
+            Arc::new(SearchUnavailableAlistClient),
             default_clients.local_bilibili_client(),
             default_clients.local_emby_client(),
         ));
         let provider =
-            AlistProvider::with_client_manager(fake_provider_instance_manager(), client_manager);
+            AlistProvider::with_optional_manager_and_client_manager(None, client_manager);
 
         let response = provider
             .fs_search(
@@ -2102,12 +2126,12 @@ mod tests {
         let default_clients = ProviderClientManager::new_for_tests()
             .expect("default provider HTTP client should build");
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
-            Arc::new(FakeAlistSearchUnavailableClient),
+            Arc::new(SearchUnavailableAlistClient),
             default_clients.local_bilibili_client(),
             default_clients.local_emby_client(),
         ));
         let provider =
-            AlistProvider::with_client_manager(fake_provider_instance_manager(), client_manager);
+            AlistProvider::with_optional_manager_and_client_manager(None, client_manager);
 
         let files = provider
             .fs_search(
@@ -2150,8 +2174,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_prepare_alist_config_rejects_provider_instance_name() {
-        let provider =
-            AlistProvider::new(fake_provider_instance_manager()).expect("provider should build");
+        let provider = AlistProvider::new_local_only().expect("provider should build");
         let config = json!({
             "path": "/media/movies/test.mp4",
             "provider_instance_name": "remote-alist-1",
@@ -2702,8 +2725,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_alist_enrich_related_subtitles_resolves_urls_with_fs_get() {
-        let fake_client = Arc::new(FakeAlistSubtitleClient::new());
-        let client: AlistClientArc = fake_client.clone();
+        let recording_client = Arc::new(RecordingAlistSubtitleClient::new());
+        let client: AlistClientArc = recording_client.clone();
         let config = ResolvedAlistConfig {
             host: "https://alist.example.com".to_string(),
             token: "token".to_string(),
@@ -2750,7 +2773,7 @@ mod tests {
         assert!(file_info.related[1].raw_url.is_empty());
         assert!(file_info.related[2].raw_url.is_empty());
         assert_eq!(
-            fake_client
+            recording_client
                 .requested_paths
                 .lock()
                 .expect("requested_paths mutex should not be poisoned")

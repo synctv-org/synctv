@@ -11,7 +11,7 @@ use std::sync::Arc;
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use synctv_core::models::{
-    CreateFileUploadSession, FileReferenceTarget, FileUploadSession, NewChatImage, Room, RoomId,
+    CreateFileUploadSession, FileReferenceTarget, FileUploadSession, NewStoredFile, Room, RoomId,
     RoomStatus, User, UserId, UserRole, UserStatus,
 };
 use synctv_core::repository::{RoomRepository, UserRepository};
@@ -53,8 +53,8 @@ impl FileStorageService for RecordingFileStorageService {
     async fn prepare_files(
         &self,
         _context: FileStorageContext<'_>,
-        files: Vec<NewChatImage>,
-    ) -> synctv_core::Result<Vec<NewChatImage>> {
+        files: Vec<NewStoredFile>,
+    ) -> synctv_core::Result<Vec<NewStoredFile>> {
         Ok(files)
     }
 

@@ -101,8 +101,6 @@ protoc-bin-vendored.workspace = true
 criterion.workspace = true
 mockall.workspace = true
 synctv-core-testing.workspace = true
-testcontainers.workspace = true
-testcontainers-modules.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 

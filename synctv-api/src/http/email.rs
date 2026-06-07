@@ -25,7 +25,7 @@ use crate::http::{
     error::map_api_error, middleware::RequestMetadata, AppError, AppResult, AppState,
 };
 use crate::impls::{EmailApiImpl, EndpointRateLimitCategory};
-use crate::proto::client::{
+use synctv_proto::client::{
     ConfirmPasswordResetResponse, FinishOpaquePasswordResetRequest, RequestPasswordResetRequest,
     RequestPasswordResetResponse, StartOpaquePasswordResetRequest,
     StartOpaquePasswordResetResponse,
@@ -117,8 +117,8 @@ pub fn create_email_router() -> Router<AppState> {
         request_body = RequestPasswordResetRequest,
         responses(
             (status = 200, description = "Password reset email accepted", body = RequestPasswordResetResponse),
-            (status = 400, description = "Invalid password reset request", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid password reset request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
         )
     )
 )]
@@ -154,7 +154,7 @@ pub async fn request_password_reset(
         request_body = StartOpaquePasswordResetRequest,
         responses(
             (status = 200, description = "OPAQUE password reset challenge created", body = StartOpaquePasswordResetResponse),
-            (status = 400, description = "Invalid password reset request", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid password reset request", body = synctv_proto::client::ApiErrorResponse)
         )
     )
 )]
@@ -190,7 +190,7 @@ pub async fn start_opaque_password_reset(
         request_body = FinishOpaquePasswordResetRequest,
         responses(
             (status = 200, description = "Password reset confirmed", body = ConfirmPasswordResetResponse),
-            (status = 400, description = "Invalid password reset confirmation", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid password reset confirmation", body = synctv_proto::client::ApiErrorResponse)
         )
     )
 )]

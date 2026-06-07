@@ -21,7 +21,7 @@ pub struct AdminConnectionOptions {
     pub allow_config_auth_for_explicit_endpoint: bool,
 }
 
-pub type AuthenticatedManagementClient = ManagementServiceClient<
+type AuthenticatedManagementClient = ManagementServiceClient<
     tonic::service::interceptor::InterceptedService<Channel, ManagementAuthInterceptor>,
 >;
 
@@ -450,6 +450,12 @@ mod tests {
         seen_authorization: Option<Arc<Mutex<Vec<Option<String>>>>>,
     }
 
+    fn unavailable_test_management_response<T>() -> std::result::Result<Response<T>, Status> {
+        Err(Status::unavailable(
+            "test management service method is not configured",
+        ))
+    }
+
     #[cfg(unix)]
     #[tonic::async_trait]
     impl ManagementService for TestManagementService {
@@ -479,599 +485,599 @@ mod tests {
             &self,
             _: Request<GetSliceCacheStatsRequest>,
         ) -> std::result::Result<Response<GetSliceCacheStatsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
 
         async fn purge_slice_cache(
             &self,
             _: Request<PurgeSliceCacheRequest>,
         ) -> std::result::Result<Response<PurgeSliceCacheResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
 
         async fn evict_expired_slice_cache(
             &self,
             _: Request<EvictExpiredSliceCacheRequest>,
         ) -> std::result::Result<Response<EvictExpiredSliceCacheResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
 
         async fn list_users(
             &self,
             _: Request<ListUsersRequest>,
         ) -> std::result::Result<Response<admin_proto::ListUsersResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn get_user(
             &self,
             _: Request<GetUserRequest>,
         ) -> std::result::Result<Response<admin_proto::GetUserResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn get_user_preferences(
             &self,
             _: Request<GetUserPreferencesRequest>,
         ) -> std::result::Result<Response<admin_proto::GetUserPreferencesResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn update_user_preferences(
             &self,
             _: Request<UpdateUserPreferencesRequest>,
         ) -> std::result::Result<Response<admin_proto::UpdateUserPreferencesResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn add_admin(
             &self,
             _: Request<AddAdminRequest>,
         ) -> std::result::Result<Response<admin_proto::AddAdminResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn remove_admin(
             &self,
             _: Request<RemoveAdminRequest>,
         ) -> std::result::Result<Response<admin_proto::RemoveAdminResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn list_admins(
             &self,
             _: Request<ListAdminsRequest>,
         ) -> std::result::Result<Response<admin_proto::ListAdminsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn create_user(
             &self,
             _: Request<CreateUserRequest>,
         ) -> std::result::Result<Response<admin_proto::CreateUserResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn delete_user(
             &self,
             _: Request<DeleteUserRequest>,
         ) -> std::result::Result<Response<admin_proto::DeleteUserResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn ban_user(
             &self,
             _: Request<BanUserRequest>,
         ) -> std::result::Result<Response<admin_proto::BanUserResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn unban_user(
             &self,
             _: Request<UnbanUserRequest>,
         ) -> std::result::Result<Response<admin_proto::UnbanUserResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn list_user_registration_reviews(
             &self,
             _: Request<ListUserRegistrationReviewsRequest>,
         ) -> std::result::Result<Response<admin_proto::ListUserRegistrationReviewsResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn approve_user_registration_review(
             &self,
             _: Request<ApproveUserRegistrationReviewRequest>,
         ) -> std::result::Result<Response<admin_proto::ApproveUserRegistrationReviewResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn reject_user_registration_review(
             &self,
             _: Request<RejectUserRegistrationReviewRequest>,
         ) -> std::result::Result<Response<admin_proto::RejectUserRegistrationReviewResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn list_room_creation_reviews(
             &self,
             _: Request<ListRoomCreationReviewsRequest>,
         ) -> std::result::Result<Response<admin_proto::ListRoomCreationReviewsResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn approve_room_creation_review(
             &self,
             _: Request<ApproveRoomCreationReviewRequest>,
         ) -> std::result::Result<Response<admin_proto::ApproveRoomCreationReviewResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn reject_room_creation_review(
             &self,
             _: Request<RejectRoomCreationReviewRequest>,
         ) -> std::result::Result<Response<admin_proto::RejectRoomCreationReviewResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn list_room_join_reviews(
             &self,
             _: Request<ListRoomJoinReviewsRequest>,
         ) -> std::result::Result<Response<admin_proto::ListRoomJoinReviewsResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn approve_room_join_review(
             &self,
             _: Request<ApproveRoomJoinReviewRequest>,
         ) -> std::result::Result<Response<admin_proto::ApproveRoomJoinReviewResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn reject_room_join_review(
             &self,
             _: Request<RejectRoomJoinReviewRequest>,
         ) -> std::result::Result<Response<admin_proto::RejectRoomJoinReviewResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn list_ban_records(
             &self,
             _: Request<ListBanRecordsRequest>,
         ) -> std::result::Result<Response<admin_proto::ListBanRecordsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn update_user_role(
             &self,
             _: Request<UpdateUserRoleRequest>,
         ) -> std::result::Result<Response<admin_proto::UpdateUserRoleResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn set_user_password(
             &self,
             _: Request<SetUserPasswordRequest>,
         ) -> std::result::Result<Response<admin_proto::SetUserPasswordResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn update_user_username(
             &self,
             _: Request<UpdateUserUsernameRequest>,
         ) -> std::result::Result<Response<admin_proto::UpdateUserUsernameResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn get_user_rooms(
             &self,
             _: Request<GetUserRoomsRequest>,
         ) -> std::result::Result<Response<admin_proto::GetUserRoomsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn batch_ban_users(
             &self,
             _: Request<BatchBanUsersRequest>,
         ) -> std::result::Result<Response<admin_proto::BatchBanUsersResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn batch_delete_users(
             &self,
             _: Request<BatchDeleteUsersRequest>,
         ) -> std::result::Result<Response<admin_proto::BatchDeleteUsersResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn create_room(
             &self,
             _: Request<CreateRoomRequest>,
         ) -> std::result::Result<Response<client_proto::CreateRoomResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn list_rooms(
             &self,
             _: Request<ListRoomsRequest>,
         ) -> std::result::Result<Response<admin_proto::ListRoomsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn get_room(
             &self,
             _: Request<GetRoomRequest>,
         ) -> std::result::Result<Response<admin_proto::GetRoomResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn get_room_members(
             &self,
             _: Request<GetRoomMembersRequest>,
         ) -> std::result::Result<Response<admin_proto::GetRoomMembersResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn add_member(
             &self,
             _: Request<AddMemberRequest>,
         ) -> std::result::Result<Response<client_proto::AddMemberResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn update_member_permissions(
             &self,
             _: Request<UpdateMemberPermissionsRequest>,
         ) -> std::result::Result<Response<client_proto::UpdateMemberPermissionsResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn kick_member(
             &self,
             _: Request<KickMemberRequest>,
         ) -> std::result::Result<Response<client_proto::KickMemberResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn get_room_settings(
             &self,
             _: Request<GetRoomSettingsRequest>,
         ) -> std::result::Result<Response<admin_proto::GetRoomSettingsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn update_room_settings(
             &self,
             _: Request<UpdateRoomSettingsRequest>,
         ) -> std::result::Result<Response<admin_proto::UpdateRoomSettingsResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn reset_room_settings(
             &self,
             _: Request<ResetRoomSettingsRequest>,
         ) -> std::result::Result<Response<admin_proto::ResetRoomSettingsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn transfer_room_ownership(
             &self,
             _: Request<TransferRoomOwnershipRequest>,
         ) -> std::result::Result<Response<client_proto::TransferRoomOwnershipResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn update_room_password(
             &self,
             _: Request<UpdateRoomPasswordRequest>,
         ) -> std::result::Result<Response<admin_proto::UpdateRoomPasswordResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn ban_room(
             &self,
             _: Request<BanRoomRequest>,
         ) -> std::result::Result<Response<admin_proto::BanRoomResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn unban_room(
             &self,
             _: Request<UnbanRoomRequest>,
         ) -> std::result::Result<Response<admin_proto::UnbanRoomResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn delete_room(
             &self,
             _: Request<DeleteRoomRequest>,
         ) -> std::result::Result<Response<admin_proto::DeleteRoomResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn batch_ban_rooms(
             &self,
             _: Request<BatchBanRoomsRequest>,
         ) -> std::result::Result<Response<admin_proto::BatchBanRoomsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn batch_delete_rooms(
             &self,
             _: Request<BatchDeleteRoomsRequest>,
         ) -> std::result::Result<Response<admin_proto::BatchDeleteRoomsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn start_playback(
             &self,
             _: Request<StartPlaybackRequest>,
         ) -> std::result::Result<Response<client_proto::StartPlaybackResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn stop_playback(
             &self,
             _: Request<StopPlaybackRequest>,
         ) -> std::result::Result<Response<client_proto::StopPlaybackResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn get_playback(
             &self,
             _: Request<GetPlaybackRequest>,
         ) -> std::result::Result<Response<client_proto::GetPlaybackResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn update_playback(
             &self,
             _: Request<UpdatePlaybackRequest>,
         ) -> std::result::Result<Response<client_proto::GetPlaybackResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn create_publish_key(
             &self,
             _: Request<CreatePublishKeyRequest>,
         ) -> std::result::Result<Response<rtmp_proto::CreatePublishKeyResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn get_stream_info(
             &self,
             _: Request<GetStreamInfoRequest>,
         ) -> std::result::Result<Response<rtmp_proto::GetStreamInfoResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn list_room_streams(
             &self,
             _: Request<ListRoomStreamsRequest>,
         ) -> std::result::Result<Response<client_proto::ListRoomStreamsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn kick_room_stream(
             &self,
             _: Request<KickRoomStreamRequest>,
         ) -> std::result::Result<Response<client_proto::KickRoomStreamResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn list_playlists(
             &self,
             _: Request<ListPlaylistsRequest>,
         ) -> std::result::Result<Response<client_proto::ListPlaylistsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn get_playlist(
             &self,
             _: Request<GetPlaylistRequest>,
         ) -> std::result::Result<Response<client_proto::GetPlaylistResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn create_playlist(
             &self,
             _: Request<CreatePlaylistRequest>,
         ) -> std::result::Result<Response<client_proto::CreatePlaylistResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn create_alist_playlist(
             &self,
             _: Request<CreateAlistPlaylistRequest>,
         ) -> std::result::Result<Response<client_proto::CreatePlaylistResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn create_emby_playlist(
             &self,
             _: Request<CreateEmbyPlaylistRequest>,
         ) -> std::result::Result<Response<client_proto::CreatePlaylistResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn update_playlist(
             &self,
             _: Request<UpdatePlaylistRequest>,
         ) -> std::result::Result<Response<client_proto::UpdatePlaylistResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn move_playlist(
             &self,
             _: Request<MovePlaylistRequest>,
         ) -> std::result::Result<Response<client_proto::MovePlaylistResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn delete_playlist(
             &self,
             _: Request<DeletePlaylistRequest>,
         ) -> std::result::Result<Response<client_proto::DeletePlaylistResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn list_media(
             &self,
             _: Request<ListMediaRequest>,
         ) -> std::result::Result<Response<client_proto::ListPlaylistItemsResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn add_media(
             &self,
             _: Request<AddMediaRequest>,
         ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn add_direct_url_media(
             &self,
             _: Request<AddDirectUrlMediaRequest>,
         ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn add_alist_media(
             &self,
             _: Request<AddAlistMediaRequest>,
         ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn add_emby_media(
             &self,
             _: Request<AddEmbyMediaRequest>,
         ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn add_bilibili_video_media(
             &self,
             _: Request<AddBilibiliVideoMediaRequest>,
         ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn add_bilibili_pgc_media(
             &self,
             _: Request<AddBilibiliPgcMediaRequest>,
         ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn add_bilibili_live_media(
             &self,
             _: Request<AddBilibiliLiveMediaRequest>,
         ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn edit_media(
             &self,
             _: Request<EditMediaRequest>,
         ) -> std::result::Result<Response<client_proto::EditMediaResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn move_media(
             &self,
             _: Request<MoveMediaRequest>,
         ) -> std::result::Result<Response<client_proto::MoveMediaResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn delete_media(
             &self,
             _: Request<DeleteMediaRequest>,
         ) -> std::result::Result<Response<client_proto::DeleteMediaResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn alist_login(
             &self,
             _: Request<AlistLoginRequest>,
         ) -> std::result::Result<Response<alist_proto::LoginResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn alist_list(
             &self,
             _: Request<AlistListRequest>,
         ) -> std::result::Result<Response<alist_proto::ListResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn alist_search(
             &self,
             _: Request<AlistSearchRequest>,
         ) -> std::result::Result<Response<alist_proto::SearchResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn alist_get_me(
             &self,
             _: Request<AlistGetMeRequest>,
         ) -> std::result::Result<Response<alist_proto::GetMeResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn alist_logout(
             &self,
             _: Request<AlistLogoutRequest>,
         ) -> std::result::Result<Response<alist_proto::LogoutResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn alist_get_binds(
             &self,
             _: Request<AlistGetBindsRequest>,
         ) -> std::result::Result<Response<alist_proto::GetBindsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn emby_login(
             &self,
             _: Request<EmbyLoginRequest>,
         ) -> std::result::Result<Response<emby_proto::LoginResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn emby_list(
             &self,
             _: Request<EmbyListRequest>,
         ) -> std::result::Result<Response<emby_proto::ListResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn emby_get_me(
             &self,
             _: Request<EmbyGetMeRequest>,
         ) -> std::result::Result<Response<emby_proto::GetMeResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn emby_logout(
             &self,
             _: Request<EmbyLogoutRequest>,
         ) -> std::result::Result<Response<emby_proto::LogoutResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn emby_get_binds(
             &self,
             _: Request<EmbyGetBindsRequest>,
         ) -> std::result::Result<Response<emby_proto::GetBindsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn bilibili_parse(
             &self,
             _: Request<BilibiliParseRequest>,
         ) -> std::result::Result<Response<bilibili_proto::ParseResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn bilibili_login_qr(
             &self,
             _: Request<BilibiliLoginQrRequest>,
         ) -> std::result::Result<Response<bilibili_proto::QrCodeResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn bilibili_check_qr(
             &self,
             _: Request<BilibiliCheckQrRequest>,
         ) -> std::result::Result<Response<bilibili_proto::QrStatusResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn bilibili_start_sms_login(
             &self,
             _: Request<BilibiliStartSmsLoginRequest>,
         ) -> std::result::Result<Response<bilibili_proto::StartSmsLoginResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn bilibili_send_sms(
             &self,
             _: Request<BilibiliSendSmsRequest>,
         ) -> std::result::Result<Response<bilibili_proto::SendSmsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn bilibili_login_sms(
             &self,
             _: Request<BilibiliLoginSmsRequest>,
         ) -> std::result::Result<Response<bilibili_proto::LoginSmsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn bilibili_get_user_info(
             &self,
             _: Request<BilibiliGetUserInfoRequest>,
         ) -> std::result::Result<Response<bilibili_proto::UserInfoResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn bilibili_logout(
             &self,
             _: Request<BilibiliLogoutRequest>,
         ) -> std::result::Result<Response<bilibili_proto::LogoutResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn bilibili_get_binds(
             &self,
             _: Request<BilibiliGetBindsRequest>,
         ) -> std::result::Result<Response<bilibili_proto::GetBindsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn list_available_provider_instances(
             &self,
             _: Request<provider_common_proto::ListAvailableProviderInstancesRequest>,
         ) -> std::result::Result<Response<provider_common_proto::ProviderInstancesResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn list_provider_backends(
             &self,
             _: Request<provider_common_proto::ListProviderBackendsRequest>,
         ) -> std::result::Result<Response<provider_common_proto::ProviderBackendsResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn list_provider_instances(
             &self,
@@ -1080,14 +1086,14 @@ mod tests {
             Response<provider_common_proto::ListProviderInstancesResponse>,
             Status,
         > {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn add_provider_instance(
             &self,
             _: Request<provider_common_proto::AddProviderInstanceRequest>,
         ) -> std::result::Result<Response<provider_common_proto::AddProviderInstanceResponse>, Status>
         {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn update_provider_instance(
             &self,
@@ -1096,7 +1102,7 @@ mod tests {
             Response<provider_common_proto::UpdateProviderInstanceResponse>,
             Status,
         > {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn delete_provider_instance(
             &self,
@@ -1105,7 +1111,7 @@ mod tests {
             Response<provider_common_proto::DeleteProviderInstanceResponse>,
             Status,
         > {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn reconnect_provider_instance(
             &self,
@@ -1114,7 +1120,7 @@ mod tests {
             Response<provider_common_proto::ReconnectProviderInstanceResponse>,
             Status,
         > {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn enable_provider_instance(
             &self,
@@ -1123,7 +1129,7 @@ mod tests {
             Response<provider_common_proto::EnableProviderInstanceResponse>,
             Status,
         > {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn disable_provider_instance(
             &self,
@@ -1132,43 +1138,43 @@ mod tests {
             Response<provider_common_proto::DisableProviderInstanceResponse>,
             Status,
         > {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn get_settings(
             &self,
             _: Request<GetSettingsRequest>,
         ) -> std::result::Result<Response<admin_proto::GetSettingsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn get_settings_group(
             &self,
             _: Request<GetSettingsGroupRequest>,
         ) -> std::result::Result<Response<admin_proto::GetSettingsGroupResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn update_settings(
             &self,
             _: Request<UpdateSettingsRequest>,
         ) -> std::result::Result<Response<admin_proto::UpdateSettingsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn send_test_email(
             &self,
             _: Request<SendTestEmailRequest>,
         ) -> std::result::Result<Response<admin_proto::SendTestEmailResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn list_active_streams(
             &self,
             _: Request<ListActiveStreamsRequest>,
         ) -> std::result::Result<Response<admin_proto::ListActiveStreamsResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn kick_stream(
             &self,
             _: Request<KickStreamRequest>,
         ) -> std::result::Result<Response<admin_proto::KickStreamResponse>, Status> {
-            Err(Status::unimplemented("test stub"))
+            unavailable_test_management_response()
         }
         async fn stop_server(
             &self,

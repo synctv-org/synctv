@@ -1,0 +1,154 @@
+use axum::{
+    extract::{Path, State},
+    Json,
+};
+
+use super::execute::execute_user_endpoint;
+use super::types::{KickRoomStreamBody, RoomStreamPath};
+use crate::http::validation::ProtoQuery;
+use crate::http::{middleware::RequestMetadata, AppResult, AppState};
+use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
+use synctv_proto::client::{
+    GetRoomStreamInfoRequest, GetRoomStreamInfoResponse, KickRoomStreamRequest,
+    KickRoomStreamResponse, ListRoomStreamsRequest, ListRoomStreamsResponse,
+};
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/streams",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ListRoomStreamsRequest
+        ),
+        responses(
+            (status = 200, description = "Active room live streams", body = ListRoomStreamsResponse),
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Room not found", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn list_room_streams(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
+    ProtoQuery(req): ProtoQuery<ListRoomStreamsRequest>,
+) -> AppResult<Json<ListRoomStreamsResponse>> {
+    let room_id = path.room_id;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomMedia,
+        move |client_api, authenticated| async move {
+            client_api
+                .list_room_streams(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/streams/{media_id}",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("media_id" = String, Path, description = "Media ID")
+        ),
+        responses(
+            (status = 200, description = "Room live stream information", body = GetRoomStreamInfoResponse),
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Stream not found", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn get_room_stream_info(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomStreamPath>,
+) -> AppResult<Json<GetRoomStreamInfoResponse>> {
+    let room_id = path.room_id;
+    let req = GetRoomStreamInfoRequest {
+        media_id: path.media_id,
+    };
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomMedia,
+        move |client_api, authenticated| async move {
+            client_api
+                .get_room_stream_info(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/rooms/{room_id}/streams/{media_id}/kick",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("media_id" = String, Path, description = "Media ID")
+        ),
+        request_body = KickRoomStreamBody,
+        responses(
+            (status = 200, description = "Room live stream kicked", body = KickRoomStreamResponse),
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Permission denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Stream not found", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn kick_room_stream(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomStreamPath>,
+    Json(req): Json<KickRoomStreamBody>,
+) -> AppResult<Json<KickRoomStreamResponse>> {
+    let room_id = path.room_id;
+    let req = KickRoomStreamRequest {
+        media_id: path.media_id,
+        reason: req.reason,
+    };
+    execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomMedia,
+        move |client_api, authenticated| async move {
+            client_api
+                .kick_room_stream(&authenticated.user_id, &room_id, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(KickRoomStreamResponse {}))
+}

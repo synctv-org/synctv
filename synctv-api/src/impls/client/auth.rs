@@ -16,25 +16,25 @@ pub(crate) struct PasskeyAuthChallenge {
     pub options_json: Vec<u8>,
 }
 
-fn mfa_method_to_proto(method: AuthFactorMethod) -> crate::proto::client::MfaMethod {
+fn mfa_method_to_proto(method: AuthFactorMethod) -> synctv_proto::client::MfaMethod {
     match method {
-        AuthFactorMethod::Password => crate::proto::client::MfaMethod::Password,
-        AuthFactorMethod::WebAuthn => crate::proto::client::MfaMethod::Webauthn,
-        AuthFactorMethod::Email => crate::proto::client::MfaMethod::Email,
+        AuthFactorMethod::Password => synctv_proto::client::MfaMethod::Password,
+        AuthFactorMethod::WebAuthn => synctv_proto::client::MfaMethod::Webauthn,
+        AuthFactorMethod::Email => synctv_proto::client::MfaMethod::Email,
     }
 }
 
 pub(crate) fn login_outcome_to_proto(
     outcome: AuthenticatedLogin,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::LoginResponse, ApiError> {
+) -> Result<synctv_proto::client::LoginResponse, ApiError> {
     match outcome {
         AuthenticatedLogin::Complete {
             user,
             email,
             access_token,
             refresh_token,
-        } => Ok(crate::proto::client::LoginResponse {
+        } => Ok(synctv_proto::client::LoginResponse {
             user: Some(try_user_to_proto(&user, email.as_deref(), public_id_codec)?),
             access_token,
             refresh_token,
@@ -44,11 +44,11 @@ pub(crate) fn login_outcome_to_proto(
             user,
             email,
             challenge,
-        } => Ok(crate::proto::client::LoginResponse {
+        } => Ok(synctv_proto::client::LoginResponse {
             user: Some(try_user_to_proto(&user, email.as_deref(), public_id_codec)?),
             access_token: String::new(),
             refresh_token: String::new(),
-            mfa: Some(crate::proto::client::MfaChallenge {
+            mfa: Some(synctv_proto::client::MfaChallenge {
                 required: true,
                 session_id: challenge.session_id,
                 available_methods: challenge
@@ -76,8 +76,8 @@ fn normalize_optional_email(email: Option<String>) -> Result<Option<String>, Api
 fn pending_registration_to_proto(
     pending: PendingAccountRegistration,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::PendingRegistrationReview, ApiError> {
-    Ok(crate::proto::client::PendingRegistrationReview {
+) -> Result<synctv_proto::client::PendingRegistrationReview, ApiError> {
+    Ok(synctv_proto::client::PendingRegistrationReview {
         review_request_id: public_id_codec
             .encode_user_id(pending.review_request_id)
             .map_err(|error| {
@@ -93,26 +93,26 @@ fn pending_registration_to_proto(
 fn registration_outcome_to_proto(
     outcome: AccountRegistrationOutcome,
     public_id_codec: &crate::PublicIdCodec,
-) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+) -> Result<synctv_proto::client::RegisterResponse, ApiError> {
     match outcome {
         AccountRegistrationOutcome::Registered {
             user,
             email,
             access_token,
             refresh_token,
-        } => Ok(crate::proto::client::RegisterResponse {
+        } => Ok(synctv_proto::client::RegisterResponse {
             user: Some(try_user_to_proto(&user, email.as_deref(), public_id_codec)?),
             access_token,
             refresh_token,
-            status: crate::proto::client::RegistrationStatus::Registered as i32,
+            status: synctv_proto::client::RegistrationStatus::Registered as i32,
             pending_review: None,
         }),
         AccountRegistrationOutcome::PendingReview(pending) => {
-            Ok(crate::proto::client::RegisterResponse {
+            Ok(synctv_proto::client::RegisterResponse {
                 user: None,
                 access_token: String::new(),
                 refresh_token: String::new(),
-                status: crate::proto::client::RegistrationStatus::PendingReview as i32,
+                status: synctv_proto::client::RegistrationStatus::PendingReview as i32,
                 pending_review: Some(pending_registration_to_proto(pending, public_id_codec)?),
             })
         }
@@ -177,10 +177,10 @@ impl ClientApiImpl {
     pub async fn confirm_email_login_with_control(
         &self,
         email_api: Option<&crate::impls::EmailApiImpl>,
-        req: crate::proto::client::ConfirmEmailLoginRequest,
+        req: synctv_proto::client::ConfirmEmailLoginRequest,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+    ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let email_api = email_api.ok_or_else(|| {
@@ -197,9 +197,9 @@ impl ClientApiImpl {
 
     pub async fn create_guest_token_with_control(
         &self,
-        req: crate::proto::client::CreateGuestTokenRequest,
+        req: synctv_proto::client::CreateGuestTokenRequest,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::CreateGuestTokenResponse, ApiError> {
+    ) -> Result<synctv_proto::client::CreateGuestTokenResponse, ApiError> {
         let _ = control;
         crate::impls::validate_proto_request(&req)?;
 
@@ -243,7 +243,7 @@ impl ClientApiImpl {
         let now = chrono::Utc::now().timestamp();
         let expires_in_secs = nonnegative_token_ttl_seconds(claims.exp, now)?;
 
-        Ok(crate::proto::client::CreateGuestTokenResponse {
+        Ok(synctv_proto::client::CreateGuestTokenResponse {
             token,
             room_id: req.room_id,
             guest_id,
@@ -257,18 +257,18 @@ impl ClientApiImpl {
 
     pub async fn start_opaque_login_with_control(
         &self,
-        req: crate::proto::client::StartOpaqueLoginRequest,
+        req: synctv_proto::client::StartOpaqueLoginRequest,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::StartOpaqueLoginResponse, ApiError> {
+    ) -> Result<synctv_proto::client::StartOpaqueLoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let identifier = match req.identifier {
-            Some(crate::proto::client::start_opaque_login_request::Identifier::Email(email)) => {
+            Some(synctv_proto::client::start_opaque_login_request::Identifier::Email(email)) => {
                 crate::impls::validation::validate_email(&email)
                     .map_err(|e| ApiError::InvalidInput(e.to_string()))?
             }
-            Some(crate::proto::client::start_opaque_login_request::Identifier::Username(
+            Some(synctv_proto::client::start_opaque_login_request::Identifier::Username(
                 username,
             )) => crate::impls::validation::validate_login_username(&username)
                 .map_err(|e| ApiError::InvalidInput(e.to_string()))?,
@@ -285,7 +285,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::StartOpaqueLoginResponse {
+        Ok(synctv_proto::client::StartOpaqueLoginResponse {
             session_id: challenge.session_id,
             credential_response: challenge.credential_response,
         })
@@ -293,19 +293,19 @@ impl ClientApiImpl {
 
     pub async fn login_with_direct_password_with_control(
         &self,
-        req: crate::proto::client::LoginWithDirectPasswordRequest,
+        req: synctv_proto::client::LoginWithDirectPasswordRequest,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+    ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let identifier = match req.identifier {
-            Some(crate::proto::client::login_with_direct_password_request::Identifier::Email(
+            Some(synctv_proto::client::login_with_direct_password_request::Identifier::Email(
                 email,
             )) => crate::impls::validation::validate_email(&email)
                 .map_err(|e| ApiError::InvalidInput(e.to_string()))?,
             Some(
-                crate::proto::client::login_with_direct_password_request::Identifier::Username(
+                synctv_proto::client::login_with_direct_password_request::Identifier::Username(
                     username,
                 ),
             ) => crate::impls::validation::validate_login_username(&username)
@@ -333,10 +333,10 @@ impl ClientApiImpl {
 
     pub async fn finish_opaque_login_with_control(
         &self,
-        req: crate::proto::client::FinishOpaqueLoginRequest,
+        req: synctv_proto::client::FinishOpaqueLoginRequest,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+    ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let outcome = self
@@ -355,10 +355,10 @@ impl ClientApiImpl {
 
     pub async fn start_opaque_registration_with_control(
         &self,
-        mut req: crate::proto::client::StartOpaqueRegistrationRequest,
+        mut req: synctv_proto::client::StartOpaqueRegistrationRequest,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::StartOpaqueRegistrationResponse, ApiError> {
+    ) -> Result<synctv_proto::client::StartOpaqueRegistrationResponse, ApiError> {
         req.username = crate::impls::validation::validate_username(&req.username)
             .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
         let email = normalize_optional_email(req.email.clone())?;
@@ -376,7 +376,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::StartOpaqueRegistrationResponse {
+        Ok(synctv_proto::client::StartOpaqueRegistrationResponse {
             session_id: challenge.session_id,
             registration_response: challenge.registration_response,
         })
@@ -384,10 +384,10 @@ impl ClientApiImpl {
 
     pub async fn finish_opaque_registration_with_control(
         &self,
-        req: crate::proto::client::FinishOpaqueRegistrationRequest,
+        req: synctv_proto::client::FinishOpaqueRegistrationRequest,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+    ) -> Result<synctv_proto::client::RegisterResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let outcome = self
@@ -405,10 +405,10 @@ impl ClientApiImpl {
 
     pub async fn register_with_direct_password_with_control(
         &self,
-        mut req: crate::proto::client::RegisterWithDirectPasswordRequest,
+        mut req: synctv_proto::client::RegisterWithDirectPasswordRequest,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+    ) -> Result<synctv_proto::client::RegisterResponse, ApiError> {
         req.username = crate::impls::validation::validate_username(&req.username)
             .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
         let email = normalize_optional_email(req.email.clone())?;
@@ -430,10 +430,10 @@ impl ClientApiImpl {
 
     pub async fn confirm_email_registration_with_direct_password_with_control(
         &self,
-        req: crate::proto::client::ConfirmEmailRegistrationRequest,
+        req: synctv_proto::client::ConfirmEmailRegistrationRequest,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+    ) -> Result<synctv_proto::client::RegisterResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let outcome = self
@@ -478,10 +478,10 @@ impl ClientApiImpl {
 
     pub async fn start_passkey_registration_with_control(
         &self,
-        req: crate::proto::client::StartPasskeyRegistrationRequest,
+        req: synctv_proto::client::StartPasskeyRegistrationRequest,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::StartPasskeyRegistrationResponse, ApiError> {
+    ) -> Result<synctv_proto::client::StartPasskeyRegistrationResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let challenge = self
             .start_passkey_registration_challenge_with_control(
@@ -493,7 +493,7 @@ impl ClientApiImpl {
             )
             .await?;
         let options = super::passkey::passkey_options_to_json_bytes(challenge.options_json)?;
-        Ok(crate::proto::client::StartPasskeyRegistrationResponse {
+        Ok(synctv_proto::client::StartPasskeyRegistrationResponse {
             session_id: challenge.session_id,
             options,
         })
@@ -505,7 +505,7 @@ impl ClientApiImpl {
         credential_json: &[u8],
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+    ) -> Result<synctv_proto::client::RegisterResponse, ApiError> {
         let outcome = self
             .passkey_service()?
             .finish_account_registration(session_id, credential_json, client_ip, control)
@@ -516,10 +516,10 @@ impl ClientApiImpl {
 
     pub async fn finish_passkey_registration_with_control(
         &self,
-        req: crate::proto::client::FinishPasskeyRegistrationRequest,
+        req: synctv_proto::client::FinishPasskeyRegistrationRequest,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+    ) -> Result<synctv_proto::client::RegisterResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.finish_passkey_registration_bytes_with_control(
             &req.session_id,
@@ -551,16 +551,16 @@ impl ClientApiImpl {
 
     pub async fn start_passkey_login_with_control(
         &self,
-        req: crate::proto::client::StartPasskeyLoginRequest,
+        req: synctv_proto::client::StartPasskeyLoginRequest,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::StartPasskeyLoginResponse, ApiError> {
+    ) -> Result<synctv_proto::client::StartPasskeyLoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let (username, email) = match req.identifier {
-            Some(crate::proto::client::start_passkey_login_request::Identifier::Username(
+            Some(synctv_proto::client::start_passkey_login_request::Identifier::Username(
                 username,
             )) => (username, String::new()),
-            Some(crate::proto::client::start_passkey_login_request::Identifier::Email(email)) => {
+            Some(synctv_proto::client::start_passkey_login_request::Identifier::Email(email)) => {
                 (String::new(), email)
             }
             None => (String::new(), String::new()),
@@ -569,7 +569,7 @@ impl ClientApiImpl {
             .start_passkey_login_challenge_with_control(username, email, client_ip, control)
             .await?;
         let options = super::passkey::passkey_options_to_json_bytes(challenge.options_json)?;
-        Ok(crate::proto::client::StartPasskeyLoginResponse {
+        Ok(synctv_proto::client::StartPasskeyLoginResponse {
             session_id: challenge.session_id,
             options,
         })
@@ -581,7 +581,7 @@ impl ClientApiImpl {
         credential_json: &[u8],
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+    ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
         let outcome = self
             .passkey_service()?
             .finish_login(session_id, credential_json, client_ip, control)
@@ -592,10 +592,10 @@ impl ClientApiImpl {
 
     pub async fn finish_passkey_login_with_control(
         &self,
-        req: crate::proto::client::FinishPasskeyLoginRequest,
+        req: synctv_proto::client::FinishPasskeyLoginRequest,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+    ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.finish_passkey_login_bytes_with_control(
             &req.session_id,
@@ -628,14 +628,14 @@ impl ClientApiImpl {
 
     pub async fn start_mfa_passkey_with_control(
         &self,
-        req: crate::proto::client::StartMfaPasskeyRequest,
-    ) -> Result<crate::proto::client::StartMfaPasskeyResponse, ApiError> {
+        req: synctv_proto::client::StartMfaPasskeyRequest,
+    ) -> Result<synctv_proto::client::StartMfaPasskeyResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let challenge = self
             .start_mfa_passkey_challenge_with_control(&req.mfa_session_id)
             .await?;
         let options = super::passkey::passkey_options_to_json_bytes(challenge.options_json)?;
-        Ok(crate::proto::client::StartMfaPasskeyResponse {
+        Ok(synctv_proto::client::StartMfaPasskeyResponse {
             passkey_session_id: challenge.session_id,
             options,
         })
@@ -648,7 +648,7 @@ impl ClientApiImpl {
         credential_json: &[u8],
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+    ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
         let user = self
             .user_service
             .get_mfa_session_user_for_method(mfa_session_id, AuthFactorMethod::WebAuthn)
@@ -673,10 +673,10 @@ impl ClientApiImpl {
 
     pub async fn finish_mfa_passkey_with_control(
         &self,
-        req: crate::proto::client::FinishMfaPasskeyRequest,
+        req: synctv_proto::client::FinishMfaPasskeyRequest,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+    ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.finish_mfa_passkey_bytes_with_control(
             &req.mfa_session_id,
@@ -690,16 +690,16 @@ impl ClientApiImpl {
 
     pub async fn refresh_token(
         &self,
-        req: crate::proto::client::RefreshTokenRequest,
-    ) -> Result<crate::proto::client::RefreshTokenResponse, ApiError> {
+        req: synctv_proto::client::RefreshTokenRequest,
+    ) -> Result<synctv_proto::client::RefreshTokenResponse, ApiError> {
         self.refresh_token_with_control(req, None).await
     }
 
     pub async fn refresh_token_with_control(
         &self,
-        req: crate::proto::client::RefreshTokenRequest,
+        req: synctv_proto::client::RefreshTokenRequest,
         control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::RefreshTokenResponse, ApiError> {
+    ) -> Result<synctv_proto::client::RefreshTokenResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         // Refresh tokens (returns tuple: (new_access_token, new_refresh_token))
@@ -709,7 +709,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::RefreshTokenResponse {
+        Ok(synctv_proto::client::RefreshTokenResponse {
             access_token,
             refresh_token,
         })
@@ -872,7 +872,7 @@ mod tests {
 
         assert_eq!(
             response.status,
-            crate::proto::client::RegistrationStatus::Registered as i32
+            synctv_proto::client::RegistrationStatus::Registered as i32
         );
         assert_eq!(response.access_token, "access");
         assert_eq!(response.refresh_token, "refresh");
@@ -895,7 +895,7 @@ mod tests {
 
         assert_eq!(
             response.status,
-            crate::proto::client::RegistrationStatus::PendingReview as i32
+            synctv_proto::client::RegistrationStatus::PendingReview as i32
         );
         assert!(response.user.is_none());
         assert!(response.access_token.is_empty());

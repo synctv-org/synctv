@@ -33,7 +33,7 @@ impl ClientApiImpl {
         &self,
         room_id: &RoomId,
         user_id: &UserId,
-    ) -> Result<crate::proto::client::GetIceServersResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetIceServersResponse, ApiError> {
         self.room_service
             .check_membership(room_id, user_id)
             .await
@@ -48,8 +48,8 @@ impl ClientApiImpl {
     pub async fn get_ice_servers_for_actor(
         &self,
         actor: &RoomActor,
-    ) -> Result<crate::proto::client::GetIceServersResponse, ApiError> {
-        use crate::proto::client::{GetIceServersResponse, IceServer};
+    ) -> Result<synctv_proto::client::GetIceServersResponse, ApiError> {
+        use synctv_proto::client::{GetIceServersResponse, IceServer};
 
         self.require_room_permission(actor, synctv_core::models::RoomPermission::USE_WEBRTC)
             .await?;

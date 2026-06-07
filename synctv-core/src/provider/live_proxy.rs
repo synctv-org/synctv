@@ -127,16 +127,17 @@ impl LiveProxyProvider {
         versioned: &VersionedPlayback,
         ctx: &ProxyRequestContext<'_>,
     ) -> Result<ProxyAction, ProviderError> {
+        let services = ctx.services()?;
         let room_id = Self::metadata_typed_id(versioned, "room_id", |room_id| {
             super::proxy::parse_proxy_room_id(
-                &ctx.services.public_id_codec,
+                &services.public_id_codec,
                 room_id,
                 "live playback metadata",
             )
         })?;
         let media_id = Self::metadata_typed_id(versioned, "media_id", |media_id| {
             super::proxy::parse_proxy_media_id(
-                &ctx.services.public_id_codec,
+                &services.public_id_codec,
                 media_id,
                 "live playback metadata",
             )
@@ -152,7 +153,7 @@ impl LiveProxyProvider {
                     room_id,
                     media_id,
                     user_id: super::proxy::parse_proxy_user_id(
-                        &ctx.services.public_id_codec,
+                        &services.public_id_codec,
                         &claims.user_id,
                         "live proxy claims",
                     )?,

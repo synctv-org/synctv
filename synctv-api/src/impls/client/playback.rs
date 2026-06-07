@@ -86,11 +86,11 @@ struct DynamicPlaylistPlaybackRequest<'a> {
 }
 
 pub(crate) fn build_start_playback_request(
-    req: crate::proto::client::StartPlaybackRequest,
+    req: synctv_proto::client::StartPlaybackRequest,
     public_id_codec: &crate::PublicIdCodec,
 ) -> Result<StartPlaybackTarget, ApiError> {
     crate::impls::validate_proto_request(&req)?;
-    let crate::proto::client::StartPlaybackRequest {
+    let synctv_proto::client::StartPlaybackRequest {
         media_id,
         playlist_id,
         target,
@@ -107,11 +107,11 @@ pub(crate) fn build_start_playback_request(
 }
 
 pub(crate) fn build_update_playback(
-    update: crate::proto::client::UpdatePlaybackRequest,
+    update: synctv_proto::client::UpdatePlaybackRequest,
     public_id_codec: &crate::PublicIdCodec,
 ) -> Result<PlaybackUpdateCommand, ApiError> {
     crate::impls::validate_proto_request(&update)?;
-    let crate::proto::client::UpdatePlaybackRequest {
+    let synctv_proto::client::UpdatePlaybackRequest {
         r#type,
         playing,
         position,
@@ -122,7 +122,7 @@ pub(crate) fn build_update_playback(
         expected_target_hash,
     } = update;
 
-    let update_type = crate::proto::client::PlaybackUpdateType::try_from(r#type)
+    let update_type = synctv_proto::client::PlaybackUpdateType::try_from(r#type)
         .map_err(|_| ApiError::InvalidInput("Unsupported playback update type".to_string()))?;
 
     if let Some(position) = position {
@@ -134,12 +134,12 @@ pub(crate) fn build_update_playback(
             .map_err(|err| ApiError::InvalidInput(err.to_string()))?;
     }
     let playing = match update_type {
-        crate::proto::client::PlaybackUpdateType::Unspecified => {
+        synctv_proto::client::PlaybackUpdateType::Unspecified => {
             return Err(ApiError::InvalidInput(
                 "Playback update type is required".to_string(),
             ));
         }
-        crate::proto::client::PlaybackUpdateType::Play => {
+        synctv_proto::client::PlaybackUpdateType::Play => {
             if playing == Some(false) {
                 return Err(ApiError::InvalidInput(
                     "play update cannot request paused state".to_string(),
@@ -147,7 +147,7 @@ pub(crate) fn build_update_playback(
             }
             Some(true)
         }
-        crate::proto::client::PlaybackUpdateType::Pause => {
+        synctv_proto::client::PlaybackUpdateType::Pause => {
             if playing == Some(true) {
                 return Err(ApiError::InvalidInput(
                     "pause update cannot request playing state".to_string(),
@@ -155,7 +155,7 @@ pub(crate) fn build_update_playback(
             }
             Some(false)
         }
-        crate::proto::client::PlaybackUpdateType::Seek => {
+        synctv_proto::client::PlaybackUpdateType::Seek => {
             if position.is_none() {
                 return Err(ApiError::InvalidInput(
                     "seek update requires position".to_string(),
@@ -163,7 +163,7 @@ pub(crate) fn build_update_playback(
             }
             playing
         }
-        crate::proto::client::PlaybackUpdateType::Speed => {
+        synctv_proto::client::PlaybackUpdateType::Speed => {
             if speed.is_none() {
                 return Err(ApiError::InvalidInput(
                     "speed update requires speed".to_string(),
@@ -308,7 +308,7 @@ impl ClientApiImpl {
         state: Option<&RoomPlaybackState>,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::Playback, ApiError> {
+    ) -> Result<synctv_proto::client::Playback, ApiError> {
         let public_user_id = self
             .public_id_codec
             .encode_user_id(*user_id)
@@ -409,7 +409,7 @@ impl ClientApiImpl {
     async fn build_dynamic_playlist_playback_result(
         &self,
         request: DynamicPlaylistPlaybackRequest<'_>,
-    ) -> Result<crate::proto::client::Playback, ApiError> {
+    ) -> Result<synctv_proto::client::Playback, ApiError> {
         let DynamicPlaylistPlaybackRequest {
             room_id,
             user_id,
@@ -526,7 +526,7 @@ impl ClientApiImpl {
         state: &synctv_core::models::RoomPlaybackState,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::Playback, ApiError> {
+    ) -> Result<synctv_proto::client::Playback, ApiError> {
         if let Some(ref media_id) = state.playing_media_id {
             let media = self
                 .room_service
@@ -561,7 +561,7 @@ impl ClientApiImpl {
                 .await;
         }
 
-        Ok(crate::proto::client::Playback {
+        Ok(synctv_proto::client::Playback {
             media_id: String::new(),
             playlist_id: String::new(),
             room_id: self
@@ -669,8 +669,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::StartPlaybackRequest,
-    ) -> Result<crate::proto::client::StartPlaybackResponse, ApiError> {
+        req: synctv_proto::client::StartPlaybackRequest,
+    ) -> Result<synctv_proto::client::StartPlaybackResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let target = build_start_playback_request(req, &self.public_id_codec)?;
@@ -697,7 +697,7 @@ impl ClientApiImpl {
         // Touch room activity to prevent TTL expiry on active rooms
         self.room_service.touch_room_activity(rid).await;
 
-        Ok(crate::proto::client::StartPlaybackResponse {})
+        Ok(synctv_proto::client::StartPlaybackResponse {})
     }
 
     /// Stop current playback
@@ -706,8 +706,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        _req: crate::proto::client::StopPlaybackRequest,
-    ) -> Result<crate::proto::client::StopPlaybackResponse, ApiError> {
+        _req: synctv_proto::client::StopPlaybackRequest,
+    ) -> Result<synctv_proto::client::StopPlaybackResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let previous_state = self.state_before_playback_update(&rid).await?;
@@ -724,7 +724,7 @@ impl ClientApiImpl {
         self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), &state)
             .await;
 
-        Ok(crate::proto::client::StopPlaybackResponse {})
+        Ok(synctv_proto::client::StopPlaybackResponse {})
     }
 
     /// Get current playback state and complete playback information
@@ -733,8 +733,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::GetPlaybackRequest,
-    ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+        req: synctv_proto::client::GetPlaybackRequest,
+    ) -> Result<synctv_proto::client::GetPlaybackResponse, ApiError> {
         let actor = self.room_actor_for_user(user_id, room_id).await?;
         self.get_playback_for_actor(&actor, req, None).await
     }
@@ -743,9 +743,9 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::GetPlaybackRequest,
+        req: synctv_proto::client::GetPlaybackRequest,
         request_control: &ExecutionControl,
-    ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetPlaybackResponse, ApiError> {
         let actor = self.room_actor_for_user(user_id, room_id).await?;
         self.get_playback_for_actor(&actor, req, Some(request_control))
             .await
@@ -754,13 +754,13 @@ impl ClientApiImpl {
     pub async fn get_playback_as_guest(
         &self,
         access: &GuestRoomAccess,
-    ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetPlaybackResponse, ApiError> {
         let state = self
             .room_service
             .get_playback_state(&access.room_id)
             .await
             .map_err(ApiError::from)?;
-        Ok(crate::proto::client::GetPlaybackResponse {
+        Ok(synctv_proto::client::GetPlaybackResponse {
             playback_state: Some(try_playback_state_to_proto(&state, &self.public_id_codec)?),
             playback: None,
         })
@@ -769,9 +769,9 @@ impl ClientApiImpl {
     pub async fn get_playback_for_actor(
         &self,
         actor: &RoomActor,
-        req: crate::proto::client::GetPlaybackRequest,
+        req: synctv_proto::client::GetPlaybackRequest,
         request_control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetPlaybackResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         match actor {
             RoomActor::User { user_id, .. } => {
@@ -790,9 +790,9 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::GetPlaybackRequest,
+        req: synctv_proto::client::GetPlaybackRequest,
         request_control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetPlaybackResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
 
@@ -857,7 +857,7 @@ impl ClientApiImpl {
             }
         };
 
-        Ok(crate::proto::client::GetPlaybackResponse {
+        Ok(synctv_proto::client::GetPlaybackResponse {
             playback_state: Some(try_playback_state_to_proto(&state, &self.public_id_codec)?),
             playback,
         })
@@ -868,8 +868,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::UpdatePlaybackRequest,
-    ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+        req: synctv_proto::client::UpdatePlaybackRequest,
+    ) -> Result<synctv_proto::client::GetPlaybackResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let command = build_update_playback(req, &self.public_id_codec)?;
@@ -908,7 +908,7 @@ impl ClientApiImpl {
         self.get_playback(
             user_id,
             room_id,
-            crate::proto::client::GetPlaybackRequest {
+            synctv_proto::client::GetPlaybackRequest {
                 playback_client_profile: None,
             },
         )
@@ -967,7 +967,7 @@ impl crate::impls::playback::PlaybackService for ClientApiImpl {
         room_id: &synctv_core::models::RoomId,
         state: &synctv_core::models::RoomPlaybackState,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
-    ) -> Result<crate::proto::client::Playback, ApiError> {
+    ) -> Result<synctv_proto::client::Playback, ApiError> {
         self.build_playback_from_state(user_id, room_id, state, playback_client_profile, None)
             .await
     }

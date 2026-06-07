@@ -41,7 +41,7 @@ pub struct OpaqueLoginStart {
 #[derive(Clone)]
 pub struct OpaquePasswordService {
     server_setup: ServerSetup<SyncTvOpaqueCipherSuite>,
-    dummy_record: Arc<Result<OpaquePasswordRecord>>,
+    decoy_record: Arc<Result<OpaquePasswordRecord>>,
 }
 
 impl OpaquePasswordService {
@@ -106,14 +106,14 @@ impl OpaquePasswordService {
     }
 
     fn new(server_setup: ServerSetup<SyncTvOpaqueCipherSuite>) -> Self {
-        let dummy_record = Self::register_password_with_setup(
+        let decoy_record = Self::register_password_with_setup(
             &server_setup,
-            b"synctv:dummy-opaque-password-record",
-            "synctv-dummy-opaque-password",
+            b"synctv:decoy-opaque-password-record",
+            "synctv-decoy-opaque-password",
         );
         Self {
             server_setup,
-            dummy_record: Arc::new(dummy_record),
+            decoy_record: Arc::new(decoy_record),
         }
     }
 
@@ -295,11 +295,11 @@ impl OpaquePasswordService {
             .is_ok())
     }
 
-    pub fn verify_dummy_password(&self, password: &str) -> Result<bool> {
-        let dummy_record = self.dummy_record.as_ref().as_ref().map_err(|error| {
-            Error::Internal(format!("Dummy OPAQUE password record unavailable: {error}"))
+    pub fn verify_decoy_password(&self, password: &str) -> Result<bool> {
+        let decoy_record = self.decoy_record.as_ref().as_ref().map_err(|error| {
+            Error::Internal(format!("Decoy OPAQUE password record unavailable: {error}"))
         })?;
-        self.verify_password(dummy_record, password)
+        self.verify_password(decoy_record, password)
     }
 }
 

@@ -559,7 +559,28 @@ impl ShutdownHook for PlaybackServiceShutdownHook {
 /// Stops a room settings cache invalidation listener task.
 pub struct RoomSettingsServiceShutdownHook {
     pub name: &'static str,
-    pub service: synctv_core::service::RoomSettingsService,
+    pub service: Arc<dyn RoomSettingsShutdownTarget>,
+}
+
+#[async_trait::async_trait]
+pub trait RoomSettingsShutdownTarget: Send + Sync {
+    async fn shutdown(&self);
+}
+
+#[async_trait::async_trait]
+impl RoomSettingsShutdownTarget for synctv_core::service::RoomSettingsService {
+    async fn shutdown(&self) {
+        synctv_core::service::RoomSettingsService::shutdown(self).await;
+    }
+}
+
+impl RoomSettingsServiceShutdownHook {
+    pub fn new(name: &'static str, service: synctv_core::service::RoomSettingsService) -> Self {
+        Self {
+            name,
+            service: Arc::new(service),
+        }
+    }
 }
 
 impl ShutdownHook for RoomSettingsServiceShutdownHook {
@@ -1035,28 +1056,32 @@ mod tests {
         );
     }
 
-    fn make_room_settings_service_for_hook_test() -> synctv_core::service::RoomSettingsService {
-        synctv_core::service::RoomSettingsService::new(
-            synctv_core::repository::RoomSettingsRepository::new(
-                sqlx::PgPool::connect_lazy("postgres://localhost/test")
-                    .expect("lazy postgres pool for unit tests should build"),
-            ),
-            None,
-            Arc::new(synctv_core::service::notification::NotificationService::default()),
-            None,
-            None,
-        )
+    struct CountingRoomSettingsShutdownTarget {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl RoomSettingsShutdownTarget for CountingRoomSettingsShutdownTarget {
+        async fn shutdown(&self) {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     #[tokio::test]
-    async fn test_room_settings_shutdown_hook_uses_instance_name() {
+    async fn test_room_settings_shutdown_hook_uses_instance_name_and_runs_target() {
+        let room_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let chat_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let room_hook = RoomSettingsServiceShutdownHook {
             name: "room_service_settings",
-            service: make_room_settings_service_for_hook_test(),
+            service: Arc::new(CountingRoomSettingsShutdownTarget {
+                calls: Arc::clone(&room_calls),
+            }),
         };
         let chat_hook = RoomSettingsServiceShutdownHook {
             name: "chat_service_settings",
-            service: make_room_settings_service_for_hook_test(),
+            service: Arc::new(CountingRoomSettingsShutdownTarget {
+                calls: Arc::clone(&chat_calls),
+            }),
         };
 
         assert_eq!(
@@ -1073,5 +1098,11 @@ mod tests {
             ShutdownHook::name(&room_hook),
             ShutdownHook::name(&chat_hook)
         );
+
+        Box::new(room_hook).run().await;
+        Box::new(chat_hook).run().await;
+
+        assert_eq!(room_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(chat_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

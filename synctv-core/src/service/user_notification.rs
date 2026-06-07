@@ -63,7 +63,14 @@ impl UserNotificationService {
     /// only needs to fan out the real-time event to active connections.
     #[must_use]
     pub fn publish_realtime_event(&self, event: NotificationCreatedEvent) -> usize {
-        match self.event_tx.send(event) {
+        Self::publish_realtime_event_to(&self.event_tx, event)
+    }
+
+    fn publish_realtime_event_to(
+        event_tx: &tokio::sync::broadcast::Sender<NotificationCreatedEvent>,
+        event: NotificationCreatedEvent,
+    ) -> usize {
+        match event_tx.send(event) {
             Ok(subscriber_count) => subscriber_count,
             Err(error) => {
                 tracing::error!(
@@ -236,11 +243,7 @@ mod tests {
 
     #[tokio::test]
     async fn publish_realtime_event_reports_subscriber_count() {
-        let repository = NotificationRepository::new(
-            sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost/synctv_test")
-                .expect("lazy pool should accept a syntactically valid URL"),
-        );
-        let service = UserNotificationService::new(repository);
+        let (event_tx, _) = tokio::sync::broadcast::channel(16);
         let event = NotificationCreatedEvent {
             user_id: UserId::expect_positive(1),
             notification: Notification {
@@ -256,9 +259,15 @@ mod tests {
             },
         };
 
-        assert_eq!(service.publish_realtime_event(event.clone()), 0);
+        assert_eq!(
+            UserNotificationService::publish_realtime_event_to(&event_tx, event.clone()),
+            0
+        );
 
-        let _receiver = service.subscribe_events();
-        assert_eq!(service.publish_realtime_event(event), 1);
+        let _receiver = event_tx.subscribe();
+        assert_eq!(
+            UserNotificationService::publish_realtime_event_to(&event_tx, event),
+            1
+        );
     }
 }

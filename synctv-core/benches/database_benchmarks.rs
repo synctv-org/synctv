@@ -2,8 +2,8 @@
 //!
 //! Run with: cargo bench --bench `database_benchmarks`
 //!
-//! Note: These benchmarks use testcontainers to start a `PostgreSQL` container.
-//! They require Docker to be running.
+//! These benchmarks use the shared `synctv-core-testing` PostgreSQL fixture and
+//! require Docker to be running.
 //!
 //! Performance targets:
 //! - Single row query: < 1ms
@@ -28,15 +28,10 @@ use synctv_core::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
     },
 };
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
-
-const POSTGRES_VERSION: &str = "18";
+use synctv_core_testing::TestContainer;
 
 struct BenchmarkDatabase {
-    container: ContainerAsync<Postgres>,
+    container: TestContainer,
     pool: PgPool,
 }
 
@@ -48,7 +43,7 @@ impl BenchmarkDatabase {
     fn shutdown(self, rt: &tokio::runtime::Runtime) {
         rt.block_on(async move {
             self.pool.close().await;
-            drop(self.container);
+            self.container.cleanup().await;
         });
     }
 }
@@ -89,38 +84,16 @@ fn main() {
     Criterion::default().configure_from_args().final_summary();
 }
 
-/// Setup test database with testcontainers
 async fn setup_test_db() -> BenchmarkDatabase {
-    let postgres = Postgres::default()
-        .with_db_name("synctv_bench")
-        .with_user("synctv")
-        .with_password("synctv_bench")
-        .with_tag(POSTGRES_VERSION)
-        .start()
-        .await
-        .expect("Failed to start Postgres container");
+    let (container, pool) = synctv_core_testing::create_test_pool_with_options_and_label(
+        "synctv_bench",
+        "database-benchmarks",
+        16,
+        Duration::from_secs(30),
+    )
+    .await;
 
-    let connection_string = format!(
-        "postgresql://synctv:synctv_bench@127.0.0.1:{}/synctv_bench",
-        postgres
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("Failed to get port")
-    );
-
-    let pool = PgPool::connect(&connection_string)
-        .await
-        .expect("Failed to create pool");
-
-    sqlx::migrate!("../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
-
-    BenchmarkDatabase {
-        container: postgres,
-        pool,
-    }
+    BenchmarkDatabase { container, pool }
 }
 
 /// Create test user

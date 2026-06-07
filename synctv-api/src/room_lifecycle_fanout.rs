@@ -260,92 +260,10 @@ pub fn default_room_lifecycle_fanout_service_with_realtime(
 mod tests {
     use super::default_room_lifecycle_fanout_service_with_realtime;
     use crate::realtime_fanout::disabled_realtime_fanout_service;
-    use crate::runtime::{RealtimeEventService, RealtimeMetrics};
-    use crate::test_support::channel_realtime_fanout_service;
-    use async_trait::async_trait;
-    use std::sync::{Arc, Mutex};
+    use crate::test_support::{channel_realtime_fanout_service, RecordingRealtimeEventService};
+    use std::sync::Arc;
     use synctv_core::models::{RoomId, UserId};
     use synctv_realtime::sync::RealtimeEvent;
-    use synctv_realtime::sync::{BroadcastResult, ConnectionId};
-    use tokio::sync::{broadcast, mpsc};
-
-    #[derive(Default)]
-    struct RecordingRealtimeEventService {
-        room_events: Mutex<Vec<RealtimeEvent>>,
-        admin_events: Mutex<Vec<RealtimeEvent>>,
-    }
-
-    impl RecordingRealtimeEventService {
-        fn room_events(&self) -> Vec<RealtimeEvent> {
-            self.room_events
-                .lock()
-                .expect("room events mutex should not be poisoned")
-                .clone()
-        }
-
-        fn admin_events(&self) -> Vec<RealtimeEvent> {
-            self.admin_events
-                .lock()
-                .expect("admin events mutex should not be poisoned")
-                .clone()
-        }
-    }
-
-    #[async_trait]
-    impl RealtimeEventService for RecordingRealtimeEventService {
-        async fn subscribe_with_id(
-            &self,
-            _room_id: RoomId,
-            _user_id: UserId,
-            _connection_id: String,
-        ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
-            panic!("subscribe_with_id should not be called in room lifecycle fanout tests");
-        }
-
-        fn unsubscribe(&self, _connection_id: &str) {
-            panic!("unsubscribe should not be called in room lifecycle fanout tests");
-        }
-
-        fn broadcast(&self, _event: RealtimeEvent) -> BroadcastResult {
-            panic!("broadcast should not be called in room lifecycle fanout tests");
-        }
-
-        fn publish_only(&self, _event: RealtimeEvent) -> bool {
-            panic!("publish_only should not be called in room lifecycle fanout tests");
-        }
-
-        fn broadcast_local(&self, _room_id: &RoomId, event: &RealtimeEvent) -> usize {
-            self.room_events
-                .lock()
-                .expect("room events mutex should not be poisoned")
-                .push(event.clone());
-            1
-        }
-
-        fn broadcast_admin_local(&self, event: &RealtimeEvent) -> usize {
-            self.admin_events
-                .lock()
-                .expect("admin events mutex should not be poisoned")
-                .push(event.clone());
-            1
-        }
-
-        fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
-            panic!("subscribe_admin_events should not be called in room lifecycle fanout tests");
-        }
-
-        fn metrics(&self) -> RealtimeMetrics {
-            RealtimeMetrics {
-                distributed_enabled: false,
-            }
-        }
-
-        fn node_id(&self) -> &'static str {
-            "room-lifecycle-fanout-test-node"
-        }
-
-        async fn shutdown(&self) {}
-    }
 
     fn room_id() -> RoomId {
         RoomId::expect_positive(104_001)

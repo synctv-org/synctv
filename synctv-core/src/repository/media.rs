@@ -398,23 +398,10 @@ impl MediaRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
-        /// Number of bind parameters per row.
-        const PARAMS_PER_ROW: usize = 12;
-        /// Maximum rows per INSERT statement (well within the 65535 parameter limit).
-        const MAX_ROWS_PER_CHUNK: usize = 1000;
-
         if items.is_empty() {
             return Ok(Vec::new());
         }
-        if items.len() > MAX_ROWS_PER_CHUNK {
-            return Err(crate::Error::InvalidInput(format!(
-                "Batch insert chunk too large: {} rows exceed the {} row limit \
-                 ({} bind parameters). Use create_batch_chunked to split automatically.",
-                items.len(),
-                MAX_ROWS_PER_CHUNK,
-                items.len() * PARAMS_PER_ROW,
-            )));
-        }
+        Self::validate_create_batch_chunk_len(items.len())?;
 
         let provider_codes = items
             .iter()
@@ -456,6 +443,23 @@ impl MediaRepository {
             .fetch_all(executor)
             .await?;
         Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    fn validate_create_batch_chunk_len(len: usize) -> Result<()> {
+        /// Number of bind parameters per row.
+        const PARAMS_PER_ROW: usize = 12;
+        /// Maximum rows per INSERT statement (well within the 65535 parameter limit).
+        const MAX_ROWS_PER_CHUNK: usize = 1000;
+
+        if len > MAX_ROWS_PER_CHUNK {
+            return Err(crate::Error::InvalidInput(format!(
+                "Batch insert chunk too large: {len} rows exceed the {MAX_ROWS_PER_CHUNK} row limit \
+                 ({} bind parameters). Use create_batch_chunked to split automatically.",
+                len * PARAMS_PER_ROW,
+            )));
+        }
+
+        Ok(())
     }
 
     /// Batch insert media items within a transaction, automatically chunking

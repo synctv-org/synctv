@@ -9,8 +9,8 @@ use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
 use synctv_core::Config;
 
 // Import generated proto types from synctv_proto
-use crate::proto::providers::emby::emby_provider_service_server::EmbyProviderService;
-use crate::proto::providers::emby::{
+use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderService;
+use synctv_proto::providers::emby::{
     GetBindsRequest, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
     LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
 };

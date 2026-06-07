@@ -84,9 +84,9 @@ impl AuditLogRepository {
     ///
     /// The caller must have already pushed the prefix (e.g. `"SELECT ... WHERE "`)
     /// so that the first condition can be appended directly.
-    fn push_filters<'q>(
+    fn push_filters(
         builder: &mut QueryBuilder<Postgres>,
-        query: &'q AuditLogQuery,
+        query: &AuditLogQuery,
         effective_from: DateTime<Utc>,
     ) {
         // Always add time range lower bound for partition pruning

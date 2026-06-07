@@ -13,7 +13,7 @@ async fn test_stream_key_format_parsing() {
     // Stream key format: {room_id}/{media_id}?token={jwt_token}
     let room_id = RoomId::new();
     let media_id = MediaId::new();
-    let token = "dummy_jwt_token";
+    let token = "example_jwt_token";
 
     let stream_key = format!("{room_id}/{media_id}?token={token}");
 

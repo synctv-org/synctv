@@ -10,13 +10,10 @@
 use crate::repository::realtime_outbox::RealtimeOutboxRepository;
 use crate::{
     models::{
-        normalize_provider_instance_name, CreateFileUploadSession, FileBlob, FileUploadSession,
-        FromProviderParams, Media, MediaId, NewStoredFile, PlaylistId, RoomId, UserId,
+        normalize_provider_instance_name, FromProviderParams, Media, MediaId, PlaylistId, RoomId,
+        UserId,
     },
-    provider::{
-        provider_requires_credential_repo, DirectoryItem, DynamicListQuery, ProviderContext,
-        SourceConfig,
-    },
+    provider::{provider_requires_credential_repo, ProviderContext, SourceConfig},
     repository::{realtime_outbox::NewRealtimeOutboxEvent, UserProviderCredentialRepository},
     repository::{MediaRepository, PlaylistRepository, UserRepository},
     service::{
@@ -24,7 +21,6 @@ use crate::{
         permission::PermissionService,
         provider_binding::resolve_credential_provider_instance_binding,
         source_config::validate_source_config_size,
-        video_cover_upload_policy, FileStorageCleanupOrigin, FileStorageContext,
         FileStorageService, ProvidersManager,
     },
     Error, Result,
@@ -33,29 +29,19 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Maximum number of items allowed in a single batch operation
-///
-/// This limit prevents `DoS` attacks and ensures reasonable resource usage
-/// for bulk operations like add, delete, and reorder.
-const MAX_BATCH_SIZE: usize = 100;
-/// Leave sparse gaps between inserted media positions to reduce renumbering.
-const MEDIA_BATCH_POSITION_STEP: f64 = 1024.0;
-const MEDIA_COVER_REFERENCE_KIND: &str = "media_cover";
+mod cover;
+mod dynamic;
+mod helpers;
+pub use cover::CreateVideoCoverUploadSession;
+use helpers::{
+    batch_media_position, dedup_media_ids, ensure_media_creator_can_edit,
+    media_source_config_error, media_source_prepare_error, validate_media_name, MAX_BATCH_SIZE,
+};
 
 pub type RealtimeOutboxMediaEventFactory =
     Arc<dyn Fn(&Media) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
 pub type RealtimeOutboxMediaBatchEventFactory =
     Arc<dyn Fn(&[Media]) -> Result<Vec<NewRealtimeOutboxEvent>> + Send + Sync>;
-
-fn batch_media_position(index: usize, start_position: f64) -> Result<f64> {
-    let index = u32::try_from(index)
-        .map_err(|_| Error::InvalidInput("Media batch index exceeds u32::MAX".to_string()))?;
-    Ok(MEDIA_BATCH_POSITION_STEP.mul_add(f64::from(index), start_position))
-}
-
-fn validate_media_name(name: &str) -> Result<()> {
-    crate::validation::validate_media_name(name).map_err(|e| Error::InvalidInput(e.to_string()))
-}
 
 /// Request to add a media item
 ///
@@ -87,35 +73,6 @@ pub struct EditMediaRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct CreateVideoCoverUploadSession {
-    pub client_cover_id: Option<String>,
-    pub mime_type: String,
-    pub size_bytes: i64,
-    pub width: Option<i32>,
-    pub height: Option<i32>,
-    pub checksum_sha256: Option<String>,
-    pub metadata: JsonValue,
-}
-
-fn media_cover_storage_scope(room_id: RoomId, media_id: MediaId) -> String {
-    format!(
-        "rooms/{}/media/{}/cover",
-        room_id.as_i64(),
-        media_id.as_i64()
-    )
-}
-
-fn ensure_media_creator_can_edit(media: &Media, user_id: &UserId) -> Result<()> {
-    if media.creator_id.as_ref() == Some(user_id) {
-        Ok(())
-    } else {
-        Err(Error::Authorization(
-            "Only the media creator can edit media".to_string(),
-        ))
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct MoveMediaRequest {
     pub media_ids: Vec<MediaId>,
     pub source_playlist_id: Option<PlaylistId>,
@@ -123,6 +80,12 @@ pub struct MoveMediaRequest {
     pub all_from_scope: bool,
     pub before_media_id: Option<MediaId>,
     pub after_media_id: Option<MediaId>,
+}
+
+struct PreparedMediaSource {
+    provider_name: String,
+    provider_instance_name: Option<String>,
+    source_config: JsonValue,
 }
 
 /// Media management service
@@ -155,7 +118,7 @@ impl std::fmt::Debug for MediaService {
 }
 
 impl MediaService {
-    fn build_provider_context<'a>(
+    pub(super) fn build_provider_context<'a>(
         &'a self,
         user_id: &'a UserId,
         room_id: &'a RoomId,
@@ -182,7 +145,7 @@ impl MediaService {
         ctx
     }
 
-    fn ensure_provider_credential_repo(&self, provider_name: &str) -> Result<()> {
+    pub(super) fn ensure_provider_credential_repo(&self, provider_name: &str) -> Result<()> {
         if provider_requires_credential_repo(provider_name) && self.credential_repo.is_none() {
             return Err(Error::ServiceUnavailable(format!(
                 "Provider '{provider_name}' requires credential repository wiring"
@@ -212,23 +175,81 @@ impl MediaService {
         Ok(provider)
     }
 
-    fn dedup_media_ids(media_ids: Vec<MediaId>) -> Vec<MediaId> {
-        let mut seen = std::collections::HashSet::new();
-        let mut deduped = Vec::with_capacity(media_ids.len());
-        for media_id in media_ids {
-            if seen.insert(media_id) {
-                deduped.push(media_id);
-            }
-        }
-        deduped
-    }
-
     async fn resolve_actor_username(&self, user_id: &UserId) -> Result<String> {
         UserRepository::new(self.media_repo.pool().clone())
             .get_by_id(user_id)
             .await?
             .map(|user| user.username)
             .ok_or_else(|| Error::NotFound("Actor user not found".to_string()))
+    }
+
+    async fn prepare_media_source(
+        &self,
+        user_id: &UserId,
+        room_id: &RoomId,
+        source_provider: &str,
+        provider_instance_name: Option<&str>,
+        source_config: JsonValue,
+        item_name: Option<&str>,
+    ) -> Result<PreparedMediaSource> {
+        let explicit_provider_instance =
+            normalize_provider_instance_name(provider_instance_name).map(str::to_string);
+        validate_source_config_size(&source_config)?;
+
+        let provider = self
+            .resolve_media_provider(source_provider, explicit_provider_instance.as_deref())
+            .await?;
+        self.ensure_provider_credential_repo(provider.name())?;
+
+        let dependency_ctx = self.build_provider_context(
+            user_id,
+            room_id,
+            Some(user_id),
+            explicit_provider_instance.as_deref(),
+        );
+
+        provider
+            .validate_source_config(&dependency_ctx, SourceConfig::media(&source_config))
+            .await
+            .map_err(|error| media_source_config_error(item_name, error))?;
+
+        let bound_provider_instance = resolve_credential_provider_instance_binding(
+            provider.as_ref(),
+            self.credential_repo.as_ref(),
+            &dependency_ctx,
+            &source_config,
+            explicit_provider_instance.as_deref(),
+        )
+        .await?;
+        let provider = if bound_provider_instance == explicit_provider_instance {
+            provider
+        } else {
+            self.resolve_media_provider(source_provider, bound_provider_instance.as_deref())
+                .await?
+        };
+
+        let ctx = self.build_provider_context(
+            user_id,
+            room_id,
+            Some(user_id),
+            bound_provider_instance.as_deref(),
+        );
+
+        provider
+            .validate_source_config(&ctx, SourceConfig::media(&source_config))
+            .await
+            .map_err(|error| media_source_config_error(item_name, error))?;
+
+        let prepared_source_config = provider
+            .prepare_source_config(&ctx, source_config)
+            .await
+            .map_err(|error| media_source_prepare_error(item_name, error))?;
+
+        Ok(PreparedMediaSource {
+            provider_name: provider.name().to_string(),
+            provider_instance_name: bound_provider_instance,
+            source_config: prepared_source_config,
+        })
     }
 
     /// Create a new media service
@@ -335,32 +356,6 @@ impl MediaService {
         self.credential_repo.as_ref()
     }
 
-    async fn get_dynamic_playlist_provider(
-        &self,
-        playlist: &crate::models::Playlist,
-    ) -> Result<(String, Arc<dyn crate::provider::MediaProvider>)> {
-        let provider_name = playlist
-            .source_provider
-            .clone()
-            .ok_or_else(|| Error::InvalidInput("Dynamic playlist missing provider".to_string()))?;
-
-        let bound_instance = playlist.provider_instance_name.as_deref().and_then(|name| {
-            let trimmed = name.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        });
-
-        let provider = self
-            .providers_manager
-            .resolve_provider(&provider_name, bound_instance)
-            .await?;
-
-        Ok((provider_name, provider))
-    }
-
     /// Add media to a playlist
     ///
     /// Three-stage workflow - Stage 2:
@@ -410,70 +405,16 @@ impl MediaService {
             debug_assert_eq!(playlist.room_id, room_id);
         }
 
-        let explicit_provider_instance =
-            normalize_provider_instance_name(request.provider_instance_name.as_deref())
-                .map(str::to_string);
-        validate_source_config_size(&request.source_config)?;
-
-        // Resolve the provider adapter from the declared type plus optional
-        // top-level instance binding. Empty and None instance names both use
-        // the default provider instance.
-        let provider = self
-            .resolve_media_provider(
+        let prepared_source = self
+            .prepare_media_source(
+                &user_id,
+                &room_id,
                 &request.source_provider,
-                explicit_provider_instance.as_deref(),
+                request.provider_instance_name.as_deref(),
+                request.source_config,
+                None,
             )
             .await?;
-        self.ensure_provider_credential_repo(provider.name())?;
-
-        let dependency_ctx = self.build_provider_context(
-            &user_id,
-            &room_id,
-            Some(&user_id),
-            explicit_provider_instance.as_deref(),
-        );
-
-        provider
-            .validate_source_config(&dependency_ctx, SourceConfig::media(&request.source_config))
-            .await
-            .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
-
-        let bound_provider_instance = resolve_credential_provider_instance_binding(
-            provider.as_ref(),
-            self.credential_repo.as_ref(),
-            &dependency_ctx,
-            &request.source_config,
-            explicit_provider_instance.as_deref(),
-        )
-        .await?;
-        let provider = if bound_provider_instance == explicit_provider_instance {
-            provider
-        } else {
-            self.resolve_media_provider(
-                &request.source_provider,
-                bound_provider_instance.as_deref(),
-            )
-            .await?
-        };
-
-        // Validate source_config using provider trait method
-        let ctx = self.build_provider_context(
-            &user_id,
-            &room_id,
-            Some(&user_id),
-            bound_provider_instance.as_deref(),
-        );
-
-        provider
-            .validate_source_config(&ctx, SourceConfig::media(&request.source_config))
-            .await
-            .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
-
-        // Prepare source_config for storage (provider-owned normalization)
-        let prepared_source_config = provider
-            .prepare_source_config(&ctx, request.source_config.clone())
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to prepare source_config: {e}")))?;
 
         // Use a transaction to atomically get the next position and insert,
         // preventing concurrent adds from getting the same position
@@ -494,9 +435,9 @@ impl MediaService {
             creator_id: Some(user_id),
             name: request.name.clone(),
             description: request.description.clone(),
-            source_config: prepared_source_config,
-            provider_name: provider.name().to_string(),
-            provider_instance_name: bound_provider_instance.clone(),
+            source_config: prepared_source.source_config,
+            provider_name: prepared_source.provider_name.clone(),
+            provider_instance_name: prepared_source.provider_instance_name.clone(),
             position,
         });
         let created_media = self
@@ -518,8 +459,8 @@ impl MediaService {
             room_id = %room_id,
             media_id = %created_media.id,
             name = %created_media.name,
-            source_provider = provider.name(),
-            provider_instance_name = bound_provider_instance.as_deref().unwrap_or(""),
+            source_provider = prepared_source.provider_name,
+            provider_instance_name = prepared_source.provider_instance_name.as_deref().unwrap_or(""),
             "Media added to playlist"
         );
         let actor_username = match self.resolve_actor_username(&user_id).await {
@@ -617,89 +558,22 @@ impl MediaService {
                 )));
             }
 
-            let explicit_provider_instance =
-                normalize_provider_instance_name(item.provider_instance_name.as_deref())
-                    .map(str::to_string);
-            validate_source_config_size(&item.source_config)?;
-
-            // Resolve provider by declared type plus optional top-level instance binding.
-            let provider = self
-                .resolve_media_provider(
+            let prepared_source = self
+                .prepare_media_source(
+                    &user_id,
+                    &room_id,
                     &item.source_provider,
-                    explicit_provider_instance.as_deref(),
+                    item.provider_instance_name.as_deref(),
+                    item.source_config.clone(),
+                    Some(&item.name),
                 )
                 .await?;
-            self.ensure_provider_credential_repo(provider.name())?;
 
-            let dependency_ctx = self.build_provider_context(
-                &user_id,
-                &room_id,
-                Some(&user_id),
-                explicit_provider_instance.as_deref(),
-            );
+            validated_items.push((item, prepared_source));
+        }
 
-            provider
-                .validate_source_config(&dependency_ctx, SourceConfig::media(&item.source_config))
-                .await
-                .map_err(|e| {
-                    Error::InvalidInput(format!(
-                        "Invalid source_config for item '{}': {}",
-                        item.name, e
-                    ))
-                })?;
-
-            let bound_provider_instance = resolve_credential_provider_instance_binding(
-                provider.as_ref(),
-                self.credential_repo.as_ref(),
-                &dependency_ctx,
-                &item.source_config,
-                explicit_provider_instance.as_deref(),
-            )
-            .await?;
-            let provider = if bound_provider_instance == explicit_provider_instance {
-                provider
-            } else {
-                self.resolve_media_provider(
-                    &item.source_provider,
-                    bound_provider_instance.as_deref(),
-                )
-                .await?
-            };
-
-            let ctx = self.build_provider_context(
-                &user_id,
-                &room_id,
-                Some(&user_id),
-                bound_provider_instance.as_deref(),
-            );
-
-            provider
-                .validate_source_config(&ctx, SourceConfig::media(&item.source_config))
-                .await
-                .map_err(|e| {
-                    Error::InvalidInput(format!(
-                        "Invalid source_config for item '{}': {}",
-                        item.name, e
-                    ))
-                })?;
-
-            // Prepare source_config for storage (provider-owned normalization)
-            let prepared_source_config = provider
-                .prepare_source_config(&ctx, item.source_config.clone())
-                .await
-                .map_err(|e| {
-                    Error::Internal(format!(
-                        "Failed to prepare source_config for item '{}': {}",
-                        item.name, e
-                    ))
-                })?;
-
-            validated_items.push((
-                item,
-                provider,
-                prepared_source_config,
-                bound_provider_instance,
-            ));
+        for (item, _) in &mut validated_items {
+            item.playlist_id = playlist_id;
         }
 
         // Use a transaction to atomically get the next position and batch insert,
@@ -714,18 +588,16 @@ impl MediaService {
 
         // Create media items with provider info
         let mut media_items = Vec::with_capacity(validated_items.len());
-        for (index, (item, provider, prepared_source_config, provider_instance_name)) in
-            validated_items.into_iter().enumerate()
-        {
+        for (index, (item, prepared_source)) in validated_items.into_iter().enumerate() {
             let media = Media::from_provider_with_params(FromProviderParams {
                 playlist_id: item.playlist_id,
                 room_id,
                 creator_id: Some(user_id),
                 name: item.name,
                 description: item.description,
-                source_config: prepared_source_config,
-                provider_name: provider.name().to_string(),
-                provider_instance_name,
+                source_config: prepared_source.source_config,
+                provider_name: prepared_source.provider_name,
+                provider_instance_name: prepared_source.provider_instance_name,
                 position: batch_media_position(index, start_position)?,
             });
             media_items.push(media);
@@ -930,212 +802,6 @@ impl MediaService {
                 media_id = %updated_media.id,
                 "Media updated event had no local subscribers"
             );
-        }
-
-        Ok(updated_media)
-    }
-
-    pub async fn create_video_cover_upload_session(
-        &self,
-        room_id: RoomId,
-        media_id: MediaId,
-        user_id: UserId,
-        request: CreateVideoCoverUploadSession,
-    ) -> Result<FileUploadSession> {
-        let storage = self.file_storage_service.as_ref().ok_or_else(|| {
-            Error::InvalidInput("file storage is not configured for video covers".to_string())
-        })?;
-        let media = self
-            .media_repo
-            .get_by_room_and_id(&room_id, &media_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
-        ensure_media_creator_can_edit(&media, &user_id)?;
-        self.permission_service
-            .check_permission_no_cache(
-                &room_id,
-                &user_id,
-                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
-            )
-            .await?;
-
-        storage
-            .create_upload_session(CreateFileUploadSession {
-                user_id,
-                storage_scope: media_cover_storage_scope(room_id, media_id),
-                client_file_id: request.client_cover_id,
-                mime_type: request.mime_type,
-                size_bytes: request.size_bytes,
-                width: request.width,
-                height: request.height,
-                checksum_sha256: request.checksum_sha256,
-                metadata: request.metadata,
-                policy: video_cover_upload_policy(),
-            })
-            .await
-    }
-
-    pub async fn store_video_cover_upload_object(
-        &self,
-        encoded_object_key: &str,
-        upload_token: &str,
-        content_type: Option<&str>,
-        data: Vec<u8>,
-    ) -> Result<FileBlob> {
-        self.file_storage_service
-            .as_ref()
-            .ok_or_else(|| {
-                Error::InvalidInput("file storage is not configured for video covers".to_string())
-            })?
-            .store_upload_object(encoded_object_key, upload_token, content_type, data)
-            .await
-    }
-
-    pub async fn get_video_cover_object(
-        &self,
-        encoded_object_key: &str,
-        read_token: &str,
-    ) -> Result<FileBlob> {
-        self.file_storage_service
-            .as_ref()
-            .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
-            .get_object(encoded_object_key, read_token)
-            .await
-    }
-
-    pub async fn update_video_cover(
-        &self,
-        room_id: RoomId,
-        media_id: MediaId,
-        user_id: UserId,
-        file: NewStoredFile,
-    ) -> Result<Media> {
-        let storage = self.file_storage_service.as_ref().ok_or_else(|| {
-            Error::InvalidInput("file storage is not configured for video covers".to_string())
-        })?;
-        let mut tx = self.media_repo.pool().begin().await?;
-        let current_media = self
-            .media_repo
-            .get_by_room_and_id_for_update_with_executor(&room_id, &media_id, &mut *tx)
-            .await?
-            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
-        ensure_media_creator_can_edit(&current_media, &user_id)?;
-        self.permission_service
-            .check_permission_no_cache(
-                &room_id,
-                &user_id,
-                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
-            )
-            .await?;
-
-        let storage_scope = media_cover_storage_scope(room_id, media_id);
-        let prepared = storage
-            .prepare_files(
-                FileStorageContext {
-                    user_id,
-                    storage_scope: &storage_scope,
-                    client_request_id: None,
-                },
-                vec![file],
-            )
-            .await?;
-        let file = prepared
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::InvalidInput("video cover file is required".to_string()))?;
-
-        let new_reference_id = crate::repository::FileStorageRepository::insert_reference_in_tx(
-            &mut tx,
-            &file.storage_backend,
-            &file.object_key,
-            MEDIA_COVER_REFERENCE_KIND,
-            &media_id.as_i64().to_string(),
-            None,
-            &file.metadata,
-        )
-        .await?
-        .ok_or_else(|| {
-            Error::InvalidInput("video cover file object is not registered".to_string())
-        })?;
-        let old_reference = if let Some(reference_id) = current_media.cover_file_reference_id {
-            crate::repository::FileStorageRepository::new(self.media_repo.pool().clone())
-                .get_reference_by_id(reference_id)
-                .await?
-                .map(|reference| current_media.cover_file_reference_target(&reference))
-        } else {
-            None
-        };
-
-        let updated_media = self
-            .media_repo
-            .update_cover_with_executor(
-                &room_id,
-                &media_id,
-                Some(new_reference_id),
-                current_media.version,
-                &mut *tx,
-            )
-            .await?
-            .ok_or(Error::OptimisticLockConflict)?;
-        tx.commit().await?;
-
-        if let Some(old_reference) = old_reference {
-            if old_reference.storage_backend != file.storage_backend
-                || old_reference.object_key != file.object_key
-            {
-                storage
-                    .delete_files(
-                        FileStorageCleanupOrigin::ReferenceReleased,
-                        &[old_reference],
-                    )
-                    .await?;
-            }
-        }
-
-        Ok(updated_media)
-    }
-
-    pub async fn clear_video_cover(
-        &self,
-        room_id: RoomId,
-        media_id: MediaId,
-        user_id: UserId,
-    ) -> Result<Media> {
-        let mut tx = self.media_repo.pool().begin().await?;
-        let current_media = self
-            .media_repo
-            .get_by_room_and_id_for_update_with_executor(&room_id, &media_id, &mut *tx)
-            .await?
-            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
-        ensure_media_creator_can_edit(&current_media, &user_id)?;
-        self.permission_service
-            .check_permission_no_cache(
-                &room_id,
-                &user_id,
-                crate::models::RoomPermission::CREATE_MEDIA_RESOURCE,
-            )
-            .await?;
-        let old_reference = if let Some(reference_id) = current_media.cover_file_reference_id {
-            crate::repository::FileStorageRepository::new(self.media_repo.pool().clone())
-                .get_reference_by_id(reference_id)
-                .await?
-                .map(|reference| current_media.cover_file_reference_target(&reference))
-        } else {
-            None
-        };
-        let updated_media = self
-            .media_repo
-            .update_cover_with_executor(&room_id, &media_id, None, current_media.version, &mut *tx)
-            .await?
-            .ok_or(Error::OptimisticLockConflict)?;
-        tx.commit().await?;
-
-        if let (Some(storage), Some(reference)) =
-            (self.file_storage_service.as_ref(), old_reference)
-        {
-            storage
-                .delete_files(FileStorageCleanupOrigin::ReferenceReleased, &[reference])
-                .await?;
         }
 
         Ok(updated_media)
@@ -1426,7 +1092,7 @@ impl MediaService {
             ));
         }
 
-        let explicit_media_ids = Self::dedup_media_ids(request.media_ids);
+        let explicit_media_ids = dedup_media_ids(request.media_ids);
         if !request.all_from_scope && explicit_media_ids.is_empty() {
             return Err(Error::InvalidInput(
                 "At least one media_id is required".to_string(),
@@ -1662,84 +1328,6 @@ impl MediaService {
         Ok(moved)
     }
 
-    /// List dynamic playlist items as a global admin.
-    pub async fn admin_list_dynamic_playlist_items(
-        &self,
-        room_id: RoomId,
-        admin_user_id: UserId,
-        playlist_id: &PlaylistId,
-        target: Option<&[u8]>,
-        query: DynamicListQuery,
-    ) -> Result<Vec<DirectoryItem>> {
-        let playlist = self
-            .playlist_repo
-            .get_by_room_and_id(&room_id, playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if !playlist.is_dynamic() {
-            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
-        }
-
-        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
-        self.ensure_provider_credential_repo(&provider_name)?;
-        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "Provider {provider_name} does not support dynamic folders"
-            ))
-        })?;
-
-        let ctx = self.build_provider_context(
-            &admin_user_id,
-            &room_id,
-            playlist.creator_id.as_ref().or(Some(&admin_user_id)),
-            playlist.provider_instance_name.as_deref(),
-        );
-
-        dynamic_folder
-            .list_playlist(&ctx, &playlist, target, query)
-            .await
-            .map_err(Error::from)
-    }
-
-    pub async fn admin_get_dynamic_playlist_browse_path(
-        &self,
-        room_id: RoomId,
-        admin_user_id: UserId,
-        playlist_id: &PlaylistId,
-        target: Option<&[u8]>,
-    ) -> Result<Vec<crate::provider::DynamicBrowsePathSegment>> {
-        let playlist = self
-            .playlist_repo
-            .get_by_room_and_id(&room_id, playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if !playlist.is_dynamic() {
-            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
-        }
-
-        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
-        self.ensure_provider_credential_repo(&provider_name)?;
-        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "Provider {provider_name} does not support dynamic folders"
-            ))
-        })?;
-
-        let ctx = self.build_provider_context(
-            &admin_user_id,
-            &room_id,
-            playlist.creator_id.as_ref().or(Some(&admin_user_id)),
-            playlist.provider_instance_name.as_deref(),
-        );
-
-        dynamic_folder
-            .browse_path(&ctx, &playlist, target)
-            .await
-            .map_err(Error::from)
-    }
-
     /// Delete all media in a playlist (single query, no N+1).
     pub async fn delete_playlist_media(&self, playlist_id: &PlaylistId) -> Result<usize> {
         self.media_repo.delete_playlist(playlist_id).await
@@ -1795,122 +1383,6 @@ impl MediaService {
             .await
     }
 
-    /// List dynamic playlist items
-    ///
-    /// For dynamic playlists (provider-based folders), this fetches the directory listing
-    /// from the provider's `DynamicFolder` implementation.
-    ///
-    /// # Arguments
-    /// * `room_id` - Room ID for permission check
-    /// * `user_id` - User ID for permission check
-    /// * `playlist_id` - Playlist ID to list
-    /// * `target` - Provider-defined browse target within the dynamic folder
-    /// * `page` - Page number (0-indexed)
-    /// * `page_size` - Items per page
-    ///
-    /// # Returns
-    /// List of directory items (files and folders)
-    ///
-    /// # Errors
-    /// - `Error::NotFound` if playlist doesn't exist
-    /// - `Error::InvalidOperation` if playlist is not dynamic
-    /// - `Error::ProviderError` if provider fails
-    pub async fn list_dynamic_playlist_items(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        playlist_id: &PlaylistId,
-        target: Option<&[u8]>,
-        query: DynamicListQuery,
-    ) -> Result<Vec<DirectoryItem>> {
-        // Check permission
-        self.permission_service
-            .check_permission(
-                &room_id,
-                &user_id,
-                crate::models::RoomPermission::VIEW_MEDIA_RESOURCES,
-            )
-            .await?;
-
-        // Get playlist
-        let playlist = self
-            .playlist_repo
-            .get_by_room_and_id(&room_id, playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        // Check if playlist is dynamic
-        if !playlist.is_dynamic() {
-            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
-        }
-
-        // Get provider
-        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
-        self.ensure_provider_credential_repo(&provider_name)?;
-
-        // Check if provider implements DynamicFolder trait
-        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "Provider {provider_name} does not support dynamic folders"
-            ))
-        })?;
-
-        // Create context
-        let ctx = self.build_provider_context(
-            &user_id,
-            &room_id,
-            playlist.creator_id.as_ref().or(Some(&user_id)),
-            playlist.provider_instance_name.as_deref(),
-        );
-
-        // List items
-        let items = dynamic_folder
-            .list_playlist(&ctx, &playlist, target, query)
-            .await
-            .map_err(Error::from)?;
-
-        Ok(items)
-    }
-
-    pub async fn get_dynamic_playlist_browse_path(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        playlist_id: &PlaylistId,
-        target: Option<&[u8]>,
-    ) -> Result<Vec<crate::provider::DynamicBrowsePathSegment>> {
-        let playlist = self
-            .playlist_repo
-            .get_by_room_and_id(&room_id, playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if !playlist.is_dynamic() {
-            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
-        }
-
-        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
-        self.ensure_provider_credential_repo(&provider_name)?;
-
-        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "Provider {provider_name} does not support dynamic folders"
-            ))
-        })?;
-
-        let ctx = self.build_provider_context(
-            &user_id,
-            &room_id,
-            playlist.creator_id.as_ref().or(Some(&user_id)),
-            playlist.provider_instance_name.as_deref(),
-        );
-
-        dynamic_folder
-            .browse_path(&ctx, &playlist, target)
-            .await
-            .map_err(Error::from)
-    }
-
     /// Get playlist metadata needed by playback/media orchestration.
     pub async fn get_playlist(
         &self,
@@ -1929,182 +1401,7 @@ impl MediaService {
             .get_by_room_and_id(room_id, playlist_id)
             .await
     }
-
-    /// Resolve a concrete playable item inside a dynamic playlist.
-    pub async fn resolve_dynamic_playlist_item(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        playlist_id: &PlaylistId,
-        target: &[u8],
-    ) -> Result<Option<crate::provider::NextPlayItem>> {
-        let playlist = self
-            .playlist_repo
-            .get_by_room_and_id(&room_id, playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if !playlist.is_dynamic() {
-            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
-        }
-
-        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
-        self.ensure_provider_credential_repo(&provider_name)?;
-
-        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "Provider {provider_name} does not support dynamic folders"
-            ))
-        })?;
-
-        let ctx = self.build_provider_context(
-            &user_id,
-            &room_id,
-            playlist.creator_id.as_ref().or(Some(&user_id)),
-            playlist.provider_instance_name.as_deref(),
-        );
-
-        dynamic_folder
-            .resolve_item(&ctx, &playlist, target)
-            .await
-            .map_err(Error::from)
-    }
-
-    /// Resolve the next auto-play target within a dynamic playlist.
-    ///
-    /// This is internal playback orchestration logic, so it intentionally does
-    /// not perform room membership or permission checks. The caller must already
-    /// have a valid playback state scoped to the room.
-    pub async fn next_dynamic_playlist_item(
-        &self,
-        room_id: &RoomId,
-        playlist_id: &PlaylistId,
-        target: &[u8],
-        play_mode: crate::models::PlayMode,
-    ) -> Result<Option<crate::provider::NextPlayItem>> {
-        let playlist = self
-            .playlist_repo
-            .get_by_room_and_id(room_id, playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if !playlist.is_dynamic() {
-            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
-        }
-
-        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
-        self.ensure_provider_credential_repo(&provider_name)?;
-
-        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "Provider {provider_name} does not support dynamic folders"
-            ))
-        })?;
-        let current_dynamic_media = crate::models::Media {
-            id: MediaId::new(),
-            playlist_id: Some(playlist.id),
-            room_id: *room_id,
-            creator_id: playlist.creator_id,
-            name: format!("dynamic:{playlist_id}"),
-            description: String::new(),
-            position: 0.0,
-            source_provider: provider_name.clone(),
-            source_config: serde_json::Value::Null,
-            provider_instance_name: playlist.provider_instance_name.clone(),
-            cover_file_reference_id: None,
-            added_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            version: 0,
-        };
-
-        let mut ctx = ProviderContext::new("synctv").with_room_id(*room_id);
-        if let Some(creator_id) = playlist.creator_id.as_ref() {
-            ctx = ctx.with_credential_owner_id(*creator_id);
-        }
-        if let Some(provider_instance_name) =
-            current_dynamic_media.provider_instance_name.as_deref()
-        {
-            ctx = ctx.with_provider_instance_name(provider_instance_name);
-        }
-        if let Some(ref repo) = self.credential_repo {
-            ctx = ctx.with_credential_repo(repo);
-        }
-        if let Some(ref enc) = self.credential_encryption {
-            ctx = ctx.with_credential_encryption(enc);
-        }
-
-        dynamic_folder
-            .next(&ctx, &playlist, &current_dynamic_media, target, play_mode)
-            .await
-            .map_err(Error::from)
-    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_normalize_provider_instance_name() {
-        assert_eq!(normalize_provider_instance_name(None), None);
-        assert_eq!(normalize_provider_instance_name(Some("")), None);
-        assert_eq!(normalize_provider_instance_name(Some("   ")), None);
-        assert_eq!(
-            normalize_provider_instance_name(Some("  bilibili_main  ")),
-            Some("bilibili_main")
-        );
-    }
-
-    #[test]
-    fn test_media_edit_requires_matching_creator() {
-        let creator_id = UserId::expect_positive(10);
-        let media = Media {
-            id: MediaId::expect_positive(11),
-            playlist_id: None,
-            room_id: RoomId::expect_positive(12),
-            creator_id: Some(creator_id),
-            name: "Owned".to_string(),
-            description: String::new(),
-            position: 1.0,
-            source_provider: "direct_url".to_string(),
-            provider_instance_name: None,
-            source_config: serde_json::json!({}),
-            added_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            version: 1,
-            cover_file_reference_id: None,
-        };
-
-        assert!(ensure_media_creator_can_edit(&media, &creator_id).is_ok());
-
-        let other_user_id = UserId::expect_positive(13);
-        assert!(matches!(
-            ensure_media_creator_can_edit(&media, &other_user_id),
-            Err(Error::Authorization(_))
-        ));
-
-        let mut unowned_media = media;
-        unowned_media.creator_id = None;
-        assert!(matches!(
-            ensure_media_creator_can_edit(&unowned_media, &creator_id),
-            Err(Error::Authorization(_))
-        ));
-    }
-
-    #[test]
-    fn test_edit_media_error_message_contains_media_id() {
-        let media_id = MediaId::new();
-
-        let expected_msg =
-            format!("Media edit failed after maximum retry attempts for media_id={media_id}");
-
-        assert!(
-            expected_msg.contains(&media_id.to_string()),
-            "Error message should contain media_id"
-        );
-        assert!(
-            expected_msg.contains("maximum retry attempts"),
-            "Error message should identify retry exhaustion"
-        );
-    }
-}
+mod tests;

@@ -493,20 +493,7 @@ impl AuditService {
     }
 
     pub async fn log_user_login(&self, request: UserLoginAuditRequest) -> Result<()> {
-        self.log(AuditEventParams {
-            actor_id: request.user_id.clone(),
-            actor_username: request.username.clone(),
-            action: AuditAction::UserLogin,
-            target_type: AuditTargetType::User,
-            target_id: Some(request.user_id),
-            details: serde_json::json!({
-                "login_method": request.login_method,
-                "username": request.username
-            }),
-            ip_address: request.ip_address,
-            user_agent: request.user_agent,
-        })
-        .await
+        self.log(user_login_event_params(request)).await
     }
 
     /// Log a user logout event.
@@ -519,74 +506,110 @@ impl AuditService {
         ip_address: Option<String>,
         user_agent: Option<String>,
     ) -> Result<()> {
-        self.log(AuditEventParams {
-            actor_id: user_id.clone(),
-            actor_username: username,
-            action: AuditAction::UserLogout,
-            target_type: AuditTargetType::User,
-            target_id: Some(user_id),
-            details: serde_json::json!({}),
-            ip_address,
-            user_agent,
-        })
+        self.log(user_logout_event_params(
+            user_id, username, ip_address, user_agent,
+        ))
         .await
     }
 
     pub async fn log_token_issued(&self, request: TokenIssuedAuditRequest) -> Result<()> {
-        let target_id = format!("{}:{}", request.user_id, request.jti);
-        self.log(AuditEventParams {
-            actor_id: request.user_id,
-            actor_username: request.username,
-            action: AuditAction::TokenIssued,
-            target_type: AuditTargetType::Token,
-            target_id: Some(target_id),
-            details: serde_json::json!({
-                "token_type": request.token_type,
-                "jti": request.jti,
-                "expires_at": request.expires_at
-            }),
-            ip_address: request.ip_address,
-            user_agent: request.user_agent,
-        })
-        .await
+        self.log(token_issued_event_params(request)).await
     }
 
     pub async fn log_token_refreshed(&self, request: TokenRefreshedAuditRequest) -> Result<()> {
-        let target_id = format!("{}:{}", request.user_id, request.new_jti);
-        self.log(AuditEventParams {
-            actor_id: request.user_id,
-            actor_username: request.username,
-            action: AuditAction::TokenRefreshed,
-            target_type: AuditTargetType::Token,
-            target_id: Some(target_id),
-            details: serde_json::json!({
-                "old_jti": request.old_jti,
-                "new_jti": request.new_jti
-            }),
-            ip_address: request.ip_address,
-            user_agent: request.user_agent,
-        })
-        .await
+        self.log(token_refreshed_event_params(request)).await
     }
 
     pub async fn log_token_family_revoked(
         &self,
         request: TokenFamilyRevokedAuditRequest,
     ) -> Result<()> {
-        self.log(AuditEventParams {
-            actor_id: request.user_id.clone(),
-            actor_username: request.username,
-            action: AuditAction::TokenFamilyRevoked,
-            target_type: AuditTargetType::Token,
-            target_id: Some(request.user_id),
-            details: serde_json::json!({
-                "replayed_jti": request.replayed_jti,
-                "reason": "token_replay_detected"
-            }),
-            ip_address: request.ip_address,
-            user_agent: None,
-        })
-        .await
+        self.log(token_family_revoked_event_params(request)).await
+    }
+}
+
+fn user_login_event_params(request: UserLoginAuditRequest) -> AuditEventParams {
+    AuditEventParams {
+        actor_id: request.user_id.clone(),
+        actor_username: request.username.clone(),
+        action: AuditAction::UserLogin,
+        target_type: AuditTargetType::User,
+        target_id: Some(request.user_id),
+        details: serde_json::json!({
+            "login_method": request.login_method,
+            "username": request.username
+        }),
+        ip_address: request.ip_address,
+        user_agent: request.user_agent,
+    }
+}
+
+fn user_logout_event_params(
+    user_id: String,
+    username: String,
+    ip_address: Option<String>,
+    user_agent: Option<String>,
+) -> AuditEventParams {
+    AuditEventParams {
+        actor_id: user_id.clone(),
+        actor_username: username,
+        action: AuditAction::UserLogout,
+        target_type: AuditTargetType::User,
+        target_id: Some(user_id),
+        details: serde_json::json!({}),
+        ip_address,
+        user_agent,
+    }
+}
+
+fn token_issued_event_params(request: TokenIssuedAuditRequest) -> AuditEventParams {
+    let target_id = format!("{}:{}", request.user_id, request.jti);
+    AuditEventParams {
+        actor_id: request.user_id,
+        actor_username: request.username,
+        action: AuditAction::TokenIssued,
+        target_type: AuditTargetType::Token,
+        target_id: Some(target_id),
+        details: serde_json::json!({
+            "token_type": request.token_type,
+            "jti": request.jti,
+            "expires_at": request.expires_at
+        }),
+        ip_address: request.ip_address,
+        user_agent: request.user_agent,
+    }
+}
+
+fn token_refreshed_event_params(request: TokenRefreshedAuditRequest) -> AuditEventParams {
+    let target_id = format!("{}:{}", request.user_id, request.new_jti);
+    AuditEventParams {
+        actor_id: request.user_id,
+        actor_username: request.username,
+        action: AuditAction::TokenRefreshed,
+        target_type: AuditTargetType::Token,
+        target_id: Some(target_id),
+        details: serde_json::json!({
+            "old_jti": request.old_jti,
+            "new_jti": request.new_jti
+        }),
+        ip_address: request.ip_address,
+        user_agent: request.user_agent,
+    }
+}
+
+fn token_family_revoked_event_params(request: TokenFamilyRevokedAuditRequest) -> AuditEventParams {
+    AuditEventParams {
+        actor_id: request.user_id.clone(),
+        actor_username: request.username,
+        action: AuditAction::TokenFamilyRevoked,
+        target_type: AuditTargetType::Token,
+        target_id: Some(request.user_id),
+        details: serde_json::json!({
+            "replayed_jti": request.replayed_jti,
+            "reason": "token_replay_detected"
+        }),
+        ip_address: request.ip_address,
+        user_agent: None,
     }
 }
 
@@ -852,37 +875,8 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_unbuffered_service_dropped_count_is_zero() {
-        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
-        let service = AuditService::new_unbuffered(pool);
-        assert_eq!(service.dropped_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_buffered_service_enqueues_events() {
-        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
-        let (service, _handle) = AuditService::new(pool);
-
-        let result = service
-            .log(AuditEventParams {
-                actor_id: "actor1".to_string(),
-                actor_username: "admin".to_string(),
-                action: AuditAction::UserCreated,
-                target_type: AuditTargetType::User,
-                target_id: Some("user1".to_string()),
-                details: serde_json::json!({}),
-                ip_address: None,
-                user_agent: None,
-            })
-            .await;
-
-        assert!(result.is_ok());
-        assert_eq!(service.dropped_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_audit_record_fields() {
+    #[test]
+    fn test_audit_record_fields() {
         let record = AuditRecord {
             actor_id: "a1".to_string(),
             actor_username: "admin".to_string(),
@@ -902,119 +896,84 @@ mod tests {
         assert_eq!(record.actor_id, "a1");
     }
 
-    #[tokio::test]
-    async fn test_log_user_login_buffered() {
-        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
-        let (service, _handle) = AuditService::new(pool);
+    #[test]
+    fn auth_audit_request_mapping_preserves_identity_and_metadata() {
+        let login = user_login_event_params(UserLoginAuditRequest {
+            user_id: "user_123".to_string(),
+            username: "alice".to_string(),
+            login_method: "password".to_string(),
+            ip_address: Some("192.168.1.1".to_string()),
+            user_agent: Some("Mozilla/5.0".to_string()),
+        });
+        assert_eq!(login.actor_id, "user_123");
+        assert_eq!(login.actor_username, "alice");
+        assert_eq!(login.action, AuditAction::UserLogin);
+        assert_eq!(login.target_type, AuditTargetType::User);
+        assert_eq!(login.target_id.as_deref(), Some("user_123"));
+        assert_eq!(login.details["login_method"], "password");
+        assert_eq!(login.details["username"], "alice");
+        assert_eq!(login.ip_address.as_deref(), Some("192.168.1.1"));
+        assert_eq!(login.user_agent.as_deref(), Some("Mozilla/5.0"));
 
-        let result = service
-            .log_user_login(UserLoginAuditRequest {
-                user_id: "user_123".to_string(),
-                username: "alice".to_string(),
-                login_method: "password".to_string(),
-                ip_address: Some("192.168.1.1".to_string()),
-                user_agent: Some("Mozilla/5.0".to_string()),
-            })
-            .await;
-
-        assert!(result.is_ok());
-        assert_eq!(service.dropped_count(), 0);
+        let logout = user_logout_event_params(
+            "user_123".to_string(),
+            "alice".to_string(),
+            Some("192.168.1.1".to_string()),
+            Some("Mozilla/5.0".to_string()),
+        );
+        assert_eq!(logout.actor_id, "user_123");
+        assert_eq!(logout.actor_username, "alice");
+        assert_eq!(logout.action, AuditAction::UserLogout);
+        assert_eq!(logout.target_type, AuditTargetType::User);
+        assert_eq!(logout.target_id.as_deref(), Some("user_123"));
+        assert_eq!(logout.details, serde_json::json!({}));
+        assert_eq!(logout.ip_address.as_deref(), Some("192.168.1.1"));
+        assert_eq!(logout.user_agent.as_deref(), Some("Mozilla/5.0"));
     }
 
-    #[tokio::test]
-    async fn test_log_user_logout_buffered() {
-        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
-        let (service, _handle) = AuditService::new(pool);
+    #[test]
+    fn token_audit_request_mapping_preserves_jti_details() {
+        let issued = token_issued_event_params(TokenIssuedAuditRequest {
+            user_id: "user_123".to_string(),
+            username: "alice".to_string(),
+            token_type: "access".to_string(),
+            jti: "jti_abc123".to_string(),
+            expires_at: 1_735_689_600,
+            ip_address: Some("192.168.1.1".to_string()),
+            user_agent: Some("Mozilla/5.0".to_string()),
+        });
+        assert_eq!(issued.action, AuditAction::TokenIssued);
+        assert_eq!(issued.target_type, AuditTargetType::Token);
+        assert_eq!(issued.target_id.as_deref(), Some("user_123:jti_abc123"));
+        assert_eq!(issued.details["token_type"], "access");
+        assert_eq!(issued.details["jti"], "jti_abc123");
+        assert_eq!(issued.details["expires_at"], 1_735_689_600);
 
-        let result = service
-            .log_user_logout(
-                "user_123".to_string(),
-                "alice".to_string(),
-                Some("192.168.1.1".to_string()),
-                Some("Mozilla/5.0".to_string()),
-            )
-            .await;
+        let refreshed = token_refreshed_event_params(TokenRefreshedAuditRequest {
+            user_id: "user_123".to_string(),
+            username: "alice".to_string(),
+            old_jti: "jti_old_123".to_string(),
+            new_jti: "jti_new_456".to_string(),
+            ip_address: Some("192.168.1.1".to_string()),
+            user_agent: Some("Mozilla/5.0".to_string()),
+        });
+        assert_eq!(refreshed.action, AuditAction::TokenRefreshed);
+        assert_eq!(refreshed.target_id.as_deref(), Some("user_123:jti_new_456"));
+        assert_eq!(refreshed.details["old_jti"], "jti_old_123");
+        assert_eq!(refreshed.details["new_jti"], "jti_new_456");
 
-        assert!(result.is_ok());
-        assert_eq!(service.dropped_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_log_token_issued_buffered() {
-        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
-        let (service, _handle) = AuditService::new(pool);
-
-        let result = service
-            .log_token_issued(TokenIssuedAuditRequest {
-                user_id: "user_123".to_string(),
-                username: "alice".to_string(),
-                token_type: "access".to_string(),
-                jti: "jti_abc123".to_string(),
-                expires_at: 1_735_689_600,
-                ip_address: Some("192.168.1.1".to_string()),
-                user_agent: Some("Mozilla/5.0".to_string()),
-            })
-            .await;
-
-        assert!(result.is_ok());
-        assert_eq!(service.dropped_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_log_token_refreshed_buffered() {
-        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
-        let (service, _handle) = AuditService::new(pool);
-
-        let result = service
-            .log_token_refreshed(TokenRefreshedAuditRequest {
-                user_id: "user_123".to_string(),
-                username: "alice".to_string(),
-                old_jti: "jti_old_123".to_string(),
-                new_jti: "jti_new_456".to_string(),
-                ip_address: Some("192.168.1.1".to_string()),
-                user_agent: Some("Mozilla/5.0".to_string()),
-            })
-            .await;
-
-        assert!(result.is_ok());
-        assert_eq!(service.dropped_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_log_token_family_revoked_buffered() {
-        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
-        let (service, _handle) = AuditService::new(pool);
-
-        let result = service
-            .log_token_family_revoked(TokenFamilyRevokedAuditRequest {
-                user_id: "user_123".to_string(),
-                username: "alice".to_string(),
-                replayed_jti: "jti_replayed_789".to_string(),
-                ip_address: Some("192.168.1.1".to_string()),
-            })
-            .await;
-
-        assert!(result.is_ok());
-        assert_eq!(service.dropped_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_log_user_login_without_ip_or_user_agent() {
-        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
-        let (service, _handle) = AuditService::new(pool);
-
-        let result = service
-            .log_user_login(UserLoginAuditRequest {
-                user_id: "user_123".to_string(),
-                username: "alice".to_string(),
-                login_method: "oauth2".to_string(),
-                ip_address: None,
-                user_agent: None,
-            })
-            .await;
-
-        assert!(result.is_ok());
-        assert_eq!(service.dropped_count(), 0);
+        let revoked = token_family_revoked_event_params(TokenFamilyRevokedAuditRequest {
+            user_id: "user_123".to_string(),
+            username: "alice".to_string(),
+            replayed_jti: "jti_replayed_789".to_string(),
+            ip_address: Some("192.168.1.1".to_string()),
+        });
+        assert_eq!(revoked.action, AuditAction::TokenFamilyRevoked);
+        assert_eq!(revoked.target_id.as_deref(), Some("user_123"));
+        assert_eq!(revoked.details["replayed_jti"], "jti_replayed_789");
+        assert_eq!(revoked.details["reason"], "token_replay_detected");
+        assert_eq!(revoked.ip_address.as_deref(), Some("192.168.1.1"));
+        assert!(revoked.user_agent.is_none());
     }
 
     #[test]

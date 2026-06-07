@@ -15,6 +15,6 @@ pub use hls_proxy::HlsProxyClient;
 pub use proto::stream_relay_service_client::StreamRelayServiceClient;
 pub use proto::stream_relay_service_server::{StreamRelayService, StreamRelayServiceServer};
 pub use stream_puller::GrpcStreamPuller;
-pub use stream_relay_service::{RelayActivityCallback, StreamRelayServiceImpl};
+pub use stream_relay_service::StreamRelayServiceImpl;
 // Export proto message types
 pub use proto::{FrameType, PullRtmpStreamRequest, RtmpPacket};

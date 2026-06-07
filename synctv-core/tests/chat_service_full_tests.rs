@@ -16,9 +16,8 @@ use synctv_core::{
     models::{
         room_settings::ChatEnabled, AuditAction, AuditTargetType, ChatEventKind, ChatMessage,
         ChatMessageStatus, ChatMessageType, DeleteChatMessage, EditChatMessage,
-        FileReferenceTarget, NewChatImage, RoomAdminPermissionBits, RoomId,
-        RoomMemberPermissionBits, RoomSettings, SendChatMessage, User, UserId, UserRole,
-        UserStatus,
+        FileReferenceTarget, NewStoredFile, RoomAdminPermissionBits, RoomMemberPermissionBits,
+        RoomSettings, SendChatMessage, User, UserId, UserRole, UserStatus,
     },
     repository::{
         ChatRepository, FileStorageRepository, RoomMemberRepository, RoomRepository,
@@ -28,7 +27,6 @@ use synctv_core::{
         auth::{BruteForceProtection, JwtService},
         chat::{ChatDependencies, ChatRuntime},
         file_storage::{FileStorageCleanupOrigin, FileStorageService},
-        notification::RoomEvent,
         AuditService, ChatService, ContentFilter, DisabledFileStorageService,
         InMemoryTokenBlacklistStore, NotificationService, PermissionService, RateLimitConfig,
         RateLimiter, RequestRateLimiterService, RoomService, RoomSettingsService, UserService,
@@ -748,41 +746,6 @@ async fn test_admin_delete_records_actor_reason_and_original_author() {
     );
 }
 
-/// Mock broadcaster that tracks broadcast calls
-struct NotificationObserver {
-    event_count: std::sync::Mutex<usize>,
-    last_room_id: std::sync::Mutex<Option<String>>,
-    last_event_type: std::sync::Mutex<Option<String>>,
-}
-
-impl NotificationObserver {
-    const fn new() -> Self {
-        Self {
-            event_count: std::sync::Mutex::new(0),
-            last_room_id: std::sync::Mutex::new(None),
-            last_event_type: std::sync::Mutex::new(None),
-        }
-    }
-
-    fn observe(&self, room_id: &RoomId, event: &RoomEvent) {
-        *self.event_count.lock().unwrap() += 1;
-        *self.last_room_id.lock().unwrap() = Some(room_id.to_string());
-        *self.last_event_type.lock().unwrap() = Some(event.event_type().to_string());
-    }
-
-    fn get_event_count(&self) -> usize {
-        *self.event_count.lock().unwrap()
-    }
-
-    fn get_last_room_id(&self) -> Option<String> {
-        self.last_room_id.lock().unwrap().clone()
-    }
-
-    fn get_last_event_type(&self) -> Option<String> {
-        self.last_event_type.lock().unwrap().clone()
-    }
-}
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_send_message_broadcasts_to_room_members() {
@@ -795,9 +758,6 @@ async fn test_send_message_broadcasts_to_room_members() {
         .await
         .unwrap();
 
-    let observer = Arc::new(NotificationObserver::new());
-
-    // Build chat service with the counting broadcaster
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
     let rate_limiter: Arc<dyn RequestRateLimiterService> =
         Arc::new(RateLimiter::local_only("test:chat_broadcast:".to_string()));
@@ -861,43 +821,24 @@ async fn test_send_message_broadcasts_to_room_members() {
         .await
         .unwrap();
 
-    // Verify no broadcasts before sending
-    assert_eq!(
-        observer.get_event_count(),
-        0,
-        "No broadcasts should have occurred yet"
-    );
-
     let msg = chat_service
         .send_message(room.id, creator.id, "Hello, world!".to_string())
         .await
         .expect("send_message should succeed");
 
-    // Verify broadcast was triggered
     let (event_room_id, event) =
         tokio::time::timeout(std::time::Duration::from_secs(2), notification_rx.recv())
             .await
             .expect("chat notification should arrive")
             .expect("notification channel should remain open");
-    observer.observe(&event_room_id, &event);
 
+    assert_eq!(event_room_id, room.id);
     assert_eq!(
-        observer.get_event_count(),
-        1,
-        "One event should have been published"
-    );
-    assert_eq!(
-        observer.get_last_room_id(),
-        Some(room.id.to_string()),
-        "Event should be published for the correct room"
-    );
-    assert_eq!(
-        observer.get_last_event_type().as_deref(),
-        Some("chat_message"),
+        event.event_type(),
+        "chat_message",
         "Event type should be chat_message"
     );
 
-    // Verify the message was persisted
     assert!(msg.id > 0, "Message should have a positive ID");
     assert_eq!(msg.content, "Hello, world!", "Message content should match");
 }
@@ -2023,7 +1964,7 @@ async fn test_reused_chat_image_object_keeps_storage_until_last_reference_is_rel
         .await
         .unwrap();
 
-    let image = |id: &str| NewChatImage {
+    let image = |id: &str| NewStoredFile {
         id: id.to_string(),
         storage_backend: "database".to_string(),
         object_key: object_key.to_string(),

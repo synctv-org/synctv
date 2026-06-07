@@ -2,11 +2,9 @@
 
 use crate::impls::ApiError;
 use std::collections::HashMap;
-use std::net::IpAddr;
 use synctv_core::models::{
-    ChatImageBlob, ChatMessageEvent, ChatMessageType, ChatMessageWithImages,
-    ChatPlaybackMessagesQuery, CreateChatImageUploadSession, DeleteChatMessage, EditChatMessage,
-    FileUploadSession, MarkChatRead, NewChatImage, SendChatMessage, SetChatReaction, UserId,
+    ChatMessageEvent, ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery,
+    CreateChatImageUploadSession, MarkChatRead, SendChatMessage, SetChatReaction, UserId,
 };
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::room::ClientResourceAvailability;
@@ -17,714 +15,13 @@ use super::convert::{
 };
 use super::media::{
     file_cover_proto_to_stored_file, file_upload_session_to_room_cover_proto,
-    prepare_delete_entries_outbox_fanout, required_stored_file_fields, room_cover_object_to_proto,
-    upload_session_fields,
+    prepare_delete_entries_outbox_fanout, room_cover_object_to_proto,
 };
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
-fn settings_registry_unavailable_error() -> ApiError {
-    ApiError::ServiceUnavailable("Public settings are not available on this server.".to_string())
-}
-
-fn chat_service_unavailable_error() -> ApiError {
-    ApiError::ServiceUnavailable("Chat service is not available on this server.".to_string())
-}
-
-fn parse_optional_client_ip(client_ip: Option<&str>) -> Result<Option<IpAddr>, ApiError> {
-    client_ip
-        .map(|ip| {
-            ip.parse::<IpAddr>().map_err(|error| {
-                ApiError::InvalidInput(format!("Invalid client IP address '{ip}': {error}"))
-            })
-        })
-        .transpose()
-}
-
-fn required_room_settings<'a>(
-    settings: &'a std::collections::HashMap<
-        synctv_core::models::RoomId,
-        synctv_core::models::RoomSettings,
-    >,
-    room_id: &synctv_core::models::RoomId,
-) -> Result<&'a synctv_core::models::RoomSettings, ApiError> {
-    settings.get(room_id).ok_or_else(|| {
-        ApiError::Internal(format!(
-            "Missing room settings for room {room_id} in batch response"
-        ))
-    })
-}
-
-fn proto_room_status_filter(
-    value: i32,
-) -> Result<Option<synctv_core::models::RoomStatus>, ApiError> {
-    if value == synctv_proto::common::RoomStatus::Unspecified as i32 {
-        return Ok(None);
-    }
-    synctv_core::models::RoomStatus::try_from(value)
-        .map(Some)
-        .map_err(|_| ApiError::InvalidInput("Unsupported room status".to_string()))
-}
-
-fn proto_room_list_sort_by(value: i32) -> Result<synctv_core::models::RoomListSortBy, ApiError> {
-    match crate::proto::client::RoomListSortBy::try_from(value)
-        .map_err(|_| ApiError::InvalidInput("Unsupported room list sort field".to_string()))?
-    {
-        crate::proto::client::RoomListSortBy::Unspecified
-        | crate::proto::client::RoomListSortBy::CreatedAt => {
-            Ok(synctv_core::models::RoomListSortBy::CreatedAt)
-        }
-        crate::proto::client::RoomListSortBy::Name => Ok(synctv_core::models::RoomListSortBy::Name),
-        crate::proto::client::RoomListSortBy::UpdatedAt => {
-            Ok(synctv_core::models::RoomListSortBy::UpdatedAt)
-        }
-        crate::proto::client::RoomListSortBy::LastActivityAt => {
-            Ok(synctv_core::models::RoomListSortBy::LastActivityAt)
-        }
-    }
-}
-
-fn proto_my_room_relation(value: i32) -> Result<synctv_core::models::MyRoomRelation, ApiError> {
-    match crate::proto::client::MyRoomRelation::try_from(value)
-        .map_err(|_| ApiError::InvalidInput("Unsupported room relation".to_string()))?
-    {
-        crate::proto::client::MyRoomRelation::Unspecified
-        | crate::proto::client::MyRoomRelation::All => Ok(synctv_core::models::MyRoomRelation::All),
-        crate::proto::client::MyRoomRelation::Created => {
-            Ok(synctv_core::models::MyRoomRelation::Created)
-        }
-        crate::proto::client::MyRoomRelation::Participating => {
-            Ok(synctv_core::models::MyRoomRelation::Participating)
-        }
-    }
-}
-
-fn proto_my_room_list_sort_by(
-    value: i32,
-) -> Result<synctv_core::models::MyRoomListSortBy, ApiError> {
-    match crate::proto::client::MyRoomListSortBy::try_from(value).map_err(|_| {
-        ApiError::InvalidInput("Unsupported related room list sort field".to_string())
-    })? {
-        crate::proto::client::MyRoomListSortBy::Unspecified
-        | crate::proto::client::MyRoomListSortBy::JoinedAt => {
-            Ok(synctv_core::models::MyRoomListSortBy::JoinedAt)
-        }
-        crate::proto::client::MyRoomListSortBy::Name => {
-            Ok(synctv_core::models::MyRoomListSortBy::Name)
-        }
-        crate::proto::client::MyRoomListSortBy::CreatedAt => {
-            Ok(synctv_core::models::MyRoomListSortBy::CreatedAt)
-        }
-        crate::proto::client::MyRoomListSortBy::UpdatedAt => {
-            Ok(synctv_core::models::MyRoomListSortBy::UpdatedAt)
-        }
-        crate::proto::client::MyRoomListSortBy::LastActivityAt => {
-            Ok(synctv_core::models::MyRoomListSortBy::LastActivityAt)
-        }
-    }
-}
-
-fn proto_sort_direction(
-    value: i32,
-    default: synctv_core::models::SortDirection,
-) -> Result<synctv_core::models::SortDirection, ApiError> {
-    match crate::proto::client::SortDirection::try_from(value)
-        .map_err(|_| ApiError::InvalidInput("Unsupported sort direction".to_string()))?
-    {
-        crate::proto::client::SortDirection::Unspecified => Ok(default),
-        crate::proto::client::SortDirection::Asc => Ok(synctv_core::models::SortDirection::Asc),
-        crate::proto::client::SortDirection::Desc => Ok(synctv_core::models::SortDirection::Desc),
-    }
-}
-
-const DEFAULT_ROOM_PAGE: u32 = 1;
-const DEFAULT_ROOM_PAGE_SIZE: u32 = 20;
-const MAX_ROOM_PAGE_SIZE: u32 = 100;
-const DEFAULT_HOT_ROOM_LIMIT: i64 = 10;
-const DEFAULT_HOT_ROOM_LIMIT_USIZE: usize = 10;
-
-fn validate_room_password_for_set(password: &str) -> Result<(), ApiError> {
-    let char_count = password.trim().chars().count();
-    if char_count < synctv_core::validation::ROOM_PASSWORD_MIN {
-        return Err(ApiError::InvalidInput(format!(
-            "Room password must be at least {} characters",
-            synctv_core::validation::ROOM_PASSWORD_MIN
-        )));
-    }
-    if char_count > synctv_core::validation::ROOM_PASSWORD_MAX {
-        return Err(ApiError::InvalidInput(format!(
-            "Room password must not exceed {} characters",
-            synctv_core::validation::ROOM_PASSWORD_MAX
-        )));
-    }
-    Ok(())
-}
-
-fn validate_room_password_for_verify(password: &str) -> Result<(), ApiError> {
-    let char_count = password.chars().count();
-    if char_count == 0 || char_count > synctv_core::validation::ROOM_PASSWORD_MAX {
-        return Err(ApiError::InvalidInput("Invalid room password".to_string()));
-    }
-    Ok(())
-}
-
-fn positive_i32_to_u32(value: i32, default: u32) -> u32 {
-    if value > 0 {
-        value.cast_unsigned()
-    } else {
-        default
-    }
-}
-
-fn positive_i32(value: i32, default: i32) -> i32 {
-    if value > 0 {
-        value
-    } else {
-        default
-    }
-}
-
-fn optional_positive_window_seconds(
-    value: f64,
-    default: f64,
-    field: &str,
-) -> Result<f64, ApiError> {
-    if value == 0.0 {
-        return Ok(default);
-    }
-    if !value.is_finite() || value < 0.0 {
-        return Err(ApiError::InvalidInput(format!(
-            "{field} must be a finite non-negative number"
-        )));
-    }
-    Ok(value)
-}
-
-fn optional_positive_limit(
-    value: i32,
-    default: i32,
-    max: i32,
-    field: &str,
-) -> Result<i32, ApiError> {
-    if value == 0 {
-        return Ok(default);
-    }
-    if value < 0 {
-        return Err(ApiError::InvalidInput(format!(
-            "{field} must be a positive integer"
-        )));
-    }
-    if value > max {
-        return Err(ApiError::InvalidInput(format!(
-            "{field} must be at most {max}"
-        )));
-    }
-    Ok(value)
-}
-
-fn required_playback_position_seconds(value: f64) -> Result<f64, ApiError> {
-    if !value.is_finite() || value < 0.0 {
-        return Err(ApiError::InvalidInput(
-            "position_seconds must be a finite non-negative number".to_string(),
-        ));
-    }
-    Ok(value)
-}
-
-fn positive_i64_to_usize(
-    value: i64,
-    default: usize,
-    field: &'static str,
-) -> Result<usize, ApiError> {
-    let value = if value <= 0 {
-        i64::try_from(default)
-            .map_err(|_| ApiError::Internal(format!("{field} default exceeds i64::MAX")))?
-    } else {
-        value
-    };
-    usize::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds usize::MAX")))
-}
-
-fn usize_to_i32_api(value: usize, field: &'static str) -> Result<i32, ApiError> {
-    i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
-}
-
-fn i64_to_i32_api(value: i64, field: &'static str) -> Result<i32, ApiError> {
-    i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
-}
-
-fn usize_to_u32_api(value: usize, field: &'static str) -> Result<u32, ApiError> {
-    u32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds u32::MAX")))
-}
-
-fn chat_status_to_proto(
-    status: synctv_core::models::ChatMessageStatus,
-) -> crate::proto::client::ChatMessageStatus {
-    match status {
-        synctv_core::models::ChatMessageStatus::Active => {
-            crate::proto::client::ChatMessageStatus::Active
-        }
-        synctv_core::models::ChatMessageStatus::Edited => {
-            crate::proto::client::ChatMessageStatus::Edited
-        }
-        synctv_core::models::ChatMessageStatus::Deleted => {
-            crate::proto::client::ChatMessageStatus::Deleted
-        }
-    }
-}
-
-async fn username_for_chat_message(
-    api: &ClientApiImpl,
-    message: &synctv_core::models::ChatMessage,
-) -> Result<String, ApiError> {
-    let Some(user_id) = message.user_id else {
-        return Ok("[deleted]".to_string());
-    };
-    api.user_service
-        .get_username(&user_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::NotFound("Chat message author not found".to_string()))
-}
-
-fn chat_image_to_proto(
-    image: &synctv_core::models::ChatImage,
-) -> Result<crate::proto::client::ChatImage, ApiError> {
-    crate::impls::messaging::core_chat_image_to_proto(image)
-        .map_err(|error| ApiError::Internal(error.clone()))
-}
-
-fn new_chat_image_to_proto(
-    image: &NewChatImage,
-) -> Result<crate::proto::client::ChatImage, ApiError> {
-    let fields = required_stored_file_fields(image, "chat image metadata")?;
-    Ok(crate::proto::client::ChatImage {
-        id: image.id.clone(),
-        storage_backend: image.storage_backend.clone(),
-        object_key: image.object_key.clone(),
-        url: fields.url,
-        mime_type: fields.mime_type,
-        size_bytes: fields.size_bytes,
-        width: fields.width,
-        height: fields.height,
-        metadata: fields.metadata,
-    })
-}
-
-fn chat_message_to_proto(
-    api: &ClientApiImpl,
-    message: ChatMessageWithImages,
-    username: String,
-) -> Result<crate::proto::client::ChatMessageReceive, ApiError> {
-    let msg = message.message;
-    let room_id = api
-        .public_id_codec
-        .encode_room_id(msg.room_id)
-        .map_err(|error| ApiError::Internal(format!("Failed to encode chat room id: {error}")))?;
-    let user_id = msg
-        .user_id
-        .map(|id| {
-            api.public_id_codec.encode_user_id(id).map_err(|error| {
-                ApiError::Internal(format!("Failed to encode chat user id: {error}"))
-            })
-        })
-        .transpose()?
-        .unwrap_or_default();
-    let deleted_by_user_id = msg
-        .deleted_by
-        .map(|id| {
-            api.public_id_codec.encode_user_id(id).map_err(|error| {
-                ApiError::Internal(format!("Failed to encode chat deleted_by user id: {error}"))
-            })
-        })
-        .transpose()?
-        .unwrap_or_default();
-    let reactions = message
-        .reactions
-        .iter()
-        .map(chat_reaction_summary_to_proto)
-        .collect::<Result<Vec<_>, _>>()?;
-    let reaction_count = chat_reaction_count(&reactions)?;
-    let playback = crate::impls::messaging::chat_playback_metadata_from_metadata(
-        &msg.metadata,
-        &api.public_id_codec,
-    )
-    .map_err(ApiError::Internal)?;
-    Ok(crate::proto::client::ChatMessageReceive {
-        id: msg.id.to_string(),
-        room_id,
-        user_id,
-        username,
-        content: msg.content,
-        timestamp: msg.created_at.timestamp(),
-        display_position: crate::impls::messaging::chat_display_position_from_metadata(
-            &msg.metadata,
-        )
-        .map_err(ApiError::Internal)?,
-        display_color: crate::impls::messaging::chat_display_color_from_metadata(&msg.metadata)
-            .map_err(ApiError::Internal)?,
-        client_message_id: msg.client_message_id.unwrap_or_default(),
-        status: chat_status_to_proto(msg.status) as i32,
-        version: msg.version,
-        edited_at: msg.edited_at.map_or(0, |ts| ts.timestamp()),
-        deleted_at: msg.deleted_at.map_or(0, |ts| ts.timestamp()),
-        reply_to_message_id: msg
-            .reply_to_message_id
-            .map(|id| id.to_string())
-            .unwrap_or_default(),
-        images: message
-            .images
-            .iter()
-            .map(chat_image_to_proto)
-            .collect::<Result<Vec<_>, _>>()?,
-        deleted_by_user_id,
-        delete_reason: msg.delete_reason.unwrap_or_default(),
-        playback_media_id: playback.media_id,
-        playback_playlist_id: playback.playlist_id,
-        playback_target: playback.target,
-        playback_target_hash: playback.target_hash,
-        playback_position_seconds: playback.position_seconds,
-        reactions,
-        reaction_count,
-    })
-}
-
-pub(crate) fn chat_reaction_summary_to_proto(
-    reaction: &synctv_core::models::ChatReactionSummary,
-) -> Result<crate::proto::client::ChatReactionSummary, ApiError> {
-    let key = reaction.key.trim();
-    if key.is_empty() {
-        return Err(ApiError::Internal(
-            "chat reaction summary key is empty".to_string(),
-        ));
-    }
-    if reaction.count < 0 {
-        return Err(ApiError::Internal(format!(
-            "chat reaction summary '{}' has negative count",
-            reaction.key
-        )));
-    }
-    Ok(crate::proto::client::ChatReactionSummary {
-        key: key.to_string(),
-        count: reaction.count,
-        reacted_by_me: reaction.reacted_by_me,
-    })
-}
-
-pub(crate) fn chat_reaction_count(
-    reactions: &[crate::proto::client::ChatReactionSummary],
-) -> Result<i32, ApiError> {
-    reactions
-        .iter()
-        .try_fold(0_i64, |total, reaction| {
-            if reaction.count < 0 {
-                return Err(ApiError::Internal(format!(
-                    "chat reaction summary '{}' has negative count",
-                    reaction.key
-                )));
-            }
-            total.checked_add(reaction.count).ok_or_else(|| {
-                ApiError::Internal("chat reaction count exceeds i64::MAX".to_string())
-            })
-        })?
-        .try_into()
-        .map_err(|_| ApiError::Internal("chat reaction count exceeds i32::MAX".to_string()))
-}
-
-async fn chat_event_to_proto(
-    api: &ClientApiImpl,
-    event: ChatMessageEvent,
-) -> Result<crate::proto::client::ChatMessageEvent, ApiError> {
-    let username = username_for_chat_message(api, &event.message.message).await?;
-    let room_id = api
-        .public_id_codec
-        .encode_room_id(event.room_id)
-        .map_err(|error| {
-            ApiError::Internal(format!("Failed to encode chat event room id: {error}"))
-        })?;
-    Ok(crate::proto::client::ChatMessageEvent {
-        event_id: event.event_id,
-        room_id,
-        kind: crate::impls::messaging::chat_event_kind_to_proto(event.kind) as i32,
-        message: Some(chat_message_to_proto(api, event.message, username)?),
-        occurred_at: event.occurred_at.timestamp(),
-        sequence: event.sequence,
-    })
-}
-
-fn optional_chat_expected_version(raw: i64) -> Result<Option<i64>, ApiError> {
-    if raw < 0 {
-        return Err(ApiError::InvalidInput(
-            "expected_version must be non-negative".to_string(),
-        ));
-    }
-    Ok((raw > 0).then_some(raw))
-}
-
-fn optional_trimmed_string(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
-fn parse_chat_message_id(raw: &str) -> Result<i64, ApiError> {
-    raw.trim()
-        .parse::<i64>()
-        .map_err(|_| ApiError::InvalidInput("Invalid chat message id".to_string()))
-}
-
-fn parse_json_metadata(bytes: &[u8]) -> Result<serde_json::Value, ApiError> {
-    if bytes.is_empty() {
-        return Ok(serde_json::Value::Object(Default::default()));
-    }
-    let metadata: serde_json::Value = serde_json::from_slice(bytes)
-        .map_err(|error| ApiError::InvalidInput(format!("Invalid metadata JSON: {error}")))?;
-    if !metadata.is_object() {
-        return Err(ApiError::InvalidInput(
-            "metadata must be a JSON object".to_string(),
-        ));
-    }
-    Ok(metadata)
-}
-
-fn parse_proto_chat_images(
-    images: &[crate::proto::client::ChatImage],
-) -> Result<Vec<synctv_core::models::NewChatImage>, ApiError> {
-    images
-        .iter()
-        .map(crate::impls::messaging::proto_chat_image_to_core)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| ApiError::InvalidInput(format!("Invalid chat image: {error}")))
-}
-
-fn upload_session_to_proto(
-    session: FileUploadSession,
-) -> Result<crate::proto::client::ChatImageUploadSession, ApiError> {
-    let fields = upload_session_fields(&session)?;
-    Ok(crate::proto::client::ChatImageUploadSession {
-        image: Some(new_chat_image_to_proto(&session.file)?),
-        upload_required: session.upload_required,
-        upload_url: fields.upload_url,
-        upload_method: fields.upload_method,
-        upload_headers: session.upload_headers.into_iter().collect(),
-        expires_at: fields.expires_at,
-        max_size_bytes: session.max_size_bytes,
-        ownership_proof_required: session.ownership_proof_required,
-        ownership_proof_nonce: fields.ownership_proof_nonce,
-        ownership_proof_ranges: session
-            .ownership_proof_ranges
-            .into_iter()
-            .map(|range| crate::proto::client::ChatImageOwnershipProofRange {
-                offset: range.offset,
-                length: range.length,
-            })
-            .collect(),
-        ownership_proof_metadata_key: fields.ownership_proof_metadata_key,
-    })
-}
-
-fn chat_image_object_to_proto(
-    room_id: &str,
-    blob: &ChatImageBlob,
-) -> crate::proto::client::ChatImageObjectResponse {
-    crate::proto::client::ChatImageObjectResponse {
-        room_id: room_id.to_string(),
-        object_key: blob.object_key.clone(),
-        mime_type: blob.mime_type.clone(),
-        checksum_sha256: blob.checksum_sha256.clone(),
-        data: blob.data.clone(),
-    }
-}
-
-fn edit_chat_message_request_to_core(
-    room_id: synctv_core::models::RoomId,
-    user_id: synctv_core::models::UserId,
-    req: crate::proto::client::EditChatMessageRequest,
-) -> Result<EditChatMessage, ApiError> {
-    Ok(EditChatMessage {
-        room_id,
-        message_id: parse_chat_message_id(&req.message_id)?,
-        user_id,
-        client_operation_id: optional_trimmed_string(&req.client_operation_id),
-        content: req.content,
-        metadata: parse_json_metadata(&req.metadata)?,
-        expected_version: optional_chat_expected_version(req.expected_version)?,
-    })
-}
-
-fn delete_chat_message_request_to_core(
-    room_id: synctv_core::models::RoomId,
-    user_id: synctv_core::models::UserId,
-    req: &crate::proto::client::DeleteChatMessageRequest,
-) -> Result<DeleteChatMessage, ApiError> {
-    Ok(DeleteChatMessage {
-        room_id,
-        message_id: parse_chat_message_id(&req.message_id)?,
-        user_id,
-        client_operation_id: optional_trimmed_string(&req.client_operation_id),
-        reason: optional_trimmed_string(&req.reason),
-        expected_version: optional_chat_expected_version(req.expected_version)?,
-    })
-}
-
-fn chat_read_state_to_proto(
-    api: &ClientApiImpl,
-    state: synctv_core::models::ChatReadStateWithUnread,
-) -> Result<crate::proto::client::ChatReadStateResponse, ApiError> {
-    let room_id = api
-        .public_id_codec
-        .encode_room_id(state.state.room_id)
-        .map_err(|error| {
-            ApiError::Internal(format!("Failed to encode chat read state room id: {error}"))
-        })?;
-    let user_id = api
-        .public_id_codec
-        .encode_user_id(state.state.user_id)
-        .map_err(|error| {
-            ApiError::Internal(format!("Failed to encode chat read state user id: {error}"))
-        })?;
-    Ok(crate::proto::client::ChatReadStateResponse {
-        state: Some(crate::proto::client::ChatReadState {
-            room_id,
-            user_id,
-            last_read_message_id: state
-                .state
-                .last_read_message_id
-                .map(|id| id.to_string())
-                .unwrap_or_default(),
-            last_read_event_id: state.state.last_read_event_id.unwrap_or_default(),
-            last_read_event_sequence: state.state.last_read_event_sequence.unwrap_or_default(),
-            updated_at: state.state.updated_at.timestamp(),
-        }),
-        unread_count: state.unread_count,
-    })
-}
-
-fn build_public_room_list_query(
-    req: crate::proto::client::ListRoomsRequest,
-) -> Result<synctv_core::models::RoomListQuery, ApiError> {
-    crate::impls::validate_proto_request(&req)?;
-
-    let page = positive_i32_to_u32(req.page, DEFAULT_ROOM_PAGE);
-    let page_size = if req.page_size > 0 {
-        req.page_size.cast_unsigned().min(MAX_ROOM_PAGE_SIZE)
-    } else {
-        DEFAULT_ROOM_PAGE_SIZE
-    };
-
-    Ok(synctv_core::models::RoomListQuery {
-        pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
-        search: (!req.search.is_empty()).then_some(req.search),
-        status: Some(synctv_core::models::RoomStatus::Active),
-        is_banned: Some(false),
-        sort_by: proto_room_list_sort_by(req.sort_by)?,
-        sort_direction: proto_sort_direction(
-            req.sort_direction,
-            synctv_core::models::SortDirection::Desc,
-        )?,
-        ..Default::default()
-    })
-}
-
-fn build_my_room_list_query(
-    req: crate::proto::client::ListMyRoomsRequest,
-) -> Result<synctv_core::models::MyRoomListQuery, ApiError> {
-    crate::impls::validate_proto_request(&req)?;
-
-    let page = positive_i32_to_u32(req.page, DEFAULT_ROOM_PAGE);
-    let page_size = if req.page_size > 0 {
-        req.page_size.cast_unsigned().min(MAX_ROOM_PAGE_SIZE)
-    } else {
-        DEFAULT_ROOM_PAGE_SIZE
-    };
-
-    Ok(synctv_core::models::MyRoomListQuery {
-        pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
-        search: (!req.search.is_empty()).then_some(req.search),
-        status: proto_room_status_filter(req.status)?,
-        is_banned: req.is_banned,
-        relation: proto_my_room_relation(req.relation)?,
-        sort_by: proto_my_room_list_sort_by(req.sort_by)?,
-        sort_direction: proto_sort_direction(
-            req.sort_direction,
-            synctv_core::models::SortDirection::Desc,
-        )?,
-    })
-}
-
-fn build_transfer_room_ownership_request(
-    req: crate::proto::client::TransferRoomOwnershipRequest,
-    public_id_codec: &crate::PublicIdCodec,
-) -> Result<UserId, ApiError> {
-    crate::impls::validate_proto_request(&req)?;
-    crate::impls::proto_validated_user_id(req.new_owner_user_id, public_id_codec)
-}
-
-fn build_check_room_request(
-    req: crate::proto::client::CheckRoomRequest,
-    public_id_codec: &crate::PublicIdCodec,
-) -> Result<synctv_core::models::RoomId, ApiError> {
-    crate::impls::validate_proto_request(&req)?;
-    crate::impls::proto_validated_room_id(req.room_id, public_id_codec)
-}
-
-pub(crate) fn build_create_websocket_ticket_request(
-    req: &crate::proto::client::CreateWebSocketTicketRequest,
-    public_id_codec: &crate::PublicIdCodec,
-) -> Result<synctv_core::models::RoomId, ApiError> {
-    crate::impls::validate_proto_request(req)?;
-    crate::impls::proto_validated_room_id(req.room_id.clone(), public_id_codec)
-}
-
-fn websocket_ticket_service_unavailable_error() -> ApiError {
-    ApiError::ServiceUnavailable("WebSocket ticket service is not available.".to_string())
-}
-
-type ChatHistoryCursor = (chrono::DateTime<chrono::Utc>, i64);
-type ChatReactionUsersCursor = (chrono::DateTime<chrono::Utc>, UserId);
-
-fn build_get_chat_history_request(
-    req: &crate::proto::client::GetChatHistoryRequest,
-) -> Result<(i32, Option<ChatHistoryCursor>), ApiError> {
-    crate::impls::validate_proto_request(req)?;
-
-    let limit = if req.limit > 0 { req.limit } else { 50 };
-    let cursor = if req.cursor.is_empty() {
-        None
-    } else if let Some((ts_str, id)) = req.cursor.split_once('|') {
-        let ts = synctv_common::time::parse_datetime_to_utc(ts_str)
-            .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
-        let id = id
-            .parse::<i64>()
-            .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
-        Some((ts, id))
-    } else {
-        return Err(ApiError::InvalidInput("Invalid cursor format".to_string()));
-    };
-
-    Ok((limit, cursor))
-}
-
-fn build_list_chat_reaction_users_request(
-    req: &crate::proto::client::ListChatReactionUsersRequest,
-    public_id_codec: &crate::PublicIdCodec,
-) -> Result<(i32, Option<ChatReactionUsersCursor>), ApiError> {
-    crate::impls::validate_proto_request(req)?;
-
-    let limit = if req.limit > 0 { req.limit } else { 50 };
-    let cursor = if req.cursor.is_empty() {
-        None
-    } else if let Some((ts_str, user_id)) = req.cursor.split_once('|') {
-        let ts = synctv_common::time::parse_datetime_to_utc(ts_str)
-            .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
-        let user_id = public_id_codec
-            .decode_user_id(user_id)
-            .map_err(ApiError::InvalidInput)?;
-        Some((ts, user_id))
-    } else {
-        return Err(ApiError::InvalidInput("Invalid cursor format".to_string()));
-    };
-
-    Ok((limit, cursor))
-}
+mod support;
+use support::*;
+pub(crate) use support::{chat_reaction_count, chat_reaction_summary_to_proto};
 
 impl ClientApiImpl {
     async fn load_room_member_count(
@@ -741,7 +38,7 @@ impl ClientApiImpl {
     async fn load_room_playback_state_proto(
         &self,
         room_id: &synctv_core::models::RoomId,
-    ) -> Result<crate::proto::client::PlaybackState, ApiError> {
+    ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
         let state = self
             .room_service
             .get_playback_state(room_id)
@@ -765,7 +62,7 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-    ) -> Result<Option<crate::proto::client::Media>, ApiError> {
+    ) -> Result<Option<synctv_proto::client::Media>, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
 
@@ -791,8 +88,8 @@ impl ClientApiImpl {
 
     pub async fn list_rooms(
         &self,
-        req: crate::proto::client::ListRoomsRequest,
-    ) -> Result<crate::proto::client::ListRoomsResponse, ApiError> {
+        req: synctv_proto::client::ListRoomsRequest,
+    ) -> Result<synctv_proto::client::ListRoomsResponse, ApiError> {
         let query = build_public_room_list_query(req)?;
         let (rooms, total) = self
             .room_service
@@ -836,7 +133,7 @@ impl ClientApiImpl {
             );
         }
 
-        Ok(crate::proto::client::ListRoomsResponse {
+        Ok(synctv_proto::client::ListRoomsResponse {
             rooms: room_list,
             total: i64_to_i32_api(total, "room total")?,
         })
@@ -845,8 +142,8 @@ impl ClientApiImpl {
     pub async fn list_my_rooms(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::ListMyRoomsRequest,
-    ) -> Result<crate::proto::client::ListMyRoomsResponse, ApiError> {
+        req: synctv_proto::client::ListMyRoomsRequest,
+    ) -> Result<synctv_proto::client::ListMyRoomsResponse, ApiError> {
         let uid = *user_id;
         let query = build_my_room_list_query(req)?;
         let (rooms, total) = self
@@ -877,11 +174,11 @@ impl ClientApiImpl {
                 .calculate_role_default_permissions(role, settings)
                 .0;
             let relation = if room.created_by == uid {
-                crate::proto::client::MyRoomRelation::Created as i32
+                synctv_proto::client::MyRoomRelation::Created as i32
             } else {
-                crate::proto::client::MyRoomRelation::Participating as i32
+                synctv_proto::client::MyRoomRelation::Participating as i32
             };
-            room_list.push(crate::proto::client::MyRoom {
+            room_list.push(synctv_proto::client::MyRoom {
                 room: Some(
                     self.room_to_proto_basic_with_loaded_cover(
                         room,
@@ -896,7 +193,7 @@ impl ClientApiImpl {
             });
         }
 
-        Ok(crate::proto::client::ListMyRoomsResponse {
+        Ok(synctv_proto::client::ListMyRoomsResponse {
             rooms: room_list,
             total: i64_to_i32_api(total, "my room total")?,
         })
@@ -905,8 +202,8 @@ impl ClientApiImpl {
     pub async fn create_room(
         &self,
         user_id: &UserId,
-        mut req: crate::proto::client::CreateRoomRequest,
-    ) -> Result<crate::proto::client::CreateRoomResponse, ApiError> {
+        mut req: synctv_proto::client::CreateRoomRequest,
+    ) -> Result<synctv_proto::client::CreateRoomResponse, ApiError> {
         // Validate and sanitize room name
         req.name = crate::impls::validation::validate_room_name(&req.name)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
@@ -953,7 +250,7 @@ impl ClientApiImpl {
 
         prepared_outbox_fanout.publish_after_outbox_commit();
 
-        Ok(crate::proto::client::CreateRoomResponse {
+        Ok(synctv_proto::client::CreateRoomResponse {
             room: Some(
                 self.room_to_proto_basic_with_loaded_cover(
                     &room,
@@ -969,7 +266,7 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-    ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetRoomResponse, ApiError> {
         let actor = self.room_actor_for_user(user_id, room_id).await?;
         self.get_room_for_actor(&actor).await
     }
@@ -977,7 +274,7 @@ impl ClientApiImpl {
     pub async fn get_room_for_actor(
         &self,
         actor: &RoomActor,
-    ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetRoomResponse, ApiError> {
         let rid = actor.room_id();
         let room = self
             .room_service
@@ -992,7 +289,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::GetRoomResponse {
+        Ok(synctv_proto::client::GetRoomResponse {
             room: Some(
                 self.room_to_proto_basic_with_loaded_cover(
                     &room,
@@ -1008,7 +305,7 @@ impl ClientApiImpl {
     pub async fn get_room_as_guest(
         &self,
         access: &GuestRoomAccess,
-    ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetRoomResponse, ApiError> {
         self.get_room_for_actor(&RoomActor::Guest(access.clone()))
             .await
     }
@@ -1016,14 +313,14 @@ impl ClientApiImpl {
     async fn room_response_after_room_update(
         &self,
         room: &synctv_core::models::Room,
-    ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetRoomResponse, ApiError> {
         let rid = room.id;
         let settings = self
             .room_service
             .get_room_settings(&rid)
             .await
             .map_err(ApiError::from)?;
-        Ok(crate::proto::client::GetRoomResponse {
+        Ok(synctv_proto::client::GetRoomResponse {
             room: Some(
                 self.room_to_proto_basic_with_loaded_cover(
                     room,
@@ -1040,8 +337,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::CreateRoomCoverUploadSessionRequest,
-    ) -> Result<crate::proto::client::CreateRoomCoverUploadSessionResponse, ApiError> {
+        req: synctv_proto::client::CreateRoomCoverUploadSessionRequest,
+    ) -> Result<synctv_proto::client::CreateRoomCoverUploadSessionResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = self.parse_room_id(room_id)?;
         let session = self
@@ -1061,15 +358,15 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        Ok(crate::proto::client::CreateRoomCoverUploadSessionResponse {
+        Ok(synctv_proto::client::CreateRoomCoverUploadSessionResponse {
             session: Some(file_upload_session_to_room_cover_proto(session)?),
         })
     }
 
     pub async fn upload_room_cover_object(
         &self,
-        req: crate::proto::client::UploadRoomCoverObjectRequest,
-    ) -> Result<crate::proto::client::UploadRoomCoverObjectResponse, ApiError> {
+        req: synctv_proto::client::UploadRoomCoverObjectRequest,
+    ) -> Result<synctv_proto::client::UploadRoomCoverObjectResponse, ApiError> {
         let blob = self
             .room_service
             .store_room_cover_upload_object(
@@ -1080,15 +377,15 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        Ok(crate::proto::client::UploadRoomCoverObjectResponse {
+        Ok(synctv_proto::client::UploadRoomCoverObjectResponse {
             object: Some(room_cover_object_to_proto(&blob)),
         })
     }
 
     pub async fn get_room_cover_object(
         &self,
-        req: crate::proto::client::GetRoomCoverObjectRequest,
-    ) -> Result<crate::proto::client::RoomCoverObjectResponse, ApiError> {
+        req: synctv_proto::client::GetRoomCoverObjectRequest,
+    ) -> Result<synctv_proto::client::RoomCoverObjectResponse, ApiError> {
         let blob = self
             .room_service
             .get_room_cover_object(&req.encoded_object_key, &req.token)
@@ -1101,8 +398,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::UpdateRoomCoverRequest,
-    ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
+        req: synctv_proto::client::UpdateRoomCoverRequest,
+    ) -> Result<synctv_proto::client::GetRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = self.parse_room_id(room_id)?;
         let cover = req
@@ -1121,8 +418,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::ClearRoomCoverRequest,
-    ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
+        req: synctv_proto::client::ClearRoomCoverRequest,
+    ) -> Result<synctv_proto::client::GetRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = self.parse_room_id(room_id)?;
         let room = self
@@ -1138,9 +435,9 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::JoinRoomRequest,
+        req: synctv_proto::client::JoinRoomRequest,
         client_ip: Option<&str>,
-    ) -> Result<crate::proto::client::JoinRoomResponse, ApiError> {
+    ) -> Result<synctv_proto::client::JoinRoomResponse, ApiError> {
         self.join_room_with_control(user_id, room_id, req, client_ip, None)
             .await
     }
@@ -1149,10 +446,10 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::JoinRoomRequest,
+        req: synctv_proto::client::JoinRoomRequest,
         client_ip: Option<&str>,
         request_control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::JoinRoomResponse, ApiError> {
+    ) -> Result<synctv_proto::client::JoinRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let uid = *user_id;
@@ -1229,7 +526,7 @@ impl ClientApiImpl {
         )?;
 
         let requires_approval = proto_members.is_empty();
-        Ok(crate::proto::client::JoinRoomResponse {
+        Ok(synctv_proto::client::JoinRoomResponse {
             room: Some(
                 self.room_to_proto_basic_with_loaded_cover(
                     &room,
@@ -1248,10 +545,10 @@ impl ClientApiImpl {
     pub async fn start_room_password_login_with_control(
         &self,
         user_id: &UserId,
-        req: crate::proto::client::StartRoomPasswordLoginRequest,
+        req: synctv_proto::client::StartRoomPasswordLoginRequest,
         client_ip: Option<&str>,
         request_control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::StartRoomPasswordLoginResponse, ApiError> {
+    ) -> Result<synctv_proto::client::StartRoomPasswordLoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = *user_id;
         let rid = self.parse_room_id(&req.room_id)?;
@@ -1267,7 +564,7 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        Ok(crate::proto::client::StartRoomPasswordLoginResponse {
+        Ok(synctv_proto::client::StartRoomPasswordLoginResponse {
             session_id: challenge.session_id,
             credential_response: challenge.credential_response,
         })
@@ -1277,9 +574,9 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         expected_room_id: Option<&str>,
-        req: crate::proto::client::FinishRoomPasswordLoginRequest,
+        req: synctv_proto::client::FinishRoomPasswordLoginRequest,
         client_ip: Option<&str>,
-    ) -> Result<crate::proto::client::JoinRoomResponse, ApiError> {
+    ) -> Result<synctv_proto::client::JoinRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = *user_id;
         let expected_room_id = expected_room_id
@@ -1317,7 +614,7 @@ impl ClientApiImpl {
             &self.public_id_codec,
         )?;
         let requires_approval = proto_members.is_empty();
-        Ok(crate::proto::client::JoinRoomResponse {
+        Ok(synctv_proto::client::JoinRoomResponse {
             room: Some(
                 self.room_to_proto_basic_with_loaded_cover(
                     &room,
@@ -1337,9 +634,9 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         password_version: i32,
-        req: crate::proto::client::CreateWebSocketTicketRequest,
+        req: synctv_proto::client::CreateWebSocketTicketRequest,
         request_control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::CreateWebSocketTicketResponse, ApiError> {
+    ) -> Result<synctv_proto::client::CreateWebSocketTicketResponse, ApiError> {
         let room_id = build_create_websocket_ticket_request(&req, &self.public_id_codec)?;
         let requested_room_id = req.room_id;
         let ws_ticket_service = self
@@ -1385,7 +682,7 @@ impl ClientApiImpl {
             .encode_room_id(room_id)
             .map_err(ApiError::Internal)?;
 
-        Ok(crate::proto::client::CreateWebSocketTicketResponse {
+        Ok(synctv_proto::client::CreateWebSocketTicketResponse {
             ticket,
             room_id: public_room_id.clone(),
             expires_in_secs: ws_ticket_service.ticket_ttl_secs(),
@@ -1396,9 +693,9 @@ impl ClientApiImpl {
     pub async fn create_websocket_ticket_for_actor_with_control(
         &self,
         actor: RoomActor,
-        req: crate::proto::client::CreateWebSocketTicketRequest,
+        req: synctv_proto::client::CreateWebSocketTicketRequest,
         request_control: Option<&ExecutionControl>,
-    ) -> Result<crate::proto::client::CreateWebSocketTicketResponse, ApiError> {
+    ) -> Result<synctv_proto::client::CreateWebSocketTicketResponse, ApiError> {
         let room_id = build_create_websocket_ticket_request(&req, &self.public_id_codec)?;
         let requested_room_id = req.room_id;
         if actor.room_id() != room_id {
@@ -1467,7 +764,7 @@ impl ClientApiImpl {
             .encode_room_id(room_id)
             .map_err(ApiError::Internal)?;
 
-        Ok(crate::proto::client::CreateWebSocketTicketResponse {
+        Ok(synctv_proto::client::CreateWebSocketTicketResponse {
             ticket,
             room_id: public_room_id.clone(),
             expires_in_secs: ws_ticket_service.ticket_ttl_secs(),
@@ -1479,7 +776,7 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-    ) -> Result<crate::proto::client::LeaveRoomResponse, ApiError> {
+    ) -> Result<synctv_proto::client::LeaveRoomResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
 
@@ -1515,14 +812,14 @@ impl ClientApiImpl {
         prepared_membership_fanout.publish_after_outbox_commit();
         prepared_cleanup_fanout.publish_after_outbox_commit();
 
-        Ok(crate::proto::client::LeaveRoomResponse { success: true })
+        Ok(synctv_proto::client::LeaveRoomResponse { success: true })
     }
 
     pub async fn delete_room(
         &self,
         user_id: &UserId,
         room_id: &str,
-    ) -> Result<crate::proto::client::DeleteRoomResponse, ApiError> {
+    ) -> Result<synctv_proto::client::DeleteRoomResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let prepared_outbox_fanout = self
@@ -1543,26 +840,19 @@ impl ClientApiImpl {
             .disconnect_room(&rid, "room_deleted")
             .await;
 
-        Ok(crate::proto::client::DeleteRoomResponse { success: true })
+        Ok(synctv_proto::client::DeleteRoomResponse { success: true })
     }
 
     pub async fn update_room_settings(
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::UpdateRoomSettingsRequest,
-    ) -> Result<crate::proto::client::UpdateRoomSettingsResponse, ApiError> {
+        req: synctv_proto::client::UpdateRoomSettingsRequest,
+    ) -> Result<synctv_proto::client::UpdateRoomSettingsResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
 
-        if req.settings.is_empty() {
-            return Err(ApiError::InvalidInput(
-                "settings patch is required".to_string(),
-            ));
-        }
-
-        let settings_patch: serde_json::Value = serde_json::from_slice(&req.settings)
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid settings JSON: {e}")))?;
+        let settings_patch = validate_update_room_settings_request(&req)?;
         let username = self.user_username_for_event(&uid).await?;
         let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
             &rid,
@@ -1595,7 +885,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::UpdateRoomSettingsResponse {
+        Ok(synctv_proto::client::UpdateRoomSettingsResponse {
             room: Some(
                 self.room_to_proto_basic_with_loaded_cover(
                     &room,
@@ -1611,8 +901,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::StartRoomPasswordRegistrationRequest,
-    ) -> Result<crate::proto::client::StartRoomPasswordRegistrationResponse, ApiError> {
+        req: synctv_proto::client::StartRoomPasswordRegistrationRequest,
+    ) -> Result<synctv_proto::client::StartRoomPasswordRegistrationResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
@@ -1622,7 +912,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         Ok(
-            crate::proto::client::StartRoomPasswordRegistrationResponse {
+            synctv_proto::client::StartRoomPasswordRegistrationResponse {
                 session_id: challenge.session_id,
                 registration_response: challenge.registration_response,
             },
@@ -1633,8 +923,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::FinishRoomPasswordRegistrationRequest,
-    ) -> Result<crate::proto::client::SetRoomPasswordResponse, ApiError> {
+        req: synctv_proto::client::FinishRoomPasswordRegistrationRequest,
+    ) -> Result<synctv_proto::client::SetRoomPasswordResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
@@ -1660,15 +950,15 @@ impl ClientApiImpl {
             "Room password updated"
         );
 
-        Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
+        Ok(synctv_proto::client::SetRoomPasswordResponse { success: true })
     }
 
     pub async fn clear_room_password(
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::ClearRoomPasswordRequest,
-    ) -> Result<crate::proto::client::SetRoomPasswordResponse, ApiError> {
+        req: synctv_proto::client::ClearRoomPasswordRequest,
+    ) -> Result<synctv_proto::client::SetRoomPasswordResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
@@ -1693,7 +983,7 @@ impl ClientApiImpl {
             password_version = state.version,
             "Room password cleared"
         );
-        Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
+        Ok(synctv_proto::client::SetRoomPasswordResponse { success: true })
     }
 
     /// Get room settings
@@ -1703,7 +993,7 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-    ) -> Result<crate::proto::client::GetRoomSettingsResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetRoomSettingsResponse, ApiError> {
         let actor = self.room_actor_for_user(user_id, room_id).await?;
         self.get_room_settings_for_actor(&actor).await
     }
@@ -1711,7 +1001,7 @@ impl ClientApiImpl {
     pub async fn get_room_settings_for_actor(
         &self,
         actor: &RoomActor,
-    ) -> Result<crate::proto::client::GetRoomSettingsResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetRoomSettingsResponse, ApiError> {
         let rid = actor.room_id();
         let (settings, version) = self
             .room_service
@@ -1722,7 +1012,7 @@ impl ClientApiImpl {
         let settings_bytes = serde_json::to_vec(&settings)
             .map_err(|e| ApiError::Internal(format!("Failed to serialize settings: {e}")))?;
 
-        Ok(crate::proto::client::GetRoomSettingsResponse {
+        Ok(synctv_proto::client::GetRoomSettingsResponse {
             settings: settings_bytes,
             version,
         })
@@ -1731,7 +1021,7 @@ impl ClientApiImpl {
     pub async fn get_room_settings_as_guest(
         &self,
         access: &GuestRoomAccess,
-    ) -> Result<crate::proto::client::GetRoomSettingsResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetRoomSettingsResponse, ApiError> {
         self.get_room_settings_for_actor(&RoomActor::Guest(access.clone()))
             .await
     }
@@ -1741,7 +1031,7 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-    ) -> Result<crate::proto::client::ResetRoomSettingsResponse, ApiError> {
+    ) -> Result<synctv_proto::client::ResetRoomSettingsResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let username = self.user_username_for_event(&uid).await?;
@@ -1774,7 +1064,7 @@ impl ClientApiImpl {
             );
         self.room_cache_fanout.publish_invalidation(&rid);
 
-        Ok(crate::proto::client::ResetRoomSettingsResponse {
+        Ok(synctv_proto::client::ResetRoomSettingsResponse {
             settings: settings_json,
         })
     }
@@ -1783,8 +1073,8 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::TransferRoomOwnershipRequest,
-    ) -> Result<crate::proto::client::TransferRoomOwnershipResponse, ApiError> {
+        req: synctv_proto::client::TransferRoomOwnershipRequest,
+    ) -> Result<synctv_proto::client::TransferRoomOwnershipResponse, ApiError> {
         let current_owner_id = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let new_owner_id = build_transfer_room_ownership_request(req, &self.public_id_codec)?;
@@ -1810,7 +1100,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::TransferRoomOwnershipResponse {
+        Ok(synctv_proto::client::TransferRoomOwnershipResponse {
             room: Some(
                 self.room_to_proto_basic_with_loaded_cover(
                     &room,
@@ -1825,14 +1115,14 @@ impl ClientApiImpl {
     /// Get public settings
     pub fn get_public_settings(
         &self,
-    ) -> Result<crate::proto::client::GetPublicSettingsResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetPublicSettingsResponse, ApiError> {
         let reg = self
             .settings_registry
             .as_ref()
             .ok_or_else(settings_registry_unavailable_error)?;
 
         let s = reg.to_public_settings().map_err(ApiError::from)?;
-        Ok(crate::proto::client::GetPublicSettingsResponse {
+        Ok(synctv_proto::client::GetPublicSettingsResponse {
             allow_room_creation: s.allow_room_creation,
             max_rooms_per_user: s.max_rooms_per_user,
             max_members_per_room: s.max_members_per_room,
@@ -1859,7 +1149,7 @@ impl ClientApiImpl {
 
     pub async fn get_server_info(
         &self,
-    ) -> Result<crate::proto::client::GetServerInfoResponse, ApiError> {
+    ) -> Result<synctv_proto::client::GetServerInfoResponse, ApiError> {
         let reg = self
             .settings_registry
             .as_ref()
@@ -1869,7 +1159,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::GetServerInfoResponse {
+        Ok(synctv_proto::client::GetServerInfoResponse {
             server_id,
             server_name: self.config.webauthn.rp_name.clone(),
         })
@@ -1882,8 +1172,8 @@ impl ClientApiImpl {
     /// users (room enumeration / information disclosure).
     pub async fn check_room(
         &self,
-        req: crate::proto::client::CheckRoomRequest,
-    ) -> Result<crate::proto::client::CheckRoomResponse, ApiError> {
+        req: synctv_proto::client::CheckRoomRequest,
+    ) -> Result<synctv_proto::client::CheckRoomResponse, ApiError> {
         let rid = build_check_room_request(req, &self.public_id_codec)?;
 
         match self.room_service.get_room(&rid).await {
@@ -1898,18 +1188,18 @@ impl ClientApiImpl {
                     .room_availability(&room)
                     .await
                     .map_err(ApiError::from)?;
-                Ok(crate::proto::client::CheckRoomResponse {
+                Ok(synctv_proto::client::CheckRoomResponse {
                     exists: true,
                     requires_password: password_enabled,
                     name: String::new(),
                     availability: resource_availability_enum_to_proto(availability),
                 })
             }
-            Err(synctv_core::Error::NotFound(_)) => Ok(crate::proto::client::CheckRoomResponse {
+            Err(synctv_core::Error::NotFound(_)) => Ok(synctv_proto::client::CheckRoomResponse {
                 exists: false,
                 requires_password: false,
                 name: String::new(),
-                availability: crate::proto::client::ResourceAvailability::Unspecified as i32,
+                availability: synctv_proto::client::ResourceAvailability::Unspecified as i32,
             }),
             Err(error) => Err(ApiError::from(error)),
         }
@@ -1917,8 +1207,8 @@ impl ClientApiImpl {
 
     pub async fn get_hot_rooms(
         &self,
-        req: crate::proto::client::GetHotRoomsRequest,
-    ) -> Result<crate::proto::client::GetHotRoomsResponse, ApiError> {
+        req: synctv_proto::client::GetHotRoomsRequest,
+    ) -> Result<synctv_proto::client::GetHotRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let limit = if req.limit == 0 {
@@ -2019,7 +1309,7 @@ impl ClientApiImpl {
                 .get(&room.id)
                 .unwrap_or(&ClientResourceAvailability::Available);
 
-            hot_rooms.push(crate::proto::client::RoomWithStats {
+            hot_rooms.push(synctv_proto::client::RoomWithStats {
                 room: Some(
                     self.room_to_proto_with_availability_and_loaded_cover(
                         &room,
@@ -2034,15 +1324,15 @@ impl ClientApiImpl {
             });
         }
 
-        Ok(crate::proto::client::GetHotRoomsResponse { rooms: hot_rooms })
+        Ok(synctv_proto::client::GetHotRoomsResponse { rooms: hot_rooms })
     }
 
     pub async fn get_chat_history(
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: crate::proto::client::GetChatHistoryRequest,
-    ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
+        req: synctv_proto::client::GetChatHistoryRequest,
+    ) -> Result<synctv_proto::client::GetChatHistoryResponse, ApiError> {
         let actor = self.room_actor_for_user(user_id, room_id).await?;
         self.get_chat_history_for_actor(&actor, req).await
     }
@@ -2051,8 +1341,8 @@ impl ClientApiImpl {
         &self,
         rid: &synctv_core::models::RoomId,
         viewer_user_id: Option<UserId>,
-        req: crate::proto::client::GetChatHistoryRequest,
-    ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
+        req: synctv_proto::client::GetChatHistoryRequest,
+    ) -> Result<synctv_proto::client::GetChatHistoryResponse, ApiError> {
         let (limit, cursor) = build_get_chat_history_request(&req)?;
         let cursor = cursor
             .map(|(created_at, id)| synctv_core::models::ChatHistoryCursor { created_at, id });
@@ -2121,10 +1411,10 @@ impl ClientApiImpl {
             })
             .collect::<Result<Vec<_>, ApiError>>()?;
 
-        Ok(crate::proto::client::GetChatHistoryResponse {
+        Ok(synctv_proto::client::GetChatHistoryResponse {
             messages: proto_messages,
             next_cursor: next_cursor_str.unwrap_or_default(),
-            event_cursor: Some(crate::proto::client::EventCursor {
+            event_cursor: Some(synctv_proto::client::EventCursor {
                 event_id: page.event_cursor.event_id,
                 sequence: page.event_cursor.sequence,
             }),
@@ -2134,8 +1424,8 @@ impl ClientApiImpl {
     pub async fn send_chat_message_for_actor(
         &self,
         actor: &RoomActor,
-        req: crate::proto::client::SendChatMessageRequest,
-    ) -> Result<crate::proto::client::ChatMessageEventResponse, ApiError> {
+        req: synctv_proto::client::SendChatMessageRequest,
+    ) -> Result<synctv_proto::client::ChatMessageEventResponse, ApiError> {
         let user_id = actor.require_user_id()?;
         let room_id = actor.room_id();
         let chat_service = self
@@ -2180,7 +1470,7 @@ impl ClientApiImpl {
         if outcome.inserted {
             self.broadcast_chat_event(&outcome.event);
         }
-        Ok(crate::proto::client::ChatMessageEventResponse {
+        Ok(synctv_proto::client::ChatMessageEventResponse {
             event: Some(chat_event_to_proto(self, outcome.event).await?),
         })
     }
@@ -2188,8 +1478,8 @@ impl ClientApiImpl {
     pub async fn create_chat_image_upload_session_for_actor(
         &self,
         actor: &RoomActor,
-        req: crate::proto::client::CreateChatImageUploadSessionRequest,
-    ) -> Result<crate::proto::client::CreateChatImageUploadSessionResponse, ApiError> {
+        req: synctv_proto::client::CreateChatImageUploadSessionRequest,
+    ) -> Result<synctv_proto::client::CreateChatImageUploadSessionResponse, ApiError> {
         let user_id = actor.require_user_id()?;
         let chat_service = self
             .chat_service
@@ -2209,15 +1499,15 @@ impl ClientApiImpl {
             })
             .await
             .map_err(ApiError::from)?;
-        Ok(crate::proto::client::CreateChatImageUploadSessionResponse {
+        Ok(synctv_proto::client::CreateChatImageUploadSessionResponse {
             session: Some(upload_session_to_proto(session)?),
         })
     }
 
     pub async fn upload_chat_image_object(
         &self,
-        req: crate::proto::client::UploadChatImageObjectRequest,
-    ) -> Result<crate::proto::client::UploadChatImageObjectResponse, ApiError> {
+        req: synctv_proto::client::UploadChatImageObjectRequest,
+    ) -> Result<synctv_proto::client::UploadChatImageObjectResponse, ApiError> {
         let _room_id = self.parse_room_id(&req.room_id)?;
         let chat_service = self
             .chat_service
@@ -2232,15 +1522,15 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        Ok(crate::proto::client::UploadChatImageObjectResponse {
+        Ok(synctv_proto::client::UploadChatImageObjectResponse {
             object: Some(chat_image_object_to_proto(&req.room_id, &blob)),
         })
     }
 
     pub async fn get_chat_image_object(
         &self,
-        req: crate::proto::client::GetChatImageObjectRequest,
-    ) -> Result<crate::proto::client::ChatImageObjectResponse, ApiError> {
+        req: synctv_proto::client::GetChatImageObjectRequest,
+    ) -> Result<synctv_proto::client::ChatImageObjectResponse, ApiError> {
         let _room_id = self.parse_room_id(&req.room_id)?;
         let chat_service = self
             .chat_service
@@ -2256,8 +1546,8 @@ impl ClientApiImpl {
     pub async fn edit_chat_message_for_actor(
         &self,
         actor: &RoomActor,
-        req: crate::proto::client::EditChatMessageRequest,
-    ) -> Result<crate::proto::client::ChatMessageEventResponse, ApiError> {
+        req: synctv_proto::client::EditChatMessageRequest,
+    ) -> Result<synctv_proto::client::ChatMessageEventResponse, ApiError> {
         let user_id = actor.require_user_id()?;
         let chat_service = self
             .chat_service
@@ -2274,7 +1564,7 @@ impl ClientApiImpl {
         if outcome.inserted {
             self.broadcast_chat_event(&outcome.event);
         }
-        Ok(crate::proto::client::ChatMessageEventResponse {
+        Ok(synctv_proto::client::ChatMessageEventResponse {
             event: Some(chat_event_to_proto(self, outcome.event).await?),
         })
     }
@@ -2282,8 +1572,8 @@ impl ClientApiImpl {
     pub async fn delete_chat_message_for_actor(
         &self,
         actor: &RoomActor,
-        req: crate::proto::client::DeleteChatMessageRequest,
-    ) -> Result<crate::proto::client::ChatMessageEventResponse, ApiError> {
+        req: synctv_proto::client::DeleteChatMessageRequest,
+    ) -> Result<synctv_proto::client::ChatMessageEventResponse, ApiError> {
         let user_id = actor.require_user_id()?;
         let chat_service = self
             .chat_service
@@ -2300,7 +1590,7 @@ impl ClientApiImpl {
         if outcome.inserted {
             self.broadcast_chat_event(&outcome.event);
         }
-        Ok(crate::proto::client::ChatMessageEventResponse {
+        Ok(synctv_proto::client::ChatMessageEventResponse {
             event: Some(chat_event_to_proto(self, outcome.event).await?),
         })
     }
@@ -2308,8 +1598,8 @@ impl ClientApiImpl {
     pub async fn set_chat_reaction_for_actor(
         &self,
         actor: &RoomActor,
-        req: crate::proto::client::SetChatReactionRequest,
-    ) -> Result<crate::proto::client::SetChatReactionResponse, ApiError> {
+        req: synctv_proto::client::SetChatReactionRequest,
+    ) -> Result<synctv_proto::client::SetChatReactionResponse, ApiError> {
         let user_id = actor.require_user_id()?;
         let chat_service = self
             .chat_service
@@ -2326,7 +1616,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         self.broadcast_chat_event(&outcome.event);
-        Ok(crate::proto::client::SetChatReactionResponse {
+        Ok(synctv_proto::client::SetChatReactionResponse {
             event: Some(chat_event_to_proto(self, outcome.event).await?),
         })
     }
@@ -2334,8 +1624,8 @@ impl ClientApiImpl {
     pub async fn list_chat_reaction_users_for_actor(
         &self,
         actor: &RoomActor,
-        req: crate::proto::client::ListChatReactionUsersRequest,
-    ) -> Result<crate::proto::client::ListChatReactionUsersResponse, ApiError> {
+        req: synctv_proto::client::ListChatReactionUsersRequest,
+    ) -> Result<synctv_proto::client::ListChatReactionUsersResponse, ApiError> {
         let user_id = actor.require_user_id()?;
         self.require_room_permission(
             actor,
@@ -2393,7 +1683,7 @@ impl ClientApiImpl {
                     .ok_or_else(|| {
                         ApiError::NotFound("Chat reaction user not found".to_string())
                     })?;
-                Ok(crate::proto::client::ChatReactionUser {
+                Ok(synctv_proto::client::ChatReactionUser {
                     user_id,
                     username,
                     reacted_at: reaction_user.reacted_at.timestamp(),
@@ -2419,7 +1709,7 @@ impl ClientApiImpl {
             })
             .transpose()?;
 
-        Ok(crate::proto::client::ListChatReactionUsersResponse {
+        Ok(synctv_proto::client::ListChatReactionUsersResponse {
             users,
             next_cursor: next_cursor.unwrap_or_default(),
             total: page.total,
@@ -2429,8 +1719,8 @@ impl ClientApiImpl {
     pub async fn mark_chat_read_for_actor(
         &self,
         actor: &RoomActor,
-        req: crate::proto::client::MarkChatReadRequest,
-    ) -> Result<crate::proto::client::ChatReadStateResponse, ApiError> {
+        req: synctv_proto::client::MarkChatReadRequest,
+    ) -> Result<synctv_proto::client::ChatReadStateResponse, ApiError> {
         let user_id = actor.require_user_id()?;
         let chat_service = self
             .chat_service
@@ -2450,8 +1740,8 @@ impl ClientApiImpl {
     pub async fn get_chat_read_state_for_actor(
         &self,
         actor: &RoomActor,
-        _req: crate::proto::client::GetChatReadStateRequest,
-    ) -> Result<crate::proto::client::ChatReadStateResponse, ApiError> {
+        _req: synctv_proto::client::GetChatReadStateRequest,
+    ) -> Result<synctv_proto::client::ChatReadStateResponse, ApiError> {
         let user_id = actor.require_user_id()?;
         let chat_service = self
             .chat_service
@@ -2471,8 +1761,8 @@ impl ClientApiImpl {
     pub async fn get_chat_history_as_guest(
         &self,
         access: &GuestRoomAccess,
-        req: crate::proto::client::GetChatHistoryRequest,
-    ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
+        req: synctv_proto::client::GetChatHistoryRequest,
+    ) -> Result<synctv_proto::client::GetChatHistoryResponse, ApiError> {
         self.get_chat_history_for_actor(&RoomActor::Guest(access.clone()), req)
             .await
     }
@@ -2480,8 +1770,8 @@ impl ClientApiImpl {
     pub async fn get_chat_history_for_actor(
         &self,
         actor: &RoomActor,
-        req: crate::proto::client::GetChatHistoryRequest,
-    ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
+        req: synctv_proto::client::GetChatHistoryRequest,
+    ) -> Result<synctv_proto::client::GetChatHistoryResponse, ApiError> {
         self.require_room_permission(
             actor,
             synctv_core::models::RoomPermission::VIEW_CHAT_HISTORY,
@@ -2494,8 +1784,8 @@ impl ClientApiImpl {
     pub async fn get_chat_message_for_actor(
         &self,
         actor: &RoomActor,
-        req: crate::proto::client::GetChatMessageRequest,
-    ) -> Result<crate::proto::client::GetChatMessageResponse, ApiError> {
+        req: synctv_proto::client::GetChatMessageRequest,
+    ) -> Result<synctv_proto::client::GetChatMessageResponse, ApiError> {
         self.require_room_permission(
             actor,
             synctv_core::models::RoomPermission::VIEW_CHAT_HISTORY,
@@ -2515,7 +1805,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         let username = username_for_chat_message(self, &message.message).await?;
-        Ok(crate::proto::client::GetChatMessageResponse {
+        Ok(synctv_proto::client::GetChatMessageResponse {
             message: Some(chat_message_to_proto(self, message, username)?),
         })
     }
@@ -2523,8 +1813,8 @@ impl ClientApiImpl {
     pub async fn get_chat_message_context_for_actor(
         &self,
         actor: &RoomActor,
-        req: crate::proto::client::GetChatMessageContextRequest,
-    ) -> Result<crate::proto::client::GetChatMessageContextResponse, ApiError> {
+        req: synctv_proto::client::GetChatMessageContextRequest,
+    ) -> Result<synctv_proto::client::GetChatMessageContextResponse, ApiError> {
         self.require_room_permission(
             actor,
             synctv_core::models::RoomPermission::VIEW_CHAT_HISTORY,
@@ -2549,7 +1839,7 @@ impl ClientApiImpl {
         let username = username_for_chat_message(self, &context.anchor.message).await?;
         let message = chat_message_to_proto(self, context.anchor, username)?;
         let after = self.chat_messages_to_proto(context.after).await?;
-        Ok(crate::proto::client::GetChatMessageContextResponse {
+        Ok(synctv_proto::client::GetChatMessageContextResponse {
             before,
             message: Some(message),
             after,
@@ -2559,8 +1849,8 @@ impl ClientApiImpl {
     pub async fn get_chat_playback_messages_for_actor(
         &self,
         actor: &RoomActor,
-        req: crate::proto::client::GetChatPlaybackMessagesRequest,
-    ) -> Result<crate::proto::client::GetChatPlaybackMessagesResponse, ApiError> {
+        req: synctv_proto::client::GetChatPlaybackMessagesRequest,
+    ) -> Result<synctv_proto::client::GetChatPlaybackMessagesResponse, ApiError> {
         self.require_room_permission(
             actor,
             synctv_core::models::RoomPermission::VIEW_CHAT_HISTORY,
@@ -2601,7 +1891,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::GetChatPlaybackMessagesResponse {
+        Ok(synctv_proto::client::GetChatPlaybackMessagesResponse {
             messages: self.chat_messages_to_proto(messages).await?,
         })
     }
@@ -2609,7 +1899,7 @@ impl ClientApiImpl {
     async fn chat_messages_to_proto(
         &self,
         messages: Vec<ChatMessageWithImages>,
-    ) -> Result<Vec<crate::proto::client::ChatMessageReceive>, ApiError> {
+    ) -> Result<Vec<synctv_proto::client::ChatMessageReceive>, ApiError> {
         let mut user_ids: Vec<UserId> = messages
             .iter()
             .filter_map(|message| message.message.user_id)
@@ -2635,6 +1925,19 @@ impl ClientApiImpl {
     }
 }
 
+pub(crate) fn validate_update_room_settings_request(
+    req: &synctv_proto::client::UpdateRoomSettingsRequest,
+) -> Result<serde_json::Value, ApiError> {
+    if req.settings.is_empty() {
+        return Err(ApiError::InvalidInput(
+            "settings patch is required".to_string(),
+        ));
+    }
+
+    serde_json::from_slice(&req.settings)
+        .map_err(|e| ApiError::InvalidInput(format!("Invalid settings JSON: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2650,12 +1953,12 @@ mod tests {
 
     #[test]
     fn build_public_room_list_query_maps_sorting_and_defaults() {
-        let query = build_public_room_list_query(crate::proto::client::ListRoomsRequest {
+        let query = build_public_room_list_query(synctv_proto::client::ListRoomsRequest {
             page: 0,
             page_size: 0,
             search: "alpha".to_string(),
-            sort_by: crate::proto::client::RoomListSortBy::Name as i32,
-            sort_direction: crate::proto::client::SortDirection::Asc as i32,
+            sort_by: synctv_proto::client::RoomListSortBy::Name as i32,
+            sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         })
         .unwrap();
 
@@ -2673,15 +1976,15 @@ mod tests {
 
     #[test]
     fn build_my_room_list_query_maps_filters_sorting_and_defaults() {
-        let query = build_my_room_list_query(crate::proto::client::ListMyRoomsRequest {
+        let query = build_my_room_list_query(synctv_proto::client::ListMyRoomsRequest {
             page: 0,
             page_size: 0,
             search: "alpha".to_string(),
             status: synctv_proto::common::RoomStatus::Closed as i32,
             is_banned: Some(false),
-            relation: crate::proto::client::MyRoomRelation::Participating as i32,
-            sort_by: crate::proto::client::MyRoomListSortBy::Name as i32,
-            sort_direction: crate::proto::client::SortDirection::Asc as i32,
+            relation: synctv_proto::client::MyRoomRelation::Participating as i32,
+            sort_by: synctv_proto::client::MyRoomListSortBy::Name as i32,
+            sort_direction: synctv_proto::client::SortDirection::Asc as i32,
         })
         .unwrap();
 
@@ -2703,15 +2006,15 @@ mod tests {
 
     #[test]
     fn build_my_room_list_query_defaults_relation_to_all() {
-        let query = build_my_room_list_query(crate::proto::client::ListMyRoomsRequest {
+        let query = build_my_room_list_query(synctv_proto::client::ListMyRoomsRequest {
             page: 1,
             page_size: 20,
             search: String::new(),
             status: synctv_proto::common::RoomStatus::Unspecified as i32,
             is_banned: None,
-            relation: crate::proto::client::MyRoomRelation::Unspecified as i32,
-            sort_by: crate::proto::client::MyRoomListSortBy::Unspecified as i32,
-            sort_direction: crate::proto::client::SortDirection::Unspecified as i32,
+            relation: synctv_proto::client::MyRoomRelation::Unspecified as i32,
+            sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
+            sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
         })
         .unwrap();
 
@@ -2728,15 +2031,15 @@ mod tests {
 
     #[test]
     fn build_my_room_list_query_rejects_unknown_room_status() {
-        let error = build_my_room_list_query(crate::proto::client::ListMyRoomsRequest {
+        let error = build_my_room_list_query(synctv_proto::client::ListMyRoomsRequest {
             page: 1,
             page_size: 20,
             search: String::new(),
             status: 99,
             is_banned: None,
-            relation: crate::proto::client::MyRoomRelation::Unspecified as i32,
-            sort_by: crate::proto::client::MyRoomListSortBy::Unspecified as i32,
-            sort_direction: crate::proto::client::SortDirection::Unspecified as i32,
+            relation: synctv_proto::client::MyRoomRelation::Unspecified as i32,
+            sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
+            sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
         })
         .unwrap_err();
 
@@ -2751,12 +2054,12 @@ mod tests {
     #[test]
     fn room_list_query_builders_reject_unknown_sort_and_relation_enums() {
         let public_room_error =
-            build_public_room_list_query(crate::proto::client::ListRoomsRequest {
+            build_public_room_list_query(synctv_proto::client::ListRoomsRequest {
                 page: 1,
                 page_size: 20,
                 search: String::new(),
                 sort_by: 99,
-                sort_direction: crate::proto::client::SortDirection::Unspecified as i32,
+                sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
             })
             .unwrap_err();
         assert!(matches!(
@@ -2765,15 +2068,15 @@ mod tests {
         ));
 
         let my_room_relation_error =
-            build_my_room_list_query(crate::proto::client::ListMyRoomsRequest {
+            build_my_room_list_query(synctv_proto::client::ListMyRoomsRequest {
                 page: 1,
                 page_size: 20,
                 search: String::new(),
                 status: synctv_proto::common::RoomStatus::Unspecified as i32,
                 is_banned: None,
                 relation: 99,
-                sort_by: crate::proto::client::MyRoomListSortBy::Unspecified as i32,
-                sort_direction: crate::proto::client::SortDirection::Unspecified as i32,
+                sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
+                sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
             })
             .unwrap_err();
         assert!(matches!(
@@ -2782,14 +2085,14 @@ mod tests {
         ));
 
         let my_room_sort_error =
-            build_my_room_list_query(crate::proto::client::ListMyRoomsRequest {
+            build_my_room_list_query(synctv_proto::client::ListMyRoomsRequest {
                 page: 1,
                 page_size: 20,
                 search: String::new(),
                 status: synctv_proto::common::RoomStatus::Unspecified as i32,
                 is_banned: None,
-                relation: crate::proto::client::MyRoomRelation::Unspecified as i32,
-                sort_by: crate::proto::client::MyRoomListSortBy::Unspecified as i32,
+                relation: synctv_proto::client::MyRoomRelation::Unspecified as i32,
+                sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
                 sort_direction: 99,
             })
             .unwrap_err();
@@ -2801,15 +2104,15 @@ mod tests {
 
     #[test]
     fn build_my_room_list_query_rejects_too_long_search() {
-        let error = build_my_room_list_query(crate::proto::client::ListMyRoomsRequest {
+        let error = build_my_room_list_query(synctv_proto::client::ListMyRoomsRequest {
             page: 1,
             page_size: 20,
             search: "a".repeat(101),
             status: synctv_proto::common::RoomStatus::Unspecified as i32,
             is_banned: None,
-            relation: crate::proto::client::MyRoomRelation::Unspecified as i32,
-            sort_by: crate::proto::client::MyRoomListSortBy::Unspecified as i32,
-            sort_direction: crate::proto::client::SortDirection::Unspecified as i32,
+            relation: synctv_proto::client::MyRoomRelation::Unspecified as i32,
+            sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
+            sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
         })
         .unwrap_err();
 
@@ -2823,7 +2126,7 @@ mod tests {
 
     #[test]
     fn build_public_room_list_query_rejects_invalid_proto_request() {
-        let error = build_public_room_list_query(crate::proto::client::ListRoomsRequest {
+        let error = build_public_room_list_query(synctv_proto::client::ListRoomsRequest {
             page: -1,
             page_size: 101,
             search: "a".repeat(101),
@@ -2848,7 +2151,7 @@ mod tests {
     fn build_transfer_room_ownership_request_rejects_invalid_new_owner_user_id() {
         let codec = crate::PublicIdCodec::plain();
         let error = build_transfer_room_ownership_request(
-            crate::proto::client::TransferRoomOwnershipRequest {
+            synctv_proto::client::TransferRoomOwnershipRequest {
                 new_owner_user_id: "bad-id".to_string(),
             },
             &codec,
@@ -2867,7 +2170,7 @@ mod tests {
     fn build_check_room_request_rejects_invalid_room_id() {
         let codec = crate::PublicIdCodec::plain();
         let error = build_check_room_request(
-            crate::proto::client::CheckRoomRequest {
+            synctv_proto::client::CheckRoomRequest {
                 room_id: "bad-room".to_string(),
             },
             &codec,
@@ -2886,7 +2189,7 @@ mod tests {
     fn build_create_websocket_ticket_request_rejects_invalid_room_id() {
         let codec = crate::PublicIdCodec::plain();
         let error = build_create_websocket_ticket_request(
-            &crate::proto::client::CreateWebSocketTicketRequest {
+            &synctv_proto::client::CreateWebSocketTicketRequest {
                 room_id: "bad-room".to_string(),
             },
             &codec,
@@ -2907,7 +2210,7 @@ mod tests {
         let room_id = synctv_core::models::RoomId::expect_positive(123);
         let room_public_id = codec.encode_room_id(room_id).unwrap();
         let parsed = build_create_websocket_ticket_request(
-            &crate::proto::client::CreateWebSocketTicketRequest {
+            &synctv_proto::client::CreateWebSocketTicketRequest {
                 room_id: room_public_id,
             },
             &codec,
@@ -2921,7 +2224,7 @@ mod tests {
     fn build_create_websocket_ticket_request_rejects_proto_valid_but_undecodable_room_id() {
         let codec = crate::PublicIdCodec::plain();
         let error = build_create_websocket_ticket_request(
-            &crate::proto::client::CreateWebSocketTicketRequest {
+            &synctv_proto::client::CreateWebSocketTicketRequest {
                 room_id: "room_abc".to_string(),
             },
             &codec,
@@ -2949,7 +2252,7 @@ mod tests {
 
     #[test]
     fn build_get_chat_history_request_rejects_invalid_limit() {
-        let error = build_get_chat_history_request(&crate::proto::client::GetChatHistoryRequest {
+        let error = build_get_chat_history_request(&synctv_proto::client::GetChatHistoryRequest {
             limit: 101,
             cursor: String::new(),
         })
@@ -2966,7 +2269,7 @@ mod tests {
     #[test]
     fn hot_rooms_validation_rejects_out_of_range_limit() {
         let error =
-            crate::impls::validate_proto_request(&crate::proto::client::GetHotRoomsRequest {
+            crate::impls::validate_proto_request(&synctv_proto::client::GetHotRoomsRequest {
                 limit: 51,
             })
             .unwrap_err();
@@ -2981,7 +2284,7 @@ mod tests {
 
     #[test]
     fn hot_rooms_validation_allows_default_limit_sentinel() {
-        crate::impls::validate_proto_request(&crate::proto::client::GetHotRoomsRequest {
+        crate::impls::validate_proto_request(&synctv_proto::client::GetHotRoomsRequest {
             limit: 0,
         })
         .expect("zero should request the default hot-room limit");
@@ -2989,7 +2292,7 @@ mod tests {
 
     #[test]
     fn build_get_chat_history_request_rejects_invalid_cursor() {
-        let error = build_get_chat_history_request(&crate::proto::client::GetChatHistoryRequest {
+        let error = build_get_chat_history_request(&synctv_proto::client::GetChatHistoryRequest {
             limit: 50,
             cursor: "not-a-cursor".to_string(),
         })
@@ -3084,7 +2387,7 @@ mod tests {
             "_synctv_upload_token": "v1.payload.signature",
             "blurhash": "abc"
         });
-        let image = synctv_core::models::NewChatImage {
+        let image = synctv_core::models::NewStoredFile {
             id: "image-1".to_string(),
             storage_backend: "database".to_string(),
             object_key: "rooms/1/chat/2/image-1".to_string(),
@@ -3106,7 +2409,7 @@ mod tests {
     #[test]
     fn chat_image_upload_session_requires_upload_metadata_when_upload_required() {
         let session = synctv_core::models::FileUploadSession {
-            file: synctv_core::models::NewChatImage {
+            file: synctv_core::models::NewStoredFile {
                 id: "image-1".to_string(),
                 storage_backend: "database".to_string(),
                 object_key: "rooms/1/chat/2/image-1".to_string(),
@@ -3137,7 +2440,7 @@ mod tests {
 
     #[test]
     fn edit_chat_message_request_maps_client_operation_id() {
-        let request = crate::proto::client::EditChatMessageRequest {
+        let request = synctv_proto::client::EditChatMessageRequest {
             message_id: "42".to_string(),
             content: "hello".to_string(),
             expected_version: 7,
@@ -3166,7 +2469,7 @@ mod tests {
 
     #[test]
     fn delete_chat_message_request_maps_client_operation_id() {
-        let request = crate::proto::client::DeleteChatMessageRequest {
+        let request = synctv_proto::client::DeleteChatMessageRequest {
             message_id: "42".to_string(),
             expected_version: 7,
             reason: " cleanup ".to_string(),
@@ -3198,7 +2501,7 @@ mod tests {
         let core = edit_chat_message_request_to_core(
             synctv_core::models::RoomId::expect_positive(9),
             synctv_core::models::UserId::expect_positive(11),
-            crate::proto::client::EditChatMessageRequest {
+            synctv_proto::client::EditChatMessageRequest {
                 message_id: "42".to_string(),
                 content: "hello".to_string(),
                 expected_version: 0,
@@ -3213,7 +2516,7 @@ mod tests {
 
     #[test]
     fn delete_chat_message_request_accepts_absent_expected_version() {
-        let request = crate::proto::client::DeleteChatMessageRequest {
+        let request = synctv_proto::client::DeleteChatMessageRequest {
             message_id: "42".to_string(),
             expected_version: 0,
             reason: String::new(),
@@ -3234,7 +2537,7 @@ mod tests {
         let edit_error = edit_chat_message_request_to_core(
             synctv_core::models::RoomId::expect_positive(9),
             synctv_core::models::UserId::expect_positive(11),
-            crate::proto::client::EditChatMessageRequest {
+            synctv_proto::client::EditChatMessageRequest {
                 message_id: "42".to_string(),
                 content: "hello".to_string(),
                 expected_version: -1,
@@ -3249,7 +2552,7 @@ mod tests {
                 if message.contains("expected_version")
         ));
 
-        let delete_request = crate::proto::client::DeleteChatMessageRequest {
+        let delete_request = synctv_proto::client::DeleteChatMessageRequest {
             message_id: "42".to_string(),
             expected_version: -1,
             reason: String::new(),
@@ -3307,12 +2610,12 @@ mod tests {
     #[test]
     fn chat_reaction_count_rejects_overflow() {
         let reactions = vec![
-            crate::proto::client::ChatReactionSummary {
+            synctv_proto::client::ChatReactionSummary {
                 key: "a".to_string(),
                 count: i64::MAX,
                 reacted_by_me: false,
             },
-            crate::proto::client::ChatReactionSummary {
+            synctv_proto::client::ChatReactionSummary {
                 key: "b".to_string(),
                 count: 1,
                 reacted_by_me: false,

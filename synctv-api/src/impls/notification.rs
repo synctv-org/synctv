@@ -14,8 +14,8 @@ use synctv_core::models::SortDirection as CoreSortDirection;
 use synctv_core::service::UserNotificationService;
 
 use crate::impls::ApiError;
-use crate::proto::client::SortDirection as ProtoSortDirection;
-use crate::proto::client::{
+use synctv_proto::client::SortDirection as ProtoSortDirection;
+use synctv_proto::client::{
     DeleteAllReadResponse, DeleteNotificationRequest, DeleteNotificationResponse,
     GetNotificationRequest, GetNotificationResponse, ListNotificationsRequest,
     ListNotificationsResponse, MarkAllAsReadRequest as ProtoMarkAllAsReadRequest,

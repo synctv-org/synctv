@@ -24,8 +24,8 @@ use crate::http::{
 };
 use crate::impls::ApiError;
 use crate::impls::EndpointRateLimitCategory;
-use crate::proto::providers::common::ProviderInstanceQuery;
-use crate::proto::providers::emby::GetBindsResponse;
+use synctv_proto::providers::common::ProviderInstanceQuery;
+use synctv_proto::providers::emby::GetBindsResponse;
 
 use super::common::{
     execute_provider_user_endpoint, execute_provider_user_endpoint_with_control,
@@ -321,15 +321,15 @@ pub fn emby_read_routes() -> Router<AppState> {
         tag = "Provider",
         request_body = synctv_proto::http_serde::EmbyLoginRequestDef,
         responses(
-            (status = 200, description = "Emby login succeeded", body = crate::proto::providers::emby::LoginResponse),
-            (status = 400, description = "Invalid login request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Emby login succeeded", body = synctv_proto::providers::emby::LoginResponse),
+            (status = 400, description = "Invalid login request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -340,10 +340,10 @@ pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<synctv_proto::http_serde::EmbyLoginRequestDef>,
-) -> AppResult<Json<crate::proto::providers::emby::LoginResponse>> {
+) -> AppResult<Json<synctv_proto::providers::emby::LoginResponse>> {
     tracing::info!("Emby login request");
 
-    let req = crate::proto::providers::emby::LoginRequest::try_from(req)
+    let req = synctv_proto::providers::emby::LoginRequest::try_from(req)
         .map_err(crate::impls::ApiError::InvalidInput)?;
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
     let api = state.shared_api_runtime.emby_api.clone();
@@ -378,17 +378,17 @@ pub(crate) async fn login(
         post,
         path = "/api/providers/emby/list",
         tag = "Provider",
-        request_body = crate::proto::providers::emby::ListRequest,
+        request_body = synctv_proto::providers::emby::ListRequest,
         responses(
-            (status = 200, description = "Emby library listing", body = crate::proto::providers::emby::ListResponse),
-            (status = 400, description = "Invalid list request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Emby library listing", body = synctv_proto::providers::emby::ListResponse),
+            (status = 400, description = "Invalid list request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -398,8 +398,8 @@ pub(crate) async fn login(
 pub(crate) async fn list(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<crate::proto::providers::emby::ListRequest>,
-) -> AppResult<Json<crate::proto::providers::emby::ListResponse>> {
+    Json(req): Json<synctv_proto::providers::emby::ListRequest>,
+) -> AppResult<Json<synctv_proto::providers::emby::ListResponse>> {
     tracing::info!("Emby list request");
 
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
@@ -435,17 +435,17 @@ pub(crate) async fn list(
         post,
         path = "/api/providers/emby/me",
         tag = "Provider",
-        request_body = crate::proto::providers::emby::GetMeRequest,
+        request_body = synctv_proto::providers::emby::GetMeRequest,
         responses(
-            (status = 200, description = "Emby account info", body = crate::proto::providers::emby::GetMeResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Emby account info", body = synctv_proto::providers::emby::GetMeResponse),
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -455,8 +455,8 @@ pub(crate) async fn list(
 pub(crate) async fn me(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<crate::proto::providers::emby::GetMeRequest>,
-) -> AppResult<Json<crate::proto::providers::emby::GetMeResponse>> {
+    Json(req): Json<synctv_proto::providers::emby::GetMeRequest>,
+) -> AppResult<Json<synctv_proto::providers::emby::GetMeResponse>> {
     tracing::info!("Emby me request");
 
     let instance_name = provider_instance_name_from_body(&req.instance_name)?;
@@ -492,17 +492,17 @@ pub(crate) async fn me(
         post,
         path = "/api/providers/emby/logout",
         tag = "Provider",
-        request_body = crate::proto::providers::emby::LogoutRequest,
+        request_body = synctv_proto::providers::emby::LogoutRequest,
         responses(
-            (status = 200, description = "Emby credential removed", body = crate::proto::providers::emby::LogoutResponse),
-            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Provider resource not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 409, description = "Provider request conflict", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 200, description = "Emby credential removed", body = synctv_proto::providers::emby::LogoutResponse),
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -512,8 +512,8 @@ pub(crate) async fn me(
 pub(crate) async fn logout(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<crate::proto::providers::emby::LogoutRequest>,
-) -> AppResult<Json<crate::proto::providers::emby::LogoutResponse>> {
+    Json(req): Json<synctv_proto::providers::emby::LogoutRequest>,
+) -> AppResult<Json<synctv_proto::providers::emby::LogoutResponse>> {
     tracing::info!("Emby logout request");
 
     provider_instance_name_from_body(&req.instance_name)?;
@@ -540,12 +540,12 @@ pub(crate) async fn logout(
         params(ProviderInstanceQuery),
         responses(
             (status = 200, description = "Saved Emby credentials", body = GetBindsResponse),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 400, description = "Invalid provider instance query", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Provider bind request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider bind information unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 400, description = "Invalid provider instance query", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Provider bind request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider bind information unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])
@@ -590,13 +590,13 @@ pub(crate) async fn binds(
         ),
         responses(
             (status = 200, description = "Proxied Emby thumbnail"),
-            (status = 400, description = "Invalid thumbnail request", body = crate::openapi::ErrorResponseDoc),
-            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Provider access denied", body = crate::openapi::ErrorResponseDoc),
-            (status = 404, description = "Emby credential not found", body = crate::openapi::ErrorResponseDoc),
-            (status = 408, description = "Thumbnail request timed out", body = crate::openapi::ErrorResponseDoc),
-            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
-            (status = 503, description = "Provider service unavailable", body = crate::openapi::ErrorResponseDoc)
+            (status = 400, description = "Invalid thumbnail request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Emby credential not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 408, description = "Thumbnail request timed out", body = synctv_proto::client::ApiErrorResponse),
+            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
         ),
         security(
             ("bearer_auth" = [])

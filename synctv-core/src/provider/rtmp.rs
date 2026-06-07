@@ -130,14 +130,14 @@ impl RtmpProvider {
     ) -> Result<ProxyAction, ProviderError> {
         let room_id = Self::metadata_typed_id(versioned, "room_id", |room_id| {
             super::proxy::parse_proxy_room_id(
-                &ctx.services.public_id_codec,
+                ctx.public_id_codec()?,
                 room_id,
                 "live stream playback metadata",
             )
         })?;
         let media_id = Self::metadata_typed_id(versioned, "media_id", |media_id| {
             super::proxy::parse_proxy_media_id(
-                &ctx.services.public_id_codec,
+                ctx.public_id_codec()?,
                 media_id,
                 "live stream playback metadata",
             )
@@ -153,7 +153,7 @@ impl RtmpProvider {
                     room_id,
                     media_id,
                     user_id: super::proxy::parse_proxy_user_id(
-                        &ctx.services.public_id_codec,
+                        ctx.public_id_codec()?,
                         &claims.user_id,
                         "RTMP proxy claims",
                     )?,
@@ -245,56 +245,13 @@ impl ProviderProxy for RtmpProvider {
 mod tests {
     use super::*;
     use crate::models::{MediaId, RoomId, UserId};
-    use crate::provider::proxy::ProxyServices;
     use serde_json::json;
-    use std::sync::Arc;
 
     fn create_context() -> ProviderContext<'static> {
         ProviderContext::new("synctv")
             .with_user_id(UserId::expect_positive(1))
             .with_room_id(RoomId::expect_positive(10))
             .with_media_id(MediaId::expect_positive(100))
-    }
-
-    fn fake_proxy_services() -> ProxyServices {
-        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-        let jwt = crate::service::auth::JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
-            .expect("jwt");
-        let username_cache =
-            crate::cache::UsernameCache::local_only("test:username:".to_string(), 100, 60);
-        let token_blacklist = Arc::new(
-            crate::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                1000, 3600, 86400,
-            ),
-        );
-        let key_builder = crate::cache::KeyBuilder::new("test");
-        let brute_force = crate::service::auth::BruteForceProtection::in_memory("test".to_string());
-        let user_service = crate::service::UserService::new_for_tests(
-            &pool,
-            jwt,
-            username_cache,
-            token_blacklist,
-            key_builder,
-            brute_force,
-        );
-        let credential_repo = Arc::new(crate::repository::UserProviderCredentialRepository::new(
-            pool.clone(),
-        ));
-        let room_service = crate::service::RoomService::new_for_tests(pool, user_service)
-            .expect("room service should build");
-        ProxyServices {
-            room_service: Arc::new(room_service),
-            credential_encryption: None,
-            credential_repo,
-            provider_access_service: None,
-            signing_key: Arc::new(
-                crate::proxy_signature::ProxySigningKey::try_derive_from(
-                    b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-                )
-                .expect("test proxy signing key should derive"),
-            ),
-            public_id_codec: Arc::new(crate::PublicIdCodec::plain()),
-        }
     }
 
     #[tokio::test]
@@ -489,7 +446,7 @@ mod tests {
         use crate::proxy_signature::ProxyUrlClaims;
         use std::collections::HashMap;
 
-        let services = fake_proxy_services();
+        let public_id_codec = crate::PublicIdCodec::plain();
         let versioned = VersionedPlayback {
             version: "v1".to_string(),
             result: PlaybackResult {
@@ -498,17 +455,15 @@ mod tests {
                 metadata: HashMap::from([
                     (
                         "room_id".to_string(),
-                        json!(services
-                            .public_id_codec
+                        json!(public_id_codec
                             .encode_room_id(RoomId::expect_positive(10))
-                            .expect("room id should encode")),
+                            .unwrap()),
                     ),
                     (
                         "media_id".to_string(),
-                        json!(services
-                            .public_id_codec
+                        json!(public_id_codec
                             .encode_media_id(MediaId::expect_positive(100))
-                            .expect("media id should encode")),
+                            .unwrap()),
                     ),
                 ]),
             },
@@ -517,12 +472,10 @@ mod tests {
         let claims = ProxyUrlClaims {
             provider: "rtmp".to_string(),
             version: "v1".to_string(),
-            room_id: services
-                .public_id_codec
+            room_id: public_id_codec
                 .encode_room_id(RoomId::expect_positive(10))
                 .expect("room id should encode"),
-            user_id: services
-                .public_id_codec
+            user_id: public_id_codec
                 .encode_user_id(UserId::expect_positive(1))
                 .expect("user id should encode"),
             expires_at: chrono::Utc::now().timestamp() + 30,
@@ -533,7 +486,8 @@ mod tests {
             query_string: None,
             store: None,
             proxy_base: "/api/providers/proxy/rtmp",
-            services: &services,
+            services: None,
+            public_id_codec: Some(&public_id_codec),
             verified_claims: Some(&claims),
             request_context: None,
             request_headers: &http::HeaderMap::new(),
@@ -557,7 +511,7 @@ mod tests {
         use crate::provider::store::VersionedPlayback;
         use crate::proxy_signature::ProxyUrlClaims;
 
-        let services = fake_proxy_services();
+        let public_id_codec = crate::PublicIdCodec::plain();
         let room_id = RoomId::expect_positive(10);
         let media_id = MediaId::expect_positive(100);
         let versioned = VersionedPlayback {
@@ -568,12 +522,10 @@ mod tests {
         let claims = ProxyUrlClaims {
             provider: "rtmp".to_string(),
             version: "v1".to_string(),
-            room_id: services
-                .public_id_codec
+            room_id: public_id_codec
                 .encode_room_id(room_id)
                 .expect("room id should encode"),
-            user_id: services
-                .public_id_codec
+            user_id: public_id_codec
                 .encode_user_id(UserId::expect_positive(1))
                 .expect("user id should encode"),
             expires_at: chrono::Utc::now().timestamp() + 30,
@@ -584,7 +536,8 @@ mod tests {
             query_string: None,
             store: None,
             proxy_base: "/api/providers/proxy/rtmp",
-            services: &services,
+            services: None,
+            public_id_codec: Some(&public_id_codec),
             verified_claims: Some(&claims),
             request_context: None,
             request_headers: &http::HeaderMap::new(),
@@ -624,27 +577,14 @@ mod tests {
         use crate::provider::store::VersionedPlayback;
         use std::collections::HashMap;
 
-        let services = fake_proxy_services();
         let versioned = VersionedPlayback {
             version: "v1".to_string(),
             result: PlaybackResult {
                 playback_infos: HashMap::new(),
                 default_mode: "hls".to_string(),
                 metadata: HashMap::from([
-                    (
-                        "room_id".to_string(),
-                        json!(services
-                            .public_id_codec
-                            .encode_room_id(RoomId::expect_positive(10))
-                            .expect("room id should encode")),
-                    ),
-                    (
-                        "media_id".to_string(),
-                        json!(services
-                            .public_id_codec
-                            .encode_media_id(MediaId::expect_positive(100))
-                            .expect("media id should encode")),
-                    ),
+                    ("room_id".to_string(), json!(10)),
+                    ("media_id".to_string(), json!(100)),
                 ]),
             },
             expires_at: chrono::Utc::now().timestamp() + 60,
@@ -655,7 +595,8 @@ mod tests {
             query_string: None,
             store: None,
             proxy_base: "/api/providers/proxy/rtmp",
-            services: &services,
+            services: None,
+            public_id_codec: None,
             verified_claims: None,
             request_context: None,
             request_headers: &http::HeaderMap::new(),

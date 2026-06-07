@@ -384,12 +384,13 @@ pub fn distributed_realtime_fanout_service(
 }
 
 #[derive(Debug, Clone)]
-#[doc(hidden)]
-struct ChannelRealtimeFanoutService {
-    sender: tokio::sync::mpsc::Sender<PublishRequest>,
+#[cfg(test)]
+pub(crate) struct ChannelRealtimeFanoutService {
+    pub(crate) sender: tokio::sync::mpsc::Sender<PublishRequest>,
 }
 
 #[async_trait]
+#[cfg(test)]
 impl RealtimeFanoutService for ChannelRealtimeFanoutService {
     async fn try_publish(&self, request: PublishRequest) -> bool {
         self.sender.send(request).await.is_ok()
@@ -410,14 +411,6 @@ impl RealtimeFanoutService for ChannelRealtimeFanoutService {
     }
 }
 
-#[must_use]
-#[doc(hidden)]
-pub fn channel_realtime_fanout_service(
-    sender: tokio::sync::mpsc::Sender<PublishRequest>,
-) -> Arc<dyn RealtimeFanoutService> {
-    Arc::new(ChannelRealtimeFanoutService { sender })
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -425,72 +418,13 @@ mod tests {
         local_realtime_fanout_service, publish_best_effort, PreparedOutboxFanout,
         PreparedRealtimeFanoutPlan,
     };
-    use async_trait::async_trait;
+    use crate::test_support::RecordingRealtimeEventService;
     use chrono::Utc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::Ordering;
     use synctv_core::models::{MediaId, RoomId, RoomPlaybackState, UserId};
-    use synctv_realtime::sync::{
-        BroadcastResult, CacheTarget, ConnectionId, PublishRequest, RealtimeEvent,
-    };
-    use tokio::sync::{broadcast, mpsc};
+    use synctv_realtime::sync::{CacheTarget, PublishRequest, RealtimeEvent};
 
-    use crate::runtime::{RealtimeDeliveryRequirement, RealtimeEventService, RealtimeMetrics};
-
-    #[derive(Default)]
-    struct RecordingRealtimeEventService {
-        room_calls: AtomicUsize,
-        admin_calls: AtomicUsize,
-    }
-
-    #[async_trait]
-    impl RealtimeEventService for RecordingRealtimeEventService {
-        async fn subscribe_with_id(
-            &self,
-            _room_id: RoomId,
-            _user_id: UserId,
-            _connection_id: String,
-        ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
-            panic!("subscribe_with_id should not be called in realtime fanout tests");
-        }
-
-        fn unsubscribe(&self, _connection_id: &str) {
-            panic!("unsubscribe should not be called in realtime fanout tests");
-        }
-
-        fn broadcast(&self, _event: RealtimeEvent) -> BroadcastResult {
-            panic!("broadcast should not be called in realtime fanout tests");
-        }
-
-        fn publish_only(&self, _event: RealtimeEvent) -> bool {
-            panic!("publish_only should not be called in realtime fanout tests");
-        }
-
-        fn broadcast_local(&self, _room_id: &RoomId, _event: &RealtimeEvent) -> usize {
-            self.room_calls.fetch_add(1, Ordering::SeqCst);
-            1
-        }
-
-        fn broadcast_admin_local(&self, _event: &RealtimeEvent) -> usize {
-            self.admin_calls.fetch_add(1, Ordering::SeqCst);
-            1
-        }
-
-        fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
-            panic!("subscribe_admin_events should not be called in realtime fanout tests");
-        }
-
-        fn metrics(&self) -> RealtimeMetrics {
-            RealtimeMetrics {
-                distributed_enabled: false,
-            }
-        }
-
-        fn node_id(&self) -> &'static str {
-            "realtime-fanout-test-node"
-        }
-
-        async fn shutdown(&self) {}
-    }
+    use crate::runtime::RealtimeDeliveryRequirement;
 
     #[tokio::test]
     async fn test_realtime_fanout_without_outbox_degrades_to_noop() {

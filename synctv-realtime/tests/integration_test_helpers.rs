@@ -4,6 +4,7 @@
 //! including Redis container management and `RealtimeManager` creation.
 
 #![allow(clippy::unwrap_used)]
+#![allow(dead_code)]
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::cache::InvalidationMessage;
@@ -12,14 +13,13 @@ use synctv_core_testing::redis::{
     redis_connection_manager, redis_multiplexed_connection, RedisContainer,
 };
 use synctv_core_testing::{start_redis_url_with_label, test_redis_key_prefix};
-use synctv_realtime::{build_room_message_runtime, RealtimeConfig, RealtimeManager};
+use synctv_realtime::{build_room_message_runtime, ConnectionId, RealtimeConfig, RealtimeManager};
 
 const ROUND_TIMEOUT: Duration = Duration::from_millis(750);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Redis test infrastructure that manages a single Redis container.
 /// The container is automatically stopped when this struct is dropped.
-#[allow(dead_code)]
 pub struct TestRedis {
     pub redis_url: String,
     pub key_prefix: String,
@@ -31,7 +31,6 @@ impl TestRedis {
     /// Waits until Redis is actually accepting connections before returning.
     /// Applies a bounded startup timeout so tests fail deterministically when
     /// Docker is unavailable, while still tolerating slower CI/container hosts.
-    #[allow(dead_code)]
     pub async fn start() -> Self {
         let (redis_container, redis_url) = start_redis_url_with_label("cluster-integration").await;
         Self::wait_until_ready(&redis_url).await;
@@ -48,7 +47,6 @@ impl TestRedis {
     /// Use this for tests that terminate or destroy their Redis instance (e.g.
     /// fail-closed tests).  The shared container must never be terminated because
     /// other concurrent test processes depend on it.
-    #[allow(dead_code)]
     pub async fn start_dedicated() -> Self {
         let (redis_container, redis_url) =
             synctv_core_testing::redis::start_dedicated_redis_url_with_label("cluster-dedicated")
@@ -62,14 +60,12 @@ impl TestRedis {
         }
     }
 
-    #[allow(dead_code)]
     pub fn cleanup(mut self) {
         if let Some(redis) = self.redis_container.take() {
             redis.cleanup();
         }
     }
 
-    #[allow(dead_code)]
     pub fn terminate_container(&mut self) {
         if let Some(redis) = self.redis_container.take() {
             redis.terminate();
@@ -83,7 +79,6 @@ impl TestRedis {
     /// `ConnectionManager` can still let tests proceed into a transient startup
     /// window where `register()` times out even though the container process has
     /// already started.
-    #[allow(dead_code)]
     pub async fn wait_until_ready(redis_url: &str) {
         let client = redis::Client::open(redis_url)
             .expect("Failed to create Redis client for readiness check");
@@ -93,12 +88,10 @@ impl TestRedis {
 }
 
 /// Helper: create a `RealtimeManager` connected to the given Redis URL.
-#[allow(dead_code)]
 pub async fn create_node(redis_url: &str, node_id: &str) -> RealtimeManager {
     create_node_with_prefix(redis_url, node_id, test_redis_key_prefix("cluster-node")).await
 }
 
-#[allow(dead_code)]
 pub async fn create_node_with_prefix(
     redis_url: &str,
     node_id: &str,
@@ -135,7 +128,6 @@ pub async fn create_node_with_prefix(
 }
 
 /// Helper: create a `RealtimeManager` with custom configuration
-#[allow(dead_code)]
 pub async fn create_node_with_config(
     redis_url: &str,
     node_id: &str,
@@ -173,7 +165,6 @@ pub async fn create_node_with_config(
         .expect("Failed to create RealtimeManager")
 }
 
-#[allow(dead_code)]
 /// Broadcasts until every target client has actually received the expected
 /// chat message. This avoids brittle fixed sleeps when Redis Pub/Sub room
 /// subscriptions are still propagating across replicas.
@@ -181,7 +172,7 @@ pub async fn broadcast_until_all_clients_receive(
     manager: &RealtimeManager,
     clients: &mut [(
         tokio::sync::mpsc::Receiver<synctv_realtime::sync::events::RealtimeEvent>,
-        String,
+        ConnectionId,
     )],
     expected_message: &str,
     mut make_event: impl FnMut() -> synctv_realtime::sync::events::RealtimeEvent,
@@ -202,7 +193,7 @@ async fn broadcast_until_all_clients_receive_with(
     mut broadcast: impl FnMut(),
     clients: &mut [(
         tokio::sync::mpsc::Receiver<synctv_realtime::sync::events::RealtimeEvent>,
-        String,
+        ConnectionId,
     )],
     expected_message: &str,
     label: &str,
@@ -262,7 +253,6 @@ async fn broadcast_until_all_clients_receive_with(
     }
 }
 
-#[allow(dead_code)]
 pub async fn broadcast_until_room_event(
     manager: &RealtimeManager,
     room_rx: &mut tokio::sync::mpsc::Receiver<synctv_realtime::sync::events::RealtimeEvent>,
@@ -288,7 +278,6 @@ pub async fn broadcast_until_room_event(
     }
 }
 
-#[allow(dead_code)]
 pub async fn broadcast_until_admin_event(
     manager: &RealtimeManager,
     admin_rx: &mut tokio::sync::broadcast::Receiver<synctv_realtime::sync::events::RealtimeEvent>,
@@ -319,7 +308,6 @@ pub async fn broadcast_until_admin_event(
     }
 }
 
-#[allow(dead_code)]
 pub async fn wait_until(label: &str, timeout: Duration, mut condition: impl FnMut() -> bool) {
     let deadline = tokio::time::Instant::now() + timeout;
 
@@ -337,7 +325,6 @@ pub async fn wait_until(label: &str, timeout: Duration, mut condition: impl FnMu
     }
 }
 
-#[allow(dead_code)]
 pub async fn wait_until_async<F, Fut>(label: &str, timeout: Duration, mut condition: F)
 where
     F: FnMut() -> Fut,
@@ -359,7 +346,6 @@ where
     }
 }
 
-#[allow(dead_code)]
 pub async fn broadcast_until_cache_invalidation(
     manager: &RealtimeManager,
     rx: &mut tokio::sync::broadcast::Receiver<InvalidationMessage>,
@@ -401,7 +387,10 @@ mod tests {
         let mut clients = Vec::new();
         for index in 0..5 {
             let (_tx, rx) = tokio::sync::mpsc::channel(1);
-            clients.push((rx, format!("conn-{index}")));
+            clients.push((
+                rx,
+                synctv_realtime::ConnectionId::new(format!("conn-{index}")),
+            ));
         }
 
         let task = tokio::spawn(async move {

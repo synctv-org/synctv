@@ -7,6 +7,22 @@ use crate::models::{PlaylistId, RoomId, UserId, UserRole, UserStatus};
 use chrono::Utc;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+#[derive(Clone)]
+struct FailingRedisRuntime;
+
+#[async_trait::async_trait]
+impl crate::RedisConnectionRuntime for FailingRedisRuntime {
+    async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
+        panic!("failing_redis_runtime snapshot should not be called")
+    }
+}
+
+#[must_use]
+pub fn failing_redis_runtime() -> Arc<dyn crate::RedisConnectionRuntime> {
+    Arc::new(FailingRedisRuntime)
+}
 
 fn stable_test_id(id: &str) -> i64 {
     if let Ok(parsed) = id.parse::<i64>() {
@@ -45,7 +61,6 @@ pub fn random_room_id() -> RoomId {
 pub struct UserFixture {
     id: UserId,
     username: String,
-    email: Option<String>,
     role: UserRole,
     status: UserStatus,
 }
@@ -56,16 +71,9 @@ impl UserFixture {
         Self {
             id: random_user_id(),
             username: "test_user".to_string(),
-            email: None, // Will be auto-generated in build()
             role: UserRole::User,
             status: UserStatus::Active,
         }
-    }
-
-    #[must_use]
-    pub fn with_id(mut self, id: UserId) -> Self {
-        self.id = id;
-        self
     }
 
     #[must_use]
@@ -83,12 +91,6 @@ impl UserFixture {
     #[must_use]
     pub fn with_status(mut self, status: UserStatus) -> Self {
         self.status = status;
-        self
-    }
-
-    #[must_use]
-    pub fn with_email(mut self, email: &str) -> Self {
-        self.email = Some(email.to_string());
         self
     }
 
@@ -146,12 +148,6 @@ impl RoomFixture {
     }
 
     #[must_use]
-    pub fn with_id(mut self, id: RoomId) -> Self {
-        self.id = id;
-        self
-    }
-
-    #[must_use]
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = name.to_string();
         self
@@ -166,30 +162,6 @@ impl RoomFixture {
     #[must_use]
     pub fn with_owner(mut self, created_by: UserId) -> Self {
         self.created_by = created_by;
-        self
-    }
-
-    /// Set the `created_at` timestamp.
-    #[must_use]
-    pub fn with_created_at(mut self, created_at: chrono::DateTime<chrono::Utc>) -> Self {
-        self.created_at = Some(created_at);
-        self
-    }
-
-    /// Set the `updated_at` timestamp.
-    #[must_use]
-    pub fn with_updated_at(mut self, updated_at: chrono::DateTime<chrono::Utc>) -> Self {
-        self.updated_at = Some(updated_at);
-        self
-    }
-
-    /// Set the `last_activity_at` timestamp.
-    #[must_use]
-    pub fn with_last_activity_at(
-        mut self,
-        last_activity_at: chrono::DateTime<chrono::Utc>,
-    ) -> Self {
-        self.last_activity_at = Some(last_activity_at);
         self
     }
 
@@ -236,12 +208,6 @@ impl ChatMessageFixture {
             user_id: random_user_id(),
             content: "Test message".to_string(),
         }
-    }
-
-    #[must_use]
-    pub fn with_id(mut self, id: &str) -> Self {
-        self.id = stable_test_id(id);
-        self
     }
 
     #[must_use]
@@ -328,12 +294,6 @@ impl PlaylistFixture {
     }
 
     #[must_use]
-    pub fn with_id(mut self, id: PlaylistId) -> Self {
-        self.id = id;
-        self
-    }
-
-    #[must_use]
     pub fn with_room_id(mut self, room_id: RoomId) -> Self {
         self.room_id = room_id;
         self
@@ -349,12 +309,6 @@ impl PlaylistFixture {
     #[must_use]
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = name.to_string();
-        self
-    }
-
-    #[must_use]
-    pub fn with_parent(mut self, parent_id: PlaylistId) -> Self {
-        self.parent_id = Some(parent_id);
         self
     }
 
@@ -423,45 +377,6 @@ pub async fn create_top_level_playlist_hierarchy(
         .expect("Failed to create child playlist");
 
     (top_level, child)
-}
-
-/// Async test wrapper with timeout
-///
-/// Use this to prevent tests from hanging indefinitely.
-pub async fn with_timeout<F>(duration: std::time::Duration, future: F) -> F::Output
-where
-    F: std::future::Future,
-{
-    tokio::select! {
-        result = future => result,
-        () = tokio::time::sleep(duration) => {
-            panic!("Test timed out after {duration:?}");
-        }
-    }
-}
-
-/// Assert that two futures complete concurrently within a time delta.
-///
-/// Both futures are wrapped with `tokio::time::timeout(max_delta_ms)` and
-/// run via `tokio::join!`. If either future exceeds the deadline, the test
-/// panics, ensuring both complete within the allowed window.
-pub async fn assert_concurrent_completion<F1, F2>(
-    max_delta_ms: u64,
-    future1: F1,
-    future2: F2,
-) -> (F1::Output, F2::Output)
-where
-    F1: std::future::Future,
-    F2: std::future::Future,
-{
-    let timeout = std::time::Duration::from_millis(max_delta_ms);
-    let (r1, r2) = tokio::join!(
-        tokio::time::timeout(timeout, future1),
-        tokio::time::timeout(timeout, future2),
-    );
-    let result1 = r1.expect("future1 did not complete within max_delta_ms");
-    let result2 = r2.expect("future2 did not complete within max_delta_ms");
-    (result1, result2)
 }
 
 #[cfg(test)]

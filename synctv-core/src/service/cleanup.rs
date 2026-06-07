@@ -130,6 +130,10 @@ impl CleanupService {
             .map_err(|_| crate::Error::Internal(format!("{field} exceeds i64::MAX")))
     }
 
+    fn chat_max_messages_per_room_from_config(config: &CleanupConfig) -> i64 {
+        config.chat_max_messages_per_room
+    }
+
     /// Create a new cleanup service with a leader check.
     ///
     /// Cleanup only runs when this node is the cluster leader (or in
@@ -168,7 +172,7 @@ impl CleanupService {
                     )
                 })
             }),
-            None => Ok(self.config.chat_max_messages_per_room),
+            None => Ok(Self::chat_max_messages_per_room_from_config(&self.config)),
         }
     }
 
@@ -904,21 +908,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_chat_max_messages_fallback_to_config() {
-        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
         let config = CleanupConfig {
             chat_max_messages_per_room: 500,
             ..CleanupConfig::default()
         };
-        let leader: Arc<dyn LeaderCheck> = Arc::new(AlwaysLeader);
-        let service = CleanupService::new(pool, config, leader);
 
-        assert_eq!(service.chat_max_messages_per_room().unwrap(), 500);
-    }
-
-    struct AlwaysLeader;
-    impl LeaderCheck for AlwaysLeader {
-        fn is_leader(&self) -> bool {
-            true
-        }
+        assert_eq!(
+            CleanupService::chat_max_messages_per_room_from_config(&config),
+            500
+        );
     }
 }

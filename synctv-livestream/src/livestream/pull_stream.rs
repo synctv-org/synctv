@@ -589,7 +589,7 @@ impl Drop for PullStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::MockStreamRegistry;
+    use crate::relay::TestStreamRegistry;
 
     #[tokio::test]
     async fn test_stop_retries_unpublish_when_channel_full() {
@@ -608,7 +608,7 @@ mod tests {
             "media-1".to_string(),
             "127.0.0.1:50051".to_string(),
             "node-1".to_string(),
-            Arc::new(MockStreamRegistry::new()) as Arc<dyn crate::relay::StreamRegistryTrait>,
+            Arc::new(TestStreamRegistry::new()) as Arc<dyn crate::relay::StreamRegistryTrait>,
             sender,
             1,
         );

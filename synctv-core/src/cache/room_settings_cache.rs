@@ -119,6 +119,7 @@ impl std::fmt::Debug for RoomSettingsCache {
 mod tests {
     use super::*;
     use crate::cache::CacheL2Backend;
+    use crate::test_helpers::TestResultExt;
     use async_trait::async_trait;
     use parking_lot::Mutex;
 
@@ -139,15 +140,6 @@ mod tests {
         }
 
         async fn delete(&self, _key: &str) -> Result<()> {
-            Ok(())
-        }
-
-        async fn delete_with_retry(
-            &self,
-            _key: &str,
-            _max_retries: u32,
-            _cache_type: &str,
-        ) -> Result<()> {
             Ok(())
         }
 
@@ -207,7 +199,7 @@ mod tests {
                 },
             )
             .await
-            .expect("cache write should succeed");
+            .checked("cache write should succeed");
 
         let keys = l2.set_if_version_keys.lock();
         assert_eq!(&*keys, &["tenant-a:room_settings:42".to_string()]);

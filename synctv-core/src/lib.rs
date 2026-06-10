@@ -1,5 +1,3 @@
-#![cfg_attr(test, allow(clippy::unwrap_used))]
-
 #[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
@@ -10,8 +8,12 @@ compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive 
     feature = "tls-native-roots"
 ))]
 pub fn install_process_crypto_provider() {
-    let _ = rustls::crypto::CryptoProvider::install_default(default_crypto_provider());
-    let _ = default_jwt_crypto_provider().install_default();
+    if rustls::crypto::CryptoProvider::install_default(default_crypto_provider()).is_err() {
+        tracing::debug!("Process rustls crypto provider was already installed");
+    }
+    if default_jwt_crypto_provider().install_default().is_err() {
+        tracing::debug!("Process JWT crypto provider was already installed");
+    }
 }
 
 #[cfg(not(any(

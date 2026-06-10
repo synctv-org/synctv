@@ -6,17 +6,35 @@
       {
         "ordinal": 0,
         "name": "room_id: RoomId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "room_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "user_id: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "user_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "version",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "version"
+          }
+        }
       }
     ],
     "parameters": {

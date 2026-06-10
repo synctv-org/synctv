@@ -10,11 +10,11 @@ use std::time::Duration;
 use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core_testing::{redis_connection_manager, start_redis_client_manager, RedisContainer};
-use synctv_realtime::sync::events::{CacheTarget, NotificationLevel, RealtimeEvent};
-use synctv_realtime::{
+use synctv_realtime::sync::{
     build_room_message_runtime, ConnectionId, DedupKey, MessageDeduplicator, RealtimeConfig,
     RealtimeManager, RoomMessageHub,
 };
+use synctv_realtime::sync::{CacheTarget, NotificationLevel, RealtimeEvent};
 mod integration_test_helpers;
 use integration_test_helpers::{broadcast_until_admin_event, broadcast_until_room_event};
 
@@ -64,10 +64,10 @@ fn make_realtime_config_with_prefix(
     let shared_runtime: Arc<dyn RedisConnectionRuntime> =
         Arc::new(DirectRedisConnectionRuntime::new(redis_conn.clone()));
     let realtime_profile =
-        SharedStateProfile::from_runtime(Some(shared_runtime), &key_prefix, true);
+        SharedStateProfile::for_cluster_runtime(Some(shared_runtime), &key_prefix, true);
     RealtimeConfig {
         distributed_transport_factory: Some(Arc::new(
-            synctv_realtime::RedisRealtimeMessageTransportFactory::new(
+            synctv_realtime::sync::RedisRealtimeMessageTransportFactory::new(
                 synctv_core::coordination_runtime_from_client(redis_client),
             ),
         )),

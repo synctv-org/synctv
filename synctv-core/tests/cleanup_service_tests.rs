@@ -4,7 +4,6 @@
 //! These are unit-style tests that don't need a real database for the leader/config
 //! checks (but use testcontainers for `run_all` verification).
 //!
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -20,7 +19,7 @@ use synctv_core::service::{
     AlwaysLeader, FileStorageCleanupOrigin, FileStorageContext, FileStorageService, LeaderCheck,
 };
 use synctv_core::Error;
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, ok, TestResultExt};
 
 /// A `LeaderCheck` that always returns false
 struct NeverLeader;
@@ -63,9 +62,15 @@ impl FileStorageService for RecordingFileStorageService {
         origin: FileStorageCleanupOrigin,
         files: &[FileReferenceTarget],
     ) -> synctv_core::Result<()> {
-        let mut deleted = self.deleted_object_keys.lock().unwrap();
+        let mut deleted = ok(
+            self.deleted_object_keys.lock(),
+            "deleted object key recorder lock should be acquired",
+        );
         deleted.extend(files.iter().map(|file| file.object_key.clone()));
-        let mut origins = self.deleted_origins.lock().unwrap();
+        let mut origins = ok(
+            self.deleted_origins.lock(),
+            "deleted origin recorder lock should be acquired",
+        );
         origins.extend(files.iter().map(|_| origin.as_str().to_string()));
         Ok(())
     }
@@ -144,8 +149,9 @@ async fn test_non_leader_periodic_skips() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     cancel.cancel();
 
-    // Should complete without errors
-    let _ = handle.await;
+    handle
+        .await
+        .checked("cleanup background task should finish");
 }
 
 #[tokio::test]
@@ -214,49 +220,55 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
     let surviving_room = create_test_room(room_owner.id, None);
 
     let room_repo = RoomRepository::new(pool.clone());
-    let deleted_owned_room = room_repo
-        .create(&deleted_owned_room)
-        .await
-        .expect("Failed to create deleted user's owned room");
-    let surviving_room = room_repo
-        .create(&surviving_room)
-        .await
-        .expect("Failed to create surviving room");
+    let deleted_owned_room = ok(
+        room_repo.create(&deleted_owned_room).await,
+        "deleted user's owned room should be created",
+    );
+    let surviving_room = ok(
+        room_repo.create(&surviving_room).await,
+        "surviving room should be created",
+    );
 
     let forty_days_ago = Utc::now() - Duration::days(40);
-    sqlx::query(
-        "UPDATE users
+    ok(
+        sqlx::query(
+            "UPDATE users
          SET deleted_at = $2, updated_at = $2
          WHERE id = $1",
-    )
-    .bind(deleted_user.id)
-    .bind(forty_days_ago)
-    .execute(&pool)
-    .await
-    .expect("Failed to soft-delete user");
+        )
+        .bind(deleted_user.id)
+        .bind(forty_days_ago)
+        .execute(&pool)
+        .await,
+        "test user should be soft-deleted",
+    );
 
-    sqlx::query(
-        "UPDATE rooms
+    ok(
+        sqlx::query(
+            "UPDATE rooms
          SET deleted_at = $2, updated_at = $2
          WHERE id = $1",
-    )
-    .bind(deleted_owned_room.id)
-    .bind(forty_days_ago)
-    .execute(&pool)
-    .await
-    .expect("Failed to soft-delete owned room");
+        )
+        .bind(deleted_owned_room.id)
+        .bind(forty_days_ago)
+        .execute(&pool)
+        .await,
+        "owned room should be soft-deleted",
+    );
 
-    sqlx::query(
-        "INSERT INTO room_members (room_id, user_id, role, joined_at, version)
+    ok(
+        sqlx::query(
+            "INSERT INTO room_members (room_id, user_id, role, joined_at, version)
          VALUES ($1, $2, $3, $4, 0)",
-    )
-    .bind(surviving_room.id)
-    .bind(deleted_user.id)
-    .bind(3_i16)
-    .bind(forty_days_ago)
-    .execute(&pool)
-    .await
-    .expect("Failed to insert historical room membership");
+        )
+        .bind(surviving_room.id)
+        .bind(deleted_user.id)
+        .bind(3_i16)
+        .bind(forty_days_ago)
+        .execute(&pool)
+        .await,
+        "historical room membership should be inserted",
+    );
 
     let service = CleanupService::new(
         pool.clone(),
@@ -286,23 +298,25 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
         "Cleanup should purge the soft-deleted user in the same run"
     );
 
-    let user_still_exists: bool =
+    let user_still_exists: bool = ok(
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
             .bind(deleted_user.id)
             .fetch_one(&pool)
-            .await
-            .expect("Failed to query deleted user");
+            .await,
+        "deleted user existence query should succeed",
+    );
     assert!(
         !user_still_exists,
         "Soft-deleted user should be hard-deleted"
     );
 
-    let membership_still_exists: bool =
+    let membership_still_exists: bool = ok(
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM room_members WHERE user_id = $1)")
             .bind(deleted_user.id)
             .fetch_one(&pool)
-            .await
-            .expect("Failed to query historical memberships");
+            .await,
+        "historical membership existence query should succeed",
+    );
     assert!(
         !membership_still_exists,
         "Historical room_members rows must not block hard deletion of soft-deleted users"
@@ -317,10 +331,10 @@ async fn test_chat_message_cap_cleanup_deletes_image_objects() {
 
     let user = create_test_user(&pool).await;
     let room = create_test_room(user.id, None);
-    let room = RoomRepository::new(pool.clone())
-        .create(&room)
-        .await
-        .expect("Failed to create test room");
+    let room = ok(
+        RoomRepository::new(pool.clone()).create(&room).await,
+        "test room should be created",
+    );
     let older_at = Utc::now() - Duration::minutes(10);
     let newer_at = Utc::now() - Duration::minutes(1);
 
@@ -369,26 +383,36 @@ async fn test_chat_message_cap_cleanup_deletes_image_objects() {
     let result = service.run_all().await;
 
     assert_eq!(result.chat_messages_deleted, 1);
-    let deleted_object_keys = storage.deleted_object_keys.lock().unwrap().clone();
+    let deleted_object_keys = ok(
+        storage.deleted_object_keys.lock(),
+        "deleted object key recorder lock should be acquired",
+    )
+    .clone();
     assert_eq!(
         deleted_object_keys,
         vec!["normalized/raw/cleanup-old.webp".to_string()]
     );
-    let deleted_origins = storage.deleted_origins.lock().unwrap().clone();
+    let deleted_origins = ok(
+        storage.deleted_origins.lock(),
+        "deleted origin recorder lock should be acquired",
+    )
+    .clone();
     assert_eq!(deleted_origins, vec!["reference_cap_exceeded".to_string()]);
 
-    let old_exists: bool =
+    let old_exists: bool = ok(
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_messages WHERE id = $1)")
             .bind(9_101_i64)
             .fetch_one(&pool)
-            .await
-            .expect("old message existence query should succeed");
-    let kept_exists: bool =
+            .await,
+        "old message existence query should succeed",
+    );
+    let kept_exists: bool = ok(
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_messages WHERE id = $1)")
             .bind(9_102_i64)
             .fetch_one(&pool)
-            .await
-            .expect("kept message existence query should succeed");
+            .await,
+        "kept message existence query should succeed",
+    );
     assert!(!old_exists);
     assert!(kept_exists);
 }
@@ -413,10 +437,10 @@ async fn create_test_user(pool: &PgPool) -> User {
         banned_by: None,
         banned_reason: None,
     };
-    UserRepository::new(pool.clone())
-        .create(&user)
-        .await
-        .expect("Failed to create test user")
+    ok(
+        UserRepository::new(pool.clone()).create(&user).await,
+        "test user should be created",
+    )
 }
 
 async fn insert_chat_message_with_image(
@@ -428,8 +452,9 @@ async fn insert_chat_message_with_image(
     image_id: &str,
     object_key: &str,
 ) {
-    sqlx::query(
-        r"
+    ok(
+        sqlx::query(
+            r"
         INSERT INTO chat_messages (
             id, room_id, user_id, client_message_id, content, message_type, status, version,
             reply_to_message_id, metadata, edited_at, deleted_at, deleted_by, delete_reason,
@@ -440,22 +465,24 @@ async fn insert_chat_message_with_image(
             $9
         )
         ",
-    )
-    .bind(message_id)
-    .bind(room_id)
-    .bind(user_id)
-    .bind("image message")
-    .bind(4_i16)
-    .bind(1_i16)
-    .bind(1_i64)
-    .bind(serde_json::Value::Object(Default::default()))
-    .bind(created_at)
-    .execute(pool)
-    .await
-    .expect("Failed to insert chat message");
+        )
+        .bind(message_id)
+        .bind(room_id)
+        .bind(user_id)
+        .bind("image message")
+        .bind(4_i16)
+        .bind(1_i16)
+        .bind(1_i64)
+        .bind(serde_json::Value::Object(Default::default()))
+        .bind(created_at)
+        .execute(pool)
+        .await,
+        "chat message fixture should be inserted",
+    );
 
-    sqlx::query(
-        r"
+    ok(
+        sqlx::query(
+            r"
         INSERT INTO chat_message_images (
             id, room_id, message_id, message_created_at, storage_backend, object_key, url,
             mime_type, size_bytes, width, height, metadata, created_at
@@ -463,18 +490,19 @@ async fn insert_chat_message_with_image(
             $1, $2, $3, $4, $5, $6, NULL, NULL, NULL, NULL, NULL, $7, $8
         )
         ",
-    )
-    .bind(image_id)
-    .bind(room_id)
-    .bind(message_id)
-    .bind(created_at)
-    .bind("test-storage")
-    .bind(object_key)
-    .bind(serde_json::Value::Object(Default::default()))
-    .bind(created_at)
-    .execute(pool)
-    .await
-    .expect("Failed to insert chat image");
+        )
+        .bind(image_id)
+        .bind(room_id)
+        .bind(message_id)
+        .bind(created_at)
+        .bind("test-storage")
+        .bind(object_key)
+        .bind(serde_json::Value::Object(Default::default()))
+        .bind(created_at)
+        .execute(pool)
+        .await,
+        "chat image fixture should be inserted",
+    );
 }
 
 /// Helper to create a test room with optional custom timestamps

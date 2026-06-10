@@ -26,7 +26,7 @@ fn mfa_method_to_proto(method: AuthFactorMethod) -> synctv_proto::client::MfaMet
 
 pub(crate) fn login_outcome_to_proto(
     outcome: AuthenticatedLogin,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
     match outcome {
         AuthenticatedLogin::Complete {
@@ -44,22 +44,36 @@ pub(crate) fn login_outcome_to_proto(
             user,
             email,
             challenge,
-        } => Ok(synctv_proto::client::LoginResponse {
-            user: Some(try_user_to_proto(&user, email.as_deref(), public_id_codec)?),
-            access_token: String::new(),
-            refresh_token: String::new(),
-            mfa: Some(synctv_proto::client::MfaChallenge {
-                required: true,
-                session_id: challenge.session_id,
-                available_methods: challenge
-                    .available_methods
-                    .into_iter()
-                    .map(|method| mfa_method_to_proto(method) as i32)
-                    .collect(),
-                masked_email: challenge.masked_email.unwrap_or_default(),
-                expires_at: challenge.expires_at,
-            }),
-        }),
+        } => {
+            let masked_email = if challenge
+                .available_methods
+                .contains(&AuthFactorMethod::Email)
+            {
+                challenge.masked_email.ok_or_else(|| {
+                    ApiError::Internal(
+                        "MFA email method is available without a masked email".to_string(),
+                    )
+                })?
+            } else {
+                String::new()
+            };
+            Ok(synctv_proto::client::LoginResponse {
+                user: Some(try_user_to_proto(&user, email.as_deref(), public_id_codec)?),
+                access_token: String::new(),
+                refresh_token: String::new(),
+                mfa: Some(synctv_proto::client::MfaChallenge {
+                    required: true,
+                    session_id: challenge.session_id,
+                    available_methods: challenge
+                        .available_methods
+                        .into_iter()
+                        .map(|method| mfa_method_to_proto(method) as i32)
+                        .collect(),
+                    masked_email,
+                    expires_at: challenge.expires_at,
+                }),
+            })
+        }
     }
 }
 
@@ -75,7 +89,7 @@ fn normalize_optional_email(email: Option<String>) -> Result<Option<String>, Api
 
 fn pending_registration_to_proto(
     pending: PendingAccountRegistration,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::PendingRegistrationReview, ApiError> {
     Ok(synctv_proto::client::PendingRegistrationReview {
         review_request_id: public_id_codec
@@ -92,7 +106,7 @@ fn pending_registration_to_proto(
 
 fn registration_outcome_to_proto(
     outcome: AccountRegistrationOutcome,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::RegisterResponse, ApiError> {
     match outcome {
         AccountRegistrationOutcome::Registered {
@@ -198,9 +212,8 @@ impl ClientApiImpl {
     pub async fn create_guest_token_with_control(
         &self,
         req: synctv_proto::client::CreateGuestTokenRequest,
-        control: Option<&ExecutionControl>,
+        _control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::client::CreateGuestTokenResponse, ApiError> {
-        let _ = control;
         crate::impls::validate_proto_request(&req)?;
 
         let room_id = self.parse_room_id(&req.room_id)?;
@@ -849,14 +862,41 @@ mod tests {
         service::{AccountRegistrationOutcome, JwtService, PendingAccountRegistration},
     };
 
-    fn create_test_jwt_service() -> JwtService {
-        JwtService::new("test-secret-key-for-jwt-that-is-long-enough-1234567890").unwrap()
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn api_ok<T>(result: Result<T, ApiError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("{error:?}")))
+    }
+
+    fn core_ok<T>(result: synctv_core::Result<T>) -> TestResult<T> {
+        result.map_err(|error| test_error(error.to_string()))
+    }
+
+    fn api_err<T>(result: Result<T, ApiError>, message: &'static str) -> TestResult<ApiError> {
+        match result {
+            Ok(_) => Err(test_error(message)),
+            Err(error) => Ok(error),
+        }
+    }
+
+    fn require_some<T>(value: Option<T>, message: &'static str) -> TestResult<T> {
+        value.ok_or_else(|| test_error(message))
+    }
+
+    fn create_test_jwt_service() -> TestResult<JwtService> {
+        core_ok(JwtService::new(
+            "test-secret-key-for-jwt-that-is-long-enough-1234567890",
+        ))
     }
 
     #[test]
-    fn registration_outcome_to_proto_encodes_completed_registration() {
-        let codec = crate::PublicIdCodec::plain();
-        let response = registration_outcome_to_proto(
+    fn registration_outcome_to_proto_encodes_completed_registration() -> TestResult {
+        let codec = synctv_core::PublicIdCodec::plain();
+        let response = api_ok(registration_outcome_to_proto(
             AccountRegistrationOutcome::Registered {
                 user: User::new(
                     "alice".to_string(),
@@ -867,8 +907,7 @@ mod tests {
                 refresh_token: "refresh".to_string(),
             },
             &codec,
-        )
-        .expect("completed registration should encode");
+        ))?;
 
         assert_eq!(
             response.status,
@@ -878,20 +917,20 @@ mod tests {
         assert_eq!(response.refresh_token, "refresh");
         assert!(response.user.is_some());
         assert!(response.pending_review.is_none());
+        Ok(())
     }
 
     #[test]
-    fn registration_outcome_to_proto_encodes_pending_review() {
-        let codec = crate::PublicIdCodec::plain();
-        let response = registration_outcome_to_proto(
+    fn registration_outcome_to_proto_encodes_pending_review() -> TestResult {
+        let codec = synctv_core::PublicIdCodec::plain();
+        let response = api_ok(registration_outcome_to_proto(
             AccountRegistrationOutcome::PendingReview(PendingAccountRegistration {
                 review_request_id: UserId::expect_positive(42),
                 username: "alice".to_string(),
                 email: Some("alice@example.com".to_string()),
             }),
             &codec,
-        )
-        .expect("pending registration should encode");
+        ))?;
 
         assert_eq!(
             response.status,
@@ -900,60 +939,67 @@ mod tests {
         assert!(response.user.is_none());
         assert!(response.access_token.is_empty());
         assert!(response.refresh_token.is_empty());
-        let pending = response
-            .pending_review
-            .expect("pending review payload should be present");
+        let pending = require_some(
+            response.pending_review,
+            "pending review payload should be present",
+        )?;
         assert_eq!(pending.review_request_id, "usr_42");
         assert_eq!(pending.username, "alice");
         assert_eq!(pending.email.as_deref(), Some("alice@example.com"));
+        Ok(())
     }
 
     #[test]
-    fn test_nonnegative_token_ttl_seconds_returns_remaining_seconds() {
+    fn test_nonnegative_token_ttl_seconds_returns_remaining_seconds() -> TestResult {
         assert_eq!(
-            nonnegative_token_ttl_seconds(1_700_000_100, 1_700_000_000).unwrap(),
+            api_ok(nonnegative_token_ttl_seconds(1_700_000_100, 1_700_000_000))?,
             100
         );
+        Ok(())
     }
 
     #[test]
-    fn test_nonnegative_token_ttl_seconds_rejects_expired_token() {
-        let error = nonnegative_token_ttl_seconds(1_700_000_000, 1_700_000_100)
-            .expect_err("expired token ttl should not be coerced to zero");
+    fn test_nonnegative_token_ttl_seconds_rejects_expired_token() -> TestResult {
+        let error = api_err(
+            nonnegative_token_ttl_seconds(1_700_000_000, 1_700_000_100),
+            "expired token ttl should fail",
+        )?;
         assert!(matches!(error, ApiError::Internal(_)));
+        Ok(())
     }
 
     #[test]
-    fn opaque_login_username_validation_allows_bootstrap_root_identifier() {
+    fn opaque_login_username_validation_allows_bootstrap_root_identifier() -> TestResult {
         let username = crate::impls::validation::validate_login_username("root")
-            .expect("login must allow an existing bootstrap root username");
+            .map_err(|error| test_error(error.to_string()))?;
 
         assert_eq!(username, "root");
+        Ok(())
     }
 
     #[test]
-    fn opaque_registration_username_validation_still_rejects_reserved_root() {
-        let error = crate::impls::validation::validate_username("root")
-            .expect_err("registration/update validation must keep reserved username protection");
+    fn opaque_registration_username_validation_still_rejects_reserved_root() -> TestResult {
+        let Err(error) = crate::impls::validation::validate_username("root") else {
+            return Err(test_error("reserved username should fail validation"));
+        };
 
         assert!(
             error.to_string().contains("reserved"),
             "reserved-word validation should remain in place: {error}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_logout_blacklist_failure_is_propagated() {
-        let jwt_service = create_test_jwt_service();
-        let token = jwt_service
-            .sign_access_token_with_auth_context_and_session(
-                &UserId::new(),
-                0,
-                None,
-                Some("logout-failure-session"),
-                &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
-            )
-            .unwrap();
+    async fn test_logout_blacklist_failure_is_propagated() -> TestResult {
+        let jwt_service = create_test_jwt_service()?;
+        let token = core_ok(jwt_service.sign_access_token_with_auth_context_and_session(
+            &UserId::new(),
+            0,
+            None,
+            Some("logout-failure-session"),
+            &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
+        ))?;
 
         let result = revoke_session_for_logout(&jwt_service, &token, |_logout_token| async {
             Err(synctv_core::Error::Internal(
@@ -966,13 +1012,18 @@ mod tests {
             Err(ApiError::Internal(message)) => {
                 assert!(message.contains("Blacklist store unavailable"));
             }
-            other => panic!("expected propagated internal error, got {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "expected propagated internal error, got {other:?}"
+                )));
+            }
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_logout_invalid_token_is_rejected() {
-        let jwt_service = create_test_jwt_service();
+    async fn test_logout_invalid_token_is_rejected() -> TestResult {
+        let jwt_service = create_test_jwt_service()?;
         let blacklist_called = Arc::new(AtomicBool::new(false));
         let called = Arc::clone(&blacklist_called);
 
@@ -993,23 +1044,26 @@ mod tests {
                     "unexpected authentication error: {message}"
                 );
             }
-            other => panic!("expected authentication failure, got {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "expected authentication failure, got {other:?}"
+                )));
+            }
         }
         assert!(!blacklist_called.load(Ordering::SeqCst));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_logout_refresh_token_is_rejected() {
-        let jwt_service = create_test_jwt_service();
-        let token = jwt_service
-            .sign_refresh_token_with_session(
-                &UserId::new(),
-                0,
-                None,
-                "logout-refresh-session",
-                &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
-            )
-            .unwrap();
+    async fn test_logout_refresh_token_is_rejected() -> TestResult {
+        let jwt_service = create_test_jwt_service()?;
+        let token = core_ok(jwt_service.sign_refresh_token_with_session(
+            &UserId::new(),
+            0,
+            None,
+            "logout-refresh-session",
+            &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
+        ))?;
 
         let result =
             revoke_session_for_logout(&jwt_service, &token, |_logout_token| async { Ok(()) }).await;
@@ -1021,14 +1075,19 @@ mod tests {
                     "unexpected authentication error: {message}"
                 );
             }
-            other => panic!("expected refresh token rejection, got {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "expected refresh token rejection, got {other:?}"
+                )));
+            }
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_logout_access_token_without_session_id_is_rejected() {
-        let jwt_service = create_test_jwt_service();
-        let token = jwt_service.sign_access_token(&UserId::new(), 0).unwrap();
+    async fn test_logout_access_token_without_session_id_is_rejected() -> TestResult {
+        let jwt_service = create_test_jwt_service()?;
+        let token = core_ok(jwt_service.sign_access_token(&UserId::new(), 0))?;
 
         let result =
             revoke_session_for_logout(&jwt_service, &token, |_logout_token| async { Ok(()) }).await;
@@ -1036,27 +1095,25 @@ mod tests {
         assert!(
             matches!(result, Err(ApiError::Authentication(message)) if message.contains("session id"))
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_logout_rejects_zero_ttl_access_token() {
-        let jwt_service = JwtService::with_durations(
+    async fn test_logout_rejects_zero_ttl_access_token() -> TestResult {
+        let jwt_service = core_ok(JwtService::with_durations(
             "test-secret-key-for-jwt-that-is-long-enough-1234567890",
             0,
             30,
             4,
             0,
-        )
-        .unwrap();
-        let token = jwt_service
-            .sign_access_token_with_auth_context_and_session(
-                &UserId::new(),
-                0,
-                None,
-                Some("expired-logout-session"),
-                &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
-            )
-            .unwrap();
+        ))?;
+        let token = core_ok(jwt_service.sign_access_token_with_auth_context_and_session(
+            &UserId::new(),
+            0,
+            None,
+            Some("expired-logout-session"),
+            &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
+        ))?;
 
         let result =
             revoke_session_for_logout(&jwt_service, &token, |_logout_token| async { Ok(()) }).await;
@@ -1068,24 +1125,27 @@ mod tests {
                     "unexpected authentication error: {message}"
                 );
             }
-            other => panic!("expected expired token rejection, got {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "expected expired token rejection, got {other:?}"
+                )));
+            }
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_logout_passes_session_context_to_revoker() {
-        let jwt_service = create_test_jwt_service();
+    async fn test_logout_passes_session_context_to_revoker() -> TestResult {
+        let jwt_service = create_test_jwt_service()?;
         let user_id = UserId::new();
         let session_id = "session-for-logout";
-        let token = jwt_service
-            .sign_access_token_with_auth_context_and_session(
-                &user_id,
-                0,
-                None,
-                Some(session_id),
-                &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
-            )
-            .unwrap();
+        let token = core_ok(jwt_service.sign_access_token_with_auth_context_and_session(
+            &user_id,
+            0,
+            None,
+            Some(session_id),
+            &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
+        ))?;
 
         let result = revoke_session_for_logout(&jwt_service, &token, |logout_token| async move {
             assert_eq!(logout_token.user_id, user_id);
@@ -1098,6 +1158,7 @@ mod tests {
         .await;
 
         assert!(result.is_ok());
+        Ok(())
     }
 
     #[tokio::test]

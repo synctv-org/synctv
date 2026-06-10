@@ -22,6 +22,18 @@ pub(in crate::impls::admin) async fn load_creator_status_map(
         .collect())
 }
 
+pub(in crate::impls::admin) fn room_creator_status_from_map(
+    statuses: &std::collections::HashMap<UserId, UserStatus>,
+    room: &synctv_core::models::Room,
+) -> Result<UserStatus, ApiError> {
+    statuses.get(&room.created_by).copied().ok_or_else(|| {
+        ApiError::Internal(format!(
+            "Missing creator status for admin room {} creator {}",
+            room.id, room.created_by
+        ))
+    })
+}
+
 pub(in crate::impls::admin) async fn load_room_creator_status(
     user_service: &UserService,
     room: &synctv_core::models::Room,
@@ -108,11 +120,11 @@ impl AdminApiImpl {
 #[cfg(test)]
 pub(in crate::impls::admin) async fn active_room_stream_media_ids_for_infra(
     live_streaming_infrastructure: Option<
-        &std::sync::Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
+        &std::sync::Arc<synctv_livestream::LiveStreamingInfrastructure>,
     >,
     room_id: &RoomId,
 ) -> Vec<synctv_core::models::MediaId> {
-    let connection_service: std::sync::Arc<dyn crate::runtime::RealtimeConnectionService> =
+    let connection_service: std::sync::Arc<dyn synctv_realtime::sync::ConnectionRuntime> =
         std::sync::Arc::new(synctv_realtime::sync::ConnectionManager::new(
             synctv_realtime::sync::ConnectionLimits::default(),
         ));

@@ -14,6 +14,8 @@ use tokio::time::Duration;
 
 use crate::sync::stream_id::parse_stream_id;
 
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
 fn u128_to_u64_saturating(value: u128) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
@@ -23,6 +25,21 @@ struct UnavailableRedisRuntime;
 
 fn unavailable_redis_runtime() -> Arc<dyn RedisCoordinationRuntime> {
     Arc::new(UnavailableRedisRuntime)
+}
+
+fn test_pubsub_config(
+    message_hub: Arc<dyn RoomMessageRuntime>,
+    node_id: impl Into<String>,
+    admin_event_tx: broadcast::Sender<RealtimeEvent>,
+    deduplicator: Arc<MessageDeduplicator>,
+) -> RedisPubSubConfig {
+    RedisPubSubConfig::new(
+        unavailable_redis_runtime(),
+        message_hub,
+        node_id,
+        admin_event_tx,
+        deduplicator,
+    )
 }
 
 fn unavailable_redis_error() -> redis::RedisError {
@@ -63,7 +80,10 @@ struct RecordingEventHandler {
 #[async_trait::async_trait]
 impl RealtimeEventHandler for RecordingEventHandler {
     async fn handle_remote_event(&self, room_id: Option<RoomId>, event: &RealtimeEvent) {
-        let _ = self.tx.send((room_id, event.event_id().to_string())).await;
+        self.tx
+            .send((room_id, event.event_id().to_string()))
+            .await
+            .expect("recording event handler receiver should remain open");
     }
 }
 
@@ -72,51 +92,51 @@ async fn publish_until_received<F>(
     rx: &mut tokio::sync::mpsc::Receiver<RealtimeEvent>,
     make_event: F,
     timeout_label: &str,
-) -> RealtimeEvent
+) -> Result<RealtimeEvent, Box<dyn std::error::Error>>
 where
     F: Fn() -> RealtimeEvent,
 {
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
 
     loop {
-        publish_tx
-            .send(PublishRequest::new(make_event()))
-            .await
-            .expect("publish should succeed");
+        publish_tx.send(PublishRequest::new(make_event())).await?;
 
         match tokio::time::timeout(tokio::time::Duration::from_millis(500), rx.recv()).await {
-            Ok(Some(event)) => return event,
-            Ok(None) => panic!("channel closed unexpectedly"),
+            Ok(Some(event)) => return Ok(event),
+            Ok(None) => return Err("channel closed unexpectedly".into()),
             Err(_error) if tokio::time::Instant::now() < deadline => {}
-            Err(error) => panic!("timeout waiting for {timeout_label} message: {error}"),
+            Err(error) => {
+                return Err(format!("timeout waiting for {timeout_label} message: {error}").into())
+            }
         }
     }
 }
 
 #[test]
-fn test_with_key_prefix_accepts_trait_object_message_hub() {
+fn test_config_accepts_trait_object_message_hub() -> TestResult {
     let message_hub: Arc<dyn RoomMessageRuntime> = Arc::new(RoomMessageHub::new());
     let (admin_event_tx, _) = tokio::sync::broadcast::channel(1);
     let deduplicator = Arc::new(MessageDeduplicator::new(Duration::from_secs(1)));
 
-    let pubsub = RedisPubSub::with_key_prefix(
-        unavailable_redis_runtime(),
-        message_hub,
-        "runtime-node".to_string(),
-        "runtime-test:",
-        admin_event_tx,
-        None,
-        deduplicator,
-        300,
-        DEFAULT_MAX_STREAM_LENGTH,
-    )
-    .expect("trait-object room message hub should be accepted");
+    let pubsub = RedisPubSub::from_config(
+        test_pubsub_config(
+            message_hub,
+            "runtime-node".to_string(),
+            admin_event_tx,
+            deduplicator,
+        )
+        .key_prefix("runtime-test:")
+        .catchup_window_secs(300)
+        .stream_max_length(DEFAULT_MAX_STREAM_LENGTH),
+    )?;
 
     assert_eq!(pubsub.key_prefix, "runtime-test:");
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_cache_invalidate_dispatch_calls_handler_and_notifies_admin_subscribers() {
+async fn test_cache_invalidate_dispatch_calls_handler_and_notifies_admin_subscribers() -> TestResult
+{
     let message_hub: Arc<dyn RoomMessageRuntime> = Arc::new(RoomMessageHub::new());
     let (admin_event_tx, mut admin_rx) = tokio::sync::broadcast::channel(8);
     let deduplicator = Arc::new(MessageDeduplicator::new(tokio::time::Duration::from_secs(
@@ -125,18 +145,18 @@ async fn test_cache_invalidate_dispatch_calls_handler_and_notifies_admin_subscri
     let (handler_tx, mut handler_rx) = tokio::sync::mpsc::channel(1);
     let handler: Arc<dyn RealtimeEventHandler> = Arc::new(RecordingEventHandler { tx: handler_tx });
 
-    let pubsub = RedisPubSub::with_key_prefix(
-        unavailable_redis_runtime(),
-        message_hub,
-        "runtime-node".to_string(),
-        "runtime-test:",
-        admin_event_tx,
-        Some(handler),
-        deduplicator,
-        300,
-        DEFAULT_MAX_STREAM_LENGTH,
-    )
-    .expect("RedisPubSub should initialize");
+    let pubsub = RedisPubSub::from_config(
+        test_pubsub_config(
+            message_hub,
+            "runtime-node".to_string(),
+            admin_event_tx,
+            deduplicator,
+        )
+        .key_prefix("runtime-test:")
+        .event_handler(handler)
+        .catchup_window_secs(300)
+        .stream_max_length(DEFAULT_MAX_STREAM_LENGTH),
+    )?;
     let event = RealtimeEvent::CacheInvalidate {
         event_id: synctv_common::snanoid!(16),
         targets: vec![CacheTarget::Room {
@@ -152,22 +172,19 @@ async fn test_cache_invalidate_dispatch_calls_handler_and_notifies_admin_subscri
 
     let (handler_room_id, handler_event_id) =
         tokio::time::timeout(tokio::time::Duration::from_millis(100), handler_rx.recv())
-            .await
-            .expect("CacheInvalidate should notify remote event handler")
-            .expect("handler channel should stay open");
+            .await?
+            .ok_or("CacheInvalidate should notify remote event handler")?;
     assert_eq!(handler_room_id, None);
     assert_eq!(handler_event_id, event_id);
 
     let admin_event =
-        tokio::time::timeout(tokio::time::Duration::from_millis(100), admin_rx.recv())
-            .await
-            .expect("CacheInvalidate should notify admin subscribers")
-            .expect("admin event channel should stay open");
+        tokio::time::timeout(tokio::time::Duration::from_millis(100), admin_rx.recv()).await??;
     assert_eq!(admin_event.event_id(), event_id);
+    Ok(())
 }
 
 #[test]
-fn test_event_envelope_serialization() {
+fn test_event_envelope_serialization() -> serde_json::Result<()> {
     let event = RealtimeEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
         room_id: RoomId::expect_positive(10_000_140),
@@ -184,26 +201,24 @@ fn test_event_envelope_serialization() {
         event,
     };
 
-    // Serialize
-    let json = serde_json::to_string(&envelope).unwrap();
+    let json = serde_json::to_string(&envelope)?;
     assert!(json.contains("node1"));
     assert!(json.contains("chat_message"));
 
-    // Deserialize
-    let deserialized: EventEnvelope = serde_json::from_str(&json).unwrap();
+    let deserialized: EventEnvelope = serde_json::from_str(&json)?;
     assert_eq!(deserialized.node_id, "node1");
     assert_eq!(deserialized.event.event_type(), "chat_message");
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup() {
+async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup() -> TestResult {
     let message_hub = Arc::new(RoomMessageHub::new());
     let room_id = RoomId::expect_positive(10_000_146);
     let user_id = UserId::expect_positive(10_000_147);
     let mut rx = message_hub
         .subscribe(room_id, user_id, ConnectionId::new("conn-1"))
-        .await
-        .expect("subscribe should succeed");
+        .await?;
 
     for _ in 0..512 {
         let sent = message_hub.broadcast(
@@ -229,9 +244,8 @@ async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup()
         "node-1".to_string(),
         admin_tx,
         None,
-        Arc::new(MessageDeduplicator::with_defaults()),
-    )
-    .expect("pubsub should be created");
+        Arc::new(MessageDeduplicator::default()),
+    )?;
 
     let event = RealtimeEvent::RoomDeleted {
         event_id: synctv_common::snanoid!(16),
@@ -252,20 +266,16 @@ async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup()
         "room cleanup must wait for reliable delivery when subscriber channels are full"
     );
 
-    let drained = rx.recv().await.expect("filler message should be present");
+    let drained = rx.recv().await.ok_or("filler message should be present")?;
     assert!(matches!(drained, RealtimeEvent::ChatMessage { .. }));
 
-    tokio::time::timeout(Duration::from_secs(1), dispatch_task)
-        .await
-        .expect("dispatch should complete once delivery can proceed")
-        .expect("dispatch task should not panic");
+    tokio::time::timeout(Duration::from_secs(1), dispatch_task).await??;
 
     let mut saw_room_deleted = false;
     for _ in 0..512 {
         let msg = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("queued message should arrive")
-            .expect("channel should remain open until room deletion is delivered");
+            .await?
+            .ok_or("queued message should arrive")?;
         if matches!(msg, RealtimeEvent::RoomDeleted { .. }) {
             saw_room_deleted = true;
             break;
@@ -281,12 +291,13 @@ async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup()
         0,
         "room should be cleaned up after reliable delivery"
     );
+    Ok(())
 }
 
 // Integration tests require Redis running
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_pubsub_integration() {
+async fn test_pubsub_integration() -> TestResult {
     let (_redis_container, redis_client, _redis_url) =
         synctv_core_testing::start_redis_client_url_with_label("redis-pubsub-integration").await;
     let key_prefix = synctv_core_testing::test_redis_key_prefix("redis-pubsub-integration");
@@ -297,57 +308,46 @@ async fn test_pubsub_integration() {
 
     // Create two PubSub instances simulating different nodes
     // Note: Each RedisPubSub subscribes to lifecycle events from the message_hub internally
-    let dedup1 = Arc::new(MessageDeduplicator::with_defaults());
-    let dedup2 = Arc::new(MessageDeduplicator::with_defaults());
-    let pubsub1 = Arc::new(
-        RedisPubSub::with_key_prefix(
+    let dedup1 = Arc::new(MessageDeduplicator::default());
+    let dedup2 = Arc::new(MessageDeduplicator::default());
+    let pubsub1 = Arc::new(RedisPubSub::from_config(
+        RedisPubSubConfig::new(
             synctv_core::coordination_runtime_from_client(redis_client.clone()),
             message_hub.clone(),
             "node1".to_string(),
-            &key_prefix,
             admin_tx.clone(),
-            None,
             dedup1,
-            300,
-            DEFAULT_MAX_STREAM_LENGTH,
         )
-        .unwrap(),
-    );
-    let pubsub2 = Arc::new(
-        RedisPubSub::with_key_prefix(
+        .key_prefix(&key_prefix)
+        .catchup_window_secs(300)
+        .stream_max_length(DEFAULT_MAX_STREAM_LENGTH),
+    )?);
+    let pubsub2 = Arc::new(RedisPubSub::from_config(
+        RedisPubSubConfig::new(
             synctv_core::coordination_runtime_from_client(redis_client.clone()),
             message_hub.clone(),
             "node2".to_string(),
-            &key_prefix,
             admin_tx.clone(),
-            None,
             dedup2,
-            300,
-            DEFAULT_MAX_STREAM_LENGTH,
         )
-        .unwrap(),
-    );
+        .key_prefix(&key_prefix)
+        .catchup_window_secs(300)
+        .stream_max_length(DEFAULT_MAX_STREAM_LENGTH),
+    )?);
 
-    // Start both - this subscribes to lifecycle events from message_hub
-    let (publish_tx1, _backpressure1, _) = pubsub1.start(10_000).await.unwrap();
-    let (_publish_tx2, _backpressure2, _) = pubsub2.start(10_000).await.unwrap();
+    let (publish_tx1, _backpressure1, _) = pubsub1.start(10_000).await?;
+    let (_publish_tx2, _backpressure2, _) = pubsub2.start(10_000).await?;
 
     // Wait for subscriber loops to be ready and lifecycle subscriptions established.
     // The subscriber tasks need to: connect to Redis, subscribe to admin pattern,
     // then set up lifecycle subscription. This can take several hundred ms.
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-    // Subscribe a client to the room - this triggers RoomLifecycleEvent::RoomActivated
-    // which is received by both pubsub1 and pubsub2, causing them to subscribe to
-    // the Redis room channel.
-    // IMPORTANT: subscribe() is async and must be awaited to actually register
-    // the subscription and send the lifecycle event.
     let room_id = RoomId::expect_positive(10_000_009);
     let user_id = UserId::expect_positive(10_000_148);
     let mut rx = message_hub
         .subscribe(room_id, user_id, ConnectionId::new("conn1"))
-        .await
-        .expect("subscribe should succeed");
+        .await?;
 
     // Wait for Redis room channel subscription to complete in both pubsub instances.
     // The lifecycle event triggers async Redis SUBSCRIBE which takes time.
@@ -365,48 +365,38 @@ async fn test_pubsub_integration() {
         display_color: None,
     };
 
-    publish_tx1.send(PublishRequest::new(event)).await.unwrap();
+    publish_tx1.send(PublishRequest::new(event)).await?;
 
     // Wait for event propagation
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     // Client should receive the event
     let received = tokio::time::timeout(tokio::time::Duration::from_secs(5), rx.recv())
-        .await
-        .expect("timeout waiting for message")
-        .expect("channel closed unexpectedly");
+        .await?
+        .ok_or("channel closed unexpectedly")?;
 
     assert_eq!(received.event_type(), "chat_message");
-
-    // The container will be dropped at the end of the test, which will
-    // cause Redis connections to fail and the spawned tasks to terminate.
-    // The JoinHandle returned by start() is dropped here (via _publish_tx2),
-    // but the tasks run until cancelled via the cancel_token or Redis disconnects.
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_start_failure_cancels_background_tasks() {
+async fn test_start_failure_cancels_background_tasks() -> TestResult {
     let message_hub = Arc::new(RoomMessageHub::new());
     let (admin_tx, _) = broadcast::channel(256);
-    let dedup = Arc::new(MessageDeduplicator::with_defaults());
-    let pubsub = Arc::new(
-        RedisPubSub::with_key_prefix(
-            unavailable_redis_runtime(),
+    let dedup = Arc::new(MessageDeduplicator::default());
+    let pubsub = Arc::new(RedisPubSub::from_config(
+        test_pubsub_config(
             message_hub,
             "start-failure-node".to_string(),
-            "synctv:test:",
             admin_tx,
-            None,
             dedup,
-            300,
-            1000,
         )
-        .expect("pubsub should construct"),
-    );
+        .key_prefix("synctv:test:")
+        .catchup_window_secs(300)
+        .stream_max_length(1000),
+    )?);
 
-    let result = tokio::time::timeout(Duration::from_secs(15), pubsub.clone().start(8))
-        .await
-        .expect("start failure path should complete quickly instead of hanging");
+    let result = tokio::time::timeout(Duration::from_secs(15), pubsub.clone().start(8)).await?;
 
     assert!(
         result.is_err(),
@@ -420,36 +410,36 @@ async fn test_start_failure_cancels_background_tasks() {
         pubsub.subscriber_handle.lock().await.is_none(),
         "failed start should not leave a subscriber task registered"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_shutdown_aborts_timed_out_subscriber_task() {
+async fn test_shutdown_aborts_timed_out_subscriber_task() -> TestResult {
     let message_hub = Arc::new(RoomMessageHub::new());
     let (admin_tx, _) = broadcast::channel(256);
-    let dedup = Arc::new(MessageDeduplicator::with_defaults());
-    let pubsub = RedisPubSub::with_key_prefix(
-        unavailable_redis_runtime(),
-        message_hub,
-        "shutdown-timeout-node".to_string(),
-        "synctv:test:",
-        admin_tx,
-        None,
-        dedup,
-        300,
-        1000,
-    )
-    .expect("pubsub should construct");
+    let dedup = Arc::new(MessageDeduplicator::default());
+    let pubsub = RedisPubSub::from_config(
+        test_pubsub_config(
+            message_hub,
+            "shutdown-timeout-node".to_string(),
+            admin_tx,
+            dedup,
+        )
+        .key_prefix("synctv:test:")
+        .catchup_window_secs(300)
+        .stream_max_length(1000),
+    )?;
 
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let handle = tokio::spawn(async move {
-        let _ = started_tx.send(());
+        started_tx
+            .send(())
+            .expect("shutdown timeout test should receive subscriber start signal");
         futures::future::pending::<()>().await;
     });
     *pubsub.subscriber_handle.lock().await = Some(handle);
 
-    started_rx
-        .await
-        .expect("subscriber timeout task should report that it started");
+    started_rx.await?;
 
     pubsub.shutdown().await;
 
@@ -457,39 +447,29 @@ async fn test_shutdown_aborts_timed_out_subscriber_task() {
         pubsub.subscriber_handle.lock().await.is_none(),
         "shutdown must drain the timed-out subscriber handle after aborting it"
     );
+    Ok(())
 }
 
-/// Test that catchup_start_id generates a valid Redis Stream ID format.
-/// The ID should be in the format "{timestamp_ms}-{seq}" where seq is 0.
 #[test]
-fn test_catchup_start_id_format() {
+fn test_catchup_start_id_format() -> TestResult {
     let message_hub = Arc::new(RoomMessageHub::new());
     let (admin_tx, _) = broadcast::channel(256);
-    let dedup = Arc::new(MessageDeduplicator::with_defaults());
+    let dedup = Arc::new(MessageDeduplicator::default());
 
-    // Create with 300 second (5 minute) catchup window
-    let pubsub = RedisPubSub::with_key_prefix(
-        unavailable_redis_runtime(),
-        message_hub,
-        "test-node".to_string(),
-        "synctv:",
-        admin_tx,
-        None,
-        dedup,
-        300, // 5 minutes
-        1000,
-    )
-    .unwrap();
+    let pubsub = RedisPubSub::from_config(
+        test_pubsub_config(message_hub, "test-node".to_string(), admin_tx, dedup)
+            .key_prefix("synctv:")
+            .catchup_window_secs(300)
+            .stream_max_length(1000),
+    )?;
 
     let catchup_id = pubsub.catchup_start_id();
 
-    // Verify format: "{timestamp_ms}-0"
     assert!(
         catchup_id.ends_with("-0"),
         "catchup_start_id should end with '-0', got: {catchup_id}"
     );
 
-    // Parse and verify timestamp is within expected range
     let parts: Vec<&str> = catchup_id.split('-').collect();
     assert_eq!(
         parts.len(),
@@ -497,63 +477,56 @@ fn test_catchup_start_id_format() {
         "ID should have 2 parts separated by '-', got: {catchup_id}"
     );
 
-    let timestamp_ms: u64 = parts[0].parse().expect("timestamp should be a valid u64");
+    let timestamp_ms: u64 = parts[0].parse()?;
 
-    // Should be approximately 5 minutes ago (300 seconds = 300000 ms)
     let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)?
         .as_millis();
     let now_ms = u128_to_u64_saturating(now_ms);
 
     let expected_start = now_ms.saturating_sub(300_000);
     let diff = timestamp_ms.abs_diff(expected_start);
 
-    // Allow 1 second tolerance for test execution time
     assert!(
         diff < 1000,
         "catchup_start_id timestamp should be ~5 minutes ago, diff: {diff}ms"
     );
+    Ok(())
 }
 
-/// Test that catchup_start_id respects the configured catchup_window_secs.
 #[test]
-fn test_catchup_start_id_respects_window() {
+fn test_catchup_start_id_respects_window() -> TestResult {
     let message_hub = Arc::new(RoomMessageHub::new());
     let (admin_tx, _) = broadcast::channel(256);
-    let dedup = Arc::new(MessageDeduplicator::with_defaults());
+    let dedup = Arc::new(MessageDeduplicator::default());
 
-    // Create with 60 second catchup window
-    let pubsub = RedisPubSub::with_key_prefix(
-        unavailable_redis_runtime(),
-        message_hub,
-        "test-node".to_string(),
-        "synctv:",
-        admin_tx,
-        None,
-        dedup,
-        60, // 1 minute
-        1000,
-    )
-    .unwrap();
+    let pubsub = RedisPubSub::from_config(
+        test_pubsub_config(message_hub, "test-node".to_string(), admin_tx, dedup)
+            .key_prefix("synctv:")
+            .catchup_window_secs(60)
+            .stream_max_length(1000),
+    )?;
 
     let catchup_id = pubsub.catchup_start_id();
-    let timestamp_ms: u64 = catchup_id.split('-').next().unwrap().parse().unwrap();
+    let timestamp_ms: u64 = catchup_id
+        .split('-')
+        .next()
+        .ok_or("stream ID timestamp part should exist")?
+        .parse()?;
 
     let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)?
         .as_millis();
     let now_ms = u128_to_u64_saturating(now_ms);
 
     let expected_start = now_ms.saturating_sub(60_000);
     let diff = timestamp_ms.abs_diff(expected_start);
 
-    // Allow 1 second tolerance
     assert!(
         diff < 1000,
         "catchup_start_id should use 60s window, diff: {diff}ms"
     );
+    Ok(())
 }
 
 #[test]
@@ -584,7 +557,7 @@ fn test_room_stream_ttl_uses_catchup_window_with_floor() {
 /// and pending_subscriptions tracks rooms activated during disconnection.
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_pending_subscriptions_recovered_on_reconnect() {
+async fn test_pending_subscriptions_recovered_on_reconnect() -> TestResult {
     let (_redis_container, redis_client, _redis_url) =
         synctv_core_testing::start_redis_client_url_with_label("pending-subscriptions").await;
     let key_prefix = synctv_core_testing::test_redis_key_prefix("pending-subscriptions");
@@ -592,53 +565,45 @@ async fn test_pending_subscriptions_recovered_on_reconnect() {
     let message_hub = Arc::new(RoomMessageHub::new());
     let (admin_tx, _) = broadcast::channel(256);
 
-    // Create two PubSub instances
-    let dedup1 = Arc::new(MessageDeduplicator::with_defaults());
-    let dedup2 = Arc::new(MessageDeduplicator::with_defaults());
-    let pubsub1 = Arc::new(
-        RedisPubSub::with_key_prefix(
+    let dedup1 = Arc::new(MessageDeduplicator::default());
+    let dedup2 = Arc::new(MessageDeduplicator::default());
+    let pubsub1 = Arc::new(RedisPubSub::from_config(
+        RedisPubSubConfig::new(
             synctv_core::coordination_runtime_from_client(redis_client.clone()),
             message_hub.clone(),
             "node1".to_string(),
-            &key_prefix,
             admin_tx.clone(),
-            None,
             dedup1,
-            300,
-            DEFAULT_MAX_STREAM_LENGTH,
         )
-        .unwrap(),
-    );
-    let pubsub2 = Arc::new(
-        RedisPubSub::with_key_prefix(
+        .key_prefix(&key_prefix)
+        .catchup_window_secs(300)
+        .stream_max_length(DEFAULT_MAX_STREAM_LENGTH),
+    )?);
+    let pubsub2 = Arc::new(RedisPubSub::from_config(
+        RedisPubSubConfig::new(
             synctv_core::coordination_runtime_from_client(redis_client.clone()),
             message_hub.clone(),
             "node2".to_string(),
-            &key_prefix,
             admin_tx.clone(),
-            None,
             dedup2,
-            300,
-            DEFAULT_MAX_STREAM_LENGTH,
         )
-        .unwrap(),
-    );
+        .key_prefix(&key_prefix)
+        .catchup_window_secs(300)
+        .stream_max_length(DEFAULT_MAX_STREAM_LENGTH),
+    )?);
 
-    // Start both PubSub instances
-    let (publish_tx1, _backpressure1, _) = pubsub1.start(10_000).await.unwrap();
-    let (_publish_tx2, _backpressure2, _) = pubsub2.start(10_000).await.unwrap();
+    let (publish_tx1, _backpressure1, _) = pubsub1.start(10_000).await?;
+    let (_publish_tx2, _backpressure2, _) = pubsub2.start(10_000).await?;
 
     // Wait for subscriber loops to be ready. Keep a small initial pause, but
     // rely on eventual publish+receive retries below instead of fixed sleeps.
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-    // Subscribe a client to room1 - this activates the room
     let room1_id = RoomId::expect_positive(10_000_149);
     let user1_id = UserId::expect_positive(10_000_150);
     let mut rx1 = message_hub
         .subscribe(room1_id, user1_id, ConnectionId::new("conn1"))
-        .await
-        .expect("subscribe should succeed");
+        .await?;
 
     let received = publish_until_received(
         &publish_tx1,
@@ -655,16 +620,14 @@ async fn test_pending_subscriptions_recovered_on_reconnect() {
         },
         "room1",
     )
-    .await;
+    .await?;
     assert_eq!(received.event_type(), "chat_message");
 
-    // Now subscribe a client to room2 - this is a second room activation
     let room2_id = RoomId::expect_positive(10_000_151);
     let user2_id = UserId::expect_positive(10_000_152);
     let mut rx2 = message_hub
         .subscribe(room2_id, user2_id, ConnectionId::new("conn2"))
-        .await
-        .expect("subscribe should succeed");
+        .await?;
 
     let received = publish_until_received(
         &publish_tx1,
@@ -681,47 +644,35 @@ async fn test_pending_subscriptions_recovered_on_reconnect() {
         },
         "room2",
     )
-    .await;
+    .await?;
     assert_eq!(received.event_type(), "chat_message");
-
-    // The test verifies that multiple room subscriptions work correctly.
-    // The actual reconnection scenario is harder to test in integration tests
-    // because we can't easily force a Redis disconnect without killing the container.
-    // The unit test below verifies the pending_subscriptions mechanism directly.
+    Ok(())
 }
 
-/// Unit test for the pending_subscriptions mechanism.
-/// This verifies that lifecycle events during disconnection are properly tracked.
 #[test]
 fn test_pending_subscriptions_tracks_lifecycle_events() {
     let mut pending_subscriptions: HashSet<RoomId> = HashSet::new();
 
-    // Simulate room activations during disconnection
     let room1 = RoomId::expect_positive(10_000_092);
     let room2 = RoomId::expect_positive(10_000_094);
     let room3 = RoomId::expect_positive(10_000_153);
 
-    // Room activated
     pending_subscriptions.insert(room1);
     pending_subscriptions.insert(room2);
     assert_eq!(pending_subscriptions.len(), 2);
 
-    // Room deactivated before reconnect (should be removed)
     pending_subscriptions.remove(&room2);
     assert_eq!(pending_subscriptions.len(), 1);
     assert!(pending_subscriptions.contains(&room1));
     assert!(!pending_subscriptions.contains(&room2));
 
-    // Another room activated
     pending_subscriptions.insert(room3);
     assert_eq!(pending_subscriptions.len(), 2);
 
-    // After reconnect and successful subscription, clear the set
     pending_subscriptions.clear();
     assert!(pending_subscriptions.is_empty());
 }
 
-/// Unit test verifying the merge of active_rooms with pending_subscriptions.
 #[test]
 fn test_pending_subscriptions_merges_with_active_rooms() {
     let active_rooms: Vec<RoomId> = vec![
@@ -729,46 +680,35 @@ fn test_pending_subscriptions_merges_with_active_rooms() {
         RoomId::expect_positive(10_000_155),
     ];
 
-    // Simulate a room that was activated during disconnection
-    // but is NOT in the current active_rooms (edge case - room became inactive)
     let pending_room = RoomId::expect_positive(10_000_156);
     let mut pending_subscriptions: HashSet<RoomId> = HashSet::new();
     pending_subscriptions.insert(pending_room);
-    pending_subscriptions.insert(active_rooms[0]); // Already active, but also pending
+    pending_subscriptions.insert(active_rooms[0]);
 
-    // Merge logic (same as in run_subscriber)
     let mut rooms_to_subscribe: HashSet<RoomId> = active_rooms.iter().copied().collect();
     rooms_to_subscribe.extend(pending_subscriptions.iter().copied());
 
-    // Should contain both active rooms and pending room
     assert_eq!(rooms_to_subscribe.len(), 3);
     assert!(rooms_to_subscribe.contains(&active_rooms[0]));
     assert!(rooms_to_subscribe.contains(&active_rooms[1]));
     assert!(rooms_to_subscribe.contains(&pending_room));
 
-    // After successful subscription, clear pending
     pending_subscriptions.clear();
     assert!(pending_subscriptions.is_empty());
 }
 
 #[test]
-fn test_failed_cursor_snapshot_falls_back_to_catchup_window_not_dollar() {
+fn test_failed_cursor_snapshot_falls_back_to_catchup_window_not_dollar() -> TestResult {
     let message_hub = Arc::new(RoomMessageHub::new());
     let (admin_tx, _) = broadcast::channel(256);
-    let dedup = Arc::new(MessageDeduplicator::with_defaults());
+    let dedup = Arc::new(MessageDeduplicator::default());
 
-    let pubsub = RedisPubSub::with_key_prefix(
-        unavailable_redis_runtime(),
-        message_hub,
-        "test-node".to_string(),
-        "synctv:",
-        admin_tx,
-        None,
-        dedup,
-        300,
-        1000,
-    )
-    .unwrap();
+    let pubsub = RedisPubSub::from_config(
+        test_pubsub_config(message_hub, "test-node".to_string(), admin_tx, dedup)
+            .key_prefix("synctv:")
+            .catchup_window_secs(300)
+            .stream_max_length(1000),
+    )?;
 
     let fallback = pubsub.catchup_start_id();
     assert_ne!(
@@ -779,38 +719,36 @@ fn test_failed_cursor_snapshot_falls_back_to_catchup_window_not_dollar() {
         parse_stream_id(&fallback).is_some(),
         "fallback cursor should remain a valid Redis stream ID"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_dispatch_event_drops_malformed_webrtc_target() {
+async fn test_dispatch_event_drops_malformed_webrtc_target() -> TestResult {
     let message_hub = Arc::new(RoomMessageHub::new());
     let (admin_tx, _) = broadcast::channel(256);
-    let dedup = Arc::new(MessageDeduplicator::with_defaults());
+    let dedup = Arc::new(MessageDeduplicator::default());
 
-    let pubsub = RedisPubSub::with_key_prefix(
-        unavailable_redis_runtime(),
-        message_hub.clone(),
-        "test-node".to_string(),
-        "synctv:",
-        admin_tx,
-        None,
-        dedup,
-        300,
-        1000,
-    )
-    .unwrap();
+    let pubsub = RedisPubSub::from_config(
+        test_pubsub_config(
+            message_hub.clone(),
+            "test-node".to_string(),
+            admin_tx,
+            dedup,
+        )
+        .key_prefix("synctv:")
+        .catchup_window_secs(300)
+        .stream_max_length(1000),
+    )?;
 
     let room_id = RoomId::expect_positive(10_000_156);
     let user1 = synctv_core::models::id::UserId::expect_positive(10_000_010);
     let user2 = synctv_core::models::id::UserId::expect_positive(10_000_095);
     let mut rx1 = message_hub
         .subscribe(room_id, user1, ConnectionId::new("conn1"))
-        .await
-        .expect("subscribe should succeed");
+        .await?;
     let mut rx2 = message_hub
         .subscribe(room_id, user2, ConnectionId::new("conn2"))
-        .await
-        .expect("subscribe should succeed");
+        .await?;
 
     pubsub
         .dispatch_event(
@@ -838,33 +776,32 @@ async fn test_dispatch_event_drops_malformed_webrtc_target() {
         non_target.is_err(),
         "malformed WebRTC target must not be broadcast to non-target connections"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_dispatch_event_only_delivers_duplicate_once() {
+async fn test_dispatch_event_only_delivers_duplicate_once() -> TestResult {
     let message_hub = Arc::new(RoomMessageHub::new());
     let (admin_tx, _) = broadcast::channel(256);
-    let dedup = Arc::new(MessageDeduplicator::with_defaults());
+    let dedup = Arc::new(MessageDeduplicator::default());
 
-    let pubsub = RedisPubSub::with_key_prefix(
-        unavailable_redis_runtime(),
-        message_hub.clone(),
-        "test-node".to_string(),
-        "synctv:",
-        admin_tx,
-        None,
-        dedup,
-        300,
-        1000,
-    )
-    .unwrap();
+    let pubsub = RedisPubSub::from_config(
+        test_pubsub_config(
+            message_hub.clone(),
+            "test-node".to_string(),
+            admin_tx,
+            dedup,
+        )
+        .key_prefix("synctv:")
+        .catchup_window_secs(300)
+        .stream_max_length(1000),
+    )?;
 
     let room_id = RoomId::expect_positive(10_000_157);
     let user_id = synctv_core::models::id::UserId::expect_positive(10_000_158);
     let mut rx = message_hub
         .subscribe(room_id, user_id, ConnectionId::new("dedup-conn"))
-        .await
-        .expect("subscribe should succeed");
+        .await?;
 
     let event = RealtimeEvent::ChatMessage {
         event_id: "duplicate-event-id".to_string(),
@@ -885,9 +822,8 @@ async fn test_dispatch_event_only_delivers_duplicate_once() {
         .await;
 
     let first = tokio::time::timeout(Duration::from_millis(100), rx.recv())
-        .await
-        .expect("first event should be delivered")
-        .expect("channel should remain open");
+        .await?
+        .ok_or("first event should be delivered")?;
     assert!(matches!(first, RealtimeEvent::ChatMessage { .. }));
     assert!(
         tokio::time::timeout(Duration::from_millis(100), rx.recv())
@@ -895,4 +831,5 @@ async fn test_dispatch_event_only_delivers_duplicate_once() {
             .is_err(),
         "duplicate event must not be delivered twice"
     );
+    Ok(())
 }

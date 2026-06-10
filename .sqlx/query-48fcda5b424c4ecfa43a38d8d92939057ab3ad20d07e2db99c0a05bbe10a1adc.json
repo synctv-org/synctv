@@ -6,17 +6,35 @@
       {
         "ordinal": 0,
         "name": "playing_media_id: MediaId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "playing_media_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "playing_playlist_id: PlaylistId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "playing_playlist_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "version",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "version"
+          }
+        }
       }
     ],
     "parameters": {

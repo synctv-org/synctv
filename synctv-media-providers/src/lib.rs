@@ -1,5 +1,3 @@
-#![cfg_attr(test, allow(clippy::unwrap_used))]
-
 #[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
@@ -13,13 +11,15 @@ compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive 
 // - synctv-core/service: ProvidersManager for managing provider instances
 
 // Shared error types
-pub mod error;
+mod error;
 
 // Shared circuit breaker primitives for provider gRPC serving.
 pub mod circuit_breaker;
 
+mod validation;
+
 // Credential storage (trait and implementations)
-pub mod credential;
+mod credential;
 
 // HTTP clients (no MediaProvider dependency)
 pub mod alist;
@@ -30,13 +30,13 @@ pub mod emby;
 pub mod grpc;
 
 // Re-export client types for convenience
-pub use alist::error::AlistError;
-pub use alist::AlistClient;
-pub use bilibili::error::BilibiliError;
-pub use bilibili::BilibiliClient;
-pub use emby::error::EmbyError;
-pub use emby::EmbyClient;
-pub use error::ProviderClientError;
+pub use alist::{AlistClient, AlistError};
+pub use bilibili::{BilibiliClient, BilibiliError};
+pub use emby::{EmbyClient, EmbyError};
+pub use error::{
+    check_response, json_with_limit, provider_backoff, with_retry, ProviderClientError,
+    MAX_RESPONSE_SIZE, PROVIDER_USER_AGENT,
+};
 
 // Re-export credential types
 pub use credential::{

@@ -168,6 +168,7 @@ impl std::fmt::Debug for PlaybackStateCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
     use std::sync::Arc;
 
     fn create_test_room_id(id: &str) -> RoomId {
@@ -196,16 +197,34 @@ mod tests {
         let state = create_test_state("room1");
 
         // Cache miss
-        assert!(cache.get(&room_id).await.unwrap().is_none());
+        assert!(cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
 
         // Set and get
-        cache.set(&room_id, state.clone()).await.unwrap();
-        let retrieved = cache.get(&room_id).await.unwrap().unwrap();
+        cache
+            .set(&room_id, state.clone())
+            .await
+            .checked("operation should succeed");
+        let retrieved = cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(retrieved.room_id, state.room_id);
 
         // Invalidate
-        cache.invalidate(&room_id).await.unwrap();
-        assert!(cache.get(&room_id).await.unwrap().is_none());
+        cache
+            .invalidate(&room_id)
+            .await
+            .checked("operation should succeed");
+        assert!(cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[tokio::test]
@@ -228,7 +247,10 @@ mod tests {
         state2.updated_at = chrono::Utc::now() + chrono::Duration::seconds(10);
 
         // Set initial state
-        cache.set(&room_id, state1.clone()).await.unwrap();
+        cache
+            .set(&room_id, state1.clone())
+            .await
+            .checked("operation should succeed");
 
         // Try to set older state - should be rejected
         let older_state = {
@@ -237,15 +259,25 @@ mod tests {
             s.updated_at = chrono::Utc::now() - chrono::Duration::seconds(10);
             s
         };
-        let was_set = cache.set_if_newer(&room_id, older_state).await.unwrap();
+        let was_set = cache
+            .set_if_newer(&room_id, older_state)
+            .await
+            .checked("operation should succeed");
         assert!(!was_set, "Older state should be rejected");
 
         // Set newer state - should succeed
-        let was_set = cache.set_if_newer(&room_id, state2.clone()).await.unwrap();
+        let was_set = cache
+            .set_if_newer(&room_id, state2.clone())
+            .await
+            .checked("operation should succeed");
         assert!(was_set, "Newer state should be accepted");
 
         // Verify cache has the newer state
-        let retrieved = cache.get(&room_id).await.unwrap().unwrap();
+        let retrieved = cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(retrieved.version, 10);
     }
 
@@ -265,7 +297,7 @@ mod tests {
         cache
             .set_if_version_at_least(&room_id, state1.clone())
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         let mut older_state = state1.clone();
         older_state.version = 9;
@@ -274,10 +306,14 @@ mod tests {
         let was_set = cache
             .set_if_version_at_least(&room_id, older_state)
             .await
-            .unwrap();
+            .checked("operation should succeed");
         assert!(!was_set, "lower version must be rejected");
 
-        let retrieved = cache.get(&room_id).await.unwrap().unwrap();
+        let retrieved = cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(retrieved.version, 10);
     }
 }

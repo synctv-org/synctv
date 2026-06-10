@@ -2,7 +2,6 @@
 //!
 //! Tests batch delete operations for users.
 //!
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -14,10 +13,13 @@ use synctv_core::{
         InMemoryTokenBlacklistStore, UserService,
     },
 };
-use synctv_core_testing::{create_test_pool, opaque_register_user};
+use synctv_core_testing::{create_test_pool, ok, opaque_register_user};
 
 fn create_jwt_service() -> JwtService {
-    JwtService::new("test-secret-key-for-batch-tests-long-enough-1234567890").unwrap()
+    ok(
+        JwtService::new("test-secret-key-for-batch-tests-long-enough-1234567890"),
+        "test JWT service should initialize",
+    )
 }
 
 fn create_user_service(pool: &sqlx::PgPool) -> UserService {
@@ -49,14 +51,16 @@ fn create_user_service(pool: &sqlx::PgPool) -> UserService {
 async fn create_test_users(service: &UserService, count: usize, prefix: &str) -> Vec<UserId> {
     let mut user_ids = Vec::with_capacity(count);
     for i in 0..count {
-        let (user, _, _) = opaque_register_user(
-            service,
-            format!("{prefix}_{i}"),
-            Some(format!("{i}@test.com")),
-            "Password123",
-        )
-        .await
-        .expect("Failed to create user");
+        let (user, _, _) = ok(
+            opaque_register_user(
+                service,
+                format!("{prefix}_{i}"),
+                Some(format!("{i}@test.com")),
+                "Password123",
+            )
+            .await,
+            "test user should be created",
+        );
         user_ids.push(user.id);
     }
     user_ids

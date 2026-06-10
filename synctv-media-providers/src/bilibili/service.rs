@@ -560,8 +560,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_service_reuses_shared_wbi_state() {
-        let service = BilibiliService::new().expect("provider HTTP client should build");
+    async fn test_service_reuses_shared_wbi_state(
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let service = BilibiliService::new()?;
         service.wbi_state.reset_for_tests().await;
         service
             .wbi_state
@@ -597,5 +598,6 @@ mod tests {
                 .as_deref(),
             Some("shared-key")
         );
+        Ok(())
     }
 }

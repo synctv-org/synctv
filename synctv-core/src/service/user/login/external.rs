@@ -58,7 +58,7 @@ impl UserService {
         user_existed: bool,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) {
+    ) -> Result<()> {
         self.record_login_failure_for_bruteforce(
             brute_force_key,
             user_existed,
@@ -66,7 +66,7 @@ impl UserService {
             control,
             "external",
         )
-        .await;
+        .await
     }
 
     pub async fn login_with_verified_external_credential_with_control(

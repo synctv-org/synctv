@@ -16,12 +16,10 @@ use indexmap::IndexMap;
 #[derive(Debug, Clone, Default)]
 pub struct RtmpUrlParser {
     pub url: String,
-    // host_with_port = format!("{}:{}",host,port)
     pub host_with_port: String,
     pub host: String,
     pub port: Option<String>,
     pub app_name: String,
-    // / = format!("{}?{}",stream_name,query)
     pub stream_name_with_query: String,
     pub stream_name: String,
     pub query: Option<String>,
@@ -36,16 +34,6 @@ impl RtmpUrlParser {
         }
     }
 
-    /*
-     example;rtmp://domain.name.cn:1935/app_name/stream_name?auth_key=test_Key
-     host_with_port: domain.name.cn:1935
-     host: domain.name.cn
-     port: 1935
-     app_name: app_name
-     stream_name_with_query: stream_name?auth_key=test_Key
-     stream_name: stream_name
-     query: auth_key=test_Key
-    */
     pub fn parse_url(&mut self) -> Result<(), RtmpUrlParseError> {
         if let Some(idx) = self.url.find("rtmp://") {
             let remove_header_left = &self.url[idx + 7..];
@@ -80,7 +68,6 @@ impl RtmpUrlParser {
         }
         Ok(())
     }
-    /*parse the stream name and query to get real stream name and query*/
     #[must_use]
     pub fn parse_stream_name_with_query(stream_name_with_query: &str) -> (String, Option<String>) {
         let data: Vec<&str> = stream_name_with_query.split('?').collect();
@@ -101,13 +88,6 @@ impl RtmpUrlParser {
             None
         };
         (stream_name, query)
-    }
-
-    pub fn append_port(&mut self, port: String) {
-        if !self.host_with_port.contains(':') {
-            self.host_with_port = format!("{}:{}", self.host_with_port, port);
-            self.port = Some(port);
-        }
     }
 }
 

@@ -78,9 +78,10 @@ use crate::{
     repository::{
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
         room_member::RemovedRoomMember,
+        room_password::RoomPasswordCredentialState,
         ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository,
-        RoomPasswordCredentialState, RoomPasswordRepository, RoomPlaybackStateRepository,
-        RoomRepository, RoomSettingsRepository,
+        RoomPasswordRepository, RoomPlaybackStateRepository, RoomRepository,
+        RoomSettingsRepository,
     },
     service::{
         audit::AuditService,
@@ -118,17 +119,20 @@ mod media_playback_chat;
 mod member_admin;
 mod member_mutations;
 mod opaque_sessions;
-pub use opaque_sessions::{
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use opaque_sessions::{
     local_room_opaque_password_login_session_store,
     local_room_opaque_password_registration_session_store,
+};
+pub(crate) use opaque_sessions::{
     room_opaque_password_login_session_store_from_shared_state_profile,
     room_opaque_password_registration_session_store_from_shared_state_profile,
-    shared_room_opaque_password_login_session_store,
-    shared_room_opaque_password_registration_session_store, RoomOpaqueLoginStartChallenge,
-    RoomOpaquePasswordLoginSession, RoomOpaquePasswordLoginSessionStore,
-    RoomOpaquePasswordRegistrationSession, RoomOpaquePasswordRegistrationSessionStore,
-    RoomOpaqueRegistrationStartChallenge, ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS,
-    ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
+};
+pub use opaque_sessions::{
+    RoomOpaqueLoginStartChallenge, RoomOpaquePasswordLoginSession,
+    RoomOpaquePasswordLoginSessionStore, RoomOpaquePasswordRegistrationSession,
+    RoomOpaquePasswordRegistrationSessionStore, RoomOpaqueRegistrationStartChallenge,
+    ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS, ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
 };
 mod outbox;
 mod password;
@@ -656,12 +660,13 @@ impl RoomService {
                 return Err(error);
             }
         };
-        if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-            if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
-                self.abort_room_member_permission_fences(&permission_fences)
-                    .await;
-                return Err(error);
-            }
+        if let Err(error) = self
+            .insert_realtime_outbox_tx(&mut tx, outbox_event.as_ref())
+            .await
+        {
+            self.abort_room_member_permission_fences(&permission_fences)
+                .await;
+            return Err(error);
         }
 
         if let Err(error) = tx.commit().await {

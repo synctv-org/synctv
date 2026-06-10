@@ -223,7 +223,7 @@ impl SecretLoader {
 /// # Example
 /// ```text
 /// let password = "super_secret_123";
-/// println!("Password loaded: {}", mask_secret(password)); // "Password loaded: [SECRET:redacted]"
+/// assert_eq!(mask_secret(password), "[SECRET:redacted]");
 /// ```
 #[must_use]
 pub const fn mask_secret(_secret: &str) -> &'static str {
@@ -265,10 +265,16 @@ pub fn validate_required_secrets(required_secrets: &[(&str, SecretSource)]) -> R
 mod tests {
     use super::*;
 
+    fn load_secret(name: &str, source: &SecretSource) -> String {
+        match SecretLoader::load(name, source) {
+            Ok(secret) => secret,
+            Err(error) => std::panic::panic_any(format!("secret should load: {error}")),
+        }
+    }
+
     #[test]
     fn test_load_secret_direct() {
-        let secret =
-            SecretLoader::load("test", &SecretSource::Direct("my_secret".to_string())).unwrap();
+        let secret = load_secret("test", &SecretSource::Direct("my_secret".to_string()));
         assert_eq!(secret, "my_secret");
     }
 
@@ -290,10 +296,8 @@ mod tests {
 
     #[test]
     fn test_mask_secret() {
-        // Fixed-length mask regardless of actual secret length.
         assert_eq!(mask_secret("password123"), "[SECRET:redacted]");
         assert_eq!(mask_secret(""), "[SECRET:redacted]");
-        // Verify that secrets of different lengths produce identical output.
         assert_eq!(
             mask_secret("short"),
             mask_secret("a_much_longer_secret_value")
@@ -319,6 +323,9 @@ mod tests {
 
         let result = validate_required_secrets(&secrets);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("test2"));
+        let Err(error) = result else {
+            std::panic::panic_any("missing secret validation should fail");
+        };
+        assert!(error.to_string().contains("test2"));
     }
 }

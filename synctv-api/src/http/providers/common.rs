@@ -27,7 +27,7 @@ use synctv_proto::providers::common::{
     UpdateProviderInstanceResponse,
 };
 
-pub fn register_common_routes() -> Router<AppState> {
+pub(crate) fn register_common_routes() -> Router<AppState> {
     Router::new()
         .route("/instances/available", get(list_instances))
         .route("/instances", get(list_provider_instances))
@@ -489,33 +489,38 @@ mod tests {
     use synctv_core_testing::create_test_pool;
     use synctv_proto::providers::common::ListProviderBackendsRequest;
 
-    fn test_user_service(pool: &sqlx::PgPool) -> UserService {
-        UserService::new_for_tests(
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn core_ok<T>(result: synctv_core::Result<T>) -> TestResult<T> {
+        result.map_err(|error| test_error(error.to_string()))
+    }
+
+    fn test_user_service(pool: &sqlx::PgPool) -> TestResult<UserService> {
+        Ok(UserService::new_for_tests(
             pool,
-            JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
-                .expect("test JWT service should build"),
+            JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")?,
             UsernameCache::local_only("test:username:".to_string(), 100, 60),
             Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400)),
             KeyBuilder::new("test"),
             BruteForceProtection::in_memory("test".to_string()),
-        )
+        ))
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
-    async fn provider_common_api_list_backends_includes_local_default_and_enabled_remote_instances()
-    {
+    async fn provider_common_api_list_backends_includes_local_default_and_enabled_remote_instances(
+    ) -> TestResult {
         let (_postgres, pool) = create_test_pool().await;
         let repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
         let provider_instance_manager = Arc::new(RemoteProviderManager::new(repo.clone()));
-        let providers_manager = Arc::new(
-            ProvidersManager::new(provider_instance_manager.clone())
-                .expect("providers manager should build"),
-        );
-        providers_manager
-            .create_builtin_defaults()
-            .await
-            .expect("built-in providers should initialize");
+        let providers_manager = Arc::new(core_ok(ProvidersManager::new(
+            provider_instance_manager.clone(),
+        ))?);
+        core_ok(providers_manager.create_builtin_defaults().await)?;
 
         let now = Utc::now();
         repo.create(&ProviderInstance {
@@ -532,17 +537,16 @@ mod tests {
             created_at: now,
             updated_at: now,
         })
-        .await
-        .expect("remote backend row should persist");
+        .await?;
 
         let (audit_service, _flush_handle) = AuditService::new(pool.clone());
         let api = crate::impls::ProviderCommonApiImpl::new_with_runtime(
             provider_instance_manager,
-            Arc::new(test_user_service(&pool)),
+            Arc::new(test_user_service(&pool)?),
             Arc::new(audit_service),
             crate::impls::ProviderCommonApiRuntime {
-                providers_manager: Some(providers_manager),
-                request_executor: None,
+                providers_manager,
+                request_executor: Arc::new(crate::test_support::local_request_executor()),
             },
         );
         let backends = api
@@ -550,11 +554,12 @@ mod tests {
                 provider_type: "alist".to_string(),
             })
             .await
-            .expect("backend collection should succeed");
+            .map_err(|error| test_error(format!("{error:?}")))?;
 
         assert_eq!(
             backends.backends,
             vec!["alist".to_string(), "alist-remote".to_string()]
         );
+        Ok(())
     }
 }

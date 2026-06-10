@@ -222,7 +222,7 @@ impl ManagementLifecycleController {
     }
 
     #[must_use]
-    pub fn latest_event(&self) -> LifecycleEvent {
+    fn latest_event(&self) -> LifecycleEvent {
         read_lifecycle_lock(&self.inner.latest_event, "latest_event").clone()
     }
 
@@ -238,7 +238,12 @@ impl ManagementLifecycleController {
         if current_mode != Some(effective_mode) {
             *write_lifecycle_lock(&self.inner.current_shutdown_mode, "current_shutdown_mode") =
                 Some(effective_mode);
-            let _ = self.inner.shutdown_tx.send(Some(effective_mode));
+            if self.inner.shutdown_tx.send(Some(effective_mode)).is_err() {
+                tracing::debug!(
+                    mode = ?effective_mode,
+                    "management shutdown mode updated with no active watchers"
+                );
+            }
         }
         effective_mode
     }
@@ -260,7 +265,13 @@ impl ManagementLifecycleController {
             unix_millis: unix_millis_now(),
         };
         *write_lifecycle_lock(&self.inner.latest_event, "latest_event") = event.clone();
-        let _ = self.inner.event_tx.send(event.clone());
+        if self.inner.event_tx.send(event.clone()).is_err() {
+            tracing::debug!(
+                sequence = event.sequence,
+                stage = ?event.stage,
+                "management lifecycle event published with no active subscribers"
+            );
+        }
         event
     }
 }
@@ -292,13 +303,14 @@ fn write_lifecycle_lock<'a, T>(lock: &'a RwLock<T>, name: &'static str) -> RwLoc
 }
 
 fn unix_millis_now() -> i64 {
-    i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-    )
-    .unwrap_or(i64::MAX)
+    let millis = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis(),
+        Err(error) => {
+            tracing::warn!(%error, "system clock is before Unix epoch");
+            0
+        }
+    };
+    i64::try_from(millis).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

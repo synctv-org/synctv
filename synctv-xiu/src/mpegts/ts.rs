@@ -1,7 +1,7 @@
 use {
     super::{
         define,
-        define::{epat_pid, epes_stream_id, ts},
+        define::{epat_pid, epes_stream_id},
         errors::{MpegTsError, MpegTsErrorValue},
         pat, pes,
         pes::PesMuxer,
@@ -27,16 +27,18 @@ pub struct TsMuxer {
     packet_number: usize,
 }
 
-fn usize_to_u8_saturating(value: usize) -> u8 {
-    u8::try_from(value).unwrap_or(u8::MAX)
-}
-
 fn pid_high_bits(pid: u16) -> u8 {
-    u8::try_from((pid >> 8) & 0x1F).unwrap_or_default()
+    ((pid >> 8) & 0x1F) as u8
 }
 
 fn pid_low_byte(pid: u16) -> u8 {
-    u8::try_from(pid & 0x00FF).unwrap_or_default()
+    (pid & 0x00FF) as u8
+}
+
+fn usize_to_u8(value: usize, field: &'static str) -> Result<u8, MpegTsError> {
+    u8::try_from(value).map_err(|_| {
+        std::io::Error::other(format!("{field} value {value} exceeds u8 range")).into()
+    })
 }
 
 impl Default for TsMuxer {
@@ -84,10 +86,6 @@ impl TsMuxer {
         payload: BytesMut,
     ) -> Result<(), MpegTsError> {
         self.h264_h265_with_aud = (flags & define::MPEG_FLAG_H264_H265_WITH_AUD) > 0;
-
-        //print!("pes payload length {}\n", payload.len());
-        //self.packet_number += payload.len();
-        //print!("pes payload sum length {}\n", self.payload_sum);
 
         self.find_stream(pid)?;
 
@@ -162,36 +160,28 @@ impl TsMuxer {
         payload: &BytesMut,
         continuity_counter: u8,
     ) -> Result<(), MpegTsError> {
-        /*sync byte*/
-        self.bytes_writer.write_u8(0x47)?; //0
-                                           /*PID 13 bits*/
-        self.bytes_writer.write_u8(0x40 | pid_high_bits(pid))?; //1
-
-        self.bytes_writer.write_u8(pid_low_byte(pid))?; //2
+        self.bytes_writer.write_u8(0x47)?;
+        self.bytes_writer.write_u8(0x40 | pid_high_bits(pid))?;
+        self.bytes_writer.write_u8(pid_low_byte(pid))?;
 
         self.bytes_writer.write_u8(0x10 | continuity_counter)?;
-
-        /*adaption field control*/
-        self.bytes_writer.write_u8(0x00)?; //4
-
-        /*payload data*/
+        self.bytes_writer.write_u8(0x00)?;
         self.bytes_writer.write(payload)?;
 
-        let left_size = ts::TS_PACKET_SIZE
-            .saturating_sub(usize_to_u8_saturating(payload.len()))
-            .saturating_sub(5);
+        let left_size = define::TS_PACKET_SIZE
+            .checked_sub(payload.len())
+            .and_then(|size| size.checked_sub(5))
+            .ok_or_else(|| std::io::Error::other("PAT/PMT payload exceeds TS packet capacity"))?;
         for _ in 0..left_size {
             self.bytes_writer.write_u8(0xFF)?;
         }
         Ok(())
     }
-    //2.4.3.6 PES packet P35
     pub fn write_pes(&mut self, payload: BytesMut) -> Result<(), MpegTsError> {
         let mut is_start: bool = true;
         let mut payload_reader = BytesReader::new(payload);
 
         while !payload_reader.is_empty() {
-            //write pes header
             let mut pes_muxer = PesMuxer::new();
             if is_start {
                 let cur_pmt = self
@@ -218,7 +208,6 @@ impl TsMuxer {
             let pes_header_length: usize = pes_muxer.len();
             let mut payload_length = payload_reader.len();
 
-            //write ts header
             let mut ts_header = BytesWriter::new();
             payload_length = self.write_ts_header_for_pes(
                 &mut ts_header,
@@ -262,46 +251,26 @@ impl TsMuxer {
 
         let pcr_pid = cur_pmt.pcr_pid;
 
-        /****************************************************************/
-        /*        ts header 4 bytes without adaptation filed            */
-        /*****************************************************************
-         0                   1                   2                   3
-         0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-        +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-        |   sync byte   | | | |          PID            |   |   |       |
-        +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-        */
-
-        /*sync byte*/
-        ts_header.write_u8(0x47)?; //0
-
-        /*PID 13 bits*/
-        ts_header.write_u8(pid_high_bits(stream_data.pid))?; //1
-        ts_header.write_u8(pid_low_byte(stream_data.pid))?; //2
-
-        /*continuity counter 4 bits*/
-        ts_header.write_u8(0x10 | (stream_data.continuity_counter & 0x0F))?; //3
+        ts_header.write_u8(0x47)?;
+        ts_header.write_u8(pid_high_bits(stream_data.pid))?;
+        ts_header.write_u8(pid_low_byte(stream_data.pid))?;
+        ts_header.write_u8(0x10 | (stream_data.continuity_counter & 0x0F))?;
         stream_data.continuity_counter = (stream_data.continuity_counter + 1) % 16;
 
         if is_start {
-            /*payload unit start indicator*/
             ts_header.or_u8_at(1, define::TS_PAYLOAD_UNIT_START_INDICATOR)?;
 
             if (stream_data.pid == pcr_pid)
                 || ((stream_data.data_alignment_indicator > 0)
                     && define::PTS_NO_VALUE != stream_data.pts)
             {
-                /*adaption field control*/
                 ts_header.or_u8_at(3, 0x20)?;
 
-                /*adaption filed length -- set value to 1 for flags*/
-                ts_header.write_u8(0x01)?; //4
-
-                /*will be used for adaptation field flags if have*/
-                ts_header.write_u8(0x00)?; //5
+                // Reserve adaptation-field length and flags bytes.
+                ts_header.write_u8(0x01)?;
+                ts_header.write_u8(0x00)?;
 
                 if stream_data.pid == pcr_pid {
-                    /*adaption field flags*/
                     ts_header.or_u8_at(5, define::AF_FLAG_PCR)?;
 
                     let pcr = if define::PTS_NO_VALUE == stream_data.dts {
@@ -312,29 +281,18 @@ impl TsMuxer {
                     let mut pcr_result: BytesWriter = BytesWriter::new();
                     utils::pcr_write(&mut pcr_result, pcr * 300)?;
                     ts_header.write(&pcr_result.extract_current_bytes()[..])?;
-                    /*adaption filed length -- add 6 for pcr length*/
                     ts_header.add_u8_at(4, 6)?;
                 }
 
                 if (stream_data.data_alignment_indicator > 0)
                     && define::PTS_NO_VALUE != stream_data.pts
                 {
-                    /*adaption field flags*/
                     ts_header.or_u8_at(5, define::AF_FLAG_RANDOM_ACCESS_INDICATOR)?;
                 }
             }
         }
 
-        /*
-        +-------------------------------------------------------------------------+
-        |        ts header                              | PES data                |
-        +-------------------------------------------------------------------------+
-        | 4bytes fixed header | adaption field(stuffing)| pes header | pes payload|
-        +-------------------------------------------------------------------------+
-        */
-        // If payload data cannot fill up the 188 bytes packet,
-        // then stuffling bytes need to be filled in the adaptation field,
-
+        // Stuff short packets through the adaptation field to keep TS packets at 188 bytes.
         let ts_header_length = ts_header.len();
         let total_payload_length = ts_header_length + pes_header_length + payload_data_length;
         let Some(mut stuffing_length) = define::TS_PACKET_SIZE.checked_sub(total_payload_length)
@@ -345,22 +303,20 @@ impl TsMuxer {
         };
 
         if stuffing_length > 0 {
-            // Check adaptation field control bit (bit 5 of byte 3)
-            // ts_header has at least 4 bytes at this point (sync byte + PID + flags)
             let has_adaptation_field = ts_header.get(3).is_some_and(|b| (b & 0x20) > 0);
             if has_adaptation_field {
-                /*adaption filed length -- add 6 for pcr length*/
-                ts_header.add_u8_at(4, usize_to_u8_saturating(stuffing_length))?;
+                ts_header.add_u8_at(
+                    4,
+                    usize_to_u8(stuffing_length, "adaptation field stuffing length")?,
+                )?;
             } else {
-                /*adaption field control*/
                 ts_header.or_u8_at(3, 0x20)?;
-                /*AF length，because it occupys one byte,so here sub one.*/
                 stuffing_length -= 1;
-                /*adaption filed length*/
-                ts_header.write_u8(usize_to_u8_saturating(stuffing_length))?;
-                /*add flag*/
+                ts_header.write_u8(usize_to_u8(
+                    stuffing_length,
+                    "adaptation field stuffing length",
+                )?)?;
                 if stuffing_length >= 1 {
-                    /*adaptation field flags flag occupies one byte, sub one.*/
                     stuffing_length -= 1;
                     ts_header.write_u8(0x00)?;
                 }
@@ -389,19 +345,6 @@ impl TsMuxer {
             }
         }
 
-        // for pmt in self.pat.pmt.iter_mut() {
-        //     for stream in pmt.streams.iter_mut() {
-        //         if stream.pid == pid {
-        //             self.cur_pmt_index = pmt_index;
-        //             self.cur_stream_index = stream_index;
-
-        //             return Ok(());
-        //         }
-        //         stream_index += 1;
-        //     }
-        //     pmt_index += 1;
-        // }
-
         Err(MpegTsError {
             value: MpegTsErrorValue::StreamNotFound,
         })
@@ -429,7 +372,7 @@ impl TsMuxer {
             });
         }
 
-        let mut cur_stream = pes::Pes::new(); //&mut pmt.streams[pmt.stream_count];
+        let mut cur_stream = pes::Pes::new();
 
         cur_stream.codec_id = codecid;
         cur_stream.pid = self.pid;
@@ -469,7 +412,7 @@ impl TsMuxer {
                 value: MpegTsErrorValue::PmtCountExeceed,
             });
         }
-        let mut cur_pmt = pmt::Pmt::new(); //&mut self.pat.pmt[self.pat.pmt_count];
+        let mut cur_pmt = pmt::Pmt::new();
 
         cur_pmt.pid = self.pid;
         self.pid += 1;

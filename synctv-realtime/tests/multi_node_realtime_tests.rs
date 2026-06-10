@@ -11,7 +11,7 @@ use std::time::Duration;
 use chrono::Utc;
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_core_testing::redis_connection_manager;
-use synctv_realtime::sync::events::RealtimeEvent;
+use synctv_realtime::sync::RealtimeEvent;
 mod integration_test_helpers;
 use integration_test_helpers::{
     broadcast_until_all_clients_receive, create_node, wait_until, wait_until_async, TestRedis,

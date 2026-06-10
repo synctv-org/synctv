@@ -981,12 +981,13 @@ pub async fn close_account(
 mod tests {
     use super::UserAvatarObjectQuery;
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
     #[test]
-    fn test_list_my_rooms_request_deserializes_numeric_fields() {
+    fn test_list_my_rooms_request_deserializes_numeric_fields() -> TestResult {
         let query: synctv_proto::client::ListMyRoomsRequest = serde_urlencoded::from_str(
             "page=2&page_size=25&search=room&status=1&is_banned=false&relation=2&sort_by=5&sort_direction=1",
-        )
-        .expect("query should deserialize");
+        )?;
 
         assert_eq!(query.page, 2);
         assert_eq!(query.page_size, 25);
@@ -996,12 +997,12 @@ mod tests {
         assert_eq!(query.relation, 2);
         assert_eq!(query.sort_by, 5);
         assert_eq!(query.sort_direction, 1);
+        Ok(())
     }
 
     #[test]
-    fn test_list_my_rooms_request_query_defaults_to_proto_zero_values() {
-        let query: synctv_proto::client::ListMyRoomsRequest =
-            serde_urlencoded::from_str("").expect("query should deserialize");
+    fn test_list_my_rooms_request_query_defaults_to_proto_zero_values() -> TestResult {
+        let query: synctv_proto::client::ListMyRoomsRequest = serde_urlencoded::from_str("")?;
 
         assert_eq!(query.page, 0);
         assert_eq!(query.page_size, 0);
@@ -1011,6 +1012,7 @@ mod tests {
         assert_eq!(query.relation, 0);
         assert_eq!(query.sort_by, 0);
         assert_eq!(query.sort_direction, 0);
+        Ok(())
     }
 
     #[test]

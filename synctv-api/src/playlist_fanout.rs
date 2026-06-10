@@ -7,7 +7,6 @@ use synctv_realtime::sync::RealtimeEvent;
 use crate::realtime_fanout::{
     PreparedOutboxFanout, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
 };
-use crate::runtime::RealtimeDeliveryRequirement;
 
 #[derive(Clone)]
 pub struct PreparedPlaylistOutboxFanout {
@@ -17,8 +16,7 @@ pub struct PreparedPlaylistOutboxFanout {
 impl PreparedPlaylistOutboxFanout {
     #[must_use]
     pub fn outbox_factory(&self) -> RealtimeOutboxPlaylistEventFactory {
-        let factory = self.prepared.outbox_factory();
-        Arc::new(move |playlist| factory(playlist))
+        self.prepared.outbox_factory()
     }
 
     pub fn publish_after_outbox_commit(&self) {
@@ -145,12 +143,8 @@ impl PlaylistFanoutService for DefaultPlaylistFanoutService {
     ) -> synctv_core::Result<PreparedPlaylistDeletedFanout> {
         let event = playlist_deleted_event(room_id, user_id, username, playlist_id);
         Ok(PreparedPlaylistDeletedFanout {
-            plan: PreparedRealtimeFanoutPlan::new(
-                self.realtime_fanout.clone(),
-                event,
-                RealtimeDeliveryRequirement::DistributedIfAvailable,
-            )
-            .map_err(synctv_core::Error::Internal)?,
+            plan: PreparedRealtimeFanoutPlan::new(self.realtime_fanout.clone(), event)
+                .map_err(synctv_core::Error::Internal)?,
         })
     }
 }
@@ -190,6 +184,16 @@ mod tests {
     use synctv_core::models::{Playlist, PlaylistId, RoomId, UserId};
     use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
     use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
+
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn core_ok<T>(result: synctv_core::Result<T>) -> TestResult<T> {
+        result.map_err(|error| test_error(error.to_string()))
+    }
 
     #[derive(Default)]
     struct RecordingRealtimeFanout {
@@ -255,7 +259,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_playlist_fanout_prepares_created_outbox_without_local_publish() {
+    async fn test_playlist_fanout_prepares_created_outbox_without_local_publish() -> TestResult {
         let realtime_fanout = Arc::new(RecordingRealtimeFanout::default());
         let service = default_playlist_fanout_service(realtime_fanout.clone());
 
@@ -263,7 +267,7 @@ mod tests {
         let prepared =
             service.prepare_created_outbox_fanout(room_id(), user_id(), "tester".to_string());
         let factory = prepared.outbox_factory();
-        let outbox_event = factory(&playlist).expect("playlist outbox event should prepare");
+        let outbox_event = core_ok(factory(&playlist))?;
 
         assert_eq!(outbox_event.event_type.as_str(), "playlist_created");
         assert_eq!(
@@ -283,8 +287,7 @@ mod tests {
             "playlist fanout should publish the same prepared event after commit"
         );
 
-        let event: RealtimeEvent = serde_json::from_value(outbox_event.payload)
-            .expect("playlist outbox payload should deserialize");
+        let event: RealtimeEvent = serde_json::from_value(outbox_event.payload)?;
         match event {
             RealtimeEvent::PlaylistCreated {
                 room_id,
@@ -298,7 +301,12 @@ mod tests {
                 assert_eq!(username, "tester");
                 assert_eq!(playlist.id, PlaylistId::expect_positive(105_003));
             }
-            other => panic!("expected PlaylistCreated, got {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "expected PlaylistCreated, got {other:?}"
+                )))
+            }
         }
+        Ok(())
     }
 }

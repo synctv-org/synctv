@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_helpers::{TestOptionExt, TestResultExt};
 use synctv_core_testing::start_redis_with_client;
 
 #[tokio::test]
@@ -9,7 +10,7 @@ async fn test_init_redis_standalone_without_url_returns_none() {
 
     let result = init_redis(&config, None)
         .await
-        .expect("standalone without redis.url should be allowed");
+        .checked("standalone without redis.url should be allowed");
 
     assert!(result.runtime.is_none());
     assert!(result.sentinel_health_check_task.is_none());
@@ -26,7 +27,7 @@ async fn test_init_redis_standalone_with_split_config_attempts_connection() {
 
     let err = init_redis(&config, None)
         .await
-        .expect_err("split redis config should be treated as configured at runtime");
+        .failed("split redis config should be treated as configured at runtime");
 
     assert!(
         err.to_string().contains("Connection refused")
@@ -50,7 +51,7 @@ async fn test_init_redis_sentinel_without_url_attempts_backend_init() {
 
     let err = init_redis(&config, None)
         .await
-        .expect_err("sentinel mode must not short-circuit to None when redis.url is empty");
+        .failed("sentinel mode must not short-circuit to None when redis.url is empty");
 
     assert!(
         err.to_string().contains("Sentinel")
@@ -68,8 +69,8 @@ fn test_parse_redis_node_settings_preserves_auth_and_db_from_url() {
     config.redis.url = "redis://sync-user:secret@redis.example.com:6380/7".to_string();
 
     let redis_settings = parse_redis_node_settings(&config)
-        .expect("parse redis settings")
-        .expect("redis.url should produce redis settings");
+        .checked("parse redis settings")
+        .checked("redis.url should produce redis settings");
 
     assert_eq!(redis_settings.username(), Some("sync-user"));
     assert_eq!(redis_settings.password(), Some("secret"));
@@ -87,8 +88,8 @@ fn test_parse_redis_node_settings_preserves_auth_and_db_from_split_config() {
     config.redis.database = 7;
 
     let redis_settings = parse_redis_node_settings(&config)
-        .expect("parse redis settings")
-        .expect("split redis config should produce redis settings");
+        .checked("parse redis settings")
+        .checked("split redis config should produce redis settings");
 
     assert_eq!(redis_settings.username(), Some("sync-user"));
     assert_eq!(redis_settings.password(), Some("secret"));
@@ -138,13 +139,16 @@ async fn test_snapshot_returns_clone() {
     let (_redis, client) = start_redis_with_client().await;
     let conn = redis::aio::ConnectionManager::new(client.clone())
         .await
-        .unwrap();
+        .checked("operation should succeed");
     let runtime = ManagedRedisRuntime::new(client, Arc::new(RwLock::new(conn)));
 
     let mut snapshot = runtime
         .snapshot()
         .await
-        .expect("snapshot should return a Redis connection");
-    let pong: String = redis::cmd("PING").query_async(&mut snapshot).await.unwrap();
+        .checked("snapshot should return a Redis connection");
+    let pong: String = redis::cmd("PING")
+        .query_async(&mut snapshot)
+        .await
+        .checked("operation should succeed");
     assert_eq!(pong, "PONG");
 }

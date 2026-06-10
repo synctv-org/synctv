@@ -1274,7 +1274,9 @@ impl PlaylistRepository {
         let mut playlist_ids = Vec::with_capacity(rows.len());
         for row in rows {
             let playlist_id = row.id;
-            let depth = row.depth.unwrap_or_default();
+            let depth = row.depth.ok_or_else(|| {
+                Error::Internal("playlist tree query did not return depth".into())
+            })?;
             playlist_ids.push(playlist_id);
             ids_by_depth.entry(depth).or_default().push(playlist_id);
         }
@@ -1341,7 +1343,9 @@ impl PlaylistRepository {
         let mut playlist_ids = Vec::with_capacity(rows.len());
         for row in rows {
             let playlist_id = row.id;
-            let depth = row.depth.unwrap_or_default();
+            let depth = row.depth.ok_or_else(|| {
+                Error::Internal("playlist tree query did not return depth".into())
+            })?;
             playlist_ids.push(playlist_id);
             ids_by_depth.entry(depth).or_default().push(playlist_id);
         }

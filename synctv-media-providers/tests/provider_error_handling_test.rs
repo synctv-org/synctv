@@ -11,12 +11,12 @@
 //! 8. gRPC validation layer
 
 #![allow(clippy::unwrap_used)]
-use synctv_media_providers::error::*;
+use synctv_media_providers::*;
 
 #[test]
-fn test_error_display_not_implemented() {
-    let err = ProviderClientError::NotImplemented("subtitle parsing".to_string());
-    assert_eq!(err.to_string(), "Not implemented: subtitle parsing");
+fn test_error_display_invalid_config() {
+    let err = ProviderClientError::InvalidConfig("missing url".to_string());
+    assert_eq!(err.to_string(), "Invalid configuration: missing url");
 }
 
 #[test]
@@ -106,8 +106,8 @@ fn test_is_not_retryable_response_too_large() {
 }
 
 #[test]
-fn test_is_not_retryable_not_implemented() {
-    let err = ProviderClientError::NotImplemented("feature".to_string());
+fn test_is_not_retryable_auth() {
+    let err = ProviderClientError::Auth("expired token".to_string());
     assert!(!err.is_retryable());
 }
 
@@ -251,7 +251,7 @@ mod ssrf_tests {
 }
 
 mod alist_type_tests {
-    use synctv_media_providers::alist::types::*;
+    use synctv_media_providers::alist::*;
 
     #[test]
     fn test_alist_resp_deserialize_success() {
@@ -418,7 +418,7 @@ mod alist_type_tests {
 }
 
 mod emby_type_tests {
-    use synctv_media_providers::emby::types::*;
+    use synctv_media_providers::emby::*;
     use synctv_media_providers::grpc::emby::{
         DirectPlayProfileHint, PlaybackInfoDeviceProfile, SubtitleDeliveryMethod,
         SubtitleProfileHint,
@@ -699,7 +699,7 @@ mod emby_type_tests {
 }
 
 mod bilibili_type_tests {
-    use synctv_media_providers::bilibili::types::*;
+    use synctv_media_providers::bilibili::*;
 
     #[test]
     fn test_season_info_resp_deserialize() {
@@ -935,36 +935,6 @@ mod bilibili_type_tests {
         let resp: PgcUrlResp = serde_json::from_str(json).unwrap();
         assert_eq!(resp.result.quality, 80);
         assert_eq!(resp.result.durl.len(), 1);
-    }
-}
-
-mod grpc_validation_tests {
-    use synctv_media_providers::grpc::validation::*;
-
-    #[test]
-    fn test_validate_required_whitespace() {
-        assert!(validate_required("field", " ").is_err());
-        assert!(validate_required("field", "\t").is_err());
-    }
-
-    #[test]
-    fn test_validate_host_cloud_metadata() {
-        assert!(validate_host("http://169.254.169.254").is_ok());
-        assert!(validate_host("http://metadata.google.internal").is_ok());
-        assert!(validate_provider_grpc_host("http://169.254.169.254").is_ok());
-        assert!(validate_provider_grpc_host("http://metadata.google.internal").is_ok());
-    }
-
-    #[test]
-    fn test_validate_host_ipv4_mapped_ipv6() {
-        assert!(validate_host("http://[::ffff:127.0.0.1]").is_ok());
-        assert!(validate_provider_grpc_host("http://[::ffff:127.0.0.1]").is_ok());
-    }
-
-    #[test]
-    fn test_validate_host_kubernetes_service() {
-        assert!(validate_host("http://localhost").is_ok());
-        assert!(validate_provider_grpc_host("http://localhost").is_ok());
     }
 }
 

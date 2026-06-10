@@ -5,7 +5,6 @@
 //! room members simultaneously.
 //!
 //! Requires Docker for testcontainers.
-#![allow(clippy::unwrap_used)]
 
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -16,7 +15,7 @@ use synctv_core::{
     },
     repository::{RoomMemberRepository, RoomRepository},
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, ok, some};
 use tokio::sync::Barrier;
 
 /// Default `PostgreSQL` version for test containers
@@ -40,43 +39,48 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         banned_by: None,
         banned_reason: None,
     };
-    sqlx::query(
-        r"
+    ok(
+        sqlx::query(
+            r"
         INSERT INTO users (
             id, username, signup_method, role,
             created_at, updated_at
         )
         VALUES ($1, $2, $3, $4, $5, $6)
         ",
-    )
-    .bind(user.id)
-    .bind(&user.username)
-    .bind(user.signup_method)
-    .bind(user.role)
-    .bind(user.created_at)
-    .bind(user.updated_at)
-    .execute(pool)
-    .await
-    .expect("Failed to create test user");
+        )
+        .bind(user.id)
+        .bind(&user.username)
+        .bind(user.signup_method)
+        .bind(user.role)
+        .bind(user.created_at)
+        .bind(user.updated_at)
+        .execute(pool)
+        .await,
+        "test user should be inserted",
+    );
 
-    sqlx::query(
-        r"
+    ok(
+        sqlx::query(
+            r"
         INSERT INTO auth_email_identities (
             user_id, email, created_at, updated_at
         )
         VALUES ($1, $2, $3, $4)
         ",
-    )
-    .bind(user.id)
-    .bind(format!("{user_id}@test.com"))
-    .bind(user.created_at)
-    .bind(user.updated_at)
-    .execute(pool)
-    .await
-    .expect("Failed to create test user email identity");
+        )
+        .bind(user.id)
+        .bind(format!("{user_id}@test.com"))
+        .bind(user.created_at)
+        .bind(user.updated_at)
+        .execute(pool)
+        .await,
+        "test user email identity should be inserted",
+    );
 
-    sqlx::query(
-        r"
+    ok(
+        sqlx::query(
+            r"
         INSERT INTO auth_password_credentials (
             user_id, opaque_record, opaque_credential_identifier, opaque_ciphersuite,
             opaque_server_setup_version,
@@ -84,19 +88,20 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ",
-    )
-    .bind(user.id)
-    .bind(b"test-opaque-record".as_slice())
-    .bind(b"test-opaque-id".as_slice())
-    .bind("opaque-ristretto255-sha512-argon2id")
-    .bind(1_i32)
-    .bind(user.created_at)
-    .bind(0_i32)
-    .bind(user.created_at)
-    .bind(user.updated_at)
-    .execute(pool)
-    .await
-    .expect("Failed to create test user password credential");
+        )
+        .bind(user.id)
+        .bind(b"test-opaque-record".as_slice())
+        .bind(b"test-opaque-id".as_slice())
+        .bind("opaque-ristretto255-sha512-argon2id")
+        .bind(1_i32)
+        .bind(user.created_at)
+        .bind(0_i32)
+        .bind(user.created_at)
+        .bind(user.updated_at)
+        .execute(pool)
+        .await,
+        "test user password credential should be inserted",
+    );
 }
 
 fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {
@@ -139,10 +144,7 @@ async fn test_concurrent_member_role_updates_isolated() {
         version: 0,
         last_activity_at: chrono::Utc::now(),
     };
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
+    let room = ok(room_repo.create(&room).await, "room should be created");
 
     let user1 = UserId::new();
     let user2 = UserId::new();
@@ -152,14 +154,14 @@ async fn test_concurrent_member_role_updates_isolated() {
     let member1 = make_member(room.id, user1);
     let member2 = make_member(room.id, user2);
 
-    member_repo
-        .add(&member1)
-        .await
-        .expect("Failed to create member1");
-    member_repo
-        .add(&member2)
-        .await
-        .expect("Failed to create member2");
+    ok(
+        member_repo.add(&member1).await,
+        "first member should be added",
+    );
+    ok(
+        member_repo.add(&member2).await,
+        "second member should be added",
+    );
 
     // Concurrent role updates using added_permissions column
     let barrier = Arc::new(Barrier::new(2));
@@ -173,7 +175,7 @@ async fn test_concurrent_member_role_updates_isolated() {
     let handle1 = tokio::spawn(async move {
         barrier1.wait().await;
 
-        let mut tx = pool1.begin().await.expect("Failed to begin transaction");
+        let mut tx = pool1.begin().await?;
 
         sqlx::query(
             "UPDATE room_members SET added_permissions = $1
@@ -183,12 +185,12 @@ async fn test_concurrent_member_role_updates_isolated() {
         .bind(room_id)
         .bind(user1_clone)
         .execute(&mut *tx)
-        .await
-        .expect("Failed to update user1");
+        .await?;
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        tx.commit().await.expect("Failed to commit tx1");
+        tx.commit().await?;
+        Ok::<(), sqlx::Error>(())
     });
 
     let barrier2 = barrier.clone();
@@ -196,7 +198,7 @@ async fn test_concurrent_member_role_updates_isolated() {
     let handle2 = tokio::spawn(async move {
         barrier2.wait().await;
 
-        let mut tx = pool2.begin().await.expect("Failed to begin transaction");
+        let mut tx = pool2.begin().await?;
 
         sqlx::query(
             "UPDATE room_members SET added_permissions = $1
@@ -206,28 +208,34 @@ async fn test_concurrent_member_role_updates_isolated() {
         .bind(room_id2)
         .bind(user2_clone)
         .execute(&mut *tx)
-        .await
-        .expect("Failed to update user2");
+        .await?;
 
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        tx.commit().await.expect("Failed to commit tx2");
+        tx.commit().await?;
+        Ok::<(), sqlx::Error>(())
     });
 
-    handle1.await.expect("Task 1 failed");
-    handle2.await.expect("Task 2 failed");
+    let update1 = ok(handle1.await, "first update task should complete");
+    ok(update1, "first update transaction should finish");
+    let update2 = ok(handle2.await, "second update task should complete");
+    ok(update2, "second update transaction should finish");
 
     // Verify both updates succeeded
-    let member1_updated = member_repo
-        .get(&room.id, &user1)
-        .await
-        .expect("Failed to get member1")
-        .expect("Member1 not found");
-    let member2_updated = member_repo
-        .get(&room.id, &user2)
-        .await
-        .expect("Failed to get member2")
-        .expect("Member2 not found");
+    let member1_updated = some(
+        ok(
+            member_repo.get(&room.id, &user1).await,
+            "first member should be fetched",
+        ),
+        "first member should exist",
+    );
+    let member2_updated = some(
+        ok(
+            member_repo.get(&room.id, &user2).await,
+            "second member should be fetched",
+        ),
+        "second member should exist",
+    );
 
     assert_eq!(member1_updated.added_permissions, 0xFF);
     assert_eq!(member2_updated.added_permissions, 0xFF);
@@ -257,22 +265,18 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
         version: 0,
         last_activity_at: chrono::Utc::now(),
     };
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
+    let room = ok(room_repo.create(&room).await, "room should be created");
 
     // Transaction 1: Count members, then re-count
     let pool1 = pool.clone();
     let room_id1 = room.id;
     let handle1 = tokio::spawn(async move {
-        let mut tx = pool1.begin().await.expect("Failed to begin transaction");
+        let mut tx = pool1.begin().await?;
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
             .bind(room_id1)
             .fetch_one(&mut *tx)
-            .await
-            .expect("Failed to count");
+            .await?;
 
         assert_eq!(count, 0);
 
@@ -282,12 +286,11 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
             sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
                 .bind(room_id1)
                 .fetch_one(&mut *tx)
-                .await
-                .expect("Failed to count");
+                .await?;
 
-        tx.commit().await.expect("Failed to commit");
+        tx.commit().await?;
 
-        count2
+        Ok::<i64, sqlx::Error>(count2)
     });
 
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -299,14 +302,13 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
     let handle2 = tokio::spawn(async move {
         let member = make_member(room_id2, user_id);
         let member_repo = RoomMemberRepository::new(pool2);
-        member_repo
-            .add(&member)
-            .await
-            .expect("Failed to create member");
+        member_repo.add(&member).await
     });
 
-    handle2.await.expect("Task 2 failed");
-    let final_count = handle1.await.expect("Task 1 failed");
+    let insert_result = ok(handle2.await, "member insert task should complete");
+    ok(insert_result, "member should be added");
+    let count_result = ok(handle1.await, "count task should complete");
+    let final_count = ok(count_result, "count transaction should finish");
 
     // Due to READ COMMITTED isolation (default), the re-count may see the new member.
     // This is expected behavior for READ COMMITTED.

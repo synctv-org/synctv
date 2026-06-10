@@ -28,7 +28,7 @@ use synctv_proto::client::{HealthDetails, HealthResponse, MemoryHealth};
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Health check router.
-pub fn create_health_router() -> Router<AppState> {
+pub(crate) fn create_health_router() -> Router<AppState> {
     Router::new()
         .route("/health/live", get(liveness_check))
         .route("/health/ready", get(readiness_check))
@@ -648,6 +648,32 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
+    }
+
+    async fn read_health_response(
+        response: axum::response::Response,
+    ) -> TestResult<HealthResponse> {
+        let body = response.into_body().collect().await?.to_bytes();
+        Ok(serde_json::from_slice(&body)?)
+    }
+
+    fn require_details(health: HealthResponse) -> TestResult<HealthDetails> {
+        health
+            .details
+            .ok_or_else(|| test_error("readiness should include details"))
+    }
+
+    fn request(uri: &str) -> TestResult<axum::http::Request<axum::body::Body>> {
+        axum::http::Request::builder()
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .map_err(|err| test_error(format!("request should build: {err}")))
+    }
+
     #[derive(Clone)]
     struct TestEmailConfigProvider(Option<synctv_core::service::EmailConfig>);
 
@@ -707,12 +733,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_liveness_check_response_body() {
+    async fn test_liveness_check_response_body() -> TestResult {
         let response = liveness_check().await.into_response();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let health: HealthResponse = serde_json::from_slice(&body).unwrap();
+        let health = read_health_response(response).await?;
         assert_eq!(health.status, "ok");
         assert!(health.details.is_none());
+        Ok(())
     }
 
     #[test]
@@ -752,14 +778,15 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_usage_percent_handles_large_totals_without_u32_truncation() {
+    fn test_memory_usage_percent_handles_large_totals_without_u32_truncation() -> TestResult {
         let total_bytes = 16 * 1024 * 1024 * 1024_u64;
         let used_bytes = 8 * 1024 * 1024 * 1024_u64;
 
-        let usage_percent =
-            memory_usage_percent(used_bytes, total_bytes).expect("non-zero total memory");
+        let usage_percent = memory_usage_percent(used_bytes, total_bytes)
+            .ok_or_else(|| test_error("non-zero total memory"))?;
 
         assert!((usage_percent - 50.0).abs() < f64::EPSILON);
+        Ok(())
     }
 
     #[tokio::test]
@@ -773,7 +800,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_check_redis_health_status_reports_not_configured_without_connection() {
+    async fn test_check_redis_health_status_reports_not_configured_without_connection() -> TestResult
+    {
         let state = test_app_state();
         let response = readiness_check(State(state)).await.into_response();
         assert!(
@@ -784,29 +812,29 @@ mod tests {
             "readiness should remain on the documented status surface"
         );
 
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let health: HealthResponse = serde_json::from_slice(&body).unwrap();
-        let details = health.details.expect("readiness should include details");
+        let health = read_health_response(response).await?;
+        let details = require_details(health)?;
         assert_eq!(
             details.redis, "not configured",
             "readiness must distinguish missing Redis from a healthy configured Redis"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_readiness_includes_webrtc_status() {
+    async fn test_readiness_includes_webrtc_status() -> TestResult {
         let state = test_app_state();
         let response = readiness_check(State(state)).await.into_response();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let health: HealthResponse = serde_json::from_slice(&body).unwrap();
-        let details = health.details.expect("readiness should include details");
+        let health = read_health_response(response).await?;
+        let details = require_details(health)?;
         let webrtc = details
             .webrtc
-            .expect("readiness should expose WebRTC status");
+            .ok_or_else(|| test_error("readiness should expose WebRTC status"))?;
 
         assert_eq!(webrtc.mode, "peer_to_peer");
         assert_eq!(webrtc.builtin_stun_state, "disabled");
         assert_eq!(webrtc.reason, "disabled_by_config");
+        Ok(())
     }
 
     fn metrics_test_state(metrics_bearer_token: &str) -> crate::http::AppState {
@@ -868,21 +896,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_metrics_router_exposes_metrics_endpoint() {
+    async fn test_metrics_router_exposes_metrics_endpoint() -> TestResult {
         let app = create_metrics_router().with_state(metrics_test_state("secret"));
 
-        let response = app
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/metrics")
-                    .header(AUTHORIZATION, "Bearer secret")
-                    .body(axum::body::Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
+        let mut request = request("/metrics")?;
+        request
+            .headers_mut()
+            .insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
+        let response = app.oneshot(request).await?;
 
         assert_eq!(response.status(), StatusCode::OK);
+        Ok(())
     }
 
     #[test]
@@ -943,10 +967,9 @@ mod tests {
     }
 
     #[test]
-    fn test_email_health_reports_configuration_only() {
+    fn test_email_health_reports_configuration_only() -> TestResult {
         let unconfigured =
-            synctv_core::service::EmailService::new(Arc::new(TestEmailConfigProvider(None)))
-                .expect("email service");
+            synctv_core::service::EmailService::new(Arc::new(TestEmailConfigProvider(None)))?;
         assert_eq!(check_email_health(&unconfigured), "not configured");
 
         let configured = synctv_core::service::EmailService::new(Arc::new(
@@ -959,9 +982,9 @@ mod tests {
                 from_name: "SyncTV".to_string(),
                 use_tls: true,
             })),
-        ))
-        .expect("email service");
+        ))?;
         assert_eq!(check_email_health(&configured), "configured");
+        Ok(())
     }
 
     /// Verify that cgroup memory check is attempted on Linux.
@@ -981,11 +1004,11 @@ mod tests {
     /// Verify that proc_meminfo fallback works on Linux.
     #[cfg(target_os = "linux")]
     #[test]
-    fn test_proc_meminfo_returns_some() {
+    fn test_proc_meminfo_returns_some() -> TestResult {
         let result = check_proc_meminfo();
-        assert!(result.is_some());
-        let mem = result.unwrap();
+        let mem = result.ok_or_else(|| test_error("proc meminfo should be available"))?;
         assert!(mem.usage_percent >= 0.0);
         assert!(mem.usage_percent <= 100.0);
+        Ok(())
     }
 }

@@ -109,6 +109,13 @@ mod tests {
         Error,
     };
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     fn upload_request(
         policy: FileUploadPolicy,
         mime_type: &str,
@@ -182,12 +189,14 @@ mod tests {
         ];
 
         for (policy, mime_type, max_size_bytes) in cases {
-            validate_create_file_upload_session(&upload_request(
-                policy.clone(),
-                mime_type,
-                max_size_bytes,
-            ))
-            .expect("valid product upload request should pass policy validation");
+            ok(
+                validate_create_file_upload_session(&upload_request(
+                    policy.clone(),
+                    mime_type,
+                    max_size_bytes,
+                )),
+                "valid product upload request should pass policy validation",
+            );
             assert!(matches!(
                 validate_create_file_upload_session(&upload_request(
                     policy.clone(),

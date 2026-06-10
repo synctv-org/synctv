@@ -701,23 +701,33 @@ where
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn test_bool_conversion() {
-        assert!("true".parse::<bool>().unwrap());
-        assert!(!"false".parse::<bool>().unwrap());
+        assert!(ok("true".parse::<bool>(), "true should parse as bool"));
+        assert!(!ok("false".parse::<bool>(), "false should parse as bool"));
         assert_eq!(true.to_string(), "true");
         assert_eq!(false.to_string(), "false");
     }
 
     #[test]
     fn test_i64_conversion() {
-        assert_eq!("42".parse::<i64>().unwrap(), 42);
+        assert_eq!(ok("42".parse::<i64>(), "integer should parse"), 42);
         assert_eq!(42.to_string(), "42");
     }
 
     #[test]
     fn test_string_conversion() {
-        assert_eq!("hello".parse::<String>().unwrap(), "hello");
+        assert_eq!(
+            ok("hello".parse::<String>(), "string should parse"),
+            "hello"
+        );
         assert_eq!("world".to_string(), "world");
     }
 
@@ -879,25 +889,34 @@ mod tests {
         let service = Arc::new(SettingsService::new(repo, pool.clone()));
         let storage = Arc::new(SettingsStorage::new(service.clone()));
 
-        sqlx::query!(
-            "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) \
-             ON CONFLICT (key) DO NOTHING",
-            "room.password_policy",
-            "room",
-            "required"
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        ok(
+            sqlx::query!(
+                "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) \
+                 ON CONFLICT (key) DO NOTHING",
+                "room.password_policy",
+                "room",
+                "required"
+            )
+            .execute(&pool)
+            .await
+            .map_err(|error| error.to_string()),
+            "settings row should insert",
+        );
 
-        service.initialize().await.unwrap();
-        storage.init().unwrap();
+        ok(
+            service.initialize().await,
+            "settings service should initialize",
+        );
+        ok(storage.init(), "settings storage should initialize");
         storage
             .inner
             .write()
             .insert("room.password_policy".to_string(), "optional".to_string());
 
-        storage.reload_all_from_service().unwrap();
+        ok(
+            storage.reload_all_from_service(),
+            "settings storage should reload",
+        );
 
         assert_eq!(
             storage.get_raw("room.password_policy").as_deref(),

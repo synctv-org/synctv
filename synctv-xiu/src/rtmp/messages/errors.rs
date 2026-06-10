@@ -11,12 +11,12 @@ use {
 pub enum MessageErrorValue {
     #[error("bytes read error: {0}")]
     BytesReadError(BytesReadError),
-    #[error("unknow read state")]
-    UnknowReadState,
+    #[error("unknown read state")]
+    UnknownReadState,
     #[error("amf0 read error: {0}")]
     Amf0ReadError(Amf0ReadError),
-    #[error("unknown message type")]
-    UnknowMessageType,
+    #[error("unknown RTMP message type {0}")]
+    UnknownMessageType(u8),
     #[error("protocol control message read error: {0}")]
     ProtocolControlMessageReaderError(ProtocolControlMessageReaderError),
     #[error("user control message read error: {0}")]

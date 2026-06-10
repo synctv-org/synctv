@@ -9,8 +9,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::time::Duration;
-use synctv_xiu::bytesio::bytesio::{TNetIO, TcpIO};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use synctv_xiu::bytesio::net_io::{TNetIO, TcpIO};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time;
 
@@ -23,38 +22,6 @@ async fn create_hanging_server_after_accept() -> (u16, tokio::task::JoinHandle<(
         // Accept connection but never send any data (simulating malicious server)
         if let Ok((mut _stream, _addr)) = listener.accept().await {
             // Just hang forever - never send handshake response
-            loop {
-                time::sleep(Duration::from_hours(1)).await;
-            }
-        }
-    });
-
-    // Small delay to ensure server is listening
-    time::sleep(Duration::from_millis(10)).await;
-
-    (port, handle)
-}
-
-/// Helper to create a server that immediately sends handshake data
-#[allow(dead_code)]
-async fn create_responsive_server_with_extra_data() -> (u16, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-
-    let handle = tokio::spawn(async move {
-        if let Ok((mut stream, _addr)) = listener.accept().await {
-            // Read C0+C1 from client (3073 bytes)
-            let mut buf = vec![0u8; 4096];
-            let _ = stream.read(&mut buf).await;
-
-            let mut response = vec![3u8]; // S0 - version
-            response.extend_from_slice(&[0u8; 1536]); // S1
-            response.extend_from_slice(&[0u8; 1536]); // S2
-            response.extend_from_slice(&[0u8; 5000]); // Extra garbage to test buffer limit
-
-            let _ = stream.write_all(&response).await;
-
-            // Keep connection alive
             loop {
                 time::sleep(Duration::from_hours(1)).await;
             }

@@ -1,9 +1,27 @@
+use super::metrics::ShutdownTaskOutcome;
 use super::model::system_time_to_unix_secs;
 use super::redis_state::DISTRIBUTED_COUNTER_TTL_SECONDS;
 use super::*;
 use std::time::UNIX_EPOCH;
 use synctv_core::config::ConnectionLimitsConfig;
 use synctv_core_testing::{start_redis_url_with_label, RedisContainer};
+
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+type TestResult = std::result::Result<(), BoxError>;
+
+fn missing(message: &'static str) -> BoxError {
+    anyhow::anyhow!(message).into()
+}
+
+fn require_error<T>(
+    result: std::result::Result<T, String>,
+    message: &'static str,
+) -> std::result::Result<String, BoxError> {
+    match result {
+        Ok(_) => Err(missing(message)),
+        Err(error) => Ok(error),
+    }
+}
 
 impl ConnectionManager {
     fn users_online_metric_delta_for_test(&self) -> isize {
@@ -13,31 +31,25 @@ impl ConnectionManager {
             .cast_signed()
     }
 
-    fn drain_pending_retries_for_test(&self) -> Vec<PendingRedisOp> {
-        let mut guard = self
-            .pending_retries_rx
-            .try_lock()
-            .expect("pending retries receiver should be lockable in tests");
-        let rx = guard
-            .as_mut()
-            .expect("pending retries receiver is only available before with_redis()");
+    fn drain_pending_retries_for_test(&self) -> std::result::Result<Vec<PendingRedisOp>, BoxError> {
+        let mut guard = self.pending_retries_rx.try_lock()?;
+        let rx = guard.as_mut().ok_or_else(|| {
+            missing("pending retries receiver is only available before with_redis()")
+        })?;
 
         let mut ops = Vec::new();
         while let Ok(op) = rx.try_recv() {
             ops.push(op);
         }
-        ops
+        Ok(ops)
     }
 
-    fn enqueue_pending_retry_for_test(&self, op: PendingRedisOp) {
-        self.pending_retries_tx
-            .try_send(op)
-            .expect("test should enqueue pending retry");
-    }
-
-    fn test_set_disconnect_retry_handle(&self, handle: tokio::task::JoinHandle<()>) {
-        *self.disconnect_retry_handle.lock() = Some(handle);
-        self.disconnect_retry_started.store(true, Ordering::Release);
+    fn enqueue_pending_retry_for_test(
+        &self,
+        op: PendingRedisOp,
+    ) -> std::result::Result<(), BoxError> {
+        self.pending_retries_tx.try_send(op)?;
+        Ok(())
     }
 
     fn test_set_ttl_refresh_handle(&self, handle: tokio::task::JoinHandle<()>) {
@@ -75,22 +87,19 @@ async fn test_register_connection() {
 }
 
 #[tokio::test]
-async fn test_register_duplicate_connection_id_is_rejected_without_double_counting() {
+async fn test_register_duplicate_connection_id_is_rejected_without_double_counting() -> TestResult {
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_110);
 
-    manager
-        .register("dup-conn".to_string(), user_id)
-        .await
-        .expect("first register should succeed");
+    manager.register("dup-conn".to_string(), user_id).await?;
 
     let duplicate = manager.register("dup-conn".to_string(), user_id).await;
+    let duplicate_err = require_error(
+        duplicate,
+        "duplicate connection_id must be rejected deterministically",
+    )?;
     assert!(
-        duplicate.is_err(),
-        "duplicate connection_id must be rejected deterministically"
-    );
-    assert!(
-        duplicate.unwrap_err().contains("already registered"),
+        duplicate_err.contains("already registered"),
         "duplicate register should report an already-registered error"
     );
 
@@ -99,12 +108,14 @@ async fn test_register_duplicate_connection_id_is_rejected_without_double_counti
 
     let conn = manager
         .get_connection("dup-conn")
-        .expect("original connection should remain intact");
+        .ok_or_else(|| missing("original connection should remain intact"))?;
     assert_eq!(conn.user_id, user_id);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_duplicate_register_fails_fast_while_first_attempt_holds_lifecycle_lock() {
+async fn test_duplicate_register_fails_fast_while_first_attempt_holds_lifecycle_lock() -> TestResult
+{
     let first_entered = Arc::new(tokio::sync::Notify::new());
     let release_first = Arc::new(tokio::sync::Notify::new());
     let manager = Arc::new(
@@ -134,25 +145,22 @@ async fn test_duplicate_register_fails_fast_while_first_attempt_holds_lifecycle_
         Duration::from_millis(100),
         manager.register("dup-fast".to_string(), user_id),
     )
-    .await
-    .expect("duplicate registration must fail fast instead of waiting on lifecycle lock");
-    let duplicate_err = duplicate.expect_err("duplicate registration must be rejected");
+    .await?;
+    let duplicate_err = require_error(duplicate, "duplicate registration must be rejected")?;
     assert!(
         duplicate_err.contains("already registered"),
         "duplicate registration should surface the existing claim error: {duplicate_err}"
     );
 
     release_first.notify_waiters();
-    first
-        .await
-        .expect("first registration join")
-        .expect("first registration should complete");
+    first.await??;
     assert_eq!(manager.connection_count(), 1);
     assert_eq!(manager.user_connection_count(&user_id), 1);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_connection_id_claim_rejects_concurrent_duplicate_attempts() {
+async fn test_connection_id_claim_rejects_concurrent_duplicate_attempts() -> TestResult {
     let manager = Arc::new(ConnectionManager::default());
     let claimed = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
@@ -162,12 +170,11 @@ async fn test_connection_id_claim_rejects_concurrent_duplicate_attempts() {
         let claimed = Arc::clone(&claimed);
         let release = Arc::clone(&release);
         tokio::spawn(async move {
-            let claim = manager
-                .try_claim_connection_id("local-claim-race")
-                .expect("first claim should succeed");
+            let claim = manager.try_claim_connection_id("local-claim-race")?;
             claimed.notify_one();
             release.notified().await;
             drop(claim);
+            Ok::<_, String>(())
         })
     };
 
@@ -180,17 +187,18 @@ async fn test_connection_id_claim_rejects_concurrent_duplicate_attempts() {
     );
 
     release.notify_one();
-    first.await.expect("first claim task");
+    first.await??;
 
     let retry = manager.try_claim_connection_id("local-claim-race");
     assert!(
         retry.is_ok(),
         "connection_id claim should be released after the in-flight registration finishes"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_failed_rollback_enqueues_retry_operation() {
+async fn test_failed_rollback_enqueues_retry_operation() -> TestResult {
     let manager = ConnectionManager::default();
 
     manager
@@ -198,14 +206,15 @@ async fn test_failed_rollback_enqueues_retry_operation() {
         .await;
 
     assert_eq!(
-        manager.drain_pending_retries_for_test(),
+        manager.drain_pending_retries_for_test()?,
         vec![PendingRedisOp::Decr("rollback:test:key".to_string())],
         "failed rollback must enqueue a retry instead of silently dropping the counter repair"
     );
+    Ok(())
 }
 
 #[test]
-fn test_pending_retry_queue_preserves_metadata_cleanup_operations() {
+fn test_pending_retry_queue_preserves_metadata_cleanup_operations() -> TestResult {
     let manager = ConnectionManager::default();
     let cleanup_op = manager.unregister_cleanup_op(
         "conn-123",
@@ -214,21 +223,23 @@ fn test_pending_retry_queue_preserves_metadata_cleanup_operations() {
         Some(RoomId::expect_positive(40_123_002)),
     );
 
-    manager.enqueue_pending_retry_for_test(cleanup_op.clone());
+    manager.enqueue_pending_retry_for_test(cleanup_op.clone())?;
 
     assert_eq!(
-        manager.drain_pending_retries_for_test(),
+        manager.drain_pending_retries_for_test()?,
         vec![cleanup_op],
         "metadata, index, and counter cleanup retries must be retained as one idempotent operation"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_register_same_connection_id_concurrently_with_redis_rejects_one_attempt() {
+async fn test_register_same_connection_id_concurrently_with_redis_rejects_one_attempt() -> TestResult
+{
     use redis::AsyncCommands;
 
-    let (_container, client, conn, prefix) = docker_redis_connection("dup-race:").await;
+    let (_container, client, conn, prefix) = docker_redis_connection("dup-race:").await?;
     let manager =
         Arc::new(ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix));
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
@@ -254,8 +265,8 @@ async fn test_register_same_connection_id_concurrently_with_redis_rejects_one_at
 
     barrier.wait().await;
 
-    let result1 = task1.await.expect("task1 join");
-    let result2 = task2.await.expect("task2 join");
+    let result1 = task1.await?;
+    let result2 = task2.await?;
     let success_count = usize::from(result1.is_ok()) + usize::from(result2.is_ok());
 
     assert_eq!(
@@ -275,15 +286,13 @@ async fn test_register_same_connection_id_concurrently_with_redis_rejects_one_at
 
     let registered = manager
         .get_connection("dup-race-conn")
-        .expect("winning registration should remain present");
+        .ok_or_else(|| missing("winning registration should remain present"))?;
     assert!(
         registered.user_id == user1 || registered.user_id == user2,
         "the surviving connection must belong to exactly one of the contenders"
     );
 
-    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
-        .await
-        .expect("redis verification connection");
+    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone()).await?;
     let total_count: i64 = redis_conn
         .get(format!("{prefix}connections:total"))
         .await
@@ -294,6 +303,7 @@ async fn test_register_same_connection_id_concurrently_with_redis_rejects_one_at
     );
 
     manager.unregister("dup-race-conn").await;
+    Ok(())
 }
 
 #[tokio::test]
@@ -316,7 +326,7 @@ async fn test_per_user_limit() {
 }
 
 #[tokio::test]
-async fn test_per_user_limit_holds_under_concurrent_registers_without_redis() {
+async fn test_per_user_limit_holds_under_concurrent_registers_without_redis() -> TestResult {
     let limits = ConnectionLimits {
         max_per_user: 1,
         max_total: 10,
@@ -345,8 +355,8 @@ async fn test_per_user_limit_holds_under_concurrent_registers_without_redis() {
 
     barrier.wait().await;
 
-    let result1 = task1.await.expect("task1 join");
-    let result2 = task2.await.expect("task2 join");
+    let result1 = task1.await?;
+    let result2 = task2.await?;
     let success_count = usize::from(result1.is_ok()) + usize::from(result2.is_ok());
 
     assert_eq!(
@@ -359,111 +369,96 @@ async fn test_per_user_limit_holds_under_concurrent_registers_without_redis() {
         "local user index must not oversubscribe the per-user limit"
     );
     assert_eq!(manager.connection_count(), 1);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_join_room() {
+async fn test_join_room() -> TestResult {
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_010);
     let room_id = RoomId::expect_positive(10_000_092);
 
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
 
     let result = manager.join_room("conn1", room_id).await;
     assert!(result.is_ok());
     assert_eq!(manager.room_connection_count(&room_id), 1);
 
-    let conn = manager.get_connection("conn1").unwrap();
+    let conn = manager
+        .get_connection("conn1")
+        .ok_or_else(|| missing("connection should exist after joining room"))?;
     assert_eq!(conn.room_id.as_ref(), Some(&room_id));
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_has_other_connection_for_user_in_room_distributed_uses_local_state_without_redis() {
+async fn test_has_other_connection_for_user_in_room_distributed_uses_local_state_without_redis(
+) -> TestResult {
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_010);
     let room_id = RoomId::expect_positive(10_000_092);
 
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
-    manager
-        .register("conn2".to_string(), user_id)
-        .await
-        .unwrap();
-    manager.join_room("conn1", room_id).await.unwrap();
-    manager.join_room("conn2", room_id).await.unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
+    manager.register("conn2".to_string(), user_id).await?;
+    manager.join_room("conn1", room_id).await?;
+    manager.join_room("conn2", room_id).await?;
 
     let has_other = manager
         .has_other_connection_for_user_in_room_distributed(&user_id, &room_id, "conn1")
-        .await
-        .unwrap();
+        .await?;
 
     assert!(has_other, "second local room connection should be detected");
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_has_other_connection_for_user_in_room_distributed_ignores_other_rooms() {
+async fn test_has_other_connection_for_user_in_room_distributed_ignores_other_rooms() -> TestResult
+{
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_010);
     let room_id = RoomId::expect_positive(10_000_092);
     let other_room_id = RoomId::expect_positive(10_000_094);
 
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
-    manager
-        .register("conn2".to_string(), user_id)
-        .await
-        .unwrap();
-    manager.join_room("conn1", room_id).await.unwrap();
-    manager.join_room("conn2", other_room_id).await.unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
+    manager.register("conn2".to_string(), user_id).await?;
+    manager.join_room("conn1", room_id).await?;
+    manager.join_room("conn2", other_room_id).await?;
 
     let has_other = manager
         .has_other_connection_for_user_in_room_distributed(&user_id, &room_id, "conn1")
-        .await
-        .unwrap();
+        .await?;
 
     assert!(
         !has_other,
         "connection in another room must not keep room presence alive"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_has_existing_presence_for_user_in_room_distributed_uses_same_logic() {
+async fn test_has_existing_presence_for_user_in_room_distributed_uses_same_logic() -> TestResult {
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_010);
     let room_id = RoomId::expect_positive(10_000_092);
 
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
-    manager
-        .register("conn2".to_string(), user_id)
-        .await
-        .unwrap();
-    manager.join_room("conn1", room_id).await.unwrap();
-    manager.join_room("conn2", room_id).await.unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
+    manager.register("conn2".to_string(), user_id).await?;
+    manager.join_room("conn1", room_id).await?;
+    manager.join_room("conn2", room_id).await?;
 
     let has_existing_presence = manager
         .has_existing_presence_for_user_in_room_distributed(&user_id, &room_id, "conn2")
-        .await
-        .unwrap();
+        .await?;
 
     assert!(
         has_existing_presence,
         "existing same-user room presence should be detected before broadcasting UserJoined"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_per_room_limit() {
+async fn test_per_room_limit() -> TestResult {
     let limits = ConnectionLimits {
         max_per_room: 2,
         ..Default::default()
@@ -476,9 +471,9 @@ async fn test_per_room_limit() {
     let user2 = UserId::expect_positive(10_000_095);
     let user3 = UserId::expect_positive(10_000_115);
 
-    manager.register("conn1".to_string(), user1).await.unwrap();
-    manager.register("conn2".to_string(), user2).await.unwrap();
-    manager.register("conn3".to_string(), user3).await.unwrap();
+    manager.register("conn1".to_string(), user1).await?;
+    manager.register("conn2".to_string(), user2).await?;
+    manager.register("conn3".to_string(), user3).await?;
 
     assert!(manager.join_room("conn1", room_id).await.is_ok());
     assert!(manager.join_room("conn2", room_id).await.is_ok());
@@ -486,10 +481,11 @@ async fn test_per_room_limit() {
     // Third should fail
     let result = manager.join_room("conn3", room_id).await;
     assert!(result.is_err());
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_per_room_limit_holds_under_concurrent_join_without_redis() {
+async fn test_per_room_limit_holds_under_concurrent_join_without_redis() -> TestResult {
     let limits = ConnectionLimits {
         max_per_room: 1,
         max_total: 10,
@@ -504,15 +500,13 @@ async fn test_per_room_limit_holds_under_concurrent_join_without_redis() {
             "conn-room-race-1".to_string(),
             UserId::expect_positive(10_000_117),
         )
-        .await
-        .expect("first registration");
+        .await?;
     manager
         .register(
             "conn-room-race-2".to_string(),
             UserId::expect_positive(10_000_118),
         )
-        .await
-        .expect("second registration");
+        .await?;
 
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
     let join1 = {
@@ -534,8 +528,8 @@ async fn test_per_room_limit_holds_under_concurrent_join_without_redis() {
 
     barrier.wait().await;
 
-    let result1 = join1.await.expect("join1 task");
-    let result2 = join2.await.expect("join2 task");
+    let result1 = join1.await?;
+    let result2 = join2.await?;
     let success_count = usize::from(result1.is_ok()) + usize::from(result2.is_ok());
 
     assert_eq!(
@@ -543,10 +537,12 @@ async fn test_per_room_limit_holds_under_concurrent_join_without_redis() {
         "only one concurrent room join should succeed when max_per_room=1"
     );
     assert_eq!(manager.room_connection_count(&room_id), 1);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_concurrent_room_switch_for_same_connection_keeps_single_room_membership() {
+async fn test_concurrent_room_switch_for_same_connection_keeps_single_room_membership() -> TestResult
+{
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
     let manager = Arc::new(
         ConnectionManager::default().with_join_room_before_commit_hook({
@@ -563,10 +559,7 @@ async fn test_concurrent_room_switch_for_same_connection_keeps_single_room_membe
     let room_a = RoomId::expect_positive(10_000_120);
     let room_b = RoomId::expect_positive(10_000_121);
 
-    manager
-        .register("conn-switch".to_string(), user_id)
-        .await
-        .expect("registration");
+    manager.register("conn-switch".to_string(), user_id).await?;
 
     let join_a = {
         let manager = Arc::clone(&manager);
@@ -579,13 +572,15 @@ async fn test_concurrent_room_switch_for_same_connection_keeps_single_room_membe
 
     barrier.wait().await;
 
-    join_a.await.expect("join_a task").expect("join_a");
-    join_b.await.expect("join_b task").expect("join_b");
+    join_a.await??;
+    join_b.await??;
 
     let conn = manager
         .get_connection("conn-switch")
-        .expect("connection should exist after room switch race");
-    let final_room = conn.room_id.expect("connection should belong to one room");
+        .ok_or_else(|| missing("connection should exist after room switch race"))?;
+    let final_room = conn
+        .room_id
+        .ok_or_else(|| missing("connection should belong to one room"))?;
 
     let room_a_connections = manager.get_room_connections(&room_a);
     let room_b_connections = manager.get_room_connections(&room_b);
@@ -629,10 +624,11 @@ async fn test_concurrent_room_switch_for_same_connection_keeps_single_room_membe
             "non-final room must not retain a stale connection index"
         );
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_unregister_is_not_blocked_by_join_room_waiting_on_capacity_check() {
+async fn test_unregister_is_not_blocked_by_join_room_waiting_on_capacity_check() -> TestResult {
     let join_entered = Arc::new(tokio::sync::Notify::new());
     let release_join = Arc::new(tokio::sync::Notify::new());
     let manager = Arc::new(
@@ -654,8 +650,7 @@ async fn test_unregister_is_not_blocked_by_join_room_waiting_on_capacity_check()
 
     manager
         .register("conn-unregister-race".to_string(), user_id)
-        .await
-        .expect("registration should succeed");
+        .await?;
 
     let join_task = {
         let manager = Arc::clone(&manager);
@@ -668,8 +663,7 @@ async fn test_unregister_is_not_blocked_by_join_room_waiting_on_capacity_check()
         Duration::from_millis(100),
         manager.unregister("conn-unregister-race"),
     )
-    .await
-    .expect("unregister must not wait behind join_room capacity checks");
+    .await?;
 
     assert!(
         manager.get_connection("conn-unregister-race").is_none(),
@@ -682,131 +676,109 @@ async fn test_unregister_is_not_blocked_by_join_room_waiting_on_capacity_check()
     );
 
     release_join.notify_waiters();
-    let join_err = join_task
-        .await
-        .expect("join task join")
-        .expect_err("join_room should observe that the connection was unregistered");
+    let join_err = require_error(
+        join_task.await?,
+        "join_room should observe that the connection was unregistered",
+    )?;
     assert_eq!(join_err, "Connection not found");
     assert_eq!(manager.room_connection_count(&room_id), 0);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_record_message() {
+async fn test_record_message() -> TestResult {
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_010);
 
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
 
     manager.record_message("conn1");
     manager.record_message("conn1");
 
-    let conn = manager.get_connection("conn1").unwrap();
+    let conn = manager
+        .get_connection("conn1")
+        .ok_or_else(|| missing("connection should exist after recording message"))?;
     assert_eq!(conn.message_count, 2);
     assert_eq!(manager.total_messages(), 2);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_get_user_connections_distributed_without_redis_uses_local_state() {
+async fn test_get_user_connections_distributed_without_redis_uses_local_state() -> TestResult {
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_010);
 
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
 
-    let conn_ids = manager
-        .get_user_connections_distributed(&user_id)
-        .await
-        .expect("standalone mode should read local state");
+    let conn_ids = manager.get_user_connections_distributed(&user_id).await?;
 
     assert_eq!(conn_ids, vec!["conn1".to_string()]);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_user_connection_count_distributed_without_redis_uses_local_state() {
+async fn test_user_connection_count_distributed_without_redis_uses_local_state() -> TestResult {
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_124);
 
     manager
         .register("user-count-1".to_string(), user_id)
-        .await
-        .unwrap();
+        .await?;
     manager
         .register("user-count-2".to_string(), user_id)
-        .await
-        .unwrap();
+        .await?;
 
-    let count = manager
-        .user_connection_count_distributed(&user_id)
-        .await
-        .expect("standalone mode should use local user connection count");
+    let count = manager.user_connection_count_distributed(&user_id).await?;
     assert_eq!(count, 2);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_room_connection_count_distributed_without_redis_uses_local_state() {
+async fn test_room_connection_count_distributed_without_redis_uses_local_state() -> TestResult {
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_010);
     let room_id = RoomId::expect_positive(10_000_092);
 
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
-    manager.join_room("conn1", room_id).await.unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
+    manager.join_room("conn1", room_id).await?;
 
-    let count = manager
-        .room_connection_count_distributed(&room_id)
-        .await
-        .expect("standalone mode should read local room count");
+    let count = manager.room_connection_count_distributed(&room_id).await?;
     assert_eq!(count, 1);
 
     let counts = manager
         .room_connection_count_distributed_batch(&[&room_id])
-        .await
-        .expect("standalone mode should read local room counts");
+        .await?;
     assert_eq!(counts, vec![1]);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_room_online_user_count_deduplicates_same_user_connections() {
+async fn test_room_online_user_count_deduplicates_same_user_connections() -> TestResult {
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_010);
     let room_id = RoomId::expect_positive(10_000_092);
 
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
-    manager
-        .register("conn2".to_string(), user_id)
-        .await
-        .unwrap();
-    manager.join_room("conn1", room_id).await.unwrap();
-    manager.join_room("conn2", room_id).await.unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
+    manager.register("conn2".to_string(), user_id).await?;
+    manager.join_room("conn1", room_id).await?;
+    manager.join_room("conn2", room_id).await?;
 
     assert_eq!(manager.room_connection_count(&room_id), 2);
     assert_eq!(manager.room_online_user_count(&room_id), 1);
 
-    let distributed = manager
-        .room_online_user_count_distributed(&room_id)
-        .await
-        .expect("standalone mode should use local distinct user count");
+    let distributed = manager.room_online_user_count_distributed(&room_id).await?;
     assert_eq!(distributed, 1);
 
     let batch = manager
         .room_online_user_count_distributed_batch(&[&room_id])
-        .await
-        .expect("standalone mode should use local batch distinct user counts");
+        .await?;
     assert_eq!(batch, vec![1]);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_room_online_user_ids_distributed_without_redis_checks_requested_users_only() {
+async fn test_room_online_user_ids_distributed_without_redis_checks_requested_users_only(
+) -> TestResult {
     let manager = ConnectionManager::default();
     let online_user = UserId::expect_positive(10_000_170);
     let other_online_user = UserId::expect_positive(10_000_171);
@@ -816,43 +788,35 @@ async fn test_room_online_user_ids_distributed_without_redis_checks_requested_us
 
     manager
         .register("presence-local-online".to_string(), online_user)
-        .await
-        .unwrap();
+        .await?;
     manager
         .register("presence-local-other-user".to_string(), other_online_user)
-        .await
-        .unwrap();
+        .await?;
     manager
         .register("presence-local-other-room".to_string(), offline_user)
-        .await
-        .unwrap();
-    manager
-        .join_room("presence-local-online", room_id)
-        .await
-        .unwrap();
+        .await?;
+    manager.join_room("presence-local-online", room_id).await?;
     manager
         .join_room("presence-local-other-user", room_id)
-        .await
-        .unwrap();
+        .await?;
     manager
         .join_room("presence-local-other-room", other_room_id)
-        .await
-        .unwrap();
+        .await?;
 
     let online_user_ids = manager
         .room_online_user_ids_distributed(&room_id, &[online_user, offline_user])
-        .await
-        .expect("standalone mode should use local user indexes");
+        .await?;
 
     assert_eq!(
         online_user_ids,
         vec![online_user],
         "presence lookup should only return requested users in the target room"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_user_connection_count_in_room_distributed_counts_all_connections() {
+async fn test_user_connection_count_in_room_distributed_counts_all_connections() -> TestResult {
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_125);
     let room_id = RoomId::expect_positive(10_000_126);
@@ -860,41 +824,32 @@ async fn test_user_connection_count_in_room_distributed_counts_all_connections()
 
     manager
         .register("room-count-1".to_string(), user_id)
-        .await
-        .unwrap();
+        .await?;
     manager
         .register("room-count-2".to_string(), user_id)
-        .await
-        .unwrap();
+        .await?;
     manager
         .register("room-count-3".to_string(), user_id)
-        .await
-        .unwrap();
-    manager.join_room("room-count-1", room_id).await.unwrap();
-    manager.join_room("room-count-2", room_id).await.unwrap();
-    manager
-        .join_room("room-count-3", other_room_id)
-        .await
-        .unwrap();
+        .await?;
+    manager.join_room("room-count-1", room_id).await?;
+    manager.join_room("room-count-2", room_id).await?;
+    manager.join_room("room-count-3", other_room_id).await?;
 
     let count = manager
         .user_connection_count_in_room_distributed(&user_id, &room_id)
-        .await
-        .expect("standalone mode should use local per-room connection count");
+        .await?;
     assert_eq!(count, 2);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_unregister() {
+async fn test_unregister() -> TestResult {
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_010);
     let room_id = RoomId::expect_positive(10_000_092);
 
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
-    manager.join_room("conn1", room_id).await.unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
+    manager.join_room("conn1", room_id).await?;
 
     assert_eq!(manager.connection_count(), 1);
     assert_eq!(manager.user_connection_count(&user_id), 1);
@@ -905,17 +860,17 @@ async fn test_unregister() {
     assert_eq!(manager.connection_count(), 0);
     assert_eq!(manager.user_connection_count(&user_id), 0);
     assert_eq!(manager.room_connection_count(&room_id), 0);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_users_online_metric_deduplicates_multiple_connections_per_user() {
+async fn test_users_online_metric_deduplicates_multiple_connections_per_user() -> TestResult {
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_128);
 
     manager
         .register("metric-conn-1".to_string(), user_id)
-        .await
-        .unwrap();
+        .await?;
     assert_eq!(
         manager.users_online_metric_delta_for_test(),
         1,
@@ -924,8 +879,7 @@ async fn test_users_online_metric_deduplicates_multiple_connections_per_user() {
 
     manager
         .register("metric-conn-2".to_string(), user_id)
-        .await
-        .unwrap();
+        .await?;
     assert_eq!(
         manager.users_online_metric_delta_for_test(),
         1,
@@ -935,21 +889,20 @@ async fn test_users_online_metric_deduplicates_multiple_connections_per_user() {
     manager.unregister("metric-conn-1").await;
     manager.unregister("metric-conn-2").await;
     assert_eq!(manager.users_online_metric_delta_for_test(), 0);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_users_online_metric_decrements_only_after_last_connection_leaves() {
+async fn test_users_online_metric_decrements_only_after_last_connection_leaves() -> TestResult {
     let manager = ConnectionManager::default();
     let user_id = UserId::expect_positive(10_000_129);
 
     manager
         .register("metric-last-1".to_string(), user_id)
-        .await
-        .unwrap();
+        .await?;
     manager
         .register("metric-last-2".to_string(), user_id)
-        .await
-        .unwrap();
+        .await?;
 
     manager.unregister("metric-last-1").await;
     assert_eq!(
@@ -964,16 +917,17 @@ async fn test_users_online_metric_decrements_only_after_last_connection_leaves()
         0,
         "online user count should drop only after the final connection closes"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_metrics() {
+async fn test_metrics() -> TestResult {
     let manager = ConnectionManager::default();
     let user1 = UserId::expect_positive(10_000_010);
     let user2 = UserId::expect_positive(10_000_095);
 
-    manager.register("conn1".to_string(), user1).await.unwrap();
-    manager.register("conn2".to_string(), user2).await.unwrap();
+    manager.register("conn1".to_string(), user1).await?;
+    manager.register("conn2".to_string(), user2).await?;
 
     manager.record_message("conn1");
     manager.record_message("conn2");
@@ -983,10 +937,11 @@ async fn test_metrics() {
     assert_eq!(metrics.total_connections_ever, 2);
     assert_eq!(metrics.total_messages, 2);
     assert_eq!(metrics.active_users, 2);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_idle_timeout() {
+async fn test_idle_timeout() -> TestResult {
     let limits = ConnectionLimits {
         idle_timeout: Duration::from_millis(100),
         ..Default::default()
@@ -994,10 +949,7 @@ async fn test_idle_timeout() {
     let manager = ConnectionManager::new(limits);
     let user_id = UserId::expect_positive(10_000_010);
 
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
 
     // Wait for idle timeout
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -1005,10 +957,11 @@ async fn test_idle_timeout() {
     let timeouts = manager.check_timeouts();
     assert_eq!(timeouts.len(), 1);
     assert_eq!(timeouts[0], "conn1");
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_record_message_refreshes_idle_deadline() {
+async fn test_record_message_refreshes_idle_deadline() -> TestResult {
     let limits = ConnectionLimits {
         idle_timeout: Duration::from_millis(100),
         ..Default::default()
@@ -1016,10 +969,7 @@ async fn test_record_message_refreshes_idle_deadline() {
     let manager = ConnectionManager::new(limits);
     let user_id = UserId::expect_positive(10_000_010);
 
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
 
     tokio::time::sleep(Duration::from_millis(60)).await;
     manager.record_message("conn1");
@@ -1033,10 +983,11 @@ async fn test_record_message_refreshes_idle_deadline() {
     tokio::time::sleep(Duration::from_millis(60)).await;
     let timeouts = manager.check_timeouts();
     assert_eq!(timeouts, vec!["conn1".to_string()]);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_rtc_timeout_marks_connection_left_before_disconnect() {
+async fn test_rtc_timeout_marks_connection_left_before_disconnect() -> TestResult {
     let limits = ConnectionLimits {
         idle_timeout: Duration::from_secs(10),
         max_duration: Duration::from_secs(10),
@@ -1047,11 +998,8 @@ async fn test_rtc_timeout_marks_connection_left_before_disconnect() {
     let user_id = UserId::expect_positive(10_000_010);
     let room_id = RoomId::expect_positive(10_000_092);
 
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
-    manager.join_room("conn1", room_id).await.unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
+    manager.join_room("conn1", room_id).await?;
     manager.mark_rtc_joined(&room_id, &user_id, "conn1", true);
 
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -1062,18 +1010,15 @@ async fn test_rtc_timeout_marks_connection_left_before_disconnect() {
         manager.get_rtc_connections(&room_id).is_empty(),
         "RTC timeout should clear joined state before disconnect handling"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_redis_recovery_reconciles_connection_counts() {
-    // This test verifies that after a Redis outage, the ConnectionManager
-    // reconciles in-memory connection counts with Redis.
-
-    // Setup: Create manager with Redis
+async fn test_redis_recovery_reconciles_connection_counts() -> TestResult {
     use redis::AsyncCommands;
 
-    let (_container, client, conn, prefix) = docker_redis_connection("test:").await;
+    let (_container, client, conn, prefix) = docker_redis_connection("test:").await?;
     let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
     let user_id = UserId::expect_positive(10_000_010);
@@ -1081,55 +1026,38 @@ async fn test_redis_recovery_reconciles_connection_counts() {
     let user_key = format!("{prefix}connections:user:{user_id}");
     let room_key = format!("{prefix}connections:room:{room_id}");
 
-    // Register connections
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
-    manager.join_room("conn1", room_id).await.unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
+    manager.join_room("conn1", room_id).await?;
 
-    // Verify Redis has the counts
-    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
-        .await
-        .unwrap();
+    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone()).await?;
     let user_count: i64 = redis_conn.get(&user_key).await.unwrap_or(0);
     assert_eq!(user_count, 1);
 
-    // Simulate Redis outage by clearing Redis keys manually
-    // (In real scenario, Redis would be down)
-    let _: () = redis_conn.del(&user_key).await.unwrap();
-    let _: () = redis_conn.del(&room_key).await.unwrap();
+    let _: () = redis_conn.del(&user_key).await?;
+    let _: () = redis_conn.del(&room_key).await?;
 
-    // At this point, local state has 1 connection but Redis has 0
     assert_eq!(manager.user_connection_count(&user_id), 1);
 
-    // Trigger reconciliation
     manager.reconcile_with_redis().await;
 
-    // After reconciliation, Redis should match local state
     let user_count: i64 = redis_conn.get(&user_key).await.unwrap_or(0);
     assert_eq!(user_count, 1);
 
-    // Cleanup
     manager.unregister("conn1").await;
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_redis_recovery_reconciles_stale_connections() {
-    // This test verifies that stale Redis index members are cleaned up
-    // during reconciliation without deleting unrelated metadata keys.
-
+async fn test_redis_recovery_reconciles_stale_connections() -> TestResult {
     use redis::AsyncCommands;
 
-    let (_container, client, conn, prefix) = docker_redis_connection("test2:").await;
+    let (_container, client, conn, prefix) = docker_redis_connection("test2:").await?;
     let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
     // Manually inject a stale connection id into the distributed user/room indexes
     // without creating a matching conn_mgr:conn:* metadata key.
-    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
-        .await
-        .unwrap();
+    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone()).await?;
     let stale_user_index = format!("{prefix}conn_mgr:user:user_stale");
     let stale_room_index = format!("{prefix}conn_mgr:room:room_stale");
     let stale_conn_key = format!("{prefix}conn_mgr:conn:stale_conn");
@@ -1137,30 +1065,20 @@ async fn test_redis_recovery_reconciles_stale_connections() {
     let user_index_directory_key = format!("{prefix}{USER_INDEX_DIRECTORY_KEY_SUFFIX}");
     let room_index_directory_key = format!("{prefix}{ROOM_INDEX_DIRECTORY_KEY_SUFFIX}");
 
-    let _: () = redis_conn
-        .sadd(&stale_user_index, "stale_conn")
-        .await
-        .unwrap();
-    let _: () = redis_conn
-        .sadd(&stale_room_index, "stale_conn")
-        .await
-        .unwrap();
+    let _: () = redis_conn.sadd(&stale_user_index, "stale_conn").await?;
+    let _: () = redis_conn.sadd(&stale_room_index, "stale_conn").await?;
     let _: () = redis_conn
         .expire(&stale_user_index, CONNECTION_METADATA_TTL_SECONDS)
-        .await
-        .unwrap();
+        .await?;
     let _: () = redis_conn
         .expire(&stale_room_index, CONNECTION_METADATA_TTL_SECONDS)
-        .await
-        .unwrap();
+        .await?;
     let _: () = redis_conn
         .sadd(&user_index_directory_key, &stale_user_index)
-        .await
-        .unwrap();
+        .await?;
     let _: () = redis_conn
         .sadd(&room_index_directory_key, &stale_room_index)
-        .await
-        .unwrap();
+        .await?;
 
     // Also create a metadata key that belongs to another replica. Reconciliation
     // on this node must not delete it just because it is absent from local memory.
@@ -1177,15 +1095,11 @@ async fn test_redis_recovery_reconciles_stale_connections() {
         rtc_joined_at_unix: None,
     };
     let _: () = redis_conn
-        .set(
-            &unrelated_conn_key,
-            serde_json::to_string(&foreign_meta).unwrap(),
-        )
-        .await
-        .unwrap();
+        .set(&unrelated_conn_key, serde_json::to_string(&foreign_meta)?)
+        .await?;
 
-    let stale_user_members: Vec<String> = redis_conn.smembers(&stale_user_index).await.unwrap();
-    let stale_room_members: Vec<String> = redis_conn.smembers(&stale_room_index).await.unwrap();
+    let stale_user_members: Vec<String> = redis_conn.smembers(&stale_user_index).await?;
+    let stale_room_members: Vec<String> = redis_conn.smembers(&stale_room_index).await?;
     assert_eq!(stale_user_members, vec!["stale_conn".to_string()]);
     assert_eq!(stale_room_members, vec!["stale_conn".to_string()]);
 
@@ -1193,10 +1107,10 @@ async fn test_redis_recovery_reconciles_stale_connections() {
     manager.reconcile_with_redis().await;
 
     // Stale index members should be cleaned up since the metadata key is missing.
-    let stale_user_exists: bool = redis_conn.exists(&stale_user_index).await.unwrap();
-    let stale_room_exists: bool = redis_conn.exists(&stale_room_index).await.unwrap();
-    let stale_conn_exists: bool = redis_conn.exists(&stale_conn_key).await.unwrap();
-    let unrelated_conn_exists: bool = redis_conn.exists(&unrelated_conn_key).await.unwrap();
+    let stale_user_exists: bool = redis_conn.exists(&stale_user_index).await?;
+    let stale_room_exists: bool = redis_conn.exists(&stale_room_index).await?;
+    let stale_conn_exists: bool = redis_conn.exists(&stale_conn_key).await?;
+    let unrelated_conn_exists: bool = redis_conn.exists(&unrelated_conn_key).await?;
 
     assert!(
         !stale_user_exists,
@@ -1215,14 +1129,10 @@ async fn test_redis_recovery_reconciles_stale_connections() {
         "Reconciliation must not delete connection metadata that may belong to another replica"
     );
 
-    let user_directory_members: Vec<String> = redis_conn
-        .smembers(&user_index_directory_key)
-        .await
-        .unwrap();
-    let room_directory_members: Vec<String> = redis_conn
-        .smembers(&room_index_directory_key)
-        .await
-        .unwrap();
+    let user_directory_members: Vec<String> =
+        redis_conn.smembers(&user_index_directory_key).await?;
+    let room_directory_members: Vec<String> =
+        redis_conn.smembers(&room_index_directory_key).await?;
     assert!(
         user_directory_members.is_empty(),
         "stale user index directory entry should be pruned during reconciliation"
@@ -1231,83 +1141,65 @@ async fn test_redis_recovery_reconciles_stale_connections() {
         room_directory_members.is_empty(),
         "stale room index directory entry should be pruned during reconciliation"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_redis_outage_during_register_eventually_consistent() {
-    // This test verifies that failed Redis operations during register
-    // are eventually reconciled.
-
+async fn test_redis_outage_during_register_eventually_consistent() -> TestResult {
     use redis::AsyncCommands;
 
-    let (_container, client, conn, prefix) = docker_redis_connection("test3:").await;
+    let (_container, client, conn, prefix) = docker_redis_connection("test3:").await?;
     let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
     let user_id = UserId::expect_positive(10_000_010);
     let user_key = format!("{prefix}connections:user:{user_id}");
 
-    // Register a connection (should succeed and write to Redis)
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
 
-    // Verify Redis counter
-    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
-        .await
-        .unwrap();
+    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone()).await?;
     let user_count: i64 = redis_conn.get(&user_key).await.unwrap_or(0);
     assert_eq!(user_count, 1);
 
-    // Manually corrupt the counter (simulating partial failure)
-    let _: () = redis_conn.set(&user_key, 0).await.unwrap();
+    let _: () = redis_conn.set(&user_key, 0).await?;
 
-    // Local state says 1, Redis says 0
     assert_eq!(manager.user_connection_count(&user_id), 1);
 
-    // Trigger reconciliation
     manager.reconcile_with_redis().await;
 
-    // After reconciliation, Redis should be corrected
     let user_count: i64 = redis_conn.get(&user_key).await.unwrap_or(0);
     assert_eq!(user_count, 1);
 
-    // Cleanup
     manager.unregister("conn1").await;
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_reconcile_with_redis_does_not_overwrite_other_replica_counters() {
+async fn test_reconcile_with_redis_does_not_overwrite_other_replica_counters() -> TestResult {
     use redis::AsyncCommands;
 
-    let (_container, client, conn, prefix) = docker_redis_connection("test5:").await;
+    let (_container, client, conn, prefix) = docker_redis_connection("test5:").await?;
     let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
     // Simulate another healthy replica already having active connections.
-    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
-        .await
-        .unwrap();
+    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone()).await?;
     let user_key = format!("{prefix}connections:user:20000101");
     let room_key = format!("{prefix}connections:room:20000102");
     let total_key = format!("{prefix}connections:total");
 
-    let _: () = redis_conn.set(&user_key, 3).await.unwrap();
+    let _: () = redis_conn.set(&user_key, 3).await?;
     let _: () = redis_conn
         .expire(&user_key, DISTRIBUTED_COUNTER_TTL_SECONDS)
-        .await
-        .unwrap();
-    let _: () = redis_conn.set(&room_key, 4).await.unwrap();
+        .await?;
+    let _: () = redis_conn.set(&room_key, 4).await?;
     let _: () = redis_conn
         .expire(&room_key, DISTRIBUTED_COUNTER_TTL_SECONDS)
-        .await
-        .unwrap();
-    let _: () = redis_conn.set(&total_key, 7).await.unwrap();
+        .await?;
+    let _: () = redis_conn.set(&total_key, 7).await?;
     let _: () = redis_conn
         .expire(&total_key, DISTRIBUTED_COUNTER_TTL_SECONDS)
-        .await
-        .unwrap();
+        .await?;
 
     // This node has no local connections. Reconciliation must not zero out
     // counters that may belong to other replicas.
@@ -1329,14 +1221,15 @@ async fn test_reconcile_with_redis_does_not_overwrite_other_replica_counters() {
         total_count, 7,
         "reconciliation must preserve total counters that may belong to other replicas"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_distributed_queries_prune_stale_index_members() {
+async fn test_distributed_queries_prune_stale_index_members() -> TestResult {
     use redis::AsyncCommands;
 
-    let (_container, client, conn, prefix) = docker_redis_connection("test6:").await;
+    let (_container, client, conn, prefix) = docker_redis_connection("test6:").await?;
     let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
     let user_a = UserId::expect_positive(10_000_130);
@@ -1345,9 +1238,7 @@ async fn test_distributed_queries_prune_stale_index_members() {
     let stale_mismatch = "conn-mismatch";
     let valid = "conn-valid";
 
-    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
-        .await
-        .unwrap();
+    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone()).await?;
     let user_index_key = format!("{prefix}conn_mgr:user:{user_a}");
     let room_index_key = format!("{prefix}conn_mgr:room:{room_a}");
     let mismatch_conn_key = format!("{prefix}conn_mgr:conn:{stale_mismatch}");
@@ -1381,47 +1272,32 @@ async fn test_distributed_queries_prune_stale_index_members() {
     let _: () = redis_conn
         .set(
             &mismatch_conn_key,
-            serde_json::to_string(&mismatch_metadata).unwrap(),
+            serde_json::to_string(&mismatch_metadata)?,
         )
-        .await
-        .unwrap();
+        .await?;
     let _: () = redis_conn
-        .set(
-            &valid_conn_key,
-            serde_json::to_string(&valid_metadata).unwrap(),
-        )
-        .await
-        .unwrap();
+        .set(&valid_conn_key, serde_json::to_string(&valid_metadata)?)
+        .await?;
 
     for conn_id in [stale_missing, stale_mismatch, valid] {
-        let _: () = redis_conn.sadd(&user_index_key, conn_id).await.unwrap();
-        let _: () = redis_conn.sadd(&room_index_key, conn_id).await.unwrap();
+        let _: () = redis_conn.sadd(&user_index_key, conn_id).await?;
+        let _: () = redis_conn.sadd(&room_index_key, conn_id).await?;
     }
     let _: () = redis_conn
         .expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS)
-        .await
-        .unwrap();
+        .await?;
     let _: () = redis_conn
         .expire(&room_index_key, CONNECTION_METADATA_TTL_SECONDS)
-        .await
-        .unwrap();
+        .await?;
     let _: () = redis_conn
         .expire(&mismatch_conn_key, CONNECTION_METADATA_TTL_SECONDS)
-        .await
-        .unwrap();
+        .await?;
     let _: () = redis_conn
         .expire(&valid_conn_key, CONNECTION_METADATA_TTL_SECONDS)
-        .await
-        .unwrap();
+        .await?;
 
-    let mut user_connections = manager
-        .get_user_connections_distributed(&user_a)
-        .await
-        .expect("distributed user lookup should succeed");
-    let mut room_connections = manager
-        .get_room_connections_distributed(&room_a)
-        .await
-        .expect("distributed room lookup should succeed");
+    let mut user_connections = manager.get_user_connections_distributed(&user_a).await?;
+    let mut room_connections = manager.get_room_connections_distributed(&room_a).await?;
     user_connections.sort();
     room_connections.sort();
 
@@ -1436,8 +1312,8 @@ async fn test_distributed_queries_prune_stale_index_members() {
         "distributed room lookup must prune missing and mismatched index members"
     );
 
-    let mut user_members: Vec<String> = redis_conn.smembers(&user_index_key).await.unwrap();
-    let mut room_members: Vec<String> = redis_conn.smembers(&room_index_key).await.unwrap();
+    let mut user_members: Vec<String> = redis_conn.smembers(&user_index_key).await?;
+    let mut room_members: Vec<String> = redis_conn.smembers(&room_index_key).await?;
     user_members.sort();
     room_members.sort();
     assert_eq!(
@@ -1450,13 +1326,15 @@ async fn test_distributed_queries_prune_stale_index_members() {
         vec![valid.to_string()],
         "room index should retain only valid members after lazy pruning"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_room_online_user_ids_distributed_reads_other_replicas_without_room_scan() {
-    let (_container, client, conn_a, prefix) = docker_redis_connection("presence-users:").await;
-    let conn_b = redis::aio::ConnectionManager::new(client).await.unwrap();
+async fn test_room_online_user_ids_distributed_reads_other_replicas_without_room_scan() -> TestResult
+{
+    let (_container, client, conn_a, prefix) = docker_redis_connection("presence-users:").await?;
+    let conn_b = redis::aio::ConnectionManager::new(client).await?;
     let manager_a = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn_a, &prefix);
     let manager_b = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn_b, &prefix);
 
@@ -1468,48 +1346,38 @@ async fn test_room_online_user_ids_distributed_reads_other_replicas_without_room
 
     manager_a
         .register("presence-replica-a".to_string(), user_a)
-        .await
-        .unwrap();
+        .await?;
     manager_b
         .register("presence-replica-b".to_string(), user_b)
-        .await
-        .unwrap();
+        .await?;
     manager_b
         .register("presence-replica-other-room".to_string(), user_c)
-        .await
-        .unwrap();
+        .await?;
 
-    manager_a
-        .join_room("presence-replica-a", room_id)
-        .await
-        .unwrap();
-    manager_b
-        .join_room("presence-replica-b", room_id)
-        .await
-        .unwrap();
+    manager_a.join_room("presence-replica-a", room_id).await?;
+    manager_b.join_room("presence-replica-b", room_id).await?;
     manager_b
         .join_room("presence-replica-other-room", other_room_id)
-        .await
-        .unwrap();
+        .await?;
 
     let online_user_ids = manager_a
         .room_online_user_ids_distributed(&room_id, &[user_a, user_b, user_c])
-        .await
-        .expect("distributed presence lookup should read Redis user indexes");
+        .await?;
 
     assert_eq!(
         online_user_ids,
         vec![user_a, user_b],
         "lookup from one replica should include target-room users connected to another replica"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_connection_metadata_ttl_uses_short_crash_safety_window() {
+async fn test_connection_metadata_ttl_uses_short_crash_safety_window() -> TestResult {
     use redis::AsyncCommands;
 
-    let (_container, client, conn, prefix) = docker_redis_connection("test7:").await;
+    let (_container, client, conn, prefix) = docker_redis_connection("test7:").await?;
     let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
     let user_id = UserId::expect_positive(10_000_131);
@@ -1517,11 +1385,10 @@ async fn test_connection_metadata_ttl_uses_short_crash_safety_window() {
 
     manager
         .register("conn-meta-ttl".to_string(), user_id)
-        .await
-        .unwrap();
-    manager.join_room("conn-meta-ttl", room_id).await.unwrap();
+        .await?;
+    manager.join_room("conn-meta-ttl", room_id).await?;
 
-    let mut redis_conn = redis::aio::ConnectionManager::new(client).await.unwrap();
+    let mut redis_conn = redis::aio::ConnectionManager::new(client).await?;
     for key in [
         format!("{prefix}conn_mgr:conn:conn-meta-ttl"),
         format!("{prefix}conn_mgr:user:{user_id}"),
@@ -1529,7 +1396,7 @@ async fn test_connection_metadata_ttl_uses_short_crash_safety_window() {
         format!("{prefix}{USER_INDEX_DIRECTORY_KEY_SUFFIX}"),
         format!("{prefix}{ROOM_INDEX_DIRECTORY_KEY_SUFFIX}"),
     ] {
-        let ttl: i64 = redis_conn.ttl(&key).await.unwrap();
+        let ttl: i64 = redis_conn.ttl(&key).await?;
         assert!(
             (CONNECTION_METADATA_TTL_SECONDS - 5..=CONNECTION_METADATA_TTL_SECONDS).contains(&ttl),
             "metadata/index key {key} should use the short crash-safety TTL, got {ttl}s"
@@ -1537,14 +1404,15 @@ async fn test_connection_metadata_ttl_uses_short_crash_safety_window() {
     }
 
     manager.unregister("conn-meta-ttl").await;
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_reconcile_with_redis_repairs_missing_user_and_room_index_memberships() {
+async fn test_reconcile_with_redis_repairs_missing_user_and_room_index_memberships() -> TestResult {
     use redis::AsyncCommands;
 
-    let (_container, client, conn, prefix) = docker_redis_connection("test8:").await;
+    let (_container, client, conn, prefix) = docker_redis_connection("test8:").await?;
     let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
     let user_id = UserId::expect_positive(10_000_133);
@@ -1554,34 +1422,23 @@ async fn test_reconcile_with_redis_repairs_missing_user_and_room_index_membershi
     let user_index_directory_key = format!("{prefix}{USER_INDEX_DIRECTORY_KEY_SUFFIX}");
     let room_index_directory_key = format!("{prefix}{ROOM_INDEX_DIRECTORY_KEY_SUFFIX}");
 
-    manager
-        .register("conn-repair".to_string(), user_id)
-        .await
-        .unwrap();
-    manager.join_room("conn-repair", room_id).await.unwrap();
+    manager.register("conn-repair".to_string(), user_id).await?;
+    manager.join_room("conn-repair", room_id).await?;
 
-    let mut redis_conn = redis::aio::ConnectionManager::new(client).await.unwrap();
-    let _: () = redis_conn.del(&user_index_key).await.unwrap();
-    let _: () = redis_conn.del(&room_index_key).await.unwrap();
+    let mut redis_conn = redis::aio::ConnectionManager::new(client).await?;
+    let _: () = redis_conn.del(&user_index_key).await?;
+    let _: () = redis_conn.del(&room_index_key).await?;
     let _: () = redis_conn
         .srem(&user_index_directory_key, &user_index_key)
-        .await
-        .unwrap();
+        .await?;
     let _: () = redis_conn
         .srem(&room_index_directory_key, &room_index_key)
-        .await
-        .unwrap();
+        .await?;
 
     manager.reconcile_with_redis().await;
 
-    let user_connections = manager
-        .get_user_connections_distributed(&user_id)
-        .await
-        .expect("reconciled distributed user lookup should succeed");
-    let room_connections = manager
-        .get_room_connections_distributed(&room_id)
-        .await
-        .expect("reconciled distributed room lookup should succeed");
+    let user_connections = manager.get_user_connections_distributed(&user_id).await?;
+    let room_connections = manager.get_room_connections_distributed(&room_id).await?;
     assert_eq!(
         user_connections,
         vec!["conn-repair".to_string()],
@@ -1593,14 +1450,10 @@ async fn test_reconcile_with_redis_repairs_missing_user_and_room_index_membershi
         "reconciliation should restore missing room index membership"
     );
 
-    let user_directory_members: Vec<String> = redis_conn
-        .smembers(&user_index_directory_key)
-        .await
-        .unwrap();
-    let room_directory_members: Vec<String> = redis_conn
-        .smembers(&room_index_directory_key)
-        .await
-        .unwrap();
+    let user_directory_members: Vec<String> =
+        redis_conn.smembers(&user_index_directory_key).await?;
+    let room_directory_members: Vec<String> =
+        redis_conn.smembers(&room_index_directory_key).await?;
     assert_eq!(
         user_directory_members,
         vec![user_index_key.clone()],
@@ -1613,14 +1466,15 @@ async fn test_reconcile_with_redis_repairs_missing_user_and_room_index_membershi
     );
 
     manager.unregister("conn-repair").await;
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_register_user_limit_rejection_rolls_back_distributed_total_counter() {
+async fn test_register_user_limit_rejection_rolls_back_distributed_total_counter() -> TestResult {
     use redis::AsyncCommands;
 
-    let (_container, client, conn, prefix) = docker_redis_connection("test4:").await;
+    let (_container, client, conn, prefix) = docker_redis_connection("test4:").await?;
 
     let limits = ConnectionLimits {
         max_per_user: 1,
@@ -1630,10 +1484,7 @@ async fn test_register_user_limit_rejection_rolls_back_distributed_total_counter
     let user_id = UserId::expect_positive(10_000_135);
     let user_key = format!("{prefix}connections:user:{user_id}");
 
-    manager
-        .register("conn1".to_string(), user_id)
-        .await
-        .unwrap();
+    manager.register("conn1".to_string(), user_id).await?;
 
     let second = manager.register("conn2".to_string(), user_id).await;
     assert!(
@@ -1641,9 +1492,7 @@ async fn test_register_user_limit_rejection_rolls_back_distributed_total_counter
         "second connection should be rejected by distributed per-user limit"
     );
 
-    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
-        .await
-        .unwrap();
+    let mut redis_conn = redis::aio::ConnectionManager::new(client.clone()).await?;
     let total_count: i64 = redis_conn
         .get(format!("{prefix}connections:total"))
         .await
@@ -1660,14 +1509,15 @@ async fn test_register_user_limit_rejection_rolls_back_distributed_total_counter
     );
 
     manager.unregister("conn1").await;
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_shared_redis_handle_observes_hot_swapped_connection() {
+async fn test_shared_redis_handle_observes_hot_swapped_connection() -> TestResult {
     use redis::AsyncCommands;
 
-    let (_container, client, conn, prefix) = docker_redis_connection("shared-test:").await;
+    let (_container, client, conn, prefix) = docker_redis_connection("shared-test:").await?;
     let shared_conn = Arc::new(tokio::sync::RwLock::new(conn));
     let manager = ConnectionManager::new(ConnectionLimits::default())
         .with_shared_redis(shared_conn.clone(), &prefix);
@@ -1677,19 +1527,15 @@ async fn test_shared_redis_handle_observes_hot_swapped_connection() {
             "conn-shared".to_string(),
             UserId::expect_positive(10_000_136),
         )
-        .await
-        .unwrap();
+        .await?;
     manager
         .join_room("conn-shared", RoomId::expect_positive(10_000_137))
-        .await
-        .unwrap();
+        .await?;
 
     let initial_metadata_key = format!("{prefix}conn_mgr:conn:conn-shared");
     let initial_room_key = format!("{prefix}connections:room:10000137");
-    let mut verify_conn = redis::aio::ConnectionManager::new(client.clone())
-        .await
-        .unwrap();
-    let initial_metadata: Option<String> = verify_conn.get(&initial_metadata_key).await.unwrap();
+    let mut verify_conn = redis::aio::ConnectionManager::new(client.clone()).await?;
+    let initial_metadata: Option<String> = verify_conn.get(&initial_metadata_key).await?;
     let initial_room_count: i64 = verify_conn.get(&initial_room_key).await.unwrap_or(0);
     assert!(
         initial_metadata.is_some(),
@@ -1700,19 +1546,17 @@ async fn test_shared_redis_handle_observes_hot_swapped_connection() {
         "initial shared handle should write room counter"
     );
 
-    let replacement_conn = redis::aio::ConnectionManager::new(client.clone())
-        .await
-        .unwrap();
+    let replacement_conn = redis::aio::ConnectionManager::new(client.clone()).await?;
     *shared_conn.write().await = replacement_conn;
 
     let moved_room = RoomId::expect_positive(10_000_138);
-    manager.join_room("conn-shared", moved_room).await.unwrap();
+    manager.join_room("conn-shared", moved_room).await?;
 
     let moved_room_key = format!("{prefix}connections:room:{moved_room}");
     let old_room_count: i64 = verify_conn.get(&initial_room_key).await.unwrap_or(0);
     let new_room_count: i64 = verify_conn.get(&moved_room_key).await.unwrap_or(0);
-    let updated_metadata: String = verify_conn.get(&initial_metadata_key).await.unwrap();
-    let updated_info: ConnectionInfoPersistent = serde_json::from_str(&updated_metadata).unwrap();
+    let updated_metadata: String = verify_conn.get(&initial_metadata_key).await?;
+    let updated_info: ConnectionInfoPersistent = serde_json::from_str(&updated_metadata)?;
 
     assert_eq!(
         old_room_count, 0,
@@ -1729,14 +1573,15 @@ async fn test_shared_redis_handle_observes_hot_swapped_connection() {
     );
 
     manager.unregister("conn-shared").await;
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_with_redis_runtime_accepts_trait_object_shared_runtime() {
+async fn test_with_redis_runtime_accepts_trait_object_shared_runtime() -> TestResult {
     use redis::AsyncCommands;
 
-    let (_container, client, conn, prefix) = docker_redis_connection("shared-runtime:").await;
+    let (_container, client, conn, prefix) = docker_redis_connection("shared-runtime:").await?;
     let shared_conn = Arc::new(tokio::sync::RwLock::new(conn));
     let runtime: Arc<dyn RedisConnectionRuntime> =
         Arc::new(SharedRedisConnectionRuntime::new(shared_conn.clone()));
@@ -1748,23 +1593,23 @@ async fn test_with_redis_runtime_accepts_trait_object_shared_runtime() {
             "conn-runtime".to_string(),
             UserId::expect_positive(10_000_139),
         )
-        .await
-        .expect("register should use injected redis runtime");
+        .await?;
 
     let key = format!("{prefix}connections:user:10000139");
-    let mut verify_conn = redis::aio::ConnectionManager::new(client).await.unwrap();
+    let mut verify_conn = redis::aio::ConnectionManager::new(client).await?;
     let user_count: i64 = verify_conn.get(&key).await.unwrap_or(0);
     assert_eq!(user_count, 1);
 
     manager.unregister("conn-runtime").await;
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_pending_retries_cleanup_metadata_and_indexes_after_recovery() {
+async fn test_pending_retries_cleanup_metadata_and_indexes_after_recovery() -> TestResult {
     use redis::AsyncCommands;
 
-    let (_container, client, conn, prefix) = docker_redis_connection("shared-unregister:").await;
+    let (_container, client, conn, prefix) = docker_redis_connection("shared-unregister:").await?;
     let shared_conn = Arc::new(tokio::sync::RwLock::new(conn));
     let manager = ConnectionManager::new(ConnectionLimits::default())
         .with_shared_redis(shared_conn.clone(), &prefix);
@@ -1785,12 +1630,12 @@ async fn test_pending_retries_cleanup_metadata_and_indexes_after_recovery() {
         ..
     } = cleanup_op.clone()
     else {
-        unreachable!("unregister_cleanup_op must build an unregister cleanup operation");
+        return Err(missing(
+            "unregister_cleanup_op must build an unregister cleanup operation",
+        ));
     };
 
-    let mut verify_conn = redis::aio::ConnectionManager::new(client.clone())
-        .await
-        .unwrap();
+    let mut verify_conn = redis::aio::ConnectionManager::new(client.clone()).await?;
     let metadata = ConnectionInfoPersistent {
         connection_id: "conn-recover".to_string(),
         registration_token: "token-recover".to_string(),
@@ -1804,32 +1649,25 @@ async fn test_pending_retries_cleanup_metadata_and_indexes_after_recovery() {
         rtc_joined_at_unix: None,
     };
     let _: () = verify_conn
-        .set(&conn_key, serde_json::to_string(&metadata).unwrap())
-        .await
-        .unwrap();
-    let _: () = verify_conn.set(&total_key, 1i64).await.unwrap();
-    let _: () = verify_conn.set(&user_key, 1i64).await.unwrap();
-    let _: () = verify_conn.set(&room_key, 1i64).await.unwrap();
-    let _: () = verify_conn
-        .sadd(&user_index_key, "conn-recover")
-        .await
-        .unwrap();
-    let _: () = verify_conn
-        .sadd(&room_index_key, "conn-recover")
-        .await
-        .unwrap();
+        .set(&conn_key, serde_json::to_string(&metadata)?)
+        .await?;
+    let _: () = verify_conn.set(&total_key, 1i64).await?;
+    let _: () = verify_conn.set(&user_key, 1i64).await?;
+    let _: () = verify_conn.set(&room_key, 1i64).await?;
+    let _: () = verify_conn.sadd(&user_index_key, "conn-recover").await?;
+    let _: () = verify_conn.sadd(&room_index_key, "conn-recover").await?;
 
     assert!(
-        verify_conn.exists::<_, bool>(&conn_key).await.unwrap(),
+        verify_conn.exists::<_, bool>(&conn_key).await?,
         "metadata should exist before retry processing"
     );
-    manager.enqueue_pending_retry_for_test(cleanup_op);
+    manager.enqueue_pending_retry_for_test(cleanup_op)?;
 
     tokio::time::sleep(Duration::from_secs(6)).await;
 
-    let metadata_exists: bool = verify_conn.exists(&conn_key).await.unwrap();
-    let user_members: Vec<String> = verify_conn.smembers(&user_index_key).await.unwrap();
-    let room_members: Vec<String> = verify_conn.smembers(&room_index_key).await.unwrap();
+    let metadata_exists: bool = verify_conn.exists(&conn_key).await?;
+    let user_members: Vec<String> = verify_conn.smembers(&user_index_key).await?;
+    let room_members: Vec<String> = verify_conn.smembers(&room_index_key).await?;
     let total_count: i64 = verify_conn.get(&total_key).await.unwrap_or(0);
     let user_count: i64 = verify_conn.get(&user_key).await.unwrap_or(0);
     let room_count: i64 = verify_conn.get(&room_key).await.unwrap_or(0);
@@ -1851,11 +1689,11 @@ async fn test_pending_retries_cleanup_metadata_and_indexes_after_recovery() {
     assert_eq!(room_count, 0);
 
     manager.shutdown().await;
+    Ok(())
 }
 
 #[test]
-fn test_connection_info_persistent_serialization() {
-    // Verify that ConnectionInfoPersistent can be serialized/deserialized
+fn test_connection_info_persistent_serialization() -> TestResult {
     let persistent = ConnectionInfoPersistent {
         connection_id: "conn1".to_string(),
         registration_token: "token1".to_string(),
@@ -1869,8 +1707,8 @@ fn test_connection_info_persistent_serialization() {
         rtc_joined_at_unix: Some(1500),
     };
 
-    let json = serde_json::to_string(&persistent).unwrap();
-    let deserialized: ConnectionInfoPersistent = serde_json::from_str(&json).unwrap();
+    let json = serde_json::to_string(&persistent)?;
+    let deserialized: ConnectionInfoPersistent = serde_json::from_str(&json)?;
 
     assert_eq!(deserialized.connection_id, "conn1");
     assert_eq!(deserialized.registration_token, "token1");
@@ -1881,13 +1719,14 @@ fn test_connection_info_persistent_serialization() {
     );
     assert_eq!(deserialized.message_count, 5);
     assert!(deserialized.rtc_joined);
+    Ok(())
 }
 
 #[test]
-fn test_system_time_to_unix_secs_handles_pre_epoch_without_panicking() {
+fn test_system_time_to_unix_secs_handles_pre_epoch_without_panicking() -> TestResult {
     let pre_epoch = UNIX_EPOCH
         .checked_sub(Duration::from_secs(1))
-        .expect("pre-epoch time should be constructible");
+        .ok_or_else(|| missing("pre-epoch time should be constructible"))?;
 
     let result = std::panic::catch_unwind(|| system_time_to_unix_secs(pre_epoch));
 
@@ -1895,6 +1734,7 @@ fn test_system_time_to_unix_secs_handles_pre_epoch_without_panicking() {
         result.is_ok(),
         "cluster connection metadata conversion must not panic on clock rollback"
     );
+    Ok(())
 }
 
 #[tokio::test]
@@ -2047,102 +1887,38 @@ async fn test_release_user_reservation_removes_zero_counter_entry() {
 
 #[tokio::test]
 async fn test_new_does_not_spawn_tasks() {
-    // ConnectionManager::new() should not call tokio::spawn.
-    // It should be safe to call outside of a Tokio runtime (though we
-    // run this inside one for convenience). The key invariant is that
-    // the disconnect retry task is NOT started until start() is called.
     let manager = ConnectionManager::new(ConnectionLimits::default());
-    // Verify manager is functional for basic operations without start()
+
     let user_id = UserId::expect_positive(10_000_010);
     assert!(manager.register("conn1".to_string(), user_id).await.is_ok());
     assert_eq!(manager.connection_count(), 1);
-}
-
-#[tokio::test]
-async fn test_start_spawns_disconnect_retry_task() {
-    let manager = ConnectionManager::new(ConnectionLimits::default());
-    // start() should be callable within a Tokio runtime without panicking
-    manager.start();
-    // Give the spawned task a moment to initialize
-    tokio::time::sleep(Duration::from_millis(10)).await;
-    // Shutdown should cancel the retry task cleanly
-    let report = manager.shutdown().await;
-    assert_eq!(
-        report.disconnect_retry,
-        Some(ShutdownTaskOutcome::Completed),
-        "shutdown should await the disconnect retry task to completion"
+    assert!(
+        !manager.background_tasks_running(),
+        "new manager should not spawn background tasks"
     );
 }
 
 #[tokio::test]
-async fn test_start_is_idempotent() {
+async fn test_shutdown_reports_background_task_panic() -> TestResult {
     let manager = ConnectionManager::new(ConnectionLimits::default());
-
-    assert!(
-        !manager.disconnect_retry_task_started(),
-        "disconnect retry task should not be started before start()"
-    );
-
-    manager.start();
-    assert!(
-        manager.disconnect_retry_task_started(),
-        "start() should mark the disconnect retry task as started"
-    );
-
-    manager.start();
-    manager.start();
-
-    assert!(
-        manager.disconnect_retry_task_started(),
-        "duplicate start() calls must be a no-op"
-    );
-
-    let report = manager.shutdown().await;
-    assert_eq!(
-        report.disconnect_retry,
-        Some(ShutdownTaskOutcome::Completed),
-        "shutdown should report a clean disconnect retry task exit"
-    );
-}
-
-#[tokio::test]
-async fn test_shutdown_awaits_disconnect_retry_task_exit() {
-    let manager = ConnectionManager::new(ConnectionLimits::default());
-    manager.start();
-
-    tokio::time::sleep(Duration::from_millis(10)).await;
-
-    let report = manager.shutdown().await;
-
-    assert!(
-        manager.disconnect_retry_handle.lock().is_none(),
-        "shutdown must drain the disconnect retry task handle"
-    );
-    assert_eq!(
-        report.disconnect_retry,
-        Some(ShutdownTaskOutcome::Completed),
-        "shutdown should return the disconnect retry task outcome"
-    );
-}
-
-#[tokio::test]
-async fn test_shutdown_reports_background_task_panic() {
-    let manager = ConnectionManager::new(ConnectionLimits::default());
-    manager.test_set_disconnect_retry_handle(tokio::spawn(async {
-        panic!("disconnect retry panic");
+    manager.test_set_ttl_refresh_handle(tokio::spawn(async {
+        panic!("ttl refresh panic");
     }));
 
     let report = manager.shutdown().await;
 
-    match report.disconnect_retry {
+    match report.ttl_refresh {
         Some(ShutdownTaskOutcome::Failed(message)) => {
             assert!(
                 message.contains("panic"),
                 "panic outcome should surface join error details: {message}"
             );
         }
-        other => panic!("expected panic failure outcome, got {other:?}"),
+        other => {
+            return Err(anyhow::anyhow!("expected panic failure outcome, got {other:?}").into());
+        }
     }
+    Ok(())
 }
 
 #[tokio::test]
@@ -2164,18 +1940,18 @@ async fn test_shutdown_reports_cancelled_background_task() {
 }
 
 #[tokio::test]
-async fn test_shutdown_aborts_timed_out_background_task() {
+async fn test_shutdown_aborts_timed_out_background_task() -> TestResult {
     let manager = ConnectionManager::new(ConnectionLimits::default());
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let handle = tokio::spawn(async move {
-        let _ = started_tx.send(());
+        started_tx
+            .send(())
+            .expect("shutdown test should receive background task start signal");
         futures::future::pending::<()>().await;
     });
     manager.test_set_ttl_refresh_handle(handle);
 
-    started_rx
-        .await
-        .expect("timeout test task should report that it started");
+    started_rx.await?;
 
     let report = manager.shutdown().await;
 
@@ -2188,26 +1964,30 @@ async fn test_shutdown_aborts_timed_out_background_task() {
         manager.ttl_refresh_handle.lock().is_none(),
         "shutdown must drain the timed-out task handle after aborting it"
     );
+    Ok(())
 }
 
 async fn docker_redis_connection(
     prefix: &str,
-) -> (
-    RedisContainer,
-    redis::Client,
-    redis::aio::ConnectionManager,
-    String,
-) {
+) -> std::result::Result<
+    (
+        RedisContainer,
+        redis::Client,
+        redis::aio::ConnectionManager,
+        String,
+    ),
+    BoxError,
+> {
     let sanitized_label = prefix.replace(':', "-");
     let (container, redis_url) = start_redis_url_with_label(&sanitized_label).await;
-    let client = redis::Client::open(redis_url.as_str()).expect("Failed to open Redis client");
+    let client = redis::Client::open(redis_url.as_str())?;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         match redis::aio::ConnectionManager::new(client.clone()).await {
             Ok(mut conn) => match redis::cmd("PING").query_async::<String>(&mut conn).await {
                 Ok(_) => {
-                    return (container, client, conn, prefix.to_string());
+                    return Ok((container, client, conn, prefix.to_string()));
                 }
                 Err(error) => {
                     assert!(

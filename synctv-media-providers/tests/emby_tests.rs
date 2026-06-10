@@ -472,7 +472,7 @@ async fn test_emby_get_playback_info_success() {
 
     let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client
-        .get_playback_info(synctv_media_providers::emby::client::PlaybackInfoRequest {
+        .get_playback_info(synctv_media_providers::emby::PlaybackInfoRequest {
             item_id: "item-1",
             ..Default::default()
         })
@@ -526,7 +526,7 @@ async fn test_emby_get_playback_info_sends_playback_request_controls() {
 
     let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client
-        .get_playback_info(synctv_media_providers::emby::client::PlaybackInfoRequest {
+        .get_playback_info(synctv_media_providers::emby::PlaybackInfoRequest {
             item_id: "item-1",
             max_streaming_bitrate: Some(8_000_000),
             max_audio_channels: Some(2),
@@ -581,7 +581,7 @@ async fn test_emby_get_playback_info_preserves_explicit_empty_subtitle_profiles(
 
     let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client
-        .get_playback_info(synctv_media_providers::emby::client::PlaybackInfoRequest {
+        .get_playback_info(synctv_media_providers::emby::PlaybackInfoRequest {
             item_id: "item-1",
             device_profile: Some(
                 &synctv_media_providers::grpc::emby::PlaybackInfoDeviceProfile {
@@ -726,7 +726,7 @@ async fn emby_thumbnail_no_image_tags_returns_none() {
 /// Test thumbnail URL construction with image tag
 #[test]
 fn emby_thumbnail_url_construction() {
-    use synctv_media_providers::emby::types::ImageTags;
+    use synctv_media_providers::emby::ImageTags;
 
     // Test building thumbnail URL with Primary tag
     let image_tags = ImageTags {

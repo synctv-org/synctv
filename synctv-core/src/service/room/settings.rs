@@ -283,12 +283,13 @@ impl RoomService {
                         .as_ref()
                         .map(|factory| factory(settings, new_version))
                         .transpose()?;
-                    if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-                        if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
-                            self.abort_room_settings_write(&domain, reservation.as_ref())
-                                .await;
-                            return Err(error);
-                        }
+                    if let Err(error) = self
+                        .insert_realtime_outbox_tx(&mut tx, outbox_event.as_ref())
+                        .await
+                    {
+                        self.abort_room_settings_write(&domain, reservation.as_ref())
+                            .await;
+                        return Err(error);
                     }
                     if let Err(error) = tx.commit().await {
                         self.abort_room_settings_write(&domain, reservation.as_ref())
@@ -417,13 +418,13 @@ impl RoomService {
                             .as_ref()
                             .map(|factory| factory(&merged_settings, new_version))
                             .transpose()?;
-                        if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event)
+                        if let Err(error) = self
+                            .insert_realtime_outbox_tx(&mut tx, outbox_event.as_ref())
+                            .await
                         {
-                            if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
-                                self.abort_room_settings_write(&domain, reservation.as_ref())
-                                    .await;
-                                return Err(error);
-                            }
+                            self.abort_room_settings_write(&domain, reservation.as_ref())
+                                .await;
+                            return Err(error);
                         }
                         if let Err(error) = tx.commit().await {
                             self.abort_room_settings_write(&domain, reservation.as_ref())
@@ -706,12 +707,13 @@ impl RoomService {
                         .as_ref()
                         .map(|factory| factory(&default_settings, new_version))
                         .transpose()?;
-                    if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-                        if let Err(error) = outbox.insert_with_executor(event, &mut *tx).await {
-                            self.abort_room_settings_write(&domain, reservation.as_ref())
-                                .await;
-                            return Err(error);
-                        }
+                    if let Err(error) = self
+                        .insert_realtime_outbox_tx(&mut tx, outbox_event.as_ref())
+                        .await
+                    {
+                        self.abort_room_settings_write(&domain, reservation.as_ref())
+                            .await;
+                        return Err(error);
                     }
                     if let Err(error) = tx.commit().await {
                         self.abort_room_settings_write(&domain, reservation.as_ref())

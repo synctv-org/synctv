@@ -211,17 +211,17 @@ impl RoomOpaquePasswordLoginSessionStore for InMemoryRoomOpaquePasswordLoginSess
     }
 }
 
-pub struct RedisRoomOpaquePasswordRegistrationSessionStore {
+struct RedisRoomOpaquePasswordRegistrationSessionStore {
     store: RedisJsonSessionStore,
 }
 
-pub struct RedisRoomOpaquePasswordLoginSessionStore {
+struct RedisRoomOpaquePasswordLoginSessionStore {
     store: RedisJsonSessionStore,
 }
 
 impl RedisRoomOpaquePasswordRegistrationSessionStore {
     #[must_use]
-    pub fn from_runtime(
+    fn from_runtime(
         runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {
@@ -233,7 +233,7 @@ impl RedisRoomOpaquePasswordRegistrationSessionStore {
 
 impl RedisRoomOpaquePasswordLoginSessionStore {
     #[must_use]
-    pub fn from_runtime(
+    fn from_runtime(
         runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {
@@ -313,27 +313,25 @@ impl RoomOpaquePasswordLoginSessionStore for RedisRoomOpaquePasswordLoginSession
 }
 
 #[must_use]
-pub fn local_room_opaque_password_registration_session_store(
+pub(crate) fn local_room_opaque_password_registration_session_store(
 ) -> Arc<dyn RoomOpaquePasswordRegistrationSessionStore> {
     Arc::new(InMemoryRoomOpaquePasswordRegistrationSessionStore::new())
 }
 
 #[must_use]
-pub fn local_room_opaque_password_login_session_store(
+pub(crate) fn local_room_opaque_password_login_session_store(
 ) -> Arc<dyn RoomOpaquePasswordLoginSessionStore> {
     Arc::new(InMemoryRoomOpaquePasswordLoginSessionStore::new())
 }
 
-#[must_use]
-pub fn shared_room_opaque_password_registration_session_store(
+fn shared_room_opaque_password_registration_session_store(
     runtime: Arc<dyn RedisConnectionRuntime>,
     key_prefix: impl Into<String>,
 ) -> Arc<dyn RoomOpaquePasswordRegistrationSessionStore> {
     Arc::new(RedisRoomOpaquePasswordRegistrationSessionStore::from_runtime(runtime, key_prefix))
 }
 
-#[must_use]
-pub fn shared_room_opaque_password_login_session_store(
+fn shared_room_opaque_password_login_session_store(
     runtime: Arc<dyn RedisConnectionRuntime>,
     key_prefix: impl Into<String>,
 ) -> Arc<dyn RoomOpaquePasswordLoginSessionStore> {
@@ -342,7 +340,7 @@ pub fn shared_room_opaque_password_login_session_store(
     ))
 }
 
-pub fn room_opaque_password_registration_session_store_from_shared_state_profile(
+pub(crate) fn room_opaque_password_registration_session_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn RoomOpaquePasswordRegistrationSessionStore>> {
     match profile.state_mode() {
@@ -367,7 +365,7 @@ pub fn room_opaque_password_registration_session_store_from_shared_state_profile
     }
 }
 
-pub fn room_opaque_password_login_session_store_from_shared_state_profile(
+pub(crate) fn room_opaque_password_login_session_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn RoomOpaquePasswordLoginSessionStore>> {
     match profile.state_mode() {

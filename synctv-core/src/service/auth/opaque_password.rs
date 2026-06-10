@@ -311,20 +311,31 @@ mod tests {
         CredentialResponse, ServerLogin, ServerLoginParameters,
     };
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     fn can_login_with_record(
         service: &OpaquePasswordService,
         record: &OpaquePasswordRecord,
         password: &str,
     ) -> bool {
         let mut client_rng = OsRng;
-        let client_start =
-            ClientLogin::<SyncTvOpaqueCipherSuite>::start(&mut client_rng, password.as_bytes())
-                .expect("client login start should succeed");
-        let credential_request = CredentialRequest::deserialize(&client_start.message.serialize())
-            .expect("credential request should deserialize");
-        let password_file =
-            ServerRegistration::<SyncTvOpaqueCipherSuite>::deserialize(&record.record)
-                .expect("stored OPAQUE record should deserialize");
+        let client_start = ok(
+            ClientLogin::<SyncTvOpaqueCipherSuite>::start(&mut client_rng, password.as_bytes()),
+            "client login start should succeed",
+        );
+        let credential_request = ok(
+            CredentialRequest::deserialize(&client_start.message.serialize()),
+            "credential request should deserialize",
+        );
+        let password_file = ok(
+            ServerRegistration::<SyncTvOpaqueCipherSuite>::deserialize(&record.record),
+            "stored OPAQUE record should deserialize",
+        );
 
         let mut server_rng = OsRng;
         let server_start = ServerLogin::start(
@@ -339,9 +350,10 @@ mod tests {
             return false;
         };
 
-        let credential_response =
-            CredentialResponse::deserialize(&server_start.message.serialize())
-                .expect("credential response should deserialize");
+        let credential_response = ok(
+            CredentialResponse::deserialize(&server_start.message.serialize()),
+            "credential response should deserialize",
+        );
         let Ok(client_finish) = client_start.state.finish(
             &mut client_rng,
             password.as_bytes(),
@@ -351,9 +363,10 @@ mod tests {
             return false;
         };
 
-        let credential_finalization =
-            CredentialFinalization::deserialize(&client_finish.message.serialize())
-                .expect("credential finalization should deserialize");
+        let credential_finalization = ok(
+            CredentialFinalization::deserialize(&client_finish.message.serialize()),
+            "credential finalization should deserialize",
+        );
         let Ok(server_finish) = server_start
             .state
             .finish(credential_finalization, ServerLoginParameters::default())
@@ -367,9 +380,10 @@ mod tests {
     #[test]
     fn derived_setup_can_login_with_generated_record() {
         let service = OpaquePasswordService::derive_from_secret(b"stable-secret-32-bytes-minimum");
-        let record = service
-            .register_password(b"synctv:user:alice", "correct horse battery staple")
-            .expect("registration should succeed");
+        let record = ok(
+            service.register_password(b"synctv:user:alice", "correct horse battery staple"),
+            "registration should succeed",
+        );
 
         assert_eq!(
             record.ciphersuite,
@@ -388,9 +402,10 @@ mod tests {
     fn derived_setup_is_stable_for_same_secret() {
         let first = OpaquePasswordService::derive_from_secret(b"stable-secret-32-bytes-minimum");
         let second = OpaquePasswordService::derive_from_secret(b"stable-secret-32-bytes-minimum");
-        let record = first
-            .register_password(b"synctv:user:bob", "hunter2 replacement")
-            .expect("registration should succeed");
+        let record = ok(
+            first.register_password(b"synctv:user:bob", "hunter2 replacement"),
+            "registration should succeed",
+        );
 
         assert!(can_login_with_record(
             &second,
@@ -403,9 +418,10 @@ mod tests {
     fn different_setup_secret_cannot_use_existing_record() {
         let first = OpaquePasswordService::derive_from_secret(b"stable-secret-32-bytes-minimum");
         let second = OpaquePasswordService::derive_from_secret(b"different-stable-secret-value");
-        let record = first
-            .register_password(b"synctv:user:carol", "opaque password")
-            .expect("registration should succeed");
+        let record = ok(
+            first.register_password(b"synctv:user:carol", "opaque password"),
+            "registration should succeed",
+        );
 
         assert!(!can_login_with_record(&second, &record, "opaque password"));
     }
@@ -417,66 +433,75 @@ mod tests {
         let password = "client side opaque password";
 
         let mut client_rng = OsRng;
-        let client_registration = ClientRegistration::<SyncTvOpaqueCipherSuite>::start(
-            &mut client_rng,
-            password.as_bytes(),
-        )
-        .expect("client registration should start");
+        let client_registration = ok(
+            ClientRegistration::<SyncTvOpaqueCipherSuite>::start(
+                &mut client_rng,
+                password.as_bytes(),
+            ),
+            "client registration should start",
+        );
 
-        let server_registration = service
-            .start_registration(
+        let server_registration = ok(
+            service.start_registration(
                 credential_identifier,
                 &client_registration.message.serialize(),
-            )
-            .expect("server registration start should succeed");
+            ),
+            "server registration start should succeed",
+        );
 
-        let registration_response =
-            RegistrationResponse::deserialize(&server_registration.registration_response)
-                .expect("registration response should deserialize");
-        let client_registration_finish = client_registration
-            .state
-            .finish(
+        let registration_response = ok(
+            RegistrationResponse::deserialize(&server_registration.registration_response),
+            "registration response should deserialize",
+        );
+        let client_registration_finish = ok(
+            client_registration.state.finish(
                 &mut client_rng,
                 password.as_bytes(),
                 registration_response,
                 ClientRegistrationFinishParameters::default(),
-            )
-            .expect("client registration should finish");
-        let record = service
-            .finish_registration(
+            ),
+            "client registration should finish",
+        );
+        let record = ok(
+            service.finish_registration(
                 credential_identifier.to_vec(),
                 &client_registration_finish.message.serialize(),
-            )
-            .expect("server registration should finish");
+            ),
+            "server registration should finish",
+        );
 
-        let client_login =
-            ClientLogin::<SyncTvOpaqueCipherSuite>::start(&mut client_rng, password.as_bytes())
-                .expect("client login should start");
-        let server_login = service
-            .start_login(
+        let client_login = ok(
+            ClientLogin::<SyncTvOpaqueCipherSuite>::start(&mut client_rng, password.as_bytes()),
+            "client login should start",
+        );
+        let server_login = ok(
+            service.start_login(
                 Some(&record),
                 credential_identifier,
                 &client_login.message.serialize(),
-            )
-            .expect("server login should start");
-        let credential_response =
-            CredentialResponse::deserialize(&server_login.credential_response)
-                .expect("credential response should deserialize");
-        let client_login_finish = client_login
-            .state
-            .finish(
+            ),
+            "server login should start",
+        );
+        let credential_response = ok(
+            CredentialResponse::deserialize(&server_login.credential_response),
+            "credential response should deserialize",
+        );
+        let client_login_finish = ok(
+            client_login.state.finish(
                 &mut client_rng,
                 password.as_bytes(),
                 credential_response,
                 ClientLoginFinishParameters::default(),
-            )
-            .expect("client login should finish");
-        let server_session_key = service
-            .finish_login(
+            ),
+            "client login should finish",
+        );
+        let server_session_key = ok(
+            service.finish_login(
                 &server_login.server_login_state,
                 &client_login_finish.message.serialize(),
-            )
-            .expect("server login should finish");
+            ),
+            "server login should finish",
+        );
 
         assert_eq!(server_session_key, client_login_finish.session_key.to_vec());
     }

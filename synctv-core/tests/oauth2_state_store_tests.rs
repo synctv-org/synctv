@@ -3,11 +3,11 @@
 //! Tests the `RedisOAuthStateStore`: store, consume, TTL expiry,
 //! and atomic single-use consumption under concurrency.
 //!
-#![allow(clippy::unwrap_used)]
 
+use redis::AsyncCommands;
 use std::sync::Arc;
-use synctv_core::service::{oauth2::RedisOAuthStateStore, OAuth2State, OAuthStateStore};
-use synctv_core_testing::{start_redis as start_test_redis, test_redis_key_prefix};
+use synctv_core::service::{OAuth2State, OAuthStateStore, RedisOAuthStateStore};
+use synctv_core_testing::{ok, some, start_redis as start_test_redis, test_redis_key_prefix};
 use tokio::sync::RwLock;
 
 async fn start_redis() -> (
@@ -55,18 +55,30 @@ async fn test_redis_oauth_state_store_and_consume() {
     let ttl = std::time::Duration::from_mins(1);
 
     // Store
-    store.store("token_1", &state, ttl).await.unwrap();
+    ok(
+        store.store("token_1", &state, ttl).await,
+        "OAuth state should be stored",
+    );
 
     // Consume
-    let retrieved = store.consume("token_1").await.unwrap();
+    let retrieved = ok(
+        store.consume("token_1").await,
+        "OAuth state should be consumed",
+    );
     assert!(retrieved.is_some());
-    let retrieved = retrieved.unwrap();
+    let retrieved = some(
+        retrieved,
+        "OAuth state should exist before single-use consume",
+    );
     assert_eq!(retrieved.instance_name, "github");
     assert_eq!(retrieved.pkce_verifier, "verifier_github");
     assert_eq!(retrieved.redirect_url.as_deref(), Some("/dashboard"));
 
     // Second consume should return None (token was deleted)
-    let second = store.consume("token_1").await.unwrap();
+    let second = ok(
+        store.consume("token_1").await,
+        "second OAuth state consume should succeed",
+    );
     assert!(
         second.is_none(),
         "Second consume should return None (single-use)"
@@ -82,7 +94,10 @@ async fn test_redis_oauth_state_consume_is_atomic() {
 
     let state = make_state("atomic_test");
     let ttl = std::time::Duration::from_mins(1);
-    store.store("atomic_token", &state, ttl).await.unwrap();
+    ok(
+        store.store("atomic_token", &state, ttl).await,
+        "atomic OAuth state should be stored",
+    );
 
     // Spawn 20 concurrent consumers
     let mut handles = Vec::new();
@@ -94,7 +109,10 @@ async fn test_redis_oauth_state_consume_is_atomic() {
     let mut success_count = 0;
     let mut none_count = 0;
     for h in handles {
-        let result = h.await.unwrap().unwrap();
+        let result = ok(
+            ok(h.await, "OAuth state consume task should join"),
+            "OAuth state consume task should succeed",
+        );
         match result {
             Some(state) => {
                 assert_eq!(state.instance_name, "atomic_test");
@@ -122,11 +140,17 @@ async fn test_redis_oauth_state_ttl_expiry() {
     let state = make_state("ttl_test");
     let ttl = std::time::Duration::from_secs(1);
 
-    store.store("ttl_token", &state, ttl).await.unwrap();
+    ok(
+        store.store("ttl_token", &state, ttl).await,
+        "TTL OAuth state should be stored",
+    );
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
-    let result = store.consume("ttl_token").await.unwrap();
+    let result = ok(
+        store.consume("ttl_token").await,
+        "expired OAuth state consume should succeed",
+    );
     assert!(result.is_none(), "Token should have expired after 1s TTL");
 }
 
@@ -146,7 +170,10 @@ async fn test_redis_oauth_state_concurrent_with_barrier() {
 
     let state = make_state("barrier_test");
     let ttl = std::time::Duration::from_mins(1);
-    store.store("barrier_token", &state, ttl).await.unwrap();
+    ok(
+        store.store("barrier_token", &state, ttl).await,
+        "barrier OAuth state should be stored",
+    );
 
     // Use barrier to maximize concurrency - all threads start at exactly the same time
     let barrier = Arc::new(Barrier::new(50));
@@ -179,7 +206,7 @@ async fn test_redis_oauth_state_concurrent_with_barrier() {
     }
 
     for h in handles {
-        h.await.unwrap();
+        ok(h.await, "barrier OAuth state consume task should join");
     }
 
     assert_eq!(
@@ -214,25 +241,31 @@ async fn test_redis_oauth_state_multiple_tokens_isolated() {
             pkce_verifier: format!("verifier_{i}"),
             nonce: None,
         };
-        store
-            .store(&format!("token_{i}"), &state, ttl)
-            .await
-            .unwrap();
+        ok(
+            store.store(&format!("token_{i}"), &state, ttl).await,
+            &format!("OAuth state token_{i} should be stored"),
+        );
     }
 
     // Consume in random order and verify each is isolated
     let order = [5, 2, 8, 1, 9, 0, 3, 7, 4, 6];
     for &i in &order {
-        let result = store.consume(&format!("token_{i}")).await.unwrap();
+        let result = ok(
+            store.consume(&format!("token_{i}")).await,
+            &format!("OAuth state token_{i} should be consumed"),
+        );
         assert!(result.is_some(), "Token {i} should be found");
-        let state = result.unwrap();
+        let state = some(result, &format!("OAuth state token_{i} should exist"));
         assert_eq!(state.instance_name, format!("provider_{i}"));
         assert_eq!(state.pkce_verifier, format!("verifier_{i}"));
     }
 
     // All tokens should now be consumed
     for i in 0..10 {
-        let result = store.consume(&format!("token_{i}")).await.unwrap();
+        let result = ok(
+            store.consume(&format!("token_{i}")).await,
+            &format!("OAuth state token_{i} second consume should succeed"),
+        );
         assert!(result.is_none(), "Token {i} should be already consumed");
     }
 }
@@ -257,13 +290,16 @@ async fn test_redis_oauth_state_created_at_expiry_check() {
 
     // Store with long TTL (simulating Redis TTL not being enforced)
     let long_ttl = std::time::Duration::from_hours(1);
-    store
-        .store("expired_by_created_at", &state, long_ttl)
-        .await
-        .unwrap();
+    ok(
+        store.store("expired_by_created_at", &state, long_ttl).await,
+        "created-at expired OAuth state should be stored",
+    );
 
     // The state should be retrievable from Redis (TTL not expired)
-    let result = store.consume("expired_by_created_at").await.unwrap();
+    let result = ok(
+        store.consume("expired_by_created_at").await,
+        "created-at expired OAuth state should be consumed from store",
+    );
     assert!(result.is_some(), "State should be in Redis");
 
     // But the service layer (consume_state) should reject it based on created_at
@@ -282,29 +318,32 @@ async fn test_redis_oauth_state_store_uses_configured_key_prefix() {
     );
 
     let state = make_state("prefixed");
-    store
-        .store("prefixed_token", &state, std::time::Duration::from_mins(1))
-        .await
-        .expect("storing state should succeed");
+    ok(
+        store
+            .store("prefixed_token", &state, std::time::Duration::from_mins(1))
+            .await,
+        "prefixed OAuth state should be stored",
+    );
 
     let mut raw_conn = shared_conn.read().await.clone();
 
-    let prefixed_exists: bool = raw_conn
-        .exists(format!("{key_prefix}:oauth2:state:prefixed_token"))
-        .await
-        .expect("prefixed key existence check should succeed");
+    let prefixed_exists: bool = ok(
+        raw_conn
+            .exists(format!("{key_prefix}:oauth2:state:prefixed_token"))
+            .await,
+        "prefixed key existence check should succeed",
+    );
     assert!(
         prefixed_exists,
         "state must be stored under configured key prefix"
     );
 
-    let unprefixed_exists: bool = raw_conn
-        .exists("oauth2:state:prefixed_token")
-        .await
-        .expect("unprefixed key existence check should succeed");
+    let unprefixed_exists: bool = ok(
+        raw_conn.exists("oauth2:state:prefixed_token").await,
+        "unprefixed key existence check should succeed",
+    );
     assert!(
         !unprefixed_exists,
         "state must not leak into the global unprefixed namespace"
     );
 }
-use redis::AsyncCommands;

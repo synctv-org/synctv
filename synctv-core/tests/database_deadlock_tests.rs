@@ -3,7 +3,6 @@
 //! Tests verify that the application properly detects and handles deadlocks.
 //!
 //! Requires Docker for testcontainers.
-#![allow(clippy::unwrap_used)]
 
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -13,7 +12,7 @@ use synctv_core::{
     },
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
 };
-use synctv_core_testing::{create_test_database_with_options_and_label, TestDatabase};
+use synctv_core_testing::{create_test_database_with_options_and_label, ok, TestDatabase};
 use tokio::sync::Barrier;
 
 async fn create_test_pool() -> TestDatabase {
@@ -46,11 +45,7 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) -> UserId {
         banned_reason: None,
     };
     let user_repo = UserRepository::new(pool.clone());
-    user_repo
-        .create(&user)
-        .await
-        .expect("Failed to create test user")
-        .id
+    ok(user_repo.create(&user).await, "test user should be created").id
 }
 
 fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {
@@ -97,24 +92,21 @@ async fn test_deadlock_detection_opposite_lock_order() {
 
     let creator_id = create_test_user(pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
+    let room = ok(room_repo.create(&room).await, "room should be created");
 
     let user1 = create_test_user(pool, &UserId::new()).await;
     let user2 = create_test_user(pool, &UserId::new()).await;
 
     let member1 = make_member(room.id, user1);
     let member2 = make_member(room.id, user2);
-    member_repo
-        .add(&member1)
-        .await
-        .expect("Failed to create member1");
-    member_repo
-        .add(&member2)
-        .await
-        .expect("Failed to create member2");
+    ok(
+        member_repo.add(&member1).await,
+        "first member should be added",
+    );
+    ok(
+        member_repo.add(&member2).await,
+        "second member should be added",
+    );
 
     // Try to cause deadlock with opposite lock order
     let barrier = Arc::new(Barrier::new(2));
@@ -207,8 +199,8 @@ async fn test_deadlock_detection_opposite_lock_order() {
         result
     });
 
-    let result1 = handle1.await.expect("Task 1 panicked");
-    let result2 = handle2.await.expect("Task 2 panicked");
+    let result1 = ok(handle1.await, "first deadlock task should complete");
+    let result2 = ok(handle2.await, "second deadlock task should complete");
 
     // At least one should fail with deadlock error, or both succeed
     let both_ok = result1.is_ok() && result2.is_ok();
@@ -240,17 +232,11 @@ async fn test_deadlock_with_for_update_nowait() {
 
     let creator_id = create_test_user(pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
+    let room = ok(room_repo.create(&room).await, "room should be created");
 
     let user_id = create_test_user(pool, &UserId::new()).await;
     let member = make_member(room.id, user_id);
-    member_repo
-        .add(&member)
-        .await
-        .expect("Failed to create member");
+    ok(member_repo.add(&member).await, "member should be added");
 
     let barrier = Arc::new(Barrier::new(2));
 
@@ -323,8 +309,8 @@ async fn test_deadlock_with_for_update_nowait() {
         result
     });
 
-    let result1 = handle1.await.expect("Task 1 panicked");
-    let result2 = handle2.await.expect("Task 2 panicked");
+    let result1 = ok(handle1.await, "first nowait task should complete");
+    let result2 = ok(handle2.await, "second nowait task should complete");
 
     assert!(result1.is_ok(), "First transaction should succeed");
 
@@ -350,10 +336,7 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 
     let creator_id = create_test_user(pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
+    let room = ok(room_repo.create(&room).await, "room should be created");
 
     let user1 = create_test_user(pool, &UserId::new()).await;
     let user2 = create_test_user(pool, &UserId::new()).await;
@@ -367,14 +350,14 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 
     let member1 = make_member(room.id, first_user);
     let member2 = make_member(room.id, second_user);
-    member_repo
-        .add(&member1)
-        .await
-        .expect("Failed to create member1");
-    member_repo
-        .add(&member2)
-        .await
-        .expect("Failed to create member2");
+    ok(
+        member_repo.add(&member1).await,
+        "first member should be added",
+    );
+    ok(
+        member_repo.add(&member2).await,
+        "second member should be added",
+    );
 
     let barrier = Arc::new(Barrier::new(2));
 
@@ -461,8 +444,8 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
         result
     });
 
-    let result1 = handle1.await.expect("Task 1 panicked");
-    let result2 = handle2.await.expect("Task 2 panicked");
+    let result1 = ok(handle1.await, "first ordered-lock task should complete");
+    let result2 = ok(handle2.await, "second ordered-lock task should complete");
 
     // With consistent ordering, no deadlock should occur
     // One will complete, then the other
@@ -483,24 +466,18 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
 
     let creator_id = create_test_user(pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
+    let room = ok(room_repo.create(&room).await, "room should be created");
 
     let user_id = create_test_user(pool, &UserId::new()).await;
     let member = make_member(room.id, user_id);
-    member_repo
-        .add(&member)
-        .await
-        .expect("Failed to create member");
+    ok(member_repo.add(&member).await, "member should be added");
 
     let pool1 = pool.clone();
     let room_id1 = room.id;
     let user_id1 = user_id;
 
     let tx_handle = tokio::spawn(async move {
-        let mut tx = pool1.begin().await.expect("Failed to begin transaction");
+        let mut tx = pool1.begin().await?;
 
         // Lock the row
         sqlx::query(
@@ -511,13 +488,13 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
         .bind(room_id1)
         .bind(user_id1)
         .fetch_optional(&mut *tx)
-        .await
-        .expect("Failed to lock row");
+        .await?;
 
         // Hold lock for 2 seconds
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-        tx.commit().await.expect("Failed to commit");
+        tx.commit().await?;
+        Ok::<(), sqlx::Error>(())
     });
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -547,5 +524,6 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
     // Should timeout waiting for lock
     assert!(timeout_result.is_err(), "Should timeout waiting for lock");
 
-    tx_handle.await.expect("First transaction failed");
+    let tx_result = ok(tx_handle.await, "first transaction task should complete");
+    ok(tx_result, "first transaction should finish");
 }

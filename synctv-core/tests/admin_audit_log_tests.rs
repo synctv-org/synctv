@@ -1,13 +1,26 @@
 //! Admin audit log tests
 //!
 //! Docker tests: cargo test -p synctv-core --test `admin_audit_log_tests` -- --ignored --nocapture
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
 use synctv_core::models::{AuditAction, AuditTargetType};
 use synctv_core::service::{AuditEventParams, AuditService, StreamKickAuditRequest};
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, ok, some};
+
+fn audit_action(value: i16) -> AuditAction {
+    ok(
+        AuditAction::try_from(value),
+        "audit action code should be valid",
+    )
+}
+
+fn audit_target_type(value: i16) -> AuditTargetType {
+    ok(
+        AuditTargetType::try_from(value),
+        "audit target type code should be valid",
+    )
+}
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -28,33 +41,37 @@ async fn test_audit_log_integrity_all_fields() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    service
-        .log(AuditEventParams {
-            actor_id: "100101".to_string(),
-            actor_username: "test_admin".to_string(),
-            action: AuditAction::UserBanned,
-            target_type: AuditTargetType::User,
-            target_id: Some("target_user_002".to_string()),
-            details: serde_json::json!({
-                "reason": "Policy violation",
-                "duration": "permanent"
-            }),
-            ip_address: Some("192.168.1.100".to_string()),
-            user_agent: Some("Mozilla/5.0 TestAgent/1.0".to_string()),
-        })
-        .await
-        .expect("Log should succeed");
+    ok(
+        service
+            .log(AuditEventParams {
+                actor_id: "100101".to_string(),
+                actor_username: "test_admin".to_string(),
+                action: AuditAction::UserBanned,
+                target_type: AuditTargetType::User,
+                target_id: Some("target_user_002".to_string()),
+                details: serde_json::json!({
+                    "reason": "Policy violation",
+                    "duration": "permanent"
+                }),
+                ip_address: Some("192.168.1.100".to_string()),
+                user_agent: Some("Mozilla/5.0 TestAgent/1.0".to_string()),
+            })
+            .await,
+        "audit log should be written",
+    );
 
-    let row: AuditLogRow = sqlx::query_as(
-        r"
+    let row: AuditLogRow = ok(
+        sqlx::query_as(
+            r"
         SELECT id, actor_id, actor_username, action, target_type, target_id, ip_address, user_agent
         FROM audit_logs
         WHERE actor_id = 100101
         ",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+        )
+        .fetch_one(&pool)
+        .await,
+        "audit log row should be fetched",
+    );
 
     assert!(row.id > 0, "ID should be generated");
     assert_eq!(row.actor_id, 100_101, "Actor ID should match");
@@ -63,13 +80,12 @@ async fn test_audit_log_integrity_all_fields() {
         "Actor username should match"
     );
     assert_eq!(
-        AuditAction::try_from(row.action).unwrap(),
+        audit_action(row.action),
         AuditAction::UserBanned,
         "Action should match"
     );
     assert_eq!(
-        row.target_type
-            .map(|value| AuditTargetType::try_from(value).unwrap()),
+        row.target_type.map(audit_target_type),
         Some(AuditTargetType::User),
         "Target type should match"
     );
@@ -109,25 +125,28 @@ async fn test_audit_log_details_json_integrity() {
         "null": null
     });
 
-    service
-        .log(AuditEventParams {
-            actor_id: "100102".to_string(),
-            actor_username: "json_tester".to_string(),
-            action: AuditAction::SettingsUpdated,
-            target_type: AuditTargetType::Settings,
-            target_id: None,
-            details: details.clone(),
-            ip_address: None,
-            user_agent: None,
-        })
-        .await
-        .expect("Log should succeed");
+    ok(
+        service
+            .log(AuditEventParams {
+                actor_id: "100102".to_string(),
+                actor_username: "json_tester".to_string(),
+                action: AuditAction::SettingsUpdated,
+                target_type: AuditTargetType::Settings,
+                target_id: None,
+                details: details.clone(),
+                ip_address: None,
+                user_agent: None,
+            })
+            .await,
+        "audit log should be written",
+    );
 
-    let row: (serde_json::Value,) =
+    let row: (serde_json::Value,) = ok(
         sqlx::query_as("SELECT details FROM audit_logs WHERE actor_id = '100102'")
             .fetch_one(&pool)
-            .await
-            .expect("Query should succeed");
+            .await,
+        "audit log details should be fetched",
+    );
 
     assert_eq!(row.0["nested"]["deeply"]["value"], 42);
     assert_eq!(row.0["array"], serde_json::json!([1, 2, 3]));
@@ -145,27 +164,30 @@ async fn test_audit_log_created_at_timestamp() {
 
     let before = chrono::Utc::now();
 
-    service
-        .log(AuditEventParams {
-            actor_id: "100103".to_string(),
-            actor_username: "time_tester".to_string(),
-            action: AuditAction::UserCreated,
-            target_type: AuditTargetType::User,
-            target_id: Some("new_user".to_string()),
-            details: serde_json::json!({}),
-            ip_address: None,
-            user_agent: None,
-        })
-        .await
-        .expect("Log should succeed");
+    ok(
+        service
+            .log(AuditEventParams {
+                actor_id: "100103".to_string(),
+                actor_username: "time_tester".to_string(),
+                action: AuditAction::UserCreated,
+                target_type: AuditTargetType::User,
+                target_id: Some("new_user".to_string()),
+                details: serde_json::json!({}),
+                ip_address: None,
+                user_agent: None,
+            })
+            .await,
+        "audit log should be written",
+    );
 
     let after = chrono::Utc::now();
 
-    let row: (chrono::DateTime<chrono::Utc>,) =
+    let row: (chrono::DateTime<chrono::Utc>,) = ok(
         sqlx::query_as("SELECT created_at FROM audit_logs WHERE actor_id = '100103'")
             .fetch_one(&pool)
-            .await
-            .expect("Query should succeed");
+            .await,
+        "audit log timestamp should be fetched",
+    );
 
     assert!(row.0 >= before, "created_at should be >= before");
     assert!(row.0 <= after, "created_at should be <= after");
@@ -187,42 +209,42 @@ async fn test_audit_log_multiple_actions_same_actor() {
     ];
 
     for action in &actions {
-        service
-            .log(AuditEventParams {
-                actor_id: "100104".to_string(),
-                actor_username: "multi_tester".to_string(),
-                action: *action,
-                target_type: match action {
-                    AuditAction::UserCreated | AuditAction::UserBanned => AuditTargetType::User,
-                    AuditAction::RoomCreated | AuditAction::RoomBanned => AuditTargetType::Room,
-                    _ => AuditTargetType::Settings,
-                },
-                target_id: Some("target".to_string()),
-                details: serde_json::json!({}),
-                ip_address: None,
-                user_agent: None,
-            })
-            .await
-            .expect("Log should succeed");
+        ok(
+            service
+                .log(AuditEventParams {
+                    actor_id: "100104".to_string(),
+                    actor_username: "multi_tester".to_string(),
+                    action: *action,
+                    target_type: match action {
+                        AuditAction::UserCreated | AuditAction::UserBanned => AuditTargetType::User,
+                        AuditAction::RoomCreated | AuditAction::RoomBanned => AuditTargetType::Room,
+                        _ => AuditTargetType::Settings,
+                    },
+                    target_id: Some("target".to_string()),
+                    details: serde_json::json!({}),
+                    ip_address: None,
+                    user_agent: None,
+                })
+                .await,
+            "audit log should be written",
+        );
     }
 
-    let count: i64 =
+    let count: i64 = ok(
         sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id = '100104'")
             .fetch_one(&pool)
-            .await
-            .expect("Query should succeed");
-
-    assert_eq!(
-        count,
-        i64::try_from(actions.len()).expect("action count should fit in i64"),
-        "All actions should be logged"
+            .await,
+        "audit log count should be fetched",
     );
 
-    let ids: Vec<(i64,)> =
+    assert_eq!(usize::try_from(count), Ok(actions.len()));
+
+    let ids: Vec<(i64,)> = ok(
         sqlx::query_as("SELECT id FROM audit_logs WHERE actor_id = '100104' ORDER BY created_at")
             .fetch_all(&pool)
-            .await
-            .expect("Query should succeed");
+            .await,
+        "audit log ids should be fetched",
+    );
 
     let unique_ids: std::collections::HashSet<_> = ids.into_iter().collect();
     assert_eq!(
@@ -265,18 +287,19 @@ async fn test_concurrent_audit_logging() {
 
     let mut success_count = 0;
     for handle in handles {
-        if handle.await.expect("Task panicked").is_ok() {
+        if ok(handle.await, "audit logging task should complete").is_ok() {
             success_count += 1;
         }
     }
 
     assert_eq!(success_count, 20, "All concurrent logs should succeed");
 
-    let count: i64 =
+    let count: i64 = ok(
         sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id::text LIKE '1002%'")
             .fetch_one(&pool)
-            .await
-            .expect("Query should succeed");
+            .await,
+        "concurrent audit log count should be fetched",
+    );
 
     assert_eq!(count, 20, "All concurrent events should be stored");
 }
@@ -303,48 +326,48 @@ async fn test_all_audit_actions_are_logged() {
     ];
 
     for (i, action) in actions.iter().enumerate() {
-        service
-            .log(AuditEventParams {
-                actor_id: format!("act_actr_{i}"),
-                actor_username: "action_tester".to_string(),
-                action: *action,
-                target_type: match action {
-                    AuditAction::UserCreated
-                    | AuditAction::UserBanned
-                    | AuditAction::UserUnbanned
-                    | AuditAction::UserDeleted => AuditTargetType::User,
-                    AuditAction::RoomCreated
-                    | AuditAction::RoomBanned
-                    | AuditAction::RoomUnbanned
-                    | AuditAction::RoomDeleted => AuditTargetType::Room,
-                    AuditAction::StreamKicked => AuditTargetType::Stream,
-                    AuditAction::ChatMessageDeleted => AuditTargetType::ChatMessage,
-                    _ => AuditTargetType::Settings,
-                },
-                target_id: Some(format!("action_target_{i}")),
-                details: serde_json::json!({}),
-                ip_address: None,
-                user_agent: None,
-            })
-            .await
-            .expect("Log should succeed");
+        ok(
+            service
+                .log(AuditEventParams {
+                    actor_id: format!("act_actr_{i}"),
+                    actor_username: "action_tester".to_string(),
+                    action: *action,
+                    target_type: match action {
+                        AuditAction::UserCreated
+                        | AuditAction::UserBanned
+                        | AuditAction::UserUnbanned
+                        | AuditAction::UserDeleted => AuditTargetType::User,
+                        AuditAction::RoomCreated
+                        | AuditAction::RoomBanned
+                        | AuditAction::RoomUnbanned
+                        | AuditAction::RoomDeleted => AuditTargetType::Room,
+                        AuditAction::StreamKicked => AuditTargetType::Stream,
+                        AuditAction::ChatMessageDeleted => AuditTargetType::ChatMessage,
+                        _ => AuditTargetType::Settings,
+                    },
+                    target_id: Some(format!("action_target_{i}")),
+                    details: serde_json::json!({}),
+                    ip_address: None,
+                    user_agent: None,
+                })
+                .await,
+            "audit log should be written",
+        );
     }
 
-    let logged_actions: Vec<(i16,)> = sqlx::query_as(
-        "SELECT action FROM audit_logs WHERE actor_username = 'action_tester' ORDER BY created_at",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("Query should succeed");
+    let logged_actions: Vec<(i16,)> = ok(
+        sqlx::query_as(
+            "SELECT action FROM audit_logs WHERE actor_username = 'action_tester' ORDER BY created_at",
+        )
+        .fetch_all(&pool)
+        .await,
+        "logged audit actions should be fetched",
+    );
 
     assert_eq!(logged_actions.len(), actions.len());
 
     for ((logged,), expected) in logged_actions.iter().zip(actions.iter()) {
-        assert_eq!(
-            AuditAction::try_from(*logged).unwrap(),
-            *expected,
-            "Action code should match"
-        );
+        assert_eq!(audit_action(*logged), *expected, "Action code should match");
     }
 }
 
@@ -364,33 +387,37 @@ async fn test_all_target_types_are_logged() {
     ];
 
     for (i, target_type) in target_types.iter().enumerate() {
-        service
-            .log(AuditEventParams {
-                actor_id: format!("tgt_actr_{i}"),
-                actor_username: "target_tester".to_string(),
-                action: AuditAction::UserCreated,
-                target_type: *target_type,
-                target_id: Some(format!("target_{i}")),
-                details: serde_json::json!({}),
-                ip_address: None,
-                user_agent: None,
-            })
-            .await
-            .expect("Log should succeed");
+        ok(
+            service
+                .log(AuditEventParams {
+                    actor_id: format!("tgt_actr_{i}"),
+                    actor_username: "target_tester".to_string(),
+                    action: AuditAction::UserCreated,
+                    target_type: *target_type,
+                    target_id: Some(format!("target_{i}")),
+                    details: serde_json::json!({}),
+                    ip_address: None,
+                    user_agent: None,
+                })
+                .await,
+            "audit log should be written",
+        );
     }
 
-    let logged_types: Vec<(Option<i16>,)> = sqlx::query_as(
-        "SELECT target_type FROM audit_logs WHERE actor_username = 'target_tester' ORDER BY created_at",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("Query should succeed");
+    let logged_types: Vec<(Option<i16>,)> = ok(
+        sqlx::query_as(
+            "SELECT target_type FROM audit_logs WHERE actor_username = 'target_tester' ORDER BY created_at",
+        )
+        .fetch_all(&pool)
+        .await,
+        "logged audit target types should be fetched",
+    );
 
     assert_eq!(logged_types.len(), target_types.len());
 
     for ((logged,), expected) in logged_types.iter().zip(target_types.iter()) {
         assert_eq!(
-            logged.map(|value| AuditTargetType::try_from(value).unwrap()),
+            logged.map(audit_target_type),
             Some(*expected),
             "Target type code should match"
         );
@@ -404,26 +431,30 @@ async fn test_audit_log_with_all_null_optionals() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    service
-        .log(AuditEventParams {
-            actor_id: "100106".to_string(),
-            actor_username: "null_tester".to_string(),
-            action: AuditAction::UserCreated,
-            target_type: AuditTargetType::User,
-            target_id: None,
-            details: serde_json::json!({}),
-            ip_address: None,
-            user_agent: None,
-        })
-        .await
-        .expect("Log should succeed");
+    ok(
+        service
+            .log(AuditEventParams {
+                actor_id: "100106".to_string(),
+                actor_username: "null_tester".to_string(),
+                action: AuditAction::UserCreated,
+                target_type: AuditTargetType::User,
+                target_id: None,
+                details: serde_json::json!({}),
+                ip_address: None,
+                user_agent: None,
+            })
+            .await,
+        "audit log should be written",
+    );
 
-    let row: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT target_id, ip_address, user_agent FROM audit_logs WHERE actor_id = '100106'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+    let row: (Option<String>, Option<String>, Option<String>) = ok(
+        sqlx::query_as(
+            "SELECT target_id, ip_address, user_agent FROM audit_logs WHERE actor_id = '100106'",
+        )
+        .fetch_one(&pool)
+        .await,
+        "audit log optional fields should be fetched",
+    );
 
     assert_eq!(row.0, None, "Target ID should be NULL");
     assert_eq!(row.1, None, "IP address should be NULL");
@@ -437,26 +468,30 @@ async fn test_audit_log_with_all_optionals() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    service
-        .log(AuditEventParams {
-            actor_id: "100107".to_string(),
-            actor_username: "all_optionals_tester".to_string(),
-            action: AuditAction::UserCreated,
-            target_type: AuditTargetType::User,
-            target_id: Some("target_id".to_string()),
-            details: serde_json::json!({"key": "value"}),
-            ip_address: Some("10.0.0.1".to_string()),
-            user_agent: Some("TestClient/2.0".to_string()),
-        })
-        .await
-        .expect("Log should succeed");
+    ok(
+        service
+            .log(AuditEventParams {
+                actor_id: "100107".to_string(),
+                actor_username: "all_optionals_tester".to_string(),
+                action: AuditAction::UserCreated,
+                target_type: AuditTargetType::User,
+                target_id: Some("target_id".to_string()),
+                details: serde_json::json!({"key": "value"}),
+                ip_address: Some("10.0.0.1".to_string()),
+                user_agent: Some("TestClient/2.0".to_string()),
+            })
+            .await,
+        "audit log should be written",
+    );
 
-    let row: (Option<String>, Option<String>, Option<String>, serde_json::Value) = sqlx::query_as(
-        "SELECT target_id, ip_address, user_agent, details FROM audit_logs WHERE actor_id = '100107'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+    let row: (Option<String>, Option<String>, Option<String>, serde_json::Value) = ok(
+        sqlx::query_as(
+            "SELECT target_id, ip_address, user_agent, details FROM audit_logs WHERE actor_id = '100107'",
+        )
+        .fetch_one(&pool)
+        .await,
+        "audit log optional fields should be fetched",
+    );
 
     assert_eq!(row.0, Some("target_id".to_string()));
     assert_eq!(row.1, Some("10.0.0.1".to_string()));
@@ -471,38 +506,36 @@ async fn test_log_stream_kicked_helper() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    service
-        .log_stream_kicked(StreamKickAuditRequest {
-            actor_id: "100108".to_string(),
-            actor_username: "stream_kicker".to_string(),
-            room_id: "room_123".to_string(),
-            media_id: "media_456".to_string(),
-            reason: Some("Inappropriate content".to_string()),
-            ip_address: Some("192.168.1.1".to_string()),
-            user_agent: Some("StreamClient/1.0".to_string()),
-        })
-        .await
-        .expect("Stream kick log should succeed");
+    ok(
+        service
+            .log_stream_kicked(StreamKickAuditRequest {
+                actor_id: "100108".to_string(),
+                actor_username: "stream_kicker".to_string(),
+                room_id: "room_123".to_string(),
+                media_id: "media_456".to_string(),
+                reason: Some("Inappropriate content".to_string()),
+                ip_address: Some("192.168.1.1".to_string()),
+                user_agent: Some("StreamClient/1.0".to_string()),
+            })
+            .await,
+        "stream kick audit log should be written",
+    );
 
-    let row: (i16, i16, Option<String>, String, serde_json::Value) = sqlx::query_as(
-        r"
+    let row: (i16, i16, Option<String>, String, serde_json::Value) = ok(
+        sqlx::query_as(
+            r"
         SELECT action, target_type, target_id, actor_username, details
         FROM audit_logs
         WHERE actor_id = '100108'
         ",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+        )
+        .fetch_one(&pool)
+        .await,
+        "stream kick audit row should be fetched",
+    );
 
-    assert_eq!(
-        AuditAction::try_from(row.0).unwrap(),
-        AuditAction::StreamKicked
-    );
-    assert_eq!(
-        AuditTargetType::try_from(row.1).unwrap(),
-        AuditTargetType::Stream
-    );
+    assert_eq!(audit_action(row.0), AuditAction::StreamKicked);
+    assert_eq!(audit_target_type(row.1), AuditTargetType::Stream);
     assert_eq!(row.2, Some("room_123:media_456".to_string()));
     assert_eq!(row.3, "stream_kicker");
     assert_eq!(row.4["room_id"], "room_123");
@@ -517,28 +550,31 @@ async fn test_log_stream_kicked_without_reason() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    service
-        .log_stream_kicked(StreamKickAuditRequest {
-            actor_id: "100109".to_string(),
-            actor_username: "stream_admin".to_string(),
-            room_id: "room_abc".to_string(),
-            media_id: "media_xyz".to_string(),
-            reason: None,
-            ip_address: None,
-            user_agent: None,
-        })
-        .await
-        .expect("Stream kick log should succeed");
+    ok(
+        service
+            .log_stream_kicked(StreamKickAuditRequest {
+                actor_id: "100109".to_string(),
+                actor_username: "stream_admin".to_string(),
+                room_id: "room_abc".to_string(),
+                media_id: "media_xyz".to_string(),
+                reason: None,
+                ip_address: None,
+                user_agent: None,
+            })
+            .await,
+        "stream kick audit log should be written",
+    );
 
-    let row: (serde_json::Value,) =
+    let row: (serde_json::Value,) = ok(
         sqlx::query_as("SELECT details FROM audit_logs WHERE actor_id = '100109'")
             .fetch_one(&pool)
-            .await
-            .expect("Query should succeed");
+            .await,
+        "stream kick audit details should be fetched",
+    );
 
     assert_eq!(row.0["room_id"], "room_abc");
     assert_eq!(row.0["media_id"], "media_xyz");
-    assert_eq!(row.0["reason"], "");
+    assert_eq!(row.0["reason"], serde_json::Value::Null);
 }
 
 #[tokio::test]
@@ -548,46 +584,51 @@ async fn test_settings_viewed_audit_log() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    service
-        .log(AuditEventParams {
-            actor_id: "100110".to_string(),
-            actor_username: "admin_user".to_string(),
-            action: AuditAction::SettingsViewed,
-            target_type: AuditTargetType::Settings,
-            target_id: None,
-            details: serde_json::json!({
-                "group_count": 5,
-                "groups": ["general", "security", "proxy", "email", "p2p"],
-            }),
-            ip_address: Some("192.168.1.50".to_string()),
-            user_agent: Some("Mozilla/5.0 AdminClient/1.0".to_string()),
-        })
-        .await
-        .expect("Settings viewed log should succeed");
+    ok(
+        service
+            .log(AuditEventParams {
+                actor_id: "100110".to_string(),
+                actor_username: "admin_user".to_string(),
+                action: AuditAction::SettingsViewed,
+                target_type: AuditTargetType::Settings,
+                target_id: None,
+                details: serde_json::json!({
+                    "group_count": 5,
+                    "groups": ["general", "security", "proxy", "email", "p2p"],
+                }),
+                ip_address: Some("192.168.1.50".to_string()),
+                user_agent: Some("Mozilla/5.0 AdminClient/1.0".to_string()),
+            })
+            .await,
+        "settings viewed audit log should be written",
+    );
 
-    let row: (i16, i16, Option<String>, Option<String>, serde_json::Value) = sqlx::query_as(
-        r"
+    let row: (i16, i16, Option<String>, Option<String>, serde_json::Value) = ok(
+        sqlx::query_as(
+            r"
         SELECT action, target_type, ip_address, user_agent, details
         FROM audit_logs
         WHERE actor_id = '100110'
         ",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+        )
+        .fetch_one(&pool)
+        .await,
+        "settings viewed audit row should be fetched",
+    );
 
-    assert_eq!(
-        AuditAction::try_from(row.0).unwrap(),
-        AuditAction::SettingsViewed
-    );
-    assert_eq!(
-        AuditTargetType::try_from(row.1).unwrap(),
-        AuditTargetType::Settings
-    );
+    assert_eq!(audit_action(row.0), AuditAction::SettingsViewed);
+    assert_eq!(audit_target_type(row.1), AuditTargetType::Settings);
     assert_eq!(row.2, Some("192.168.1.50".to_string()));
     assert_eq!(row.3, Some("Mozilla/5.0 AdminClient/1.0".to_string()));
     assert_eq!(row.4["group_count"], 5);
-    assert_eq!(row.4["groups"].as_array().unwrap().len(), 5);
+    assert_eq!(
+        some(
+            row.4["groups"].as_array(),
+            "settings groups should be an array"
+        )
+        .len(),
+        5
+    );
 }
 
 #[tokio::test]
@@ -597,40 +638,38 @@ async fn test_settings_group_viewed_audit_log() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    service
-        .log(AuditEventParams {
-            actor_id: "100111".to_string(),
-            actor_username: "admin_user".to_string(),
-            action: AuditAction::SettingsGroupViewed,
-            target_type: AuditTargetType::Settings,
-            target_id: None,
-            details: serde_json::json!({
-                "group": "security",
-            }),
-            ip_address: Some("10.0.0.1".to_string()),
-            user_agent: None,
-        })
-        .await
-        .expect("Settings group viewed log should succeed");
+    ok(
+        service
+            .log(AuditEventParams {
+                actor_id: "100111".to_string(),
+                actor_username: "admin_user".to_string(),
+                action: AuditAction::SettingsGroupViewed,
+                target_type: AuditTargetType::Settings,
+                target_id: None,
+                details: serde_json::json!({
+                    "group": "security",
+                }),
+                ip_address: Some("10.0.0.1".to_string()),
+                user_agent: None,
+            })
+            .await,
+        "settings group viewed audit log should be written",
+    );
 
-    let row: (i16, i16, serde_json::Value) = sqlx::query_as(
-        r"
+    let row: (i16, i16, serde_json::Value) = ok(
+        sqlx::query_as(
+            r"
         SELECT action, target_type, details
         FROM audit_logs
         WHERE actor_id = '100111'
         ",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+        )
+        .fetch_one(&pool)
+        .await,
+        "settings group viewed audit row should be fetched",
+    );
 
-    assert_eq!(
-        AuditAction::try_from(row.0).unwrap(),
-        AuditAction::SettingsGroupViewed
-    );
-    assert_eq!(
-        AuditTargetType::try_from(row.1).unwrap(),
-        AuditTargetType::Settings
-    );
+    assert_eq!(audit_action(row.0), AuditAction::SettingsGroupViewed);
+    assert_eq!(audit_target_type(row.1), AuditTargetType::Settings);
     assert_eq!(row.2["group"], "security");
 }

@@ -121,9 +121,8 @@ pub fn build_cluster_coordination_provider(
     runtime: Arc<dyn synctv_core::RedisCoordinationRuntime>,
 ) -> Arc<dyn ClusterCoordinationProvider> {
     Arc::new(RedisClusterCoordinationProvider {
-        distributed_transport_factory: synctv_realtime::build_realtime_message_transport_factory(
-            runtime.clone(),
-        ),
+        distributed_transport_factory:
+            synctv_realtime::sync::build_realtime_message_transport_factory(runtime.clone()),
         node_directory_factory: synctv_cluster::build_cluster_node_directory_factory(runtime),
     })
 }
@@ -462,7 +461,7 @@ mod tests {
         let realtime_manager = Arc::new(
             RealtimeManager::new(RealtimeConfig {
                 distributed_transport_factory: None,
-                message_runtime: Arc::new(synctv_realtime::RoomMessageHub::new()),
+                message_runtime: Arc::new(synctv_realtime::sync::RoomMessageHub::new()),
                 distributed_enabled: false,
                 node_id: "bootstrap-factory-test".to_string(),
                 dedup_window: Duration::from_secs(1),
@@ -517,7 +516,7 @@ mod tests {
                 coordination_provider.distributed_transport_factory(),
             ),
             message_runtime: build_room_message_runtime(
-                &synctv_core::SharedStateProfile::from_runtime(
+                &synctv_core::SharedStateProfile::for_cluster_runtime(
                     Some(synctv_core::shared_runtime(shared_conn.clone())),
                     "test-k8s-env-order:",
                     true,

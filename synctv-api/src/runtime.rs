@@ -3,8 +3,6 @@ use synctv_core::models::{RoomId, UserId};
 use synctv_realtime::sync::{BroadcastResult, ConnectionId, RealtimeEvent, RealtimeManager};
 use tokio::sync::{broadcast, mpsc};
 
-pub use synctv_realtime::sync::ConnectionRuntime as RealtimeConnectionService;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RealtimeAdmissionError {
     Capacity(String),
@@ -42,8 +40,6 @@ pub struct RealtimeMetrics {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RealtimeDeliveryRequirement {
-    BestEffort,
-    AnyAvailablePath,
     DistributedWhenAvailable,
     DistributedIfAvailable,
 }
@@ -102,8 +98,6 @@ impl RealtimeDeliveryOutcome {
     #[must_use]
     pub const fn satisfies(self, requirement: RealtimeDeliveryRequirement) -> bool {
         match requirement {
-            RealtimeDeliveryRequirement::BestEffort => true,
-            RealtimeDeliveryRequirement::AnyAvailablePath => self.delivered_to_any(),
             RealtimeDeliveryRequirement::DistributedWhenAvailable => {
                 if self.distributed_available {
                     self.distributed_delivered
@@ -154,14 +148,6 @@ pub trait RealtimeEventService: Send + Sync {
 
     fn publish_only_outcome(&self, event: RealtimeEvent) -> RealtimeDeliveryOutcome {
         RealtimeDeliveryOutcome::from_publish_only(self.publish_only(event), self.metrics())
-    }
-
-    fn retry_broadcast_outcome(&self, event: RealtimeEvent) -> RealtimeDeliveryOutcome {
-        if self.metrics().distributed_enabled {
-            self.publish_only_outcome(event)
-        } else {
-            self.broadcast_outcome(event)
-        }
     }
 
     fn node_id(&self) -> &str;
@@ -261,9 +247,13 @@ impl RealtimeEventService for RealtimeManager {
     }
 
     fn broadcast_admin_local(&self, event: &RealtimeEvent) -> usize {
-        RealtimeManager::admin_event_tx(self)
-            .send(event.clone())
-            .unwrap_or_default()
+        match RealtimeManager::admin_event_tx(self).send(event.clone()) {
+            Ok(subscriber_count) => subscriber_count,
+            Err(error) => {
+                tracing::warn!(%error, "failed to broadcast admin realtime event");
+                0
+            }
+        }
     }
 
     fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
@@ -292,12 +282,10 @@ impl RealtimeEventService for RealtimeManager {
 
 #[cfg(test)]
 mod tests {
-    use synctv_realtime::ConnectionId;
+    use synctv_realtime::sync::ConnectionId;
+    use synctv_realtime::sync::ConnectionRuntime;
 
-    use super::{
-        RealtimeConnectionService, RealtimeDeliveryOutcome, RealtimeDeliveryRequirement,
-        RealtimeEventService,
-    };
+    use super::{RealtimeDeliveryOutcome, RealtimeDeliveryRequirement, RealtimeEventService};
     use std::sync::Arc;
     use std::time::Duration;
     use synctv_core::models::{RoomId, UserId};
@@ -305,6 +293,20 @@ mod tests {
         BroadcastResult, ConnectionLimits, ConnectionManager, RealtimeConfig, RealtimeEvent,
         RealtimeManager,
     };
+
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn realtime_ok<T>(result: synctv_realtime::Result<T>) -> TestResult<T> {
+        result.map_err(|error| test_error(error.to_string()))
+    }
+
+    fn string_ok<T>(result: Result<T, String>) -> TestResult<T> {
+        result.map_err(test_error)
+    }
 
     fn room_id() -> RoomId {
         RoomId::expect_positive(108_001)
@@ -314,8 +316,8 @@ mod tests {
         UserId::expect_positive(108_002)
     }
 
-    async fn local_realtime_manager(node_id: &str) -> Arc<RealtimeManager> {
-        Arc::new(
+    async fn local_realtime_manager(node_id: &str) -> TestResult<Arc<RealtimeManager>> {
+        Ok(Arc::new(
             RealtimeManager::new(RealtimeConfig {
                 distributed_transport_factory: None,
                 message_runtime: Arc::new(synctv_realtime::sync::RoomMessageHub::new()),
@@ -331,20 +333,21 @@ mod tests {
                 parent_cancel_token: None,
             })
             .await
-            .expect("local realtime manager should initialize"),
-        )
+            .map_err(|error| test_error(error.to_string()))?,
+        ))
     }
 
     #[tokio::test]
-    async fn test_realtime_manager_event_service_broadcasts_locally() {
-        let realtime_manager = local_realtime_manager("runtime-node").await;
+    async fn test_realtime_manager_event_service_broadcasts_locally() -> TestResult {
+        let realtime_manager = local_realtime_manager("runtime-node").await?;
         let event_service: Arc<dyn RealtimeEventService> = realtime_manager.clone();
 
-        let mut room_rx = event_service
-            .subscribe_with_id(room_id(), user_id(), ConnectionId::new("conn-runtime"))
-            .await
-            .expect("room subscription should succeed")
-            .0;
+        let mut room_rx = realtime_ok(
+            event_service
+                .subscribe_with_id(room_id(), user_id(), ConnectionId::new("conn-runtime"))
+                .await,
+        )?
+        .0;
 
         let event = RealtimeEvent::ChatMessage {
             event_id: "evt-runtime".to_string(),
@@ -365,24 +368,22 @@ mod tests {
         assert!(!event_service.metrics().distributed_enabled);
 
         realtime_manager.shutdown().await;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_cluster_connection_runtime_exposes_connection_queries() {
-        let connection_service: Arc<dyn RealtimeConnectionService> =
+    async fn test_cluster_connection_runtime_exposes_connection_queries() -> TestResult {
+        let connection_service: Arc<dyn ConnectionRuntime> =
             Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         let room_id = room_id();
         let user_id = user_id();
 
-        connection_service.start();
-        connection_service
-            .register("conn-runtime".to_string(), user_id)
-            .await
-            .expect("connection registration should succeed");
-        connection_service
-            .join_room("conn-runtime", room_id)
-            .await
-            .expect("room join should succeed");
+        string_ok(
+            connection_service
+                .register("conn-runtime".to_string(), user_id)
+                .await,
+        )?;
+        string_ok(connection_service.join_room("conn-runtime", room_id).await)?;
 
         assert_eq!(
             connection_service.get_connection_id(&room_id, &user_id),
@@ -392,14 +393,16 @@ mod tests {
         assert_eq!(connection_service.room_connection_count(&room_id), 1);
         assert_eq!(connection_service.user_connection_count(&user_id), 1);
         assert_eq!(
-            connection_service
-                .room_online_user_count_distributed_batch(&[&room_id])
-                .await
-                .expect("online counts should succeed"),
+            string_ok(
+                connection_service
+                    .room_online_user_count_distributed_batch(&[&room_id])
+                    .await,
+            )?,
             vec![1]
         );
 
         connection_service.shutdown().await;
+        Ok(())
     }
 
     #[test]
@@ -411,7 +414,6 @@ mod tests {
         let outcome = RealtimeDeliveryOutcome::from_publish_only(false, metrics);
 
         assert!(outcome.satisfies(RealtimeDeliveryRequirement::DistributedIfAvailable));
-        assert!(!outcome.satisfies(RealtimeDeliveryRequirement::AnyAvailablePath));
     }
 
     #[test]
@@ -428,7 +430,6 @@ mod tests {
         );
 
         assert!(!outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable));
-        assert!(outcome.satisfies(RealtimeDeliveryRequirement::AnyAvailablePath));
         assert!(outcome.distributed_delivery_missed());
     }
 }

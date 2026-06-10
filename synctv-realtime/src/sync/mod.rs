@@ -1,13 +1,13 @@
-pub mod backpressure;
-pub mod connection_manager;
-pub mod dedup;
-pub mod events;
-pub mod realtime_manager;
-pub mod redis_pubsub;
-pub mod room_hub;
-pub mod runtime;
+mod backpressure;
+mod connection_manager;
+mod dedup;
+mod events;
+mod realtime_manager;
+mod redis_pubsub;
+mod room_hub;
+mod runtime;
 pub(crate) mod stream_id;
-pub mod transport;
+mod transport;
 
 use std::sync::Arc;
 
@@ -16,7 +16,6 @@ use synctv_core::RedisCoordinationRuntime;
 pub use backpressure::{BufferPressure, PublishBackpressure};
 pub use connection_manager::{
     ConnectionInfo, ConnectionLimits, ConnectionManager, ConnectionMetrics, DisconnectSignal,
-    DisconnectSignalMetrics,
 };
 pub use dedup::{DedupKey, MessageDeduplicator};
 pub use events::{
@@ -25,7 +24,10 @@ pub use events::{
 pub use realtime_manager::{
     BroadcastResult, RealtimeConfig, RealtimeManager, RealtimeManagerRuntime, RealtimeMetrics,
 };
-pub use redis_pubsub::{PublishRequest, RedisPubSub, RedisRealtimeMessageTransportFactory};
+pub use redis_pubsub::{
+    is_sentinel_failover_error, PublishRequest, RedisPubSub, RedisPubSubConfig,
+    RedisRealtimeMessageTransportFactory,
+};
 pub use room_hub::{ConnectionId, RoomLifecycleEvent, RoomMessageHub, Subscriber};
 pub use runtime::{
     build_connection_manager, build_connection_runtime, build_room_message_runtime,

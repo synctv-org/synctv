@@ -13,10 +13,10 @@ pub enum HandshakeErrorValue {
     SysTimeError(SystemTimeError),
     #[error("digest error: {0}")]
     DigestError(DigestError),
-    #[error("Digest not found error")]
+    #[error("digest not found")]
     DigestNotFound,
-    #[error("s0 version not correct error")]
-    S0VersionNotCorrect,
+    #[error("invalid S0 version")]
+    InvalidS0Version,
     #[error("io error")]
     IOError(Error),
 }
@@ -83,12 +83,10 @@ pub struct DigestError {
 pub enum DigestErrorValue {
     #[error("bytes read error: {0}")]
     BytesReadError(BytesReadError),
-    #[error("digest length not correct")]
-    DigestLengthNotCorrect,
+    #[error("invalid digest length")]
+    InvalidDigestLength,
     #[error("cannot generate digest")]
     CannotGenerate,
-    #[error("unknow schema")]
-    UnknowSchema,
     #[error("HMAC key initialization failed")]
     HmacInitError,
 }

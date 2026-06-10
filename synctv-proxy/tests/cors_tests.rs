@@ -11,19 +11,16 @@ use axum::http::StatusCode;
 // CORS preflight with allowed origins tests
 
 /// Test that Origin in allowed list returns correct CORS headers
-#[tokio::test]
-async fn test_cors_origin_in_allowed_list_returns_headers() {
+#[test]
+fn test_cors_origin_in_allowed_list_returns_headers() {
     let allowed_origins = vec![
         "https://example.com".to_string(),
         "https://app.example.com".to_string(),
     ];
     let cors_config = Arc::new(synctv_proxy::CorsConfig::new(allowed_origins));
 
-    let response = synctv_proxy::proxy_options_preflight_with_cors(
-        Some("https://example.com"),
-        cors_config.clone(),
-    )
-    .await;
+    let response =
+        synctv_proxy::proxy_options_preflight_with_cors(Some("https://example.com"), &cors_config);
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
@@ -53,19 +50,16 @@ async fn test_cors_origin_in_allowed_list_returns_headers() {
 }
 
 /// Test that Origin NOT in allowed list is rejected
-#[tokio::test]
-async fn test_cors_origin_not_in_allowed_list_rejected() {
+#[test]
+fn test_cors_origin_not_in_allowed_list_rejected() {
     let allowed_origins = vec![
         "https://example.com".to_string(),
         "https://app.example.com".to_string(),
     ];
     let cors_config = Arc::new(synctv_proxy::CorsConfig::new(allowed_origins));
 
-    let response = synctv_proxy::proxy_options_preflight_with_cors(
-        Some("https://evil.com"),
-        cors_config.clone(),
-    )
-    .await;
+    let response =
+        synctv_proxy::proxy_options_preflight_with_cors(Some("https://evil.com"), &cors_config);
 
     // Should return 403 Forbidden for disallowed origins
     assert_eq!(
@@ -89,17 +83,14 @@ async fn test_cors_origin_not_in_allowed_list_rejected() {
 }
 
 /// Test that empty allowed origins list has safe default behavior
-#[tokio::test]
-async fn test_cors_empty_allowed_origins_default_behavior() {
+#[test]
+fn test_cors_empty_allowed_origins_default_behavior() {
     // Empty allowed origins should reject all origins (secure by default)
     let allowed_origins: Vec<String> = vec![];
     let cors_config = Arc::new(synctv_proxy::CorsConfig::new(allowed_origins));
 
-    let response = synctv_proxy::proxy_options_preflight_with_cors(
-        Some("https://any-site.com"),
-        cors_config.clone(),
-    )
-    .await;
+    let response =
+        synctv_proxy::proxy_options_preflight_with_cors(Some("https://any-site.com"), &cors_config);
 
     // Should reject when no origins are allowed
     assert_eq!(
@@ -110,14 +101,14 @@ async fn test_cors_empty_allowed_origins_default_behavior() {
 }
 
 /// Test missing Origin header behavior
-#[tokio::test]
-async fn test_cors_missing_origin_header() {
+#[test]
+fn test_cors_missing_origin_header() {
     let allowed_origins = vec!["https://example.com".to_string()];
     let cors_config = Arc::new(synctv_proxy::CorsConfig::new(allowed_origins));
 
     // When Origin is missing (non-browser request), behavior depends on policy
     // A secure default is to reject or return minimal headers
-    let response = synctv_proxy::proxy_options_preflight_with_cors(None, cors_config.clone()).await;
+    let response = synctv_proxy::proxy_options_preflight_with_cors(None, &cors_config);
 
     // Missing origin should still return a valid response
     // but without Access-Control-Allow-Origin header
@@ -128,14 +119,13 @@ async fn test_cors_missing_origin_header() {
 }
 
 /// Test wildcard (*) is not allowed when using explicit origins
-#[tokio::test]
-async fn test_cors_wildcard_not_echoed() {
+#[test]
+fn test_cors_wildcard_not_echoed() {
     let allowed_origins = vec!["https://example.com".to_string()];
     let cors_config = Arc::new(synctv_proxy::CorsConfig::new(allowed_origins));
 
     // Request with "*" as Origin should NOT be treated specially
-    let response =
-        synctv_proxy::proxy_options_preflight_with_cors(Some("*"), cors_config.clone()).await;
+    let response = synctv_proxy::proxy_options_preflight_with_cors(Some("*"), &cors_config);
 
     // "*" is not in the allowed list, so should be rejected
     assert_eq!(
@@ -146,16 +136,13 @@ async fn test_cors_wildcard_not_echoed() {
 }
 
 /// Test Vary header is set correctly for caching
-#[tokio::test]
-async fn test_cors_vary_header_set() {
+#[test]
+fn test_cors_vary_header_set() {
     let allowed_origins = vec!["https://example.com".to_string()];
     let cors_config = Arc::new(synctv_proxy::CorsConfig::new(allowed_origins));
 
-    let response = synctv_proxy::proxy_options_preflight_with_cors(
-        Some("https://example.com"),
-        cors_config.clone(),
-    )
-    .await;
+    let response =
+        synctv_proxy::proxy_options_preflight_with_cors(Some("https://example.com"), &cors_config);
 
     let headers = response.headers();
 
@@ -169,8 +156,8 @@ async fn test_cors_vary_header_set() {
 }
 
 /// Test multiple allowed origins
-#[tokio::test]
-async fn test_cors_multiple_allowed_origins() {
+#[test]
+fn test_cors_multiple_allowed_origins() {
     let allowed_origins = vec![
         "https://example.com".to_string(),
         "https://app.example.com".to_string(),
@@ -184,9 +171,7 @@ async fn test_cors_multiple_allowed_origins() {
         "https://app.example.com",
         "https://cdn.example.com",
     ] {
-        let response =
-            synctv_proxy::proxy_options_preflight_with_cors(Some(*origin), cors_config.clone())
-                .await;
+        let response = synctv_proxy::proxy_options_preflight_with_cors(Some(*origin), &cors_config);
 
         assert_eq!(
             response.status(),
@@ -206,16 +191,15 @@ async fn test_cors_multiple_allowed_origins() {
 }
 
 /// Test CORS config with wildcard enabled (special mode)
-#[tokio::test]
-async fn test_cors_wildcard_mode_allows_all() {
+#[test]
+fn test_cors_wildcard_mode_allows_all() {
     // When configured with wildcard mode, all origins are allowed
     let cors_config = Arc::new(synctv_proxy::CorsConfig::new_wildcard());
 
     let response = synctv_proxy::proxy_options_preflight_with_cors(
         Some("https://any-random-site.com"),
-        cors_config.clone(),
-    )
-    .await;
+        &cors_config,
+    );
 
     assert_eq!(
         response.status(),
@@ -236,15 +220,12 @@ async fn test_cors_wildcard_mode_allows_all() {
 
 /// Test that wildcard mode does NOT include credentials header
 /// Per CORS spec, Access-Control-Allow-Credentials cannot be used with wildcard origin
-#[tokio::test]
-async fn test_wildcard_mode_no_credentials() {
+#[test]
+fn test_wildcard_mode_no_credentials() {
     let cors_config = Arc::new(synctv_proxy::CorsConfig::new_wildcard());
 
-    let response = synctv_proxy::proxy_options_preflight_with_cors(
-        Some("https://any-site.com"),
-        cors_config.clone(),
-    )
-    .await;
+    let response =
+        synctv_proxy::proxy_options_preflight_with_cors(Some("https://any-site.com"), &cors_config);
 
     let headers = response.headers();
 

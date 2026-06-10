@@ -13,10 +13,8 @@
 //!   without a database. Data is lost on restart.
 
 use async_trait::async_trait;
-use sqlx::PgPool;
-use std::sync::Arc;
 
-use crate::{Result, SharedStateProfile};
+use crate::Result;
 
 mod stores;
 pub use stores::{InMemoryTokenBlacklistStore, PgTokenBlacklistStore, TieredTokenBlacklistStore};
@@ -86,21 +84,6 @@ pub trait TokenBlacklistStore: Send + Sync {
     async fn set_version(&self, key: &str, version: i64, ttl_secs: u64) -> Result<()> {
         self.set_family_revoked(key, version, ttl_secs).await
     }
-}
-
-/// Build the production token-blacklist store from the shared-state profile.
-///
-/// Callers should depend on the returned trait object instead of composing the
-/// PG primary and optional Redis cache layers manually.
-#[must_use]
-pub fn token_blacklist_store_from_shared_state_profile(
-    pool: PgPool,
-    profile: &SharedStateProfile,
-) -> Arc<dyn TokenBlacklistStore> {
-    Arc::new(TieredTokenBlacklistStore::from_shared_state_profile(
-        PgTokenBlacklistStore::new(pool),
-        profile,
-    ))
 }
 
 #[cfg(test)]

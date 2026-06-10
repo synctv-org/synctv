@@ -14,6 +14,21 @@ use super::{
     RealtimeOutboxUserLeftEventFactory, RoomService,
 };
 
+fn normalized_rejection_reason(reason: Option<&str>) -> Option<&str> {
+    reason.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn rejection_reason_json(reason: Option<&str>) -> serde_json::Value {
+    normalized_rejection_reason(reason).map_or(serde_json::Value::Null, serde_json::Value::from)
+}
+
+fn rejection_notification(reason: Option<&str>) -> String {
+    match normalized_rejection_reason(reason) {
+        Some(reason) => format!("Your join request was rejected: {reason}"),
+        None => "Your join request was rejected".to_string(),
+    }
+}
+
 impl RoomService {
     async fn active_member_add_options(&self, room_id: &RoomId) -> Result<AddMemberOptions> {
         let room_settings = self.room_settings_repo.get(room_id).await?;
@@ -434,16 +449,12 @@ impl RoomService {
                 "previous_review_status": "pending",
                 "new_review_status": "rejected",
                 "source": "reject_join_request",
-                "reason": reason.unwrap_or_default(),
+                "reason": rejection_reason_json(reason),
             }),
         )
         .await;
 
-        let event = if let Some(reason) = reason.filter(|value| !value.is_empty()) {
-            format!("Your join request was rejected: {reason}")
-        } else {
-            "Your join request was rejected".to_string()
-        };
+        let event = rejection_notification(reason);
         self.notify_membership_event_best_effort(&target_user_id, &room, event)
             .await;
 
@@ -705,16 +716,12 @@ impl RoomService {
                 "previous_review_status": "pending",
                 "new_review_status": "rejected",
                 "source": "admin_reject_join_request",
-                "reason": reason.unwrap_or_default(),
+                "reason": rejection_reason_json(reason),
             }),
         )
         .await;
 
-        let event = if let Some(reason) = reason.filter(|value| !value.is_empty()) {
-            format!("Your join request was rejected: {reason}")
-        } else {
-            "Your join request was rejected".to_string()
-        };
+        let event = rejection_notification(reason);
         self.notify_membership_event_best_effort(&target_user_id, &room, event)
             .await;
 
@@ -811,11 +818,6 @@ impl RoomService {
                 return Err(error);
             }
         };
-        let cleanup_outbox_events = cleanup_outbox_event_factory
-            .as_ref()
-            .map(|factory| factory(&cleanup))
-            .transpose()?
-            .unwrap_or_default();
         if let Err(error) = self
             .insert_user_left_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await
@@ -824,7 +826,11 @@ impl RoomService {
             return Err(error);
         }
         if let Err(error) = self
-            .insert_realtime_outbox_events_tx(&mut tx, &cleanup_outbox_events)
+            .insert_member_resource_cleanup_outbox_tx(
+                &mut tx,
+                &cleanup,
+                cleanup_outbox_event_factory.as_ref(),
+            )
             .await
         {
             self.abort_permission_write(&fence).await;
@@ -851,9 +857,15 @@ impl RoomService {
 
         // Notify room members with username
         let username = snapshot.username;
-        let _ = self
+        let subscriber_count = self
             .notification_service
             .notify_user_left(&room_id, &user_id, &username);
+        tracing::debug!(
+            room_id = %room_id,
+            user_id = %user_id,
+            subscriber_count,
+            "User left notification dispatched"
+        );
 
         tracing::info!(
             room_id = %room_id,
@@ -865,5 +877,29 @@ impl RoomService {
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{rejection_notification, rejection_reason_json};
+
+    #[test]
+    fn rejection_reason_json_preserves_missing_and_trims_present_reason() {
+        assert!(rejection_reason_json(None).is_null());
+        assert!(rejection_reason_json(Some("   ")).is_null());
+        assert_eq!(rejection_reason_json(Some("  duplicate  ")), "duplicate");
+    }
+
+    #[test]
+    fn rejection_notification_uses_trimmed_reason_when_present() {
+        assert_eq!(
+            rejection_notification(Some("  duplicate  ")),
+            "Your join request was rejected: duplicate"
+        );
+        assert_eq!(
+            rejection_notification(Some("   ")),
+            "Your join request was rejected"
+        );
     }
 }

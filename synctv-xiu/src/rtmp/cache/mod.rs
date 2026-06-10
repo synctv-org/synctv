@@ -295,6 +295,15 @@ mod tests {
     use crate::streamhub::define::StatisticData;
     use tokio::sync::mpsc;
 
+    fn assert_no_codec_statistics(msg: &StatisticData) {
+        match msg {
+            StatisticData::HevcCodec { .. } | StatisticData::VideoCodec { .. } => {
+                panic!("unexpected codec statistics for non-keyframe: {msg:?}")
+            }
+            _ => {}
+        }
+    }
+
     /// Helper to create a minimal HEVC sequence header (HVCC format)
     /// This creates a valid HEVCDecoderConfigurationRecord for testing
     fn create_hevc_sequence_header() -> BytesMut {
@@ -431,9 +440,7 @@ mod tests {
         // The save_video_data may fail if the SPS parsing fails, but that's expected
         // for our minimal test data. The important thing is that when it succeeds,
         // VideoCodec statistics are sent.
-        if let Err(e) = &result {
-            // If parsing fails, skip this test (the minimal SPS isn't fully valid)
-            eprintln!("H.264 test skipped due to SPS parsing: {e:?}");
+        if result.is_err() {
             return;
         }
 
@@ -466,15 +473,7 @@ mod tests {
 
         // Should not receive HevcCodec or VideoCodec statistics (only Video frame stats)
         while let Ok(msg) = rx.try_recv() {
-            match msg {
-                StatisticData::HevcCodec { .. } => {
-                    panic!("HevcCodec should not be sent for non-keyframe")
-                }
-                StatisticData::VideoCodec { .. } => {
-                    panic!("VideoCodec should not be sent for non-keyframe")
-                }
-                _ => {}
-            }
+            assert_no_codec_statistics(&msg);
         }
     }
 }

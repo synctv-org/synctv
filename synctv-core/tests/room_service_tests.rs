@@ -2,8 +2,6 @@
 //!
 //! Tests the `RoomService` business logic layer with real `PostgreSQL` via testcontainers.
 //!
-#![allow(clippy::unwrap_used)]
-
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -30,7 +28,7 @@ use synctv_core::{
     },
     Error,
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};
 
 async fn expire_kick_cooldown(pool: &PgPool, room_id: RoomId, user_id: UserId) {
     sqlx::query!(
@@ -42,7 +40,7 @@ async fn expire_kick_cooldown(pool: &PgPool, room_id: RoomId, user_id: UserId) {
     )
     .execute(pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
 }
 
 fn assert_f64_eq(actual: f64, expected: f64) {
@@ -59,7 +57,7 @@ fn u64_to_i64(value: u64) -> i64 {
 fn make_user_service(pool: &PgPool) -> UserService {
     // 32-byte secret for HS256
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = JwtService::new(secret).checked("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -78,33 +76,35 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+    RoomService::new_for_tests(pool, user_service).checked("room service should build")
 }
 
 fn make_room_service_with_settings_registry(
-    pool: PgPool,
+    pool: &PgPool,
     settings_registry: Arc<SettingsRegistry>,
 ) -> RoomService {
-    let user_service = make_user_service(&pool);
+    let user_service = make_user_service(pool);
 
     RoomService::new_with_options(
-        pool,
+        pool.clone(),
         user_service,
         RoomServiceOptions {
             settings_registry: Some(settings_registry),
-            ..RoomServiceOptions::test_defaults()
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
-    .expect("room service should build")
+    .checked("room service should build")
 }
 
 async fn register_direct_url_provider(room_service: &RoomService) {
-    room_service
+    if let Err(error) = room_service
         .media_service()
         .providers_manager()
         .create_provider("direct_url", "direct_url", &serde_json::json!({}))
         .await
-        .expect("direct_url provider should register");
+    {
+        std::panic::panic_any(format!("direct_url provider should register: {error:?}"));
+    }
 }
 
 fn make_user(username: &str) -> User {
@@ -185,8 +185,14 @@ async fn test_create_room_initializes_password_settings_and_playlist_state() {
     let room_service = make_room_service(pool.clone());
     let password_repo = RoomPasswordRepository::new(pool.clone());
 
-    let password_owner = user_repo.create(&make_user("pwd_owner")).await.unwrap();
-    let open_owner = user_repo.create(&make_user("nopwd_owner")).await.unwrap();
+    let password_owner = user_repo
+        .create(&make_user("pwd_owner"))
+        .await
+        .checked("test operation should succeed");
+    let open_owner = user_repo
+        .create(&make_user("nopwd_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let (password_room, password_member) = room_service
         .create_room(
@@ -197,7 +203,7 @@ async fn test_create_room_initializes_password_settings_and_playlist_state() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (open_room, open_member) = room_service
         .create_room(
             "No Password Room".to_string(),
@@ -207,7 +213,7 @@ async fn test_create_room_initializes_password_settings_and_playlist_state() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(password_room.name, "Password Room");
     assert_eq!(password_member.role, RoomRole::Creator);
@@ -217,8 +223,8 @@ async fn test_create_room_initializes_password_settings_and_playlist_state() {
     let credential = password_repo
         .get_opaque_credential(&password_room.id)
         .await
-        .unwrap()
-        .expect("OPAQUE room password credential should be stored");
+        .checked("test operation should succeed")
+        .checked("OPAQUE room password credential should be stored");
     assert!(!credential.record.record.is_empty());
     assert!(!credential.record.credential_identifier.is_empty());
     assert_eq!(credential.state.version, 1);
@@ -228,7 +234,7 @@ async fn test_create_room_initializes_password_settings_and_playlist_state() {
         password_repo
             .get_opaque_credential(&open_room.id)
             .await
-            .unwrap()
+            .checked("test operation should succeed")
             .is_none(),
         "open room should not store OPAQUE credentials"
     );
@@ -236,7 +242,7 @@ async fn test_create_room_initializes_password_settings_and_playlist_state() {
         password_repo
             .get_state(&open_room.id)
             .await
-            .unwrap()
+            .checked("test operation should succeed")
             .is_none(),
         "open room should not store password state"
     );
@@ -244,7 +250,7 @@ async fn test_create_room_initializes_password_settings_and_playlist_state() {
     let (settings, version) = room_service
         .get_room_settings_with_version(&open_room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(settings.chat_enabled.0);
     assert!(settings.allow_auto_join.0);
     assert!(!settings.allow_guest_join.0);
@@ -259,7 +265,7 @@ async fn test_create_room_initializes_password_settings_and_playlist_state() {
             .bind(vec![password_room.id.as_i64(), open_room.id.as_i64()])
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(playlist_count, 0);
 }
 
@@ -270,8 +276,14 @@ async fn test_join_room_correct_password() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("join_owner")).await.unwrap();
-    let joiner = user_repo.create(&make_user("join_user")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("join_owner"))
+        .await
+        .checked("test operation should succeed");
+    let joiner = user_repo
+        .create(&make_user("join_user"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -282,12 +294,12 @@ async fn test_join_room_correct_password() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (joined_room, member, members) = room_service
         .join_room(room.id, joiner.id, Some("CorrectPassword123".to_string()))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(joined_room.id, room.id);
     assert_eq!(member.user_id, joiner.id);
@@ -308,11 +320,11 @@ async fn test_join_room_wrong_password_rejected() {
     let owner = user_repo
         .create(&make_user("wrong_pwd_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let joiner = user_repo
         .create(&make_user("wrong_pwd_joiner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -323,21 +335,21 @@ async fn test_join_room_wrong_password_rejected() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .join_room(room.id, joiner.id, Some("WrongPassword456".to_string()))
         .await;
 
     assert!(result.is_err());
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::Authorization(msg) => {
             assert!(
                 msg.contains("Invalid password") || msg.contains("password"),
                 "Error should mention password: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected Authorization error, got: {other:?}")),
     }
 }
 
@@ -351,11 +363,11 @@ async fn test_join_room_ignores_stale_password_when_room_password_disabled() {
     let owner = user_repo
         .create(&make_user("stale_pwd_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let joiner = user_repo
         .create(&make_user("stale_pwd_joiner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -366,12 +378,12 @@ async fn test_join_room_ignores_stale_password_when_room_password_disabled() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .update_room_password(&room.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .join_room(room.id, joiner.id, Some("WrongPassword456".to_string()))
@@ -393,11 +405,11 @@ async fn test_join_room_password_required_not_provided() {
     let owner = user_repo
         .create(&make_user("nopwd_join_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let joiner = user_repo
         .create(&make_user("nopwd_join_user"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -408,19 +420,19 @@ async fn test_join_room_password_required_not_provided() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service.join_room(room.id, joiner.id, None).await;
 
     assert!(result.is_err());
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::Authorization(msg) => {
             assert!(
                 msg.contains("Password required") || msg.contains("password"),
                 "Error should mention password required: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected Authorization error, got: {other:?}")),
     }
 }
 
@@ -434,11 +446,11 @@ async fn test_join_room_requires_approval_returns_pending_membership() {
     let creator = user_repo
         .create(&make_user("approval_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let joiner = user_repo
         .create(&make_user("approval_joiner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = RoomSettings {
         require_approval: RequireApproval(true),
@@ -454,12 +466,12 @@ async fn test_join_room_requires_approval_returns_pending_membership() {
             Some(settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (_joined_room, member, members) = room_service
         .join_room(room.id, joiner.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(member.status, MemberStatus::Active);
     assert!(
@@ -471,7 +483,7 @@ async fn test_join_room_requires_approval_returns_pending_membership() {
         .member_service()
         .get_member(&room.id, &joiner.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(
         stored_member.is_none(),
         "pending join requests must not create active membership rows"
@@ -488,7 +500,7 @@ async fn test_join_room_requires_approval_returns_pending_membership() {
     .bind(joiner.id)
     .fetch_one(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
     assert!(pending_request_exists);
 }
 
@@ -502,11 +514,11 @@ async fn test_join_room_rejects_self_join_when_auto_join_disabled() {
     let creator = user_repo
         .create(&make_user("manual_join_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let joiner = user_repo
         .create(&make_user("manual_join_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = RoomSettings {
         allow_auto_join: AllowAutoJoin(false),
@@ -522,12 +534,12 @@ async fn test_join_room_rejects_self_join_when_auto_join_disabled() {
             Some(settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let err = room_service
         .join_room(room.id, joiner.id, None)
         .await
-        .expect_err("self-service join must be blocked when allow_auto_join=false");
+        .failed("self-service join must be blocked when allow_auto_join=false");
 
     match err {
         Error::Authorization(message) => {
@@ -536,7 +548,7 @@ async fn test_join_room_rejects_self_join_when_auto_join_disabled() {
                 "unexpected error message: {message}"
             );
         }
-        other => panic!("expected authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected authorization error, got: {other:?}")),
     }
 }
 
@@ -551,8 +563,11 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
     let creator = user_repo
         .create(&make_user("reject_creator"))
         .await
-        .unwrap();
-    let joiner = user_repo.create(&make_user("reject_joiner")).await.unwrap();
+        .checked("test operation should succeed");
+    let joiner = user_repo
+        .create(&make_user("reject_joiner"))
+        .await
+        .checked("test operation should succeed");
 
     let settings = RoomSettings {
         require_approval: RequireApproval(true),
@@ -568,12 +583,12 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
             Some(settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (_joined_room, pending_member, _) = room_service
         .join_room(room.id, joiner.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(pending_member.status, MemberStatus::Active);
 
     let request_id = sqlx::query_scalar::<_, i64>(
@@ -589,7 +604,7 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
     .bind(joiner.id)
     .fetch_one(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
 
     room_service
         .reject_join_request(
@@ -599,13 +614,13 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
             Some("not now"),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(
         member_repo
             .get(&room.id, &joiner.id)
             .await
-            .unwrap()
+            .checked("test operation should succeed")
             .is_none(),
         "rejected join requests must not create active memberships"
     );
@@ -623,13 +638,13 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
     .bind(joiner.id)
     .fetch_one(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
     assert!(rejected_request_exists);
 
     let (_joined_room, pending_again, _) = room_service
         .join_room(room.id, joiner.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(pending_again.status, MemberStatus::Active);
 }
 
@@ -644,11 +659,11 @@ async fn test_join_review_approval_transition_does_not_touch_new_pending_request
     let creator = user_repo
         .create(&make_user("stale_join_approval_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let joiner = user_repo
         .create(&make_user("stale_join_approval_joiner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = RoomSettings {
         require_approval: RequireApproval(true),
@@ -664,12 +679,12 @@ async fn test_join_review_approval_transition_does_not_touch_new_pending_request
             Some(settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, joiner.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let old_request_id = sqlx::query_scalar::<_, i64>(
         r"
         SELECT id
@@ -683,18 +698,18 @@ async fn test_join_review_approval_transition_does_not_touch_new_pending_request
     .bind(joiner.id)
     .fetch_one(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
     let old_request_id = ReviewRequestId::expect_positive(old_request_id);
 
     room_service
         .reject_join_request(room.id, creator.id, old_request_id, Some("try later"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, joiner.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let new_request_id = sqlx::query_scalar::<_, i64>(
         r"
         SELECT id
@@ -708,14 +723,14 @@ async fn test_join_review_approval_transition_does_not_touch_new_pending_request
     .bind(joiner.id)
     .fetch_one(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
     let new_request_id = ReviewRequestId::expect_positive(new_request_id);
     assert_ne!(
         old_request_id, new_request_id,
         "reapply must create a distinct pending review row"
     );
 
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.begin().await.checked("test operation should succeed");
     let stale_approval = ReviewRepository::approve_room_join_with_executor(
         &mut *tx,
         old_request_id,
@@ -723,8 +738,8 @@ async fn test_join_review_approval_transition_does_not_touch_new_pending_request
         Some(creator.id),
     )
     .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    .checked("test operation should succeed");
+    tx.commit().await.checked("test operation should succeed");
 
     assert_eq!(
         stale_approval, 0,
@@ -734,8 +749,8 @@ async fn test_join_review_approval_transition_does_not_touch_new_pending_request
     let new_status = review_repo
         .load_room_join_in_room(new_request_id, room.id)
         .await
-        .unwrap()
-        .expect("new pending join request should still exist");
+        .checked("test operation should succeed")
+        .checked("new pending join request should still exist");
     assert_eq!(
         new_status.status,
         synctv_core::models::ReviewStatus::Pending,
@@ -754,11 +769,11 @@ async fn test_approve_join_request_rejects_room_banned_after_request() {
     let creator = user_repo
         .create(&make_user("join_approval_banned_room_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let joiner = user_repo
         .create(&make_user("join_approval_banned_room_joiner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = RoomSettings {
         require_approval: RequireApproval(true),
@@ -773,12 +788,12 @@ async fn test_approve_join_request_rejects_room_banned_after_request() {
             Some(settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, joiner.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let request_id = sqlx::query_scalar::<_, i64>(
         r"
         SELECT id
@@ -792,9 +807,12 @@ async fn test_approve_join_request_rejects_room_banned_after_request() {
     .bind(joiner.id)
     .fetch_one(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
 
-    room_service.ban_room(&room.id, &creator.id).await.unwrap();
+    room_service
+        .ban_room(&room.id, &creator.id)
+        .await
+        .checked("test operation should succeed");
 
     let err = room_service
         .approve_join_request(
@@ -803,7 +821,7 @@ async fn test_approve_join_request_rejects_room_banned_after_request() {
             ReviewRequestId::expect_positive(request_id),
         )
         .await
-        .expect_err("approval must re-check current room ban state");
+        .failed("approval must re-check current room ban state");
 
     assert!(matches!(
         err,
@@ -813,7 +831,7 @@ async fn test_approve_join_request_rejects_room_banned_after_request() {
         member_repo
             .get(&room.id, &joiner.id)
             .await
-            .unwrap()
+            .checked("test operation should succeed")
             .is_none(),
         "failed approval must not create an active membership"
     );
@@ -826,7 +844,10 @@ async fn test_leave_room_creator_cannot_leave() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("leave_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("leave_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -837,19 +858,19 @@ async fn test_leave_room_creator_cannot_leave() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service.leave_room(room.id, owner.id).await;
 
     assert!(result.is_err());
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::Authorization(msg) => {
             assert!(
                 msg.contains("creator") || msg.contains("Creator"),
                 "Error should mention creator: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected Authorization error, got: {other:?}")),
     }
 }
 
@@ -864,11 +885,11 @@ async fn test_leave_room_member_succeeds() {
     let owner = user_repo
         .create(&make_user("leave_succ_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let joiner = user_repo
         .create(&make_user("leave_succ_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -879,18 +900,27 @@ async fn test_leave_room_member_succeeds() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, joiner.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    assert!(member_repo.is_member(&room.id, &joiner.id).await.unwrap());
+    assert!(member_repo
+        .is_member(&room.id, &joiner.id)
+        .await
+        .checked("test operation should succeed"));
 
-    room_service.leave_room(room.id, joiner.id).await.unwrap();
+    room_service
+        .leave_room(room.id, joiner.id)
+        .await
+        .checked("test operation should succeed");
 
-    assert!(!member_repo.is_member(&room.id, &joiner.id).await.unwrap());
+    assert!(!member_repo
+        .is_member(&room.id, &joiner.id)
+        .await
+        .checked("test operation should succeed"));
 }
 
 #[tokio::test]
@@ -906,11 +936,11 @@ async fn test_leave_room_cleans_member_created_media_resources() {
     let owner = user_repo
         .create(&make_user("leave_cleanup_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("leave_cleanup_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -921,13 +951,13 @@ async fn test_leave_room_cleans_member_created_media_resources() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     register_direct_url_provider(&room_service).await;
 
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = room_service
         .playlist_service()
@@ -945,7 +975,7 @@ async fn test_leave_room_cleans_member_created_media_resources() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let media = room_service
         .media_service()
         .add_media(
@@ -963,34 +993,44 @@ async fn test_leave_room_cleans_member_created_media_resources() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .playback_service()
         .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let warm_state = room_service
         .playback_service()
         .get_state(&room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(warm_state.playing_media_id, Some(media.id));
-    room_service.leave_room(room.id, member.id).await.unwrap();
+    room_service
+        .leave_room(room.id, member.id)
+        .await
+        .checked("test operation should succeed");
 
-    assert!(!member_repo.is_member(&room.id, &member.id).await.unwrap());
+    assert!(!member_repo
+        .is_member(&room.id, &member.id)
+        .await
+        .checked("test operation should succeed"));
     assert!(playlist_repo
         .get_by_id(&playlist.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_none());
-    assert!(media_repo.get_by_id(&media.id).await.unwrap().is_none());
+    assert!(media_repo
+        .get_by_id(&media.id)
+        .await
+        .checked("test operation should succeed")
+        .is_none());
 
     let refreshed_state = room_service
         .playback_service()
         .get_state(&room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(refreshed_state.playing_media_id, None);
     assert_eq!(refreshed_state.playing_playlist_id, None);
     assert!(refreshed_state.target.is_empty());
@@ -1012,11 +1052,11 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
     let owner = user_repo
         .create(&make_user("kick_cleanup_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let target = user_repo
         .create(&make_user("kick_cleanup_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1027,13 +1067,13 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     register_direct_url_provider(&room_service).await;
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = room_service
         .playlist_service()
@@ -1051,7 +1091,7 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let media = room_service
         .media_service()
         .add_media(
@@ -1069,41 +1109,48 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .playback_service()
         .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let warm_state = room_service
         .playback_service()
         .get_state(&room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(warm_state.playing_media_id, Some(media.id));
     room_service
         .kick_member(room.id, owner.id, target.id, 3600)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    assert!(!member_repo.is_member(&room.id, &target.id).await.unwrap());
+    assert!(!member_repo
+        .is_member(&room.id, &target.id)
+        .await
+        .checked("test operation should succeed"));
     assert!(member_repo
         .is_in_kick_cooldown(&room.id, &target.id)
         .await
-        .unwrap());
+        .checked("test operation should succeed"));
     assert!(playlist_repo
         .get_by_id(&playlist.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_none());
-    assert!(media_repo.get_by_id(&media.id).await.unwrap().is_none());
+    assert!(media_repo
+        .get_by_id(&media.id)
+        .await
+        .checked("test operation should succeed")
+        .is_none());
 
     let refreshed_state = room_service
         .playback_service()
         .get_state(&room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(refreshed_state.playing_media_id, None);
     assert_eq!(refreshed_state.playing_playlist_id, None);
     assert!(refreshed_state.target.is_empty());
@@ -1134,11 +1181,11 @@ async fn test_leave_room_non_member_is_rejected() {
     let owner = user_repo
         .create(&make_user("leave_non_member_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let outsider = user_repo
         .create(&make_user("leave_non_member_outsider"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1149,7 +1196,7 @@ async fn test_leave_room_non_member_is_rejected() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service.leave_room(room.id, outsider.id).await;
 
@@ -1157,14 +1204,14 @@ async fn test_leave_room_non_member_is_rejected() {
         result.is_err(),
         "Non-member should not be able to leave room"
     );
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::Authorization(msg) => {
             assert!(
                 msg.contains("not a member") || msg.contains("Not a member"),
                 "Error should mention membership requirement: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected Authorization error, got: {other:?}")),
     }
 }
 
@@ -1176,7 +1223,10 @@ async fn test_delete_room_sets_deleted_at() {
     let room_service = make_room_service(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("delete_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("delete_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1187,13 +1237,22 @@ async fn test_delete_room_sets_deleted_at() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    assert!(room_repo.exists(&room.id).await.unwrap());
+    assert!(room_repo
+        .exists(&room.id)
+        .await
+        .checked("test operation should succeed"));
 
-    room_service.delete_room(room.id, owner.id).await.unwrap();
+    room_service
+        .delete_room(room.id, owner.id)
+        .await
+        .checked("test operation should succeed");
 
-    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    let fetched = room_repo
+        .get_by_id(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         fetched.is_none(),
         "Room should not be found after soft-delete"
@@ -1204,7 +1263,7 @@ async fn test_delete_room_sets_deleted_at() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
 
     assert!(deleted_at.is_some(), "deleted_at should be set");
 }
@@ -1215,7 +1274,10 @@ async fn test_settings_cas_exhaustion_returns_internal() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let owner = user_repo.create(&make_user("cas_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("cas_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1226,35 +1288,38 @@ async fn test_settings_cas_exhaustion_returns_internal() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Manually corrupt the version to force OptimisticLockConflict on every attempt.
     // We do this by updating the version to a very high number after each read.
     // The service reads version N, then we immediately bump it, so the CAS write
     // fails with OptimisticLockConflict.
     // Spawn a concurrent task that keeps bumping the version.
-    let room_id_str = room.id.to_string();
     let pool_clone = pool.clone();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
 
     let bumper = tokio::spawn(async move {
         while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-            let _ = sqlx::query(
+            sqlx::query(
                 "UPDATE room_settings SET version = version + 1 WHERE room_id = $1 AND key = '_settings'"
             )
-            .bind(&room_id_str)
+            .bind(room.id)
             .execute(&pool_clone)
-            .await;
+            .await?;
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
+        Ok::<_, sqlx::Error>(())
     });
 
     let settings = RoomSettings::default();
     let result = room_service.set_settings(room.id, owner.id, settings).await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let _ = bumper.await;
+    bumper
+        .await
+        .checked("bumper task should not panic")
+        .checked("bumper task should update room settings versions");
 
     // The result should be an Internal error (not OptimisticLockConflict)
     match result {
@@ -1269,12 +1334,12 @@ async fn test_settings_cas_exhaustion_returns_internal() {
             );
         }
         Err(Error::OptimisticLockConflict) => {
-            panic!(
-                "OptimisticLockConflict should not leak; it should be wrapped in Internal error"
+            std::panic::panic_any(
+                "OptimisticLockConflict should not leak; it should be wrapped in Internal error",
             );
         }
         Err(other) => {
-            panic!("Unexpected error: {other:?}");
+            std::panic::panic_any(format!("Unexpected error: {other:?}"));
         }
     }
 }
@@ -1289,11 +1354,11 @@ async fn test_kicked_user_cannot_rejoin_until_cooldown_expires() {
     let creator = user_repo
         .create(&make_user("ban_rejoin_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let target = user_repo
         .create(&make_user("ban_rejoin_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1304,17 +1369,17 @@ async fn test_kicked_user_cannot_rejoin_until_cooldown_expires() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .kick_member(room.id, creator.id, target.id, 3600)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service.join_room(room.id, target.id, None).await;
 
@@ -1322,21 +1387,21 @@ async fn test_kicked_user_cannot_rejoin_until_cooldown_expires() {
         result.is_err(),
         "Kicked user should not be able to rejoin during cooldown"
     );
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::Authorization(msg) => {
             assert!(
                 msg.contains("recently kicked") || msg.contains("cooldown"),
                 "Error should mention kick cooldown: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected Authorization error, got: {other:?}")),
     }
 
     expire_kick_cooldown(&pool, room.id, target.id).await;
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .expect("kicked user should rejoin after cooldown expiry");
+        .checked("kicked user should rejoin after cooldown expiry");
 }
 
 #[tokio::test]
@@ -1349,11 +1414,11 @@ async fn test_room_with_banned_creator_becomes_unavailable_to_existing_members()
     let creator = user_repo
         .create(&make_user("inactive_owner_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("inactive_owner_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1364,27 +1429,27 @@ async fn test_room_with_banned_creator_becomes_unavailable_to_existing_members()
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     user_repo
         .ban(&creator.id, None, Some("room service test".to_string()))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service.check_membership(&room.id, &member.id).await;
-    match result.expect_err("member access must fail once creator is banned") {
+    match result.failed("member access must fail once creator is banned") {
         Error::Authorization(message) => {
             assert!(
                 message.contains("creator") && message.contains("active"),
                 "error should explain creator status: {message}"
             );
         }
-        other => panic!("expected authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected authorization error, got: {other:?}")),
     }
 }
 
@@ -1398,11 +1463,11 @@ async fn test_room_with_banned_creator_rejects_new_joins() {
     let creator = user_repo
         .create(&make_user("inactive_join_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let joiner = user_repo
         .create(&make_user("inactive_join_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1413,22 +1478,22 @@ async fn test_room_with_banned_creator_rejects_new_joins() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     user_repo
         .ban(&creator.id, None, Some("room service test".to_string()))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service.join_room(room.id, joiner.id, None).await;
-    match result.expect_err("room with banned creator must reject joins") {
+    match result.failed("room with banned creator must reject joins") {
         Error::Authorization(message) => {
             assert!(
                 message.contains("creator") && message.contains("active"),
                 "error should explain creator status: {message}"
             );
         }
-        other => panic!("expected authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected authorization error, got: {other:?}")),
     }
 }
 
@@ -1439,7 +1504,10 @@ async fn test_room_description_unicode_500_chars_accepted() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("unicode_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("unicode_owner"))
+        .await
+        .checked("test operation should succeed");
 
     // 500 Unicode characters (mix of ASCII and accented Latin)
     let desc = "Helloß".repeat(50); // 6 chars * 50 = 300 chars
@@ -1457,7 +1525,7 @@ async fn test_room_description_unicode_500_chars_accepted() {
         .await;
 
     assert!(result.is_ok(), "500 Unicode chars should be accepted");
-    let (room, _) = result.unwrap();
+    let (room, _) = result.checked("test operation should succeed");
     assert_eq!(room.description.chars().count(), 500);
 }
 
@@ -1471,7 +1539,7 @@ async fn test_room_description_over_500_rejected() {
     let owner = user_repo
         .create(&make_user("long_desc_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // 501 characters
     let desc = "a".repeat(501);
@@ -1481,14 +1549,14 @@ async fn test_room_description_over_500_rejected() {
         .await;
 
     assert!(result.is_err());
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::InvalidInput(msg) => {
             assert!(
                 msg.contains("description") || msg.contains("500"),
                 "Should mention description limit: {msg}"
             );
         }
-        other => panic!("Expected InvalidInput error, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected InvalidInput error, got: {other:?}")),
     }
 }
 
@@ -1502,27 +1570,27 @@ async fn test_join_room_uses_current_password_state_after_updates() {
     let owner = user_repo
         .create(&make_user("pwd_transition_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let old_joiner = user_repo
         .create(&make_user("pwd_transition_old"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let new_joiner = user_repo
         .create(&make_user("pwd_transition_new"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let clear_joiner = user_repo
         .create(&make_user("pwd_transition_clear"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let missing_joiner = user_repo
         .create(&make_user("pwd_transition_missing"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let added_joiner = user_repo
         .create(&make_user("pwd_transition_added"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1533,12 +1601,12 @@ async fn test_join_room_uses_current_password_state_after_updates() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .update_room_password(&room.id, Some("NewPassword456".to_string()))
         .await
-        .expect("password update should succeed");
+        .checked("password update should succeed");
 
     let result = room_service
         .join_room(
@@ -1552,26 +1620,26 @@ async fn test_join_room_uses_current_password_state_after_updates() {
     let (joined_room, member, _) = room_service
         .join_room(room.id, new_joiner.id, Some("NewPassword456".to_string()))
         .await
-        .expect("new password should allow join");
+        .checked("new password should allow join");
     assert_eq!(joined_room.id, room.id);
     assert_eq!(member.user_id, new_joiner.id);
 
     room_service
         .update_room_password(&room.id, None)
         .await
-        .expect("room password should be disabled");
+        .checked("room password should be disabled");
 
     let (joined_room, member, _) = room_service
         .join_room(room.id, clear_joiner.id, None)
         .await
-        .expect("cleared password should allow join");
+        .checked("cleared password should allow join");
     assert_eq!(joined_room.id, room.id);
     assert_eq!(member.user_id, clear_joiner.id);
 
     room_service
         .update_room_password(&room.id, Some("AddedPassword123".to_string()))
         .await
-        .expect("password update should succeed");
+        .checked("password update should succeed");
 
     let result = room_service
         .join_room(room.id, missing_joiner.id, None)
@@ -1585,7 +1653,7 @@ async fn test_join_room_uses_current_password_state_after_updates() {
             Some("AddedPassword123".to_string()),
         )
         .await
-        .expect("added password should allow join");
+        .checked("added password should allow join");
     assert_eq!(joined_room.id, room.id);
     assert_eq!(member.user_id, added_joiner.id);
 }
@@ -1600,11 +1668,11 @@ async fn test_concurrent_room_creation_same_name_different_users_succeeds() {
     let user1 = user_repo
         .create(&make_user("concurrent_user1"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let user2 = user_repo
         .create(&make_user("concurrent_user2"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let room_name = "Same Name Room".to_string();
 
@@ -1629,7 +1697,7 @@ async fn test_concurrent_room_creation_same_name_different_users_succeeds() {
             .bind(&room_name)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(room_count, 2, "Both active rooms should exist");
 }
 
@@ -1643,7 +1711,7 @@ async fn test_concurrent_same_user_duplicate_room_name_is_service_prevented() {
     let user = user_repo
         .create(&make_user("same_user_duplicate_concurrent"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room_name = "Repeated Concurrent Name".to_string();
 
     let mut handles = Vec::new();
@@ -1661,13 +1729,13 @@ async fn test_concurrent_same_user_duplicate_room_name_is_service_prevented() {
     let mut success_count = 0;
     let mut already_exists_count = 0;
     for handle in handles {
-        match handle.await.unwrap() {
+        match handle.await.checked("test operation should succeed") {
             Ok(_) => success_count += 1,
             Err(Error::AlreadyExists(msg)) => {
                 assert_eq!(msg, "You already have a room with this name");
                 already_exists_count += 1;
             }
-            Err(err) => panic!("unexpected create_room error: {err:?}"),
+            Err(err) => std::panic::panic_any(format!("unexpected create_room error: {err:?}")),
         }
     }
 
@@ -1683,7 +1751,7 @@ async fn test_concurrent_same_user_duplicate_room_name_is_service_prevented() {
     .bind(&room_name)
     .fetch_one(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
     assert_eq!(persisted_count, 1);
 }
 
@@ -1697,7 +1765,7 @@ async fn test_same_user_can_create_multiple_rooms_with_distinct_names() {
     let user = user_repo
         .create(&make_user("same_user_concurrent"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (result1, result2) = tokio::join!(
         room_service.create_room(
@@ -1740,7 +1808,7 @@ async fn test_password_update_invalidates_room_cache() {
     let owner = user_repo
         .create(&make_user("pwd_cache_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1751,36 +1819,39 @@ async fn test_password_update_invalidates_room_cache() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let initial_state = password_repo
         .get_state(&room.id)
         .await
-        .unwrap()
-        .expect("initial OPAQUE credential should exist");
+        .checked("test operation should succeed")
+        .checked("initial OPAQUE credential should exist");
 
     room_service
         .update_room_password(&room.id, Some("NewPassword456".to_string()))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let updated_state = password_repo
         .get_state(&room.id)
         .await
-        .unwrap()
-        .expect("updated OPAQUE credential should exist");
+        .checked("test operation should succeed")
+        .checked("updated OPAQUE credential should exist");
     assert!(
         updated_state.version > initial_state.version,
         "password update should bump room password version"
     );
 
-    let settings = settings_repo.get(&room.id).await.unwrap();
+    let settings = settings_repo
+        .get(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(settings.chat_enabled.0);
     assert!(
         password_repo
             .get_state(&room.id)
             .await
-            .unwrap()
+            .checked("test operation should succeed")
             .is_some_and(|state| state.enabled),
         "Room should still require password after update"
     );
@@ -1797,7 +1868,7 @@ async fn test_password_removal_disables_room_password_and_preserves_credential()
     let owner = user_repo
         .create(&make_user("pwd_remove_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1808,26 +1879,26 @@ async fn test_password_removal_disables_room_password_and_preserves_credential()
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let initial_credential = password_repo
         .get_opaque_credential(&room.id)
         .await
-        .unwrap()
-        .expect("password credential should be stored");
+        .checked("test operation should succeed")
+        .checked("password credential should be stored");
     assert!(initial_credential.state.enabled);
 
     // Remove password
     room_service
         .update_room_password(&room.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let disabled_credential = password_repo
         .get_opaque_credential(&room.id)
         .await
-        .unwrap()
-        .expect("disabling room password should keep OPAQUE credential material");
+        .checked("test operation should succeed")
+        .checked("disabling room password should keep OPAQUE credential material");
     assert!(!disabled_credential.state.enabled);
     assert!(disabled_credential.state.version > initial_credential.state.version);
 }
@@ -1843,7 +1914,7 @@ async fn test_update_room_password_updates_password_state_without_settings_notif
     let owner = user_repo
         .create(&make_user("password_notify_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1854,22 +1925,25 @@ async fn test_update_room_password_updates_password_state_without_settings_notif
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .update_room_password(&room.id, Some("hashed-password".to_string()))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let password_state = RoomPasswordRepository::new(pool.clone())
         .get_state(&room.id)
         .await
-        .unwrap()
-        .expect("password state should exist");
+        .checked("test operation should succeed")
+        .checked("password state should exist");
     assert!(password_state.enabled);
     let settings_event = tokio::time::timeout(std::time::Duration::from_millis(100), async {
         loop {
-            let received = event_rx.recv().await.unwrap();
+            let received = event_rx
+                .recv()
+                .await
+                .checked("test operation should succeed");
             if matches!(received.1, RoomEvent::SettingsUpdated { .. }) {
                 break received;
             }
@@ -1893,11 +1967,11 @@ async fn test_kick_member_invalidates_permission_cache() {
     let creator = user_repo
         .create(&make_user("ban_sync_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let target = user_repo
         .create(&make_user("ban_sync_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1908,30 +1982,30 @@ async fn test_kick_member_invalidates_permission_cache() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let perm_service = room_service.permission_service();
     let initial_perms = perm_service
         .get_user_permissions_eventually_consistent(&room.id, &target.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(initial_perms.0 > 0, "Member should have some permissions");
 
     room_service
         .kick_member(room.id, creator.id, target.id, 3600)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(
         member_repo
             .get_any(&room.id, &target.id)
             .await
-            .unwrap()
+            .checked("test operation should succeed")
             .is_none(),
         "kick should delete the active membership row"
     );
@@ -1939,7 +2013,7 @@ async fn test_kick_member_invalidates_permission_cache() {
         member_repo
             .is_in_kick_cooldown(&room.id, &target.id)
             .await
-            .unwrap(),
+            .checked("test operation should succeed"),
         "kick should create an active cooldown"
     );
 
@@ -1962,11 +2036,11 @@ async fn test_kick_prevents_room_access_even_with_cached_permissions() {
     let creator = user_repo
         .create(&make_user("ban_cache_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let target = user_repo
         .create(&make_user("ban_cache_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1977,23 +2051,23 @@ async fn test_kick_prevents_room_access_even_with_cached_permissions() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let perm_service = room_service.permission_service();
     let _cached = perm_service
         .get_user_permissions_eventually_consistent(&room.id, &target.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .kick_member(room.id, creator.id, target.id, 3600)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service.join_room(room.id, target.id, None).await;
     assert!(
@@ -2001,14 +2075,14 @@ async fn test_kick_prevents_room_access_even_with_cached_permissions() {
         "Kicked user should not be able to join even with cached permissions"
     );
 
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::Authorization(msg) => {
             assert!(
                 msg.contains("recently kicked") || msg.contains("cooldown"),
                 "Error should mention kick cooldown: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected Authorization error, got: {other:?}")),
     }
 }
 
@@ -2019,7 +2093,10 @@ async fn test_settings_update_retries_on_version_conflict() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("retry_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("retry_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -2030,7 +2107,7 @@ async fn test_settings_update_retries_on_version_conflict() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Concurrent settings update from two tasks
     let room_id1 = room.id;
@@ -2041,7 +2118,10 @@ async fn test_settings_update_retries_on_version_conflict() {
     let pool1 = pool.clone();
     let update1 = tokio::spawn(async move {
         let room_service = make_room_service(pool1.clone());
-        let mut settings = room_service.get_room_settings(&room_id1).await.unwrap();
+        let mut settings = room_service
+            .get_room_settings(&room_id1)
+            .await
+            .checked("test operation should succeed");
         settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
         room_service
             .set_settings(room_id1, user_id1, settings)
@@ -2051,7 +2131,10 @@ async fn test_settings_update_retries_on_version_conflict() {
     let pool2 = pool.clone();
     let update2 = tokio::spawn(async move {
         let room_service = make_room_service(pool2.clone());
-        let mut settings = room_service.get_room_settings(&room_id2).await.unwrap();
+        let mut settings = room_service
+            .get_room_settings(&room_id2)
+            .await
+            .checked("test operation should succeed");
         settings.max_members = synctv_core::models::room_settings::MaxMembers(50);
         room_service
             .set_settings(room_id2, user_id2, settings)
@@ -2062,7 +2145,8 @@ async fn test_settings_update_retries_on_version_conflict() {
 
     // At least one should succeed (possibly both with retries)
     // The retry mechanism should handle version conflicts
-    let success_count = u8::from(r1.unwrap().is_ok()) + u8::from(r2.unwrap().is_ok());
+    let success_count = u8::from(r1.checked("test operation should succeed").is_ok())
+        + u8::from(r2.checked("test operation should succeed").is_ok());
     assert!(
         success_count >= 1,
         "At least one update should succeed with retry mechanism"
@@ -2078,7 +2162,7 @@ async fn test_settings_update_returns_internal_error_after_max_retries() {
     let owner = user_repo
         .create(&make_user("max_retry_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -2089,10 +2173,9 @@ async fn test_settings_update_returns_internal_error_after_max_retries() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Manually corrupt the version to force OptimisticLockConflict on every attempt
-    let room_id_str = room.id.to_string();
     let pool_clone = pool.clone();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
@@ -2100,21 +2183,25 @@ async fn test_settings_update_returns_internal_error_after_max_retries() {
     // Spawn a task that keeps bumping the version
     let bumper = tokio::spawn(async move {
         while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-            let _ = sqlx::query(
+            sqlx::query(
                 "UPDATE room_settings SET version = version + 1 WHERE room_id = $1 AND key = '_settings'"
             )
-            .bind(&room_id_str)
+            .bind(room.id)
             .execute(&pool_clone)
-            .await;
+            .await?;
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
+        Ok::<_, sqlx::Error>(())
     });
 
     let settings = RoomSettings::default();
     let result = room_service.set_settings(room.id, owner.id, settings).await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let _ = bumper.await;
+    bumper
+        .await
+        .checked("bumper task should not panic")
+        .checked("bumper task should update room settings versions");
 
     // The result should be an Internal error (not OptimisticLockConflict which is wrapped)
     match result {
@@ -2129,10 +2216,10 @@ async fn test_settings_update_returns_internal_error_after_max_retries() {
             );
         }
         Err(Error::OptimisticLockConflict) => {
-            panic!("OptimisticLockConflict should be wrapped in Internal error");
+            std::panic::panic_any("OptimisticLockConflict should be wrapped in Internal error");
         }
         Err(other) => {
-            panic!("Unexpected error: {other:?}");
+            std::panic::panic_any(format!("Unexpected error: {other:?}"));
         }
     }
 }
@@ -2147,7 +2234,7 @@ async fn test_single_setting_update_with_retry() {
     let owner = user_repo
         .create(&make_user("single_setting_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -2158,7 +2245,7 @@ async fn test_single_setting_update_with_retry() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .update_room_setting(&room.id, &owner.id, "allow_guest_join", "true")
@@ -2170,7 +2257,10 @@ async fn test_single_setting_update_with_retry() {
         result.err()
     );
 
-    let settings = room_service.get_room_settings(&room.id).await.unwrap();
+    let settings = room_service
+        .get_room_settings(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         settings.allow_guest_join.0,
         "allow_guest_join should be true"
@@ -2187,7 +2277,7 @@ async fn test_password_update_with_cas_retry() {
     let owner = user_repo
         .create(&make_user("pwd_retry_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -2198,7 +2288,7 @@ async fn test_password_update_with_cas_retry() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .update_room_password(&room.id, Some("NewPassword123".to_string()))
@@ -2213,7 +2303,7 @@ async fn test_password_update_with_cas_retry() {
     let joiner = user_repo
         .create(&make_user("pwd_retry_joiner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let join_result = room_service
         .join_room(room.id, joiner.id, Some("NewPassword123".to_string()))
         .await;
@@ -2235,11 +2325,11 @@ async fn test_room_deletion_invalidates_caches() {
     let owner = user_repo
         .create(&make_user("cache_inval_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("cache_inval_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -2250,23 +2340,29 @@ async fn test_room_deletion_invalidates_caches() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let perm_service = room_service.permission_service();
     let _cached = perm_service
         .get_user_permissions_eventually_consistent(&room.id, &member.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    room_service.delete_room(room.id, owner.id).await.unwrap();
+    room_service
+        .delete_room(room.id, owner.id)
+        .await
+        .checked("test operation should succeed");
 
     let room_repo = RoomRepository::new(pool.clone());
-    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    let fetched = room_repo
+        .get_by_id(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched.is_none(), "Room should not be found after deletion");
 }
 
@@ -2278,7 +2374,10 @@ async fn test_room_password_uses_unique_salt_per_room() {
     let room_service = make_room_service(pool.clone());
     let password_repo = RoomPasswordRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("salt_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("salt_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room1, _) = room_service
         .create_room(
@@ -2289,7 +2388,7 @@ async fn test_room_password_uses_unique_salt_per_room() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room2, _) = room_service
         .create_room(
@@ -2300,18 +2399,18 @@ async fn test_room_password_uses_unique_salt_per_room() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let credential1 = password_repo
         .get_opaque_credential(&room1.id)
         .await
-        .unwrap()
-        .expect("first room credential should exist");
+        .checked("test operation should succeed")
+        .checked("first room credential should exist");
     let credential2 = password_repo
         .get_opaque_credential(&room2.id)
         .await
-        .unwrap()
-        .expect("second room credential should exist");
+        .checked("test operation should succeed")
+        .checked("second room credential should exist");
 
     assert_ne!(
         credential1.record.record, credential2.record.record,
@@ -2321,11 +2420,11 @@ async fn test_room_password_uses_unique_salt_per_room() {
     assert!(room_service
         .check_room_password(&room1.id, "SamePassword123")
         .await
-        .unwrap());
+        .checked("test operation should succeed"));
     assert!(room_service
         .check_room_password(&room2.id, "SamePassword123")
         .await
-        .unwrap());
+        .checked("test operation should succeed"));
 }
 
 #[tokio::test]
@@ -2336,12 +2435,18 @@ async fn test_max_members_enforces_capacity_and_zero_unlimited() {
     let room_service = make_room_service(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("max_owner")).await.unwrap();
-    let unlimited_owner = user_repo.create(&make_user("unlim_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("max_owner"))
+        .await
+        .checked("test operation should succeed");
+    let unlimited_owner = user_repo
+        .create(&make_user("unlim_owner"))
+        .await
+        .checked("test operation should succeed");
     let boundary_owner = user_repo
         .create(&make_user("boundary_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = RoomSettings {
         max_members: MaxMembers(3),
@@ -2356,23 +2461,35 @@ async fn test_max_members_enforces_capacity_and_zero_unlimited() {
             Some(settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let joiner1 = user_repo.create(&make_user("max_joiner1")).await.unwrap();
-    let joiner2 = user_repo.create(&make_user("max_joiner2")).await.unwrap();
+    let joiner1 = user_repo
+        .create(&make_user("max_joiner1"))
+        .await
+        .checked("test operation should succeed");
+    let joiner2 = user_repo
+        .create(&make_user("max_joiner2"))
+        .await
+        .checked("test operation should succeed");
     room_service
         .join_room(room.id, joiner1.id, None)
         .await
-        .expect("first joiner should fit below capacity");
+        .checked("first joiner should fit below capacity");
     room_service
         .join_room(room.id, joiner2.id, None)
         .await
-        .expect("second joiner should reach capacity");
+        .checked("second joiner should reach capacity");
 
-    let count = member_repo.count_by_room(&room.id).await.unwrap();
+    let count = member_repo
+        .count_by_room(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 3);
 
-    let joiner3 = user_repo.create(&make_user("max_joiner3")).await.unwrap();
+    let joiner3 = user_repo
+        .create(&make_user("max_joiner3"))
+        .await
+        .checked("test operation should succeed");
     let result = room_service.join_room(room.id, joiner3.id, None).await;
     assert!(matches!(result, Err(Error::InvalidInput(_))));
 
@@ -2389,17 +2506,17 @@ async fn test_max_members_enforces_capacity_and_zero_unlimited() {
             Some(unlimited_settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     for i in 0..20 {
         let joiner = user_repo
             .create(&make_user(&format!("unlim_joiner_{i}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         room_service
             .join_room(unlimited_room.id, joiner.id, None)
             .await
-            .expect("max_members=0 should allow additional members");
+            .checked("max_members=0 should allow additional members");
     }
 
     let boundary_settings = RoomSettings {
@@ -2415,12 +2532,12 @@ async fn test_max_members_enforces_capacity_and_zero_unlimited() {
             Some(boundary_settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let joiner = user_repo
         .create(&make_user("boundary_joiner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let result = room_service
         .join_room(boundary_room.id, joiner.id, None)
         .await;
@@ -2449,7 +2566,7 @@ async fn test_room_settings_update_validates_permissions_no_escalation() {
     let owner = user_repo
         .create(&make_user("perm_esc_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -2460,10 +2577,13 @@ async fn test_room_settings_update_validates_permissions_no_escalation() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Try to set guest permissions that exceed member-level permissions
-    let mut settings = room_service.get_room_settings(&room.id).await.unwrap();
+    let mut settings = room_service
+        .get_room_settings(&room.id)
+        .await
+        .checked("test operation should succeed");
     settings.guest_added_permissions = synctv_core::models::room_settings::GuestAddedPermissions(
         1 << 21, // outside guest permission bitspace
     );
@@ -2471,14 +2591,14 @@ async fn test_room_settings_update_validates_permissions_no_escalation() {
     let result = room_service.set_settings(room.id, owner.id, settings).await;
 
     assert!(result.is_err(), "Permission escalation should be rejected");
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::InvalidInput(msg) => {
             assert!(
                 msg.contains("guest") && msg.contains("permission bitspace"),
                 "Error should mention permission escalation: {msg}"
             );
         }
-        other => panic!("Expected InvalidInput error, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected InvalidInput error, got: {other:?}")),
     }
 }
 
@@ -2494,11 +2614,11 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
     let owner = user_repo
         .create(&make_user("guest_kick_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let guest = user_repo
         .create(&make_user("guest_kick_guest"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = synctv_core::models::RoomSettings {
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
@@ -2514,18 +2634,24 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
             Some(settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add guest as member with Guest role
     let member_service = room_service.member_service();
     member_service
         .add_member(room.id, guest.id, RoomRole::Guest)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Verify guest is a member
-    assert!(member_repo.is_member(&room.id, &guest.id).await.unwrap());
-    let guest_version_before = room_service.get_room_guest_version(&room.id).await.unwrap();
+    assert!(member_repo
+        .is_member(&room.id, &guest.id)
+        .await
+        .checked("test operation should succeed"));
+    let guest_version_before = room_service
+        .get_room_guest_version(&room.id)
+        .await
+        .checked("test operation should succeed");
 
     // Disable guest join - this should kick the guest
     let result = room_service
@@ -2537,24 +2663,36 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
         result.err()
     );
 
-    let settings = room_service.get_room_settings(&room.id).await.unwrap();
+    let settings = room_service
+        .get_room_settings(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         !settings.allow_guest_join.0,
         "allow_guest_join should be false"
     );
 
     assert!(
-        !member_repo.is_member(&room.id, &guest.id).await.unwrap(),
+        !member_repo
+            .is_member(&room.id, &guest.id)
+            .await
+            .checked("test operation should succeed"),
         "guest-role members must be removed when room guest mode is disabled"
     );
-    let guest_version_after = room_service.get_room_guest_version(&room.id).await.unwrap();
+    let guest_version_after = room_service
+        .get_room_guest_version(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(
         guest_version_after,
         guest_version_before + 1,
         "room guest version must be bumped so anonymous guest JWTs are revoked"
     );
 
-    let (event_room_id, event) = event_rx.recv().await.unwrap();
+    let (event_room_id, event) = event_rx
+        .recv()
+        .await
+        .checked("test operation should succeed");
     assert_eq!(event_room_id, room.id);
     match event {
         RoomEvent::GuestKicked { reason, .. } => {
@@ -2563,7 +2701,7 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
                 "unexpected guest kick reason: {reason:?}"
             );
         }
-        other => panic!("expected GuestKicked event, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected GuestKicked event, got: {other:?}")),
     }
 }
 
@@ -2578,7 +2716,7 @@ async fn test_set_room_settings_emits_settings_updated_notification() {
     let owner = user_repo
         .create(&make_user("settings_notify_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -2589,7 +2727,7 @@ async fn test_set_room_settings_emits_settings_updated_notification() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let updated_settings = RoomSettings {
         chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
@@ -2600,20 +2738,20 @@ async fn test_set_room_settings_emits_settings_updated_notification() {
     room_service
         .set_room_settings(&room.id, &updated_settings)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (event_room_id, event) =
         tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
             .await
-            .expect("expected room settings notification")
-            .unwrap();
+            .checked("expected room settings notification")
+            .checked("test operation should succeed");
     assert_eq!(event_room_id, room.id);
     match event {
         RoomEvent::SettingsUpdated { settings, .. } => {
             assert_eq!(settings["chat_enabled"], false);
             assert_eq!(settings["allow_guest_join"], true);
         }
-        other => panic!("expected SettingsUpdated event, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected SettingsUpdated event, got: {other:?}")),
     }
 }
 
@@ -2627,7 +2765,7 @@ async fn test_get_room_settings_with_version_refreshes_local_cache_after_write()
     let owner = user_repo
         .create(&make_user("settings_cache_refresh_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -2638,12 +2776,12 @@ async fn test_get_room_settings_with_version_refreshes_local_cache_after_write()
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (initial_settings, initial_version) = room_service
         .get_room_settings_with_version(&room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(initial_version, 1);
     assert!(initial_settings.chat_enabled.0);
 
@@ -2654,12 +2792,12 @@ async fn test_get_room_settings_with_version_refreshes_local_cache_after_write()
     room_service
         .set_room_settings(&room.id, &updated_settings)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (refreshed_settings, refreshed_version) = room_service
         .get_room_settings_with_version(&room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(refreshed_version, 2);
     assert!(
         !refreshed_settings.chat_enabled.0,
@@ -2677,7 +2815,7 @@ async fn test_room_settings_mutations_return_committed_snapshots() {
     let owner = user_repo
         .create(&make_user("settings_snapshot_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -2688,7 +2826,7 @@ async fn test_room_settings_mutations_return_committed_snapshots() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let updated_settings = RoomSettings {
         chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
@@ -2699,7 +2837,7 @@ async fn test_room_settings_mutations_return_committed_snapshots() {
     let snapshot = room_service
         .set_settings(room.id, owner.id, updated_settings.clone())
         .await
-        .expect("settings update should return committed snapshot");
+        .checked("settings update should return committed snapshot");
 
     assert_eq!(snapshot.version, 2);
     assert!(!snapshot.settings.chat_enabled.0);
@@ -2718,7 +2856,7 @@ async fn test_room_settings_mutations_return_committed_snapshots() {
     let snapshot = room_service
         .set_room_settings(&room.id, &admin_updated_settings)
         .await
-        .expect("admin room settings update should return committed snapshot");
+        .checked("admin room settings update should return committed snapshot");
 
     assert_eq!(snapshot.version, 3);
     assert!(snapshot.settings.chat_enabled.0);
@@ -2731,7 +2869,7 @@ async fn test_room_settings_mutations_return_committed_snapshots() {
     let snapshot = room_service
         .reset_room_settings(&room.id, &owner.id)
         .await
-        .expect("reset should return committed snapshot");
+        .checked("reset should return committed snapshot");
 
     assert_eq!(snapshot.version, 4);
     assert!(snapshot.settings.chat_enabled.0);
@@ -2754,11 +2892,11 @@ async fn test_set_room_settings_disabling_guest_join_kicks_guests() {
     let owner = user_repo
         .create(&make_user("full_replace_guest_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let guest = user_repo
         .create(&make_user("full_replace_guest_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let initial_settings = RoomSettings {
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
@@ -2774,14 +2912,17 @@ async fn test_set_room_settings_disabling_guest_join_kicks_guests() {
             Some(initial_settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .member_service()
         .add_member(room.id, guest.id, RoomRole::Guest)
         .await
-        .unwrap();
-    assert!(member_repo.is_member(&room.id, &guest.id).await.unwrap());
+        .checked("test operation should succeed");
+    assert!(member_repo
+        .is_member(&room.id, &guest.id)
+        .await
+        .checked("test operation should succeed"));
 
     let updated_settings = RoomSettings {
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(false),
@@ -2791,15 +2932,15 @@ async fn test_set_room_settings_disabling_guest_join_kicks_guests() {
     room_service
         .set_room_settings(&room.id, &updated_settings)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let mut guest_kicked = false;
     for _ in 0..3 {
         let (event_room_id, event) =
             tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
                 .await
-                .expect("expected room event after full settings replacement")
-                .unwrap();
+                .checked("expected room event after full settings replacement")
+                .checked("test operation should succeed");
         assert_eq!(event_room_id, room.id);
         if let RoomEvent::GuestKicked { reason, message } = event {
             assert!(matches!(reason, GuestKickReason::RoomGuestModeDisabled));
@@ -2814,7 +2955,7 @@ async fn test_set_room_settings_disabling_guest_join_kicks_guests() {
 
     assert!(guest_kicked, "full settings replacement should kick guests");
     assert!(
-        !member_repo.is_member(&room.id, &guest.id).await.unwrap(),
+        !member_repo.is_member(&room.id, &guest.id).await.checked("test operation should succeed"),
         "guest membership should be revoked after disabling guest join via full settings replacement"
     );
 }
@@ -2831,11 +2972,11 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
     let owner = user_repo
         .create(&make_user("pwd_kick_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let guest = user_repo
         .create(&make_user("pwd_kick_guest"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = synctv_core::models::RoomSettings {
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
@@ -2851,42 +2992,57 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
             Some(settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .member_service()
         .add_member(room.id, guest.id, RoomRole::Guest)
         .await
-        .unwrap();
-    assert!(member_repo.is_member(&room.id, &guest.id).await.unwrap());
-    let guest_version_before = room_service.get_room_guest_version(&room.id).await.unwrap();
+        .checked("test operation should succeed");
+    assert!(member_repo
+        .is_member(&room.id, &guest.id)
+        .await
+        .checked("test operation should succeed"));
+    let guest_version_before = room_service
+        .get_room_guest_version(&room.id)
+        .await
+        .checked("test operation should succeed");
 
     room_service
         .update_room_password(&room.id, Some("NewPassword123".to_string()))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(
         RoomPasswordRepository::new(pool.clone())
             .get_state(&room.id)
             .await
-            .unwrap()
+            .checked("test operation should succeed")
             .is_some_and(|state| state.enabled),
         "room password state should be enabled"
     );
 
     assert!(
-        !member_repo.is_member(&room.id, &guest.id).await.unwrap(),
+        !member_repo
+            .is_member(&room.id, &guest.id)
+            .await
+            .checked("test operation should succeed"),
         "guest-role members must be removed when a room password is added"
     );
-    let guest_version_after = room_service.get_room_guest_version(&room.id).await.unwrap();
+    let guest_version_after = room_service
+        .get_room_guest_version(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(
         guest_version_after,
         guest_version_before + 1,
         "room guest version must be bumped when adding a password"
     );
 
-    let (event_room_id, event) = event_rx.recv().await.unwrap();
+    let (event_room_id, event) = event_rx
+        .recv()
+        .await
+        .checked("test operation should succeed");
     assert_eq!(event_room_id, room.id);
     match event {
         RoomEvent::GuestKicked { reason, .. } => {
@@ -2895,7 +3051,7 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
                 "unexpected guest kick reason: {reason:?}"
             );
         }
-        other => panic!("expected GuestKicked event, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected GuestKicked event, got: {other:?}")),
     }
 }
 
@@ -2910,11 +3066,11 @@ async fn test_remove_media_respects_admin_override_columns() {
     let owner = user_repo
         .create(&make_user("remove_media_admin_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let admin = user_repo
         .create(&make_user("remove_media_admin_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -2925,13 +3081,13 @@ async fn test_remove_media_respects_admin_override_columns() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .member_service()
         .add_member(room.id, admin.id, RoomRole::Admin)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     sqlx::query(
         "UPDATE room_members
@@ -2947,12 +3103,12 @@ async fn test_remove_media_respects_admin_override_columns() {
     ))
     .execute(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
 
     let media = media_repo
         .create(&make_media(room.id, owner.id, None, "Protected Media"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service.remove_media(room.id, admin.id, media.id).await;
     assert!(
@@ -2973,7 +3129,7 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
     let owner = user_repo
         .create(&make_user("delete_entries_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -2984,17 +3140,17 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let top_level_playlist = playlist_repo
         .create(&make_playlist(room.id, owner.id, None, "Folder"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let root_media = media_repo
         .create(&make_media(room.id, owner.id, None, "root-media"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let child_media = media_repo
         .create(&make_media(
@@ -3004,7 +3160,7 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
             "child-media",
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .delete_entries(
@@ -3017,7 +3173,7 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(result.deleted_playlists, 1);
     assert_eq!(
@@ -3030,17 +3186,17 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
     assert!(playlist_repo
         .get_by_id(&top_level_playlist.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_none());
     assert!(media_repo
         .get_by_id(&root_media.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_none());
     assert!(media_repo
         .get_by_id(&child_media.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_none());
 }
 
@@ -3055,11 +3211,11 @@ async fn test_leave_room_removes_owned_resources_before_former_member_can_delete
     let owner = user_repo
         .create(&make_user("delete_owned_left_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("delete_owned_left_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -3070,23 +3226,30 @@ async fn test_leave_room_removes_owned_resources_before_former_member_can_delete
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .member_service()
         .add_member(room.id, member.id, RoomRole::Admin)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media = media_repo
         .create(&make_media(room.id, member.id, None, "owned-before-leave"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    room_service.leave_room(room.id, member.id).await.unwrap();
+    room_service
+        .leave_room(room.id, member.id)
+        .await
+        .checked("test operation should succeed");
 
     assert!(
-        media_repo.get_by_id(&media.id).await.unwrap().is_none(),
+        media_repo
+            .get_by_id(&media.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none(),
         "owned media resource must be cleaned when the member leaves"
     );
 }
@@ -3102,7 +3265,7 @@ async fn test_get_playlist_only_returns_room_root_media() {
     let owner = user_repo
         .create(&make_user("root_scope_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room_a, _) = room_service
         .create_room(
@@ -3113,7 +3276,7 @@ async fn test_get_playlist_only_returns_room_root_media() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room_b, _) = room_service
         .create_room(
             "Root Scope B".to_string(),
@@ -3123,18 +3286,21 @@ async fn test_get_playlist_only_returns_room_root_media() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media_a = media_repo
         .create(&make_media(room_a.id, owner.id, None, "room-a-root"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     media_repo
         .create(&make_media(room_b.id, owner.id, None, "room-b-root"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let items = room_service.get_room_root_media(&room_a.id).await.unwrap();
+    let items = room_service
+        .get_room_root_media(&room_a.id)
+        .await
+        .checked("test operation should succeed");
 
     assert_eq!(items.len(), 1, "room root query must stay inside the room");
     assert_eq!(items[0].id, media_a.id);
@@ -3153,11 +3319,11 @@ async fn test_delete_entries_allows_foreign_playlist_delete_with_delete_any_perm
     let owner = user_repo
         .create(&make_user("delete_entries_any_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("delete_entries_any_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -3168,17 +3334,20 @@ async fn test_delete_entries_allows_foreign_playlist_delete_with_delete_any_perm
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let mut admin_member =
         synctv_core::models::RoomMember::new(room.id, member.id, RoomRole::Admin);
     admin_member.admin_added_permissions = RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY;
-    member_repo.add(&admin_member).await.unwrap();
+    member_repo
+        .add(&admin_member)
+        .await
+        .checked("test operation should succeed");
 
     let playlist = playlist_repo
         .create(&make_playlist(room.id, owner.id, None, "Granted Delete"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .delete_entries(
@@ -3191,13 +3360,13 @@ async fn test_delete_entries_allows_foreign_playlist_delete_with_delete_any_perm
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(result.deleted_playlists, 1);
     assert!(playlist_repo
         .get_by_id(&playlist.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_none());
 }
 
@@ -3212,11 +3381,11 @@ async fn test_delete_entries_denies_foreign_playlist_delete_when_delete_any_revo
     let owner = user_repo
         .create(&make_user("delete_entries_revoke_any_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let admin = user_repo
         .create(&make_user("delete_entries_revoke_any_admin"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -3227,13 +3396,13 @@ async fn test_delete_entries_denies_foreign_playlist_delete_when_delete_any_revo
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .member_service()
         .add_member(room.id, admin.id, RoomRole::Admin)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_service
         .member_service()
         .revoke_permission(
@@ -3243,12 +3412,12 @@ async fn test_delete_entries_denies_foreign_playlist_delete_when_delete_any_revo
             RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = playlist_repo
         .create(&make_playlist(room.id, owner.id, None, "Revoked Delete"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .delete_entries(
@@ -3279,11 +3448,11 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
     let owner = user_repo
         .create(&make_user("delete_entries_media_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let admin = user_repo
         .create(&make_user("delete_entries_media_admin"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -3294,18 +3463,18 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .member_service()
         .add_member(room.id, admin.id, RoomRole::Admin)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media = media_repo
         .create(&make_media(room.id, owner.id, None, "foreign-media"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .delete_entries(
@@ -3318,10 +3487,14 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(result.deleted_media, 1);
-    assert!(media_repo.get_by_id(&media.id).await.unwrap().is_none());
+    assert!(media_repo
+        .get_by_id(&media.id)
+        .await
+        .checked("test operation should succeed")
+        .is_none());
 }
 
 #[tokio::test]
@@ -3335,7 +3508,7 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
     let owner = user_repo
         .create(&make_user("delete_entries_notify_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Delete Entries Notify".to_string(),
@@ -3345,12 +3518,12 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media = media_repo
         .create(&make_media(room.id, owner.id, None, "notify-media"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let mut event_rx = room_service.notification_service().subscribe();
 
@@ -3365,20 +3538,20 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (event_room_id, event) =
         tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
             .await
-            .expect("expected local notification")
-            .unwrap();
+            .checked("expected local notification")
+            .checked("test operation should succeed");
 
     assert_eq!(event_room_id, room.id);
     match event {
         RoomEvent::MediaRemoved { media_id, .. } => {
             assert_eq!(media_id, media.id);
         }
-        other => panic!("expected MediaRemoved event, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected MediaRemoved event, got: {other:?}")),
     }
 }
 
@@ -3393,7 +3566,7 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
     let owner = user_repo
         .create(&make_user("clear_playlist_notify_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Clear Playlist Notify".to_string(),
@@ -3403,22 +3576,25 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media1 = media_repo
         .create(&make_media(room.id, owner.id, None, "clear-notify-1"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let mut media2_template = make_media(room.id, owner.id, None, "clear-notify-2");
     media2_template.position = 1.0;
-    let media2 = media_repo.create(&media2_template).await.unwrap();
+    let media2 = media_repo
+        .create(&media2_template)
+        .await
+        .checked("test operation should succeed");
 
     let mut event_rx = room_service.notification_service().subscribe();
 
     let result = room_service
         .clear_playlist(room.id, owner.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(result.deleted_count, 2);
 
@@ -3427,15 +3603,15 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
         let (event_room_id, event) =
             tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
                 .await
-                .expect("expected local media removed notification")
-                .unwrap();
+                .checked("expected local media removed notification")
+                .checked("test operation should succeed");
 
         assert_eq!(event_room_id, room.id);
         match event {
             RoomEvent::MediaRemoved { media_id, .. } => {
                 removed_ids.insert(media_id);
             }
-            other => panic!("expected MediaRemoved event, got: {other:?}"),
+            other => std::panic::panic_any(format!("expected MediaRemoved event, got: {other:?}")),
         }
     }
 
@@ -3456,7 +3632,7 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
     let owner = user_repo
         .create(&make_user("clear_playlist_playback_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Clear Playlist Playback".to_string(),
@@ -3466,30 +3642,30 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media = media_repo
         .create(&make_media(room.id, owner.id, None, "playing-root-media"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .playback_service()
         .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let warm_state = room_service
         .playback_service()
         .get_state(&room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(warm_state.playing_media_id, Some(media.id));
 
     let result = room_service
         .clear_playlist(room.id, owner.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(result.deleted_count, 1);
 
@@ -3497,7 +3673,7 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
         .playback_service()
         .get_state(&room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(refreshed_state.playing_media_id, None);
     assert_eq!(refreshed_state.playing_playlist_id, None);
@@ -3517,7 +3693,7 @@ async fn test_clear_playlist_scope_keeps_target_playlist_and_removes_children() 
     let owner = user_repo
         .create(&make_user("clear_playlist_scope_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Clear Playlist Scope".to_string(),
@@ -3527,16 +3703,16 @@ async fn test_clear_playlist_scope_keeps_target_playlist_and_removes_children() 
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let parent = playlist_repo
         .create(&make_playlist(room.id, owner.id, None, "Parent"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let child = playlist_repo
         .create(&make_playlist(room.id, owner.id, Some(parent.id), "Child"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let parent_media = media_repo
         .create(&make_media(
@@ -3546,7 +3722,7 @@ async fn test_clear_playlist_scope_keeps_target_playlist_and_removes_children() 
             "parent-media",
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let child_media = media_repo
         .create(&make_media(
             room.id,
@@ -3555,27 +3731,35 @@ async fn test_clear_playlist_scope_keeps_target_playlist_and_removes_children() 
             "child-media",
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .clear_playlist(room.id, owner.id, Some(parent.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(result.deleted_count, 2);
     assert_eq!(result.deleted_playlists, 1);
     assert_eq!(result.deleted_playlist_ids, vec![child.id]);
-    assert!(playlist_repo.get_by_id(&parent.id).await.unwrap().is_some());
-    assert!(playlist_repo.get_by_id(&child.id).await.unwrap().is_none());
+    assert!(playlist_repo
+        .get_by_id(&parent.id)
+        .await
+        .checked("test operation should succeed")
+        .is_some());
+    assert!(playlist_repo
+        .get_by_id(&child.id)
+        .await
+        .checked("test operation should succeed")
+        .is_none());
     assert!(media_repo
         .get_by_id(&parent_media.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_none());
     assert!(media_repo
         .get_by_id(&child_media.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_none());
 }
 
@@ -3591,7 +3775,7 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
     let owner = user_repo
         .create(&make_user("delete_entries_cascade_count_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Delete Entries Cascade Count".to_string(),
@@ -3601,16 +3785,16 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let parent = playlist_repo
         .create(&make_playlist(room.id, owner.id, None, "Parent"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let child = playlist_repo
         .create(&make_playlist(room.id, owner.id, Some(parent.id), "Child"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let parent_media = media_repo
         .create(&make_media(
@@ -3620,7 +3804,7 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
             "parent-media",
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let child_media = media_repo
         .create(&make_media(
             room.id,
@@ -3629,7 +3813,7 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
             "child-media",
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .delete_entries(
@@ -3642,7 +3826,7 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(
         result.deleted_playlists, 2,
@@ -3655,12 +3839,12 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
     assert!(media_repo
         .get_by_id(&parent_media.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_none());
     assert!(media_repo
         .get_by_id(&child_media.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_none());
 }
 
@@ -3676,7 +3860,7 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
     let owner = user_repo
         .create(&make_user("delete_entries_cascade_notify_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Delete Entries Cascade Notify".to_string(),
@@ -3686,12 +3870,12 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = playlist_repo
         .create(&make_playlist(room.id, owner.id, None, "Cascade Playlist"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media = media_repo
         .create(&make_media(
@@ -3701,7 +3885,7 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
             "cascade-media",
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let mut event_rx = room_service.notification_service().subscribe();
 
@@ -3716,20 +3900,20 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (event_room_id, event) =
         tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
             .await
-            .expect("expected local notification for cascade delete")
-            .unwrap();
+            .checked("expected local notification for cascade delete")
+            .checked("test operation should succeed");
 
     assert_eq!(event_room_id, room.id);
     match event {
         RoomEvent::MediaRemoved { media_id, .. } => {
             assert_eq!(media_id, media.id);
         }
-        other => panic!("expected MediaRemoved event, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected MediaRemoved event, got: {other:?}")),
     }
 }
 
@@ -3744,7 +3928,7 @@ async fn test_delete_entries_notifies_local_playlist_deleted_subscribers() {
     let owner = user_repo
         .create(&make_user("delete_entries_playlist_notify_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Delete Entries Playlist Notify".to_string(),
@@ -3754,12 +3938,12 @@ async fn test_delete_entries_notifies_local_playlist_deleted_subscribers() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = playlist_repo
         .create(&make_playlist(room.id, owner.id, None, "notify-playlist"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let mut event_rx = room_service.notification_service().subscribe();
 
@@ -3774,20 +3958,20 @@ async fn test_delete_entries_notifies_local_playlist_deleted_subscribers() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (event_room_id, event) =
         tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
             .await
-            .expect("expected local playlist delete notification")
-            .unwrap();
+            .checked("expected local playlist delete notification")
+            .checked("test operation should succeed");
 
     assert_eq!(event_room_id, room.id);
     match event {
         RoomEvent::PlaylistDeleted { playlist_id, .. } => {
             assert_eq!(playlist_id, playlist.id);
         }
-        other => panic!("expected PlaylistDeleted event, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected PlaylistDeleted event, got: {other:?}")),
     }
 }
 
@@ -3803,7 +3987,7 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
     let owner = user_repo
         .create(&make_user("delete_entries_playing_media_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Delete Entries Playing Media".to_string(),
@@ -3813,18 +3997,18 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media = media_repo
         .create(&make_media(room.id, owner.id, None, "playing-media"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .playback_service()
         .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .delete_entries(
@@ -3842,7 +4026,11 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
         matches!(result, Err(Error::InvalidInput(_))),
         "deleting currently playing media without force must be rejected"
     );
-    assert!(media_repo.get_by_id(&media.id).await.unwrap().is_some());
+    assert!(media_repo
+        .get_by_id(&media.id)
+        .await
+        .checked("test operation should succeed")
+        .is_some());
 
     let (playlist_room, _) = room_service
         .create_room(
@@ -3853,12 +4041,12 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let parent = playlist_repo
         .create(&make_playlist(playlist_room.id, owner.id, None, "parent"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let child = playlist_repo
         .create(&make_playlist(
             playlist_room.id,
@@ -3867,7 +4055,7 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
             "child",
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let child_media = media_repo
         .create(&make_media(
@@ -3877,7 +4065,7 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
             "deep-playing-media",
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .playback_service()
@@ -3889,7 +4077,7 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
             Vec::new(),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .delete_entries(
@@ -3907,7 +4095,11 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
         matches!(result, Err(Error::InvalidInput(_))),
         "deleting an ancestor playlist of the currently playing media without force must be rejected"
     );
-    assert!(playlist_repo.get_by_id(&parent.id).await.unwrap().is_some());
+    assert!(playlist_repo
+        .get_by_id(&parent.id)
+        .await
+        .checked("test operation should succeed")
+        .is_some());
 }
 
 #[tokio::test]
@@ -3922,7 +4114,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
     let owner = user_repo
         .create(&make_user("delete_entries_force_media_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Delete Entries Force Media".to_string(),
@@ -3932,18 +4124,18 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media = media_repo
         .create(&make_media(room.id, owner.id, None, "force-playing-media"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .playback_service()
         .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .delete_entries(
@@ -3956,16 +4148,20 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(result.deleted_media, 1);
-    assert!(media_repo.get_by_id(&media.id).await.unwrap().is_none());
+    assert!(media_repo
+        .get_by_id(&media.id)
+        .await
+        .checked("test operation should succeed")
+        .is_none());
 
     let state = room_service
         .playback_service()
         .get_state(&room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(state.playing_media_id.is_none());
     assert!(state.playing_playlist_id.is_none());
     assert!(!state.is_playing);
@@ -3980,7 +4176,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let parent = playlist_repo
         .create(&make_playlist(
@@ -3990,7 +4186,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
             "force-parent",
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let child = playlist_repo
         .create(&make_playlist(
             playlist_room.id,
@@ -3999,7 +4195,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
             "force-child",
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let media = media_repo
         .create(&make_media(
             playlist_room.id,
@@ -4008,13 +4204,13 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
             "force-deep-playing-media",
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .playback_service()
         .switch(playlist_room.id, owner.id, Some(media.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .delete_entries(
@@ -4027,22 +4223,34 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(
         result.deleted_playlists, 2,
         "force deleting an ancestor playlist must count descendants too"
     );
     assert_eq!(result.deleted_media, 1);
-    assert!(playlist_repo.get_by_id(&parent.id).await.unwrap().is_none());
-    assert!(playlist_repo.get_by_id(&child.id).await.unwrap().is_none());
-    assert!(media_repo.get_by_id(&media.id).await.unwrap().is_none());
+    assert!(playlist_repo
+        .get_by_id(&parent.id)
+        .await
+        .checked("test operation should succeed")
+        .is_none());
+    assert!(playlist_repo
+        .get_by_id(&child.id)
+        .await
+        .checked("test operation should succeed")
+        .is_none());
+    assert!(media_repo
+        .get_by_id(&media.id)
+        .await
+        .checked("test operation should succeed")
+        .is_none());
 
     let state = room_service
         .playback_service()
         .get_state(&playlist_room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(state.playing_media_id.is_none());
     assert!(state.playing_playlist_id.is_none());
     assert!(!state.is_playing);
@@ -4059,7 +4267,7 @@ async fn test_create_room_preserves_supported_name_and_description_text() {
     let owner = user_repo
         .create(&make_user("unicode_name_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let unicode_name = "Room \u{4e2d}\u{6587} \u{65e5}\u{672c}\u{8a9e} \u{c0}\u{e9}\u{f1}";
     let (unicode_room, _) = room_service
@@ -4071,7 +4279,7 @@ async fn test_create_room_preserves_supported_name_and_description_text() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(unicode_room.name, unicode_name);
 
     let name_with_spaces = "  Room with spaces  ";
@@ -4084,7 +4292,7 @@ async fn test_create_room_preserves_supported_name_and_description_text() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(spaced_room.name, name_with_spaces);
 
     let description = "Line 1\nLine 2\nLine 3\n\nParagraph 2";
@@ -4097,7 +4305,7 @@ async fn test_create_room_preserves_supported_name_and_description_text() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(description_room.description, description);
 }
@@ -4109,8 +4317,14 @@ async fn test_cannot_join_closed_room() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("closed_owner")).await.unwrap();
-    let joiner = user_repo.create(&make_user("closed_joiner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("closed_owner"))
+        .await
+        .checked("test operation should succeed");
+    let joiner = user_repo
+        .create(&make_user("closed_joiner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -4121,24 +4335,24 @@ async fn test_cannot_join_closed_room() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .update_room_status(&room.id, synctv_core::models::RoomStatus::Closed)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service.join_room(room.id, joiner.id, None).await;
     assert!(result.is_err(), "Should not be able to join closed room");
 
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::InvalidInput(msg) => {
             assert!(
                 msg.contains("closed"),
                 "Error should mention room is closed: {msg}"
             );
         }
-        other => panic!("Expected InvalidInput error, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected InvalidInput error, got: {other:?}")),
     }
 }
 
@@ -4149,7 +4363,10 @@ async fn test_room_creation_creates_all_related_records_atomically() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("atomic_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("atomic_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _member) = room_service
         .create_room(
@@ -4160,18 +4377,32 @@ async fn test_room_creation_creates_all_related_records_atomically() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let room_repo = RoomRepository::new(pool.clone());
-    assert!(room_repo.exists(&room.id).await.unwrap());
+    assert!(room_repo
+        .exists(&room.id)
+        .await
+        .checked("test operation should succeed"));
 
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let creator_membership = member_repo.get(&room.id, &owner.id).await.unwrap();
+    let creator_membership = member_repo
+        .get(&room.id, &owner.id)
+        .await
+        .checked("test operation should succeed");
     assert!(creator_membership.is_some(), "Creator should be a member");
-    assert_eq!(creator_membership.unwrap().role, RoomRole::Creator);
+    assert_eq!(
+        creator_membership
+            .checked("test operation should succeed")
+            .role,
+        RoomRole::Creator
+    );
 
     let settings_repo = RoomSettingsRepository::new(pool.clone());
-    let settings = settings_repo.get(&room.id).await.unwrap();
+    let settings = settings_repo
+        .get(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(settings.chat_enabled.0, "Chat should be enabled by default");
 
     let playlist_count: i64 =
@@ -4179,7 +4410,7 @@ async fn test_room_creation_creates_all_related_records_atomically() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(
         playlist_count, 0,
         "Room creation should not create playlist rows"
@@ -4190,7 +4421,7 @@ async fn test_room_creation_creates_all_related_records_atomically() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(playback_count, 1, "Playback state should exist");
 }
 
@@ -4201,8 +4432,14 @@ async fn test_non_creator_cannot_delete_room() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("del_owner")).await.unwrap();
-    let other_user = user_repo.create(&make_user("del_other")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("del_owner"))
+        .await
+        .checked("test operation should succeed");
+    let other_user = user_repo
+        .create(&make_user("del_other"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -4213,7 +4450,7 @@ async fn test_non_creator_cannot_delete_room() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service.delete_room(room.id, other_user.id).await;
     assert!(
@@ -4232,11 +4469,11 @@ async fn test_room_admin_can_delete_room_with_permission() {
     let owner = user_repo
         .create(&make_user("room_admin_del_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room_admin = user_repo
         .create(&make_user("room_admin_del_actor"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -4247,13 +4484,13 @@ async fn test_room_admin_can_delete_room_with_permission() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .member_service()
         .add_member(room.id, room_admin.id, RoomRole::Admin)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_service
         .member_service()
         .grant_permission(
@@ -4263,15 +4500,18 @@ async fn test_room_admin_can_delete_room_with_permission() {
             RoomAdminPermissionBits::DELETE_ROOM,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .delete_room(room.id, room_admin.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let room_repo = RoomRepository::new(pool.clone());
-    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    let fetched = room_repo
+        .get_by_id(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         fetched.is_none(),
         "Room admin with delete_room should delete room"
@@ -4289,11 +4529,11 @@ async fn test_room_admin_without_delete_room_cannot_delete_room() {
     let owner = user_repo
         .create(&make_user("room_admin_no_del_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room_admin = user_repo
         .create(&make_user("room_admin_no_del_actor"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -4304,7 +4544,7 @@ async fn test_room_admin_without_delete_room_cannot_delete_room() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&synctv_core::models::RoomMember::new(
@@ -4313,7 +4553,7 @@ async fn test_room_admin_without_delete_room_cannot_delete_room() {
             RoomRole::Admin,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service.delete_room(room.id, room_admin.id).await;
     assert!(
@@ -4333,16 +4573,16 @@ async fn test_global_admin_can_delete_room_via_delete_room() {
     let owner = user_repo
         .create(&make_user("global_admin_del_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let mut admin_user = user_repo
         .create(&make_user("global_admin_del_actor"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     admin_user.role = UserRole::Admin;
     user_repo
         .update(&admin_user, admin_user.version)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -4353,14 +4593,17 @@ async fn test_global_admin_can_delete_room_via_delete_room() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .delete_room(room.id, admin_user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    let fetched = room_repo
+        .get_by_id(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         fetched.is_none(),
         "Room should be soft-deleted by global admin"
@@ -4378,16 +4621,16 @@ async fn test_admin_delete_room_bypasses_permission_check() {
     let owner = user_repo
         .create(&make_user("admin_del_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let mut admin_user = user_repo
         .create(&make_user("admin_del_admin"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     admin_user.role = UserRole::Admin;
     user_repo
         .update(&admin_user, admin_user.version)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -4398,14 +4641,17 @@ async fn test_admin_delete_room_bypasses_permission_check() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .admin_delete_room(&room.id, &admin_user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    let fetched = room_repo
+        .get_by_id(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched.is_none(), "Room should be soft-deleted");
 }
 
@@ -4417,13 +4663,19 @@ async fn test_admin_delete_room_requires_admin_or_root_role() {
     let room_service = make_room_service(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner"))
+        .await
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room("Test Room".to_string(), String::new(), owner.id, None, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let regular_user = user_repo.create(&make_user("regular_user")).await.unwrap();
+    let regular_user = user_repo
+        .create(&make_user("regular_user"))
+        .await
+        .checked("test operation should succeed");
 
     let result = room_service
         .admin_delete_room(&room.id, &regular_user.id)
@@ -4438,31 +4690,43 @@ async fn test_admin_delete_room_requires_admin_or_root_role() {
             "Error message should mention admin requirement"
         );
     } else {
-        panic!("Expected Authorization error, got {result:?}");
+        std::panic::panic_any(format!("Expected Authorization error, got {result:?}"));
     }
 
-    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    let fetched = room_repo
+        .get_by_id(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         fetched.is_some(),
         "Room should still exist after failed admin delete"
     );
 
-    let mut admin_user = user_repo.create(&make_user("admin_user")).await.unwrap();
+    let mut admin_user = user_repo
+        .create(&make_user("admin_user"))
+        .await
+        .checked("test operation should succeed");
     admin_user.role = UserRole::Admin;
     user_repo
         .update(&admin_user, admin_user.version)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .admin_delete_room(&room.id, &admin_user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    let fetched = room_repo
+        .get_by_id(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched.is_none(), "Room should be soft-deleted by admin");
 
-    let owner = user_repo.create(&make_user("owner2")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner2"))
+        .await
+        .checked("test operation should succeed");
     let (root_room, _) = room_service
         .create_room(
             "Test Room 2".to_string(),
@@ -4472,21 +4736,27 @@ async fn test_admin_delete_room_requires_admin_or_root_role() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let mut root_user = user_repo.create(&make_user("root_user")).await.unwrap();
+    let mut root_user = user_repo
+        .create(&make_user("root_user"))
+        .await
+        .checked("test operation should succeed");
     root_user.role = UserRole::Root;
     user_repo
         .update(&root_user, root_user.version)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .admin_delete_room(&root_room.id, &root_user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let fetched = room_repo.get_by_id(&root_room.id).await.unwrap();
+    let fetched = room_repo
+        .get_by_id(&root_room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched.is_none(), "Room should be soft-deleted by root");
 }
 
@@ -4500,7 +4770,7 @@ async fn test_delete_nonexistent_room_returns_error() {
     let owner = user_repo
         .create(&make_user("delete_nonexistent_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "To Be Deleted".to_string(),
@@ -4510,21 +4780,24 @@ async fn test_delete_nonexistent_room_returns_error() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    room_service.delete_room(room.id, owner.id).await.unwrap();
+    room_service
+        .delete_room(room.id, owner.id)
+        .await
+        .checked("test operation should succeed");
 
     let result = room_service.delete_room(room.id, owner.id).await;
     assert!(result.is_err(), "Deleting already-deleted room should fail");
 
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::NotFound(msg) => {
             assert!(
                 msg.contains("not found") || msg.contains("deleted"),
                 "Error should mention not found: {msg}"
             );
         }
-        other => panic!("Expected NotFound error, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected NotFound error, got: {other:?}")),
     }
 }
 
@@ -4535,7 +4808,10 @@ async fn test_get_member_count_batch_efficient_query() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("batch_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("batch_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let mut room_ids = Vec::new();
     for i in 0..5 {
@@ -4548,7 +4824,7 @@ async fn test_get_member_count_batch_efficient_query() {
                 None,
             )
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         room_ids.push(room.id);
     }
 
@@ -4556,7 +4832,7 @@ async fn test_get_member_count_batch_efficient_query() {
     let counts = room_service
         .get_member_count_batch(&room_id_refs)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     for room_id in &room_ids {
         assert_eq!(
@@ -4574,7 +4850,10 @@ async fn test_room_exists_is_efficient() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("exists_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("exists_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -4585,12 +4864,18 @@ async fn test_room_exists_is_efficient() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    assert!(room_service.room_exists(&room.id).await.unwrap());
+    assert!(room_service
+        .room_exists(&room.id)
+        .await
+        .checked("test operation should succeed"));
 
     let missing_room_id = synctv_core::models::RoomId::new();
-    assert!(!room_service.room_exists(&missing_room_id).await.unwrap());
+    assert!(!room_service
+        .room_exists(&missing_room_id)
+        .await
+        .checked("test operation should succeed"));
 }
 
 #[tokio::test]
@@ -4600,8 +4885,14 @@ async fn test_list_rooms_by_creator() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("list_owner")).await.unwrap();
-    let other = user_repo.create(&make_user("list_other")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("list_owner"))
+        .await
+        .checked("test operation should succeed");
+    let other = user_repo
+        .create(&make_user("list_other"))
+        .await
+        .checked("test operation should succeed");
 
     for i in 0..3 {
         room_service
@@ -4613,7 +4904,7 @@ async fn test_list_rooms_by_creator() {
                 None,
             )
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     }
 
     for i in 0..2 {
@@ -4626,13 +4917,13 @@ async fn test_list_rooms_by_creator() {
                 None,
             )
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     }
 
     let (rooms, total) = room_service
         .list_rooms_by_creator(&owner.id, synctv_core::models::PageParams::default())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(total, 3, "Owner should have 3 rooms");
     assert_eq!(rooms.len(), 3, "Should return all 3 rooms");
@@ -4651,11 +4942,11 @@ async fn test_list_accessible_rooms_excludes_rooms_with_inactive_creator() {
     let active_owner = user_repo
         .create(&make_user("accessible_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let inactive_owner = user_repo
         .create(&make_user("inaccessible_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (visible_room, _) = room_service
         .create_room(
@@ -4666,7 +4957,7 @@ async fn test_list_accessible_rooms_excludes_rooms_with_inactive_creator() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_service
         .create_room(
             "Hidden Room".to_string(),
@@ -4676,13 +4967,13 @@ async fn test_list_accessible_rooms_excludes_rooms_with_inactive_creator() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .user_service()
         .ban_user_and_cleanup_memberships(&inactive_owner.id, None, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (rooms, total) = room_service
         .list_accessible_rooms(&RoomListQuery {
@@ -4692,7 +4983,7 @@ async fn test_list_accessible_rooms_excludes_rooms_with_inactive_creator() {
             ..Default::default()
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(
         total, 1,
@@ -4716,12 +5007,15 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
     let active_owner = user_repo
         .create(&make_user("joined_visible_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let inactive_owner = user_repo
         .create(&make_user("joined_hidden_owner"))
         .await
-        .unwrap();
-    let member = user_repo.create(&make_user("joined_member")).await.unwrap();
+        .checked("test operation should succeed");
+    let member = user_repo
+        .create(&make_user("joined_member"))
+        .await
+        .checked("test operation should succeed");
 
     let (visible_room, _) = room_service
         .create_room(
@@ -4732,7 +5026,7 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (hidden_room, _) = room_service
         .create_room(
             "Joined Hidden Room".to_string(),
@@ -4742,22 +5036,22 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(visible_room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_service
         .join_room(hidden_room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .user_service()
         .ban_user_and_cleanup_memberships(&inactive_owner.id, None, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (rooms, total) = room_service
         .list_accessible_joined_rooms_with_query(
@@ -4768,7 +5062,7 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(
         total, 1,
@@ -4788,10 +5082,17 @@ async fn test_list_rooms_pagination() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
-    registry.max_rooms_per_user.set(32).await.unwrap();
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
+    registry
+        .max_rooms_per_user
+        .set(32)
+        .await
+        .checked("test operation should succeed");
+    let room_service = make_room_service_with_settings_registry(&pool, registry);
 
-    let owner = user_repo.create(&make_user("page_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("page_owner"))
+        .await
+        .checked("test operation should succeed");
 
     for i in 0..15 {
         room_service
@@ -4803,7 +5104,7 @@ async fn test_list_rooms_pagination() {
                 None,
             )
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     }
 
     let page1 = synctv_core::models::PageParams {
@@ -4813,7 +5114,7 @@ async fn test_list_rooms_pagination() {
     let (rooms, total) = room_service
         .list_rooms_by_creator(&owner.id, page1)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(total, 15, "Total should be 15");
     assert_eq!(rooms.len(), 10, "First page should have 10 rooms");
@@ -4825,7 +5126,7 @@ async fn test_list_rooms_pagination() {
     let (rooms2, total2) = room_service
         .list_rooms_by_creator(&owner.id, page2)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(total2, 15, "Total should still be 15");
     assert_eq!(rooms2.len(), 5, "Second page should have 5 rooms");
@@ -4841,7 +5142,7 @@ async fn test_guest_cannot_join_password_protected_room() {
     let owner = user_repo
         .create(&make_user("guest_pwd_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = synctv_core::models::RoomSettings {
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
@@ -4857,7 +5158,7 @@ async fn test_guest_cannot_join_password_protected_room() {
             Some(settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service.check_guest_allowed(&room.id, None).await;
     assert!(
@@ -4865,14 +5166,14 @@ async fn test_guest_cannot_join_password_protected_room() {
         "Guests should not be able to join password-protected room"
     );
 
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::Authorization(msg) => {
             assert!(
                 msg.contains("password") || msg.contains("Guest"),
                 "Error should mention password or guests: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected Authorization error, got: {other:?}")),
     }
 }
 
@@ -4886,7 +5187,7 @@ async fn test_check_guest_allowed_when_disabled_globally() {
     let owner = user_repo
         .create(&make_user("guest_disabled_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = synctv_core::models::RoomSettings {
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
@@ -4902,7 +5203,7 @@ async fn test_check_guest_allowed_when_disabled_globally() {
             Some(settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service.check_guest_allowed(&room.id, None).await;
     assert!(
@@ -4921,11 +5222,11 @@ async fn test_update_room_description_enforces_permissions_and_length() {
     let owner = user_repo
         .create(&make_user("desc_update_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let outsider = user_repo
         .create(&make_user("desc_perm_outsider"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -4936,14 +5237,14 @@ async fn test_update_room_description_enforces_permissions_and_length() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(room.description, "Original description");
 
     let new_description = "Updated description with more details";
     let updated_room = room_service
         .update_room_description(&room.id, &owner.id, new_description.to_string())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(updated_room.description, new_description);
 
     let long_description = "x".repeat(501);
@@ -4960,7 +5261,7 @@ async fn test_update_room_description_enforces_permissions_and_length() {
         result.is_err(),
         "Non-member should not be able to update description"
     );
-    let err = result.unwrap_err();
+    let err = result.failed("operation should fail");
     let err_str = err.to_string();
     assert!(
         err_str.contains("permission")
@@ -4970,7 +5271,10 @@ async fn test_update_room_description_enforces_permissions_and_length() {
         "Error should indicate permission denied or not a member: {err_str}"
     );
 
-    let room_after = room_service.get_room(&room.id).await.unwrap();
+    let room_after = room_service
+        .get_room(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(room_after.description, new_description);
 }
 
@@ -4982,8 +5286,14 @@ async fn test_join_room_idempotent_same_user() {
     let room_service = make_room_service(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("idem_owner")).await.unwrap();
-    let joiner = user_repo.create(&make_user("idem_joiner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("idem_owner"))
+        .await
+        .checked("test operation should succeed");
+    let joiner = user_repo
+        .create(&make_user("idem_joiner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -4994,17 +5304,23 @@ async fn test_join_room_idempotent_same_user() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result1 = room_service.join_room(room.id, joiner.id, None).await;
     assert!(result1.is_ok(), "First join should succeed");
 
-    let count1 = member_repo.count_by_room(&room.id).await.unwrap();
+    let count1 = member_repo
+        .count_by_room(&room.id)
+        .await
+        .checked("test operation should succeed");
 
     let result2 = room_service.join_room(room.id, joiner.id, None).await;
     assert!(result2.is_ok(), "Second join should succeed (idempotent)");
 
-    let count2 = member_repo.count_by_room(&room.id).await.unwrap();
+    let count2 = member_repo
+        .count_by_room(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(
         count1, count2,
         "Member count should not increase on idempotent join"
@@ -5022,7 +5338,7 @@ async fn test_create_room_persists_default_max_members_setting() {
     let owner = user_repo
         .create(&make_user("settings_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -5033,9 +5349,12 @@ async fn test_create_room_persists_default_max_members_setting() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let settings = settings_repo.get(&room.id).await.unwrap();
+    let settings = settings_repo
+        .get(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(
         settings.max_members.0, 100,
         "Default max_members should be 100"
@@ -5059,7 +5378,7 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
     let owner = user_repo
         .create(&make_user("concurrent_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = synctv_core::models::RoomSettings {
         max_members: synctv_core::models::room_settings::MaxMembers(5),
@@ -5075,14 +5394,14 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
             Some(settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let mut users = Vec::new();
     for i in 0..20 {
         let user = user_repo
             .create(&make_user(&format!("concurrent_joiner_{i}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         users.push(user);
     }
 
@@ -5113,7 +5432,7 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
                     // (shouldn't happen in this test since all users are unique)
                 }
                 Err(e) => {
-                    panic!("Unexpected error type: {e:?}");
+                    std::panic::panic_any(format!("Unexpected error type: {e:?}"));
                 }
             }
         });
@@ -5121,10 +5440,13 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
     }
 
     for handle in handles {
-        handle.await.expect("Join task panicked");
+        handle.await.checked("Join task panicked");
     }
 
-    let final_count = member_repo.count_by_room(&room.id).await.unwrap();
+    let final_count = member_repo
+        .count_by_room(&room.id)
+        .await
+        .checked("test operation should succeed");
 
     assert_eq!(
         final_count, 5,
@@ -5158,11 +5480,14 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("cleanup_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("cleanup_owner"))
+        .await
+        .checked("test operation should succeed");
     let member1 = user_repo
         .create(&make_user("cleanup_member1"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -5173,19 +5498,19 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, member1.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist_repo = synctv_core::repository::PlaylistRepository::new(pool.clone());
     let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
     let playlist = playlist_repo
         .create(&make_playlist(room.id, owner.id, None, "Test Playlist"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     media_repo
         .create(&make_media(
             room.id,
@@ -5194,14 +5519,14 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             "Test Media",
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let member_count_before: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(
         member_count_before, 2,
         "Owner and member1 should be in room"
@@ -5212,7 +5537,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert!(playlist_count_before > 0, "Should have playlists");
 
     let media_count_before: i64 =
@@ -5220,7 +5545,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert!(media_count_before > 0, "Should have media");
 
     let settings_count_before: i64 =
@@ -5228,7 +5553,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert!(settings_count_before > 0, "Should have settings");
 
     let playback_count_before: i64 =
@@ -5236,17 +5561,20 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(playback_count_before, 1, "Should have playback state");
 
-    room_service.delete_room(room.id, owner.id).await.unwrap();
+    room_service
+        .delete_room(room.id, owner.id)
+        .await
+        .checked("test operation should succeed");
 
     let deleted_at: Option<chrono::DateTime<Utc>> =
         sqlx::query_scalar("SELECT deleted_at FROM rooms WHERE id = $1")
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert!(deleted_at.is_some(), "Room should be soft-deleted");
 
     // This is the key optimization - these should be gone, not waiting 90 days
@@ -5256,7 +5584,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(
         member_count_after, 0,
         "Members should be immediately cleaned up"
@@ -5267,7 +5595,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(
         playlist_count_after, 0,
         "Playlists should be immediately cleaned up"
@@ -5278,7 +5606,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(
         media_count_after, 0,
         "Media should be immediately cleaned up"
@@ -5289,7 +5617,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(
         settings_count_after, 0,
         "Settings should be immediately cleaned up"
@@ -5300,7 +5628,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(
         playback_count_after, 0,
         "Playback state should be immediately cleaned up"
@@ -5311,7 +5639,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(
         chat_count_after, 0,
         "Chat messages should be immediately cleaned up"
@@ -5321,7 +5649,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         .bind(room.id)
         .fetch_one(&pool)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(room_exists, "Room row should still exist (soft-deleted)");
 
     // does not have an audit service configured. Audit functionality is
@@ -5339,7 +5667,7 @@ async fn test_admin_delete_orphaned_room_removes_rooms_with_inactive_creators() 
     let creator = user_repo
         .create(&make_user("orphan_creator_1"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -5350,23 +5678,29 @@ async fn test_admin_delete_orphaned_room_removes_rooms_with_inactive_creators() 
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let admin = user_repo
         .create(&make_user("admin_orphan_1"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let mut admin = admin;
     admin.role = UserRole::Admin;
-    let admin = user_repo.update(&admin, 0).await.unwrap();
+    let admin = user_repo
+        .update(&admin, 0)
+        .await
+        .checked("test operation should succeed");
 
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
         .bind(creator.id)
         .execute(&pool)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let deleted_creator = user_repo.get_by_id(&creator.id).await.unwrap();
+    let deleted_creator = user_repo
+        .get_by_id(&creator.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         deleted_creator.is_none(),
         "Soft-deleted user should not be found"
@@ -5375,9 +5709,12 @@ async fn test_admin_delete_orphaned_room_removes_rooms_with_inactive_creators() 
     room_service
         .admin_delete_orphaned_room(&room.id, &admin.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    let fetched = room_repo
+        .get_by_id(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         fetched.is_none(),
         "Orphaned room should be soft-deleted by admin"
@@ -5386,7 +5723,7 @@ async fn test_admin_delete_orphaned_room_removes_rooms_with_inactive_creators() 
     let banned_creator = user_repo
         .create(&make_user("banned_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (banned_room, _) = room_service
         .create_room(
@@ -5397,7 +5734,7 @@ async fn test_admin_delete_orphaned_room_removes_rooms_with_inactive_creators() 
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     user_repo
         .ban(
@@ -5406,14 +5743,17 @@ async fn test_admin_delete_orphaned_room_removes_rooms_with_inactive_creators() 
             Some("creator banned by admin".to_string()),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .admin_delete_orphaned_room(&banned_room.id, &admin.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let fetched = room_repo.get_by_id(&banned_room.id).await.unwrap();
+    let fetched = room_repo
+        .get_by_id(&banned_room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         fetched.is_none(),
         "Orphaned room with banned creator should be soft-deleted"
@@ -5431,14 +5771,17 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
     let mut admin = user_repo
         .create(&make_user("admin_orphan_invalid"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     admin.role = UserRole::Admin;
-    let admin = user_repo.update(&admin, admin.version).await.unwrap();
+    let admin = user_repo
+        .update(&admin, admin.version)
+        .await
+        .checked("test operation should succeed");
 
     let creator = user_repo
         .create(&make_user("active_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -5449,7 +5792,7 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .admin_delete_orphaned_room(&room.id, &admin.id)
@@ -5460,7 +5803,10 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
         "Should reject orphaned deletion for active creator"
     );
 
-    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    let fetched = room_repo
+        .get_by_id(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         fetched.is_some(),
         "Room should still exist when creator is active"
@@ -5469,7 +5815,7 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
     let orphan_creator = user_repo
         .create(&make_user("orphan_creator_non_admin"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (orphan_room, _) = room_service
         .create_room(
             "Orphaned Room Non Admin".to_string(),
@@ -5479,17 +5825,17 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let regular_user = user_repo
         .create(&make_user("regular_orphan_delete"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
         .bind(orphan_creator.id)
         .execute(&pool)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .admin_delete_orphaned_room(&orphan_room.id, &regular_user.id)
@@ -5501,13 +5847,13 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
     assert!(room_repo
         .get_by_id(&orphan_room.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_some());
 
     let creator = user_repo
         .create(&make_user("orphan_already_del"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Already Deleted Room".to_string(),
@@ -5517,18 +5863,18 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
         .bind(creator.id)
         .execute(&pool)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .admin_delete_room(&room.id, &admin.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .admin_delete_orphaned_room(&room.id, &admin.id)
@@ -5569,7 +5915,7 @@ async fn make_settings_registry(pool: PgPool) -> Arc<SettingsRegistry> {
         .bind(default_value)
         .execute(&pool)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     }
 
     registry
@@ -5581,17 +5927,17 @@ async fn test_create_room_enforces_password_policy_matrix() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry.clone());
+    let room_service = make_room_service_with_settings_registry(&pool, registry.clone());
 
     let owner = user_repo
         .create(&make_user("pwd_policy_matrix_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     registry
         .set_room_password_policy(RoomPasswordPolicy::Required)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .create_room(
@@ -5616,12 +5962,12 @@ async fn test_create_room_enforces_password_policy_matrix() {
             None,
         )
         .await
-        .expect("required policy should allow password-protected rooms");
+        .checked("required policy should allow password-protected rooms");
 
     registry
         .set_room_password_policy(RoomPasswordPolicy::Forbidden)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .create_room(
@@ -5646,7 +5992,7 @@ async fn test_create_room_enforces_password_policy_matrix() {
             None,
         )
         .await
-        .expect("forbidden policy should allow open rooms");
+        .checked("forbidden policy should allow open rooms");
 }
 
 #[tokio::test]
@@ -5656,16 +6002,16 @@ async fn test_transfer_room_ownership_updates_room_and_member_roles() {
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
+    let room_service = make_room_service_with_settings_registry(&pool, registry);
 
     let old_owner = user_repo
         .create(&make_user("room_transfer_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let new_owner = user_repo
         .create(&make_user("room_transfer_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -5676,32 +6022,32 @@ async fn test_transfer_room_ownership_updates_room_and_member_roles() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, new_owner.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let updated_room = room_service
         .transfer_room_ownership(room.id, old_owner.id, new_owner.id)
         .await
-        .expect("room ownership transfer should succeed");
+        .checked("room ownership transfer should succeed");
 
     assert_eq!(updated_room.created_by, new_owner.id);
 
     let old_owner_member = member_repo
         .get(&room.id, &old_owner.id)
         .await
-        .unwrap()
-        .expect("old owner should remain a room member");
+        .checked("test operation should succeed")
+        .checked("old owner should remain a room member");
     assert_eq!(old_owner_member.role, RoomRole::Admin);
 
     let new_owner_member = member_repo
         .get(&room.id, &new_owner.id)
         .await
-        .unwrap()
-        .expect("new owner should remain a room member");
+        .checked("test operation should succeed")
+        .checked("new owner should remain a room member");
     assert_eq!(new_owner_member.role, RoomRole::Creator);
 }
 
@@ -5711,17 +6057,21 @@ async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
-    registry.max_rooms_per_user.set(1).await.unwrap();
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
+    registry
+        .max_rooms_per_user
+        .set(1)
+        .await
+        .checked("test operation should succeed");
+    let room_service = make_room_service_with_settings_registry(&pool, registry);
 
     let old_owner = user_repo
         .create(&make_user("room_transfer_limit_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let new_owner = user_repo
         .create(&make_user("room_transfer_limit_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room_to_transfer, _) = room_service
         .create_room(
@@ -5732,7 +6082,7 @@ async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (_existing_room, _) = room_service
         .create_room(
@@ -5743,17 +6093,17 @@ async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room_to_transfer.id, new_owner.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let err = room_service
         .transfer_room_ownership(room_to_transfer.id, old_owner.id, new_owner.id)
         .await
-        .expect_err("ownership transfer should fail when new owner reached room limit");
+        .failed("ownership transfer should fail when new owner reached room limit");
 
     assert!(
         matches!(err, Error::InvalidInput(ref msg) if msg.contains("maximum number of rooms")),
@@ -5767,16 +6117,16 @@ async fn test_transfer_room_ownership_rejects_duplicate_name_for_new_owner() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
+    let room_service = make_room_service_with_settings_registry(&pool, registry);
 
     let old_owner = user_repo
         .create(&make_user("room_transfer_dup_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let new_owner = user_repo
         .create(&make_user("room_transfer_dup_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room_to_transfer, _) = room_service
         .create_room(
@@ -5787,7 +6137,7 @@ async fn test_transfer_room_ownership_rejects_duplicate_name_for_new_owner() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_service
         .create_room(
             "Shared Transfer Name".to_string(),
@@ -5797,16 +6147,16 @@ async fn test_transfer_room_ownership_rejects_duplicate_name_for_new_owner() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_service
         .join_room(room_to_transfer.id, new_owner.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let err = room_service
         .transfer_room_ownership(room_to_transfer.id, old_owner.id, new_owner.id)
         .await
-        .expect_err("ownership transfer should fail when new owner has same room name");
+        .failed("ownership transfer should fail when new owner has same room name");
 
     assert!(matches!(
         err,
@@ -5820,13 +6170,17 @@ async fn test_create_room_respects_max_rooms_per_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
-    registry.max_rooms_per_user.set(1).await.unwrap();
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
+    registry
+        .max_rooms_per_user
+        .set(1)
+        .await
+        .checked("test operation should succeed");
+    let room_service = make_room_service_with_settings_registry(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("room_create_limit_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .create_room(
@@ -5837,7 +6191,7 @@ async fn test_create_room_respects_max_rooms_per_user() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let err = room_service
         .create_room(
@@ -5848,7 +6202,7 @@ async fn test_create_room_respects_max_rooms_per_user() {
             None,
         )
         .await
-        .expect_err("second room should exceed max_rooms_per_user");
+        .failed("second room should exceed max_rooms_per_user");
 
     assert!(
         matches!(err, Error::InvalidInput(ref msg) if msg.contains("maximum number of rooms")),
@@ -5862,13 +6216,17 @@ async fn test_concurrent_create_room_respects_max_rooms_per_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
-    registry.max_rooms_per_user.set(2).await.unwrap();
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
+    registry
+        .max_rooms_per_user
+        .set(2)
+        .await
+        .checked("test operation should succeed");
+    let room_service = make_room_service_with_settings_registry(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("room_create_concurrent_limit_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .create_room(
@@ -5879,7 +6237,7 @@ async fn test_concurrent_create_room_respects_max_rooms_per_user() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let room_service = Arc::new(room_service);
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
@@ -5901,12 +6259,14 @@ async fn test_concurrent_create_room_respects_max_rooms_per_user() {
     let mut success_count = 0;
     let mut limit_error_count = 0;
     for result in results {
-        match result.expect("concurrent create task should not panic") {
+        match result.checked("concurrent create task should not panic") {
             Ok(_) => success_count += 1,
             Err(Error::InvalidInput(msg)) if msg.contains("maximum number of rooms") => {
                 limit_error_count += 1;
             }
-            Err(err) => panic!("unexpected concurrent create result: {err:?}"),
+            Err(err) => {
+                std::panic::panic_any(format!("unexpected concurrent create result: {err:?}"))
+            }
         }
     }
 
@@ -5922,7 +6282,7 @@ async fn test_concurrent_create_room_respects_max_rooms_per_user() {
     let (_rooms, total) = room_service
         .list_rooms_by_creator(&owner.id, PageParams::new(Some(1), Some(10)))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(
         total, 2,
         "final room count must not exceed max_rooms_per_user"
@@ -5940,11 +6300,11 @@ async fn test_create_room_rejects_banned_creator_in_service_layer() {
     let owner = user_repo
         .create(&make_user("room_create_banned_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     user_service
         .ban_user_and_cleanup_memberships(&owner.id, None, Some("test ban".to_string()))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let err = room_service
         .create_room(
@@ -5955,7 +6315,7 @@ async fn test_create_room_rejects_banned_creator_in_service_layer() {
             None,
         )
         .await
-        .expect_err("service layer must reject banned room creators");
+        .failed("service layer must reject banned room creators");
 
     assert!(matches!(
         err,
@@ -5969,13 +6329,17 @@ async fn test_pending_room_creation_rejects_duplicate_active_room_name() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
-    registry.create_room_need_review.set(true).await.unwrap();
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
+    registry
+        .create_room_need_review
+        .set(true)
+        .await
+        .checked("test operation should succeed");
+    let room_service = make_room_service_with_settings_registry(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_dup_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .create_room(
@@ -5986,7 +6350,7 @@ async fn test_pending_room_creation_rejects_duplicate_active_room_name() {
             None,
         )
         .await
-        .expect("first request should create a pending room");
+        .checked("first request should create a pending room");
 
     sqlx::query(
         r"
@@ -5999,14 +6363,17 @@ async fn test_pending_room_creation_rejects_duplicate_active_room_name() {
     .bind(i16::from(synctv_core::models::ReviewStatus::Approved))
     .execute(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
     let room_repo = RoomRepository::new(pool.clone());
     let approved_room = synctv_core::models::Room::new_with_description(
         "Pending Duplicate Name".to_string(),
         String::new(),
         owner.id,
     );
-    room_repo.create(&approved_room).await.unwrap();
+    room_repo
+        .create(&approved_room)
+        .await
+        .checked("test operation should succeed");
 
     let err = room_service
         .create_room(
@@ -6017,7 +6384,7 @@ async fn test_pending_room_creation_rejects_duplicate_active_room_name() {
             None,
         )
         .await
-        .expect_err("new pending request should fail when active room already has this name");
+        .failed("new pending request should fail when active room already has this name");
 
     assert!(matches!(
         err,
@@ -6031,13 +6398,17 @@ async fn test_pending_room_creation_rejects_duplicate_pending_room_name() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
-    registry.create_room_need_review.set(true).await.unwrap();
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
+    registry
+        .create_room_need_review
+        .set(true)
+        .await
+        .checked("test operation should succeed");
+    let room_service = make_room_service_with_settings_registry(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_same_name_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .create_room(
@@ -6048,7 +6419,7 @@ async fn test_pending_room_creation_rejects_duplicate_pending_room_name() {
             None,
         )
         .await
-        .expect("first request should create a pending room");
+        .checked("first request should create a pending room");
 
     let err = room_service
         .create_room(
@@ -6059,7 +6430,7 @@ async fn test_pending_room_creation_rejects_duplicate_pending_room_name() {
             None,
         )
         .await
-        .expect_err("second same-name pending request should be rejected");
+        .failed("second same-name pending request should be rejected");
 
     assert!(matches!(
         err,
@@ -6079,7 +6450,7 @@ async fn test_pending_room_creation_rejects_duplicate_pending_room_name() {
     .bind("Duplicate Pending Name")
     .fetch_one(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
     assert_eq!(
         pending_count, 1,
         "service policy should keep only one pending request for this creator/name"
@@ -6092,13 +6463,17 @@ async fn test_approve_pending_room_allows_the_request_itself_while_checking_name
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
-    registry.create_room_need_review.set(true).await.unwrap();
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
+    registry
+        .create_room_need_review
+        .set(true)
+        .await
+        .checked("test operation should succeed");
+    let room_service = make_room_service_with_settings_registry(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_self_exclusion_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (pending_room, _) = room_service
         .create_room(
@@ -6109,12 +6484,12 @@ async fn test_approve_pending_room_allows_the_request_itself_while_checking_name
             None,
         )
         .await
-        .expect("pending room request should be created");
+        .checked("pending room request should be created");
 
     let approved = room_service
         .approve_pending_room(pending_room.id, None)
         .await
-        .expect("approval should not treat the current pending row as a duplicate");
+        .checked("approval should not treat the current pending row as a duplicate");
 
     assert_eq!(approved.name, "Self Exclusion Pending Name");
     assert_eq!(approved.created_by, owner.id);
@@ -6126,21 +6501,25 @@ async fn test_approve_pending_room_preserves_password_when_policy_required() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let registry = make_settings_registry(pool.clone()).await;
-    registry.create_room_need_review.set(true).await.unwrap();
+    registry
+        .create_room_need_review
+        .set(true)
+        .await
+        .checked("test operation should succeed");
     registry
         .set_room_password_policy(RoomPasswordPolicy::Required)
         .await
-        .unwrap();
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
+        .checked("test operation should succeed");
+    let room_service = make_room_service_with_settings_registry(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_password_required_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let visitor = user_repo
         .create(&make_user("pending_room_password_required_visitor"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (pending_room, _) = room_service
         .create_room(
@@ -6151,18 +6530,18 @@ async fn test_approve_pending_room_preserves_password_when_policy_required() {
             None,
         )
         .await
-        .expect("password should satisfy required policy while room awaits review");
+        .checked("password should satisfy required policy while room awaits review");
 
     let approved = room_service
         .approve_pending_room(pending_room.id, None)
         .await
-        .expect("approval should create the password-protected room");
+        .checked("approval should create the password-protected room");
     assert_eq!(approved.name, "Pending Password Required Room");
     assert!(
         room_service
             .is_room_password_enabled(&approved.id)
             .await
-            .unwrap(),
+            .checked("test operation should succeed"),
         "approved room should keep the pending password enabled"
     );
 
@@ -6173,7 +6552,7 @@ async fn test_approve_pending_room_preserves_password_when_policy_required() {
             Some("WrongPassword123".to_string()),
         )
         .await
-        .expect_err("wrong password should not join the approved room");
+        .failed("wrong password should not join the approved room");
     assert!(matches!(
         wrong_password,
         Error::Authorization(ref message) if message.contains("Invalid password")
@@ -6186,7 +6565,7 @@ async fn test_approve_pending_room_preserves_password_when_policy_required() {
             Some("StrongPassword123".to_string()),
         )
         .await
-        .expect("correct password should join the approved room");
+        .checked("correct password should join the approved room");
 }
 
 #[tokio::test]
@@ -6196,13 +6575,17 @@ async fn test_approve_pending_room_rejects_creator_banned_after_request() {
     let user_repo = UserRepository::new(pool.clone());
     let user_service = make_user_service(&pool);
     let registry = make_settings_registry(pool.clone()).await;
-    registry.create_room_need_review.set(true).await.unwrap();
-    let room_service = make_room_service_with_settings_registry(pool.clone(), registry);
+    registry
+        .create_room_need_review
+        .set(true)
+        .await
+        .checked("test operation should succeed");
+    let room_service = make_room_service_with_settings_registry(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_banned_after_request_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (pending_room, _) = room_service
         .create_room(
@@ -6213,17 +6596,17 @@ async fn test_approve_pending_room_rejects_creator_banned_after_request() {
             None,
         )
         .await
-        .expect("request should be accepted while creator is active");
+        .checked("request should be accepted while creator is active");
 
     user_service
         .ban_user_and_cleanup_memberships(&owner.id, None, Some("test ban".to_string()))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let err = room_service
         .approve_pending_room(pending_room.id, None)
         .await
-        .expect_err("approval must re-check creator current status");
+        .failed("approval must re-check creator current status");
 
     assert!(matches!(
         err,
@@ -6232,7 +6615,7 @@ async fn test_approve_pending_room_rejects_creator_banned_after_request() {
     let room_exists = RoomRepository::new(pool.clone())
         .get_by_id(&pending_room.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_some();
     assert!(
         !room_exists,
@@ -6247,9 +6630,18 @@ async fn test_set_member_role_only_creator_can_change_roles() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("role_creator")).await.unwrap();
-    let admin_user = user_repo.create(&make_user("role_admin")).await.unwrap();
-    let member_user = user_repo.create(&make_user("role_member")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("role_creator"))
+        .await
+        .checked("test operation should succeed");
+    let admin_user = user_repo
+        .create(&make_user("role_admin"))
+        .await
+        .checked("test operation should succeed");
+    let member_user = user_repo
+        .create(&make_user("role_member"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -6260,24 +6652,24 @@ async fn test_set_member_role_only_creator_can_change_roles() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Join admin and member
     room_service
         .join_room(room.id, admin_user.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_service
         .join_room(room.id, member_user.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Creator promotes admin_user to Admin
     room_service
         .member_service()
         .set_member_role(room.id, creator.id, admin_user.id, RoomRole::Admin)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Admin tries to change member_user's role -- should fail (creator-only)
     let result = room_service
@@ -6289,7 +6681,7 @@ async fn test_set_member_role_only_creator_can_change_roles() {
         result.is_err(),
         "Admin should not be able to change roles (creator-only)"
     );
-    let err = result.unwrap_err();
+    let err = result.failed("operation should fail");
     assert!(
         matches!(err, Error::Authorization(ref msg) if msg.contains("creator")),
         "Error should mention creator-only restriction, got: {err:?}"
@@ -6304,8 +6696,14 @@ async fn test_kick_member_completes_quickly() {
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("kick_creator")).await.unwrap();
-    let target = user_repo.create(&make_user("kick_target")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("kick_creator"))
+        .await
+        .checked("test operation should succeed");
+    let target = user_repo
+        .create(&make_user("kick_target"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -6316,19 +6714,19 @@ async fn test_kick_member_completes_quickly() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Kick should complete without fixed sleep overhead
     let start = std::time::Instant::now();
     room_service
         .kick_member(room.id, creator.id, target.id, 60)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let elapsed = start.elapsed();
 
     // Without the sleep, this should complete well under 100ms
@@ -6343,7 +6741,7 @@ async fn test_kick_member_completes_quickly() {
         member_repo
             .get_any(&room.id, &target.id)
             .await
-            .unwrap()
+            .checked("test operation should succeed")
             .is_none(),
         "kick should delete the member row"
     );
@@ -6351,7 +6749,7 @@ async fn test_kick_member_completes_quickly() {
         member_repo
             .is_in_kick_cooldown(&room.id, &target.id)
             .await
-            .unwrap(),
+            .checked("test operation should succeed"),
         "kick should create cooldown"
     );
 }

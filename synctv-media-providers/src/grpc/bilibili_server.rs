@@ -11,15 +11,15 @@ use super::bilibili::{
     ParsePgcPageReq, ParseVideoPageReq, UserInfoReq, UserInfoResp, VideoPageInfo, VideoUrl,
 };
 use super::error_mapper::map_provider_error;
-use super::validation::validate_required;
 use crate::bilibili::{BilibiliInterface, BilibiliService as BilibiliServiceImpl};
 use crate::error::ProviderClientError;
+use crate::validation::validate_required;
 use tonic::{Request, Response, Status};
 
 /// Map Bilibili provider errors to appropriate gRPC status codes using the shared mapper.
 ///
-/// Bilibili has special API error codes (-101 for auth, -412 for rate limit) that
-/// are handled by the shared mapper's `api_error_code()` classification.
+/// Bilibili has special API error codes (-101 for auth, -412 for rate limit)
+/// that are handled before falling back to the shared mapper.
 fn map_bilibili_error(context: &str, e: &ProviderClientError) -> Status {
     // Special handling for Bilibili-specific API error codes
     if let ProviderClientError::Api { code, .. } = &e {

@@ -1,11 +1,11 @@
 //! Deduplication tests
 //!
 //! Tests for `MessageDeduplicator` behavior: `mark_processed` prevents
-//! reprocessing, `len/is_empty` tracking, and different events at the same
+//! reprocessing, `len` tracking, and different events at the same
 //! timestamp produce different dedup keys.
 
 #![allow(clippy::unwrap_used)]
-use synctv_realtime::{DedupKey, MessageDeduplicator};
+use synctv_realtime::sync::{DedupKey, MessageDeduplicator};
 
 fn make_key(event_type: &str, room: &str, user: &str, ts: i64, hash: u64) -> DedupKey {
     DedupKey {
@@ -22,7 +22,7 @@ fn make_key(event_type: &str, room: &str, user: &str, ts: i64, hash: u64) -> Ded
 
 #[tokio::test]
 async fn test_mark_processed_prevents_reprocessing() {
-    let dedup = MessageDeduplicator::with_defaults();
+    let dedup = MessageDeduplicator::default();
     let key = make_key("chat", "room1", "user1", 1000, 42);
 
     // Before marking, should_process returns true
@@ -44,19 +44,17 @@ async fn test_mark_processed_prevents_reprocessing() {
     );
 }
 
-// Test 2: len and is_empty tracking
+// Test 2: len tracking
 
 #[tokio::test]
-async fn test_dedup_len_and_is_empty() {
-    let dedup = MessageDeduplicator::with_defaults();
+async fn test_dedup_len_tracking() {
+    let dedup = MessageDeduplicator::default();
 
-    assert!(dedup.is_empty(), "New dedup should be empty");
     assert_eq!(dedup.len(), 0);
 
     let key1 = make_key("chat", "r1", "u1", 1000, 0);
     let _ = dedup.should_process(&key1);
     assert_eq!(dedup.len(), 1, "One entry after first should_process");
-    assert!(!dedup.is_empty());
 
     let key2 = make_key("chat", "r2", "u2", 2000, 0);
     let _ = dedup.should_process(&key2);
@@ -68,7 +66,6 @@ async fn test_dedup_len_and_is_empty() {
 
     // Clear resets
     dedup.clear();
-    assert!(dedup.is_empty(), "Should be empty after clear");
     assert_eq!(dedup.len(), 0);
 }
 
@@ -76,7 +73,7 @@ async fn test_dedup_len_and_is_empty() {
 
 #[tokio::test]
 async fn test_different_events_same_timestamp_different_keys() {
-    let dedup = MessageDeduplicator::with_defaults();
+    let dedup = MessageDeduplicator::default();
     let ts = 5000i64;
 
     // Two different events at the exact same timestamp

@@ -325,10 +325,16 @@ impl SegmentManager {
     ) -> std::io::Result<usize> {
         let mut deleted = 0;
         for segment_name in segment_names {
-            self.storage
-                .delete(app_name, stream_name, segment_name)
-                .await?;
-            deleted += 1;
+            if self
+                .storage
+                .exists(app_name, stream_name, segment_name)
+                .await?
+            {
+                self.storage
+                    .delete(app_name, stream_name, segment_name)
+                    .await?;
+                deleted += 1;
+            }
         }
         Ok(deleted)
     }
@@ -530,6 +536,38 @@ mod tests {
             .unwrap());
         assert!(storage
             .exists("live", "room_123", "new_seg_0")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_marked_stream_segments_counts_existing_segments_only() {
+        let storage = Arc::new(MemoryStorage::new());
+        storage
+            .write("live", "room_123", "old_seg_0", Bytes::from_static(b"old0"))
+            .await
+            .unwrap();
+        let manager = SegmentManager::new(
+            storage.clone(),
+            CleanupConfig {
+                interval: Duration::from_hours(1),
+                retention: Duration::from_hours(1),
+                max_segments_per_stream: 0,
+            },
+        );
+
+        let deleted = manager
+            .cleanup_marked_stream_segments(
+                "live",
+                "room_123",
+                &["old_seg_0".to_string(), "missing_seg".to_string()],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(deleted, 1);
+        assert!(!storage
+            .exists("live", "room_123", "old_seg_0")
             .await
             .unwrap());
     }

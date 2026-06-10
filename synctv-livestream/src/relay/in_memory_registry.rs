@@ -6,7 +6,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -26,72 +26,27 @@ type PublisherKey = (String, String);
 #[derive(Debug, Default)]
 struct InMemoryRegistryState {
     publishers: HashMap<PublisherKey, PublisherInfo>,
-    room_streams: HashMap<String, HashSet<String>>,
-    user_publishers: HashMap<String, HashSet<PublisherKey>>,
-    node_publishers: HashMap<String, HashSet<PublisherKey>>,
 }
 
 impl InMemoryRegistryState {
     fn insert_publisher(&mut self, key: PublisherKey, publisher: PublisherInfo) {
-        self.room_streams
-            .entry(key.0.clone())
-            .or_default()
-            .insert(key.1.clone());
-
-        if !publisher.user_id.is_empty() {
-            self.user_publishers
-                .entry(publisher.user_id.clone())
-                .or_default()
-                .insert(key.clone());
-        }
-
-        self.node_publishers
-            .entry(publisher.node_id.clone())
-            .or_default()
-            .insert(key.clone());
-
         self.publishers.insert(key, publisher);
     }
 
     fn remove_publisher(&mut self, key: &PublisherKey) -> Option<PublisherInfo> {
-        let publisher = self.publishers.remove(key)?;
-
-        if let Some(room_streams) = self.room_streams.get_mut(&key.0) {
-            room_streams.remove(&key.1);
-            if room_streams.is_empty() {
-                self.room_streams.remove(&key.0);
-            }
-        }
-
-        if !publisher.user_id.is_empty() {
-            if let Some(user_publishers) = self.user_publishers.get_mut(&publisher.user_id) {
-                user_publishers.remove(key);
-                if user_publishers.is_empty() {
-                    self.user_publishers.remove(&publisher.user_id);
-                }
-            }
-        }
-
-        if let Some(node_publishers) = self.node_publishers.get_mut(&publisher.node_id) {
-            node_publishers.remove(key);
-            if node_publishers.is_empty() {
-                self.node_publishers.remove(&publisher.node_id);
-            }
-        }
-
-        Some(publisher)
+        self.publishers.remove(key)
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct InMemoryStreamRegistry {
+pub(crate) struct InMemoryStreamRegistry {
     state: Arc<Mutex<InMemoryRegistryState>>,
     next_epoch: Arc<AtomicU64>,
 }
 
 impl InMemoryStreamRegistry {
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(InMemoryRegistryState::default())),
             next_epoch: Arc::new(AtomicU64::new(1)),
@@ -107,39 +62,6 @@ impl Default for InMemoryStreamRegistry {
 
 #[async_trait]
 impl StreamRegistryTrait for InMemoryStreamRegistry {
-    async fn register_publisher(
-        &self,
-        room_id: &str,
-        media_id: &str,
-        node_id: &str,
-        app_name: &str,
-        api_address: &str,
-    ) -> Result<bool> {
-        use std::collections::hash_map::Entry;
-        validate_stream_ids(room_id, media_id)?;
-        let mut state = self.state.lock().await;
-        let key = (room_id.to_string(), media_id.to_string());
-
-        match state.publishers.entry(key.clone()) {
-            Entry::Occupied(_) => Ok(false),
-            Entry::Vacant(_) => {
-                let epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
-                state.insert_publisher(
-                    key,
-                    PublisherInfo {
-                        node_id: node_id.to_string(),
-                        api_address: api_address.to_string(),
-                        app_name: app_name.to_string(),
-                        user_id: String::new(),
-                        started_at: Utc::now(),
-                        epoch,
-                    },
-                );
-                Ok(true)
-            }
-        }
-    }
-
     async fn try_register_publisher(
         &self,
         room_id: &str,
@@ -260,28 +182,25 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
             .collect())
     }
 
-    async fn list_active_streams(&self) -> Result<Vec<(String, String)>> {
-        let state = self.state.lock().await;
-        Ok(state.publishers.keys().cloned().collect())
-    }
-
     async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
         validate_stream_id_component(room_id, "room_id")?;
         let state = self.state.lock().await;
         Ok(state
-            .room_streams
-            .get(room_id)
-            .map(|streams| streams.iter().cloned().collect())
-            .unwrap_or_default())
+            .publishers
+            .keys()
+            .filter(|(publisher_room_id, _)| publisher_room_id == room_id)
+            .map(|(_, media_id)| media_id.clone())
+            .collect())
     }
 
     async fn get_user_publishers(&self, user_id: &str) -> Result<Vec<(String, String)>> {
         let state = self.state.lock().await;
         Ok(state
-            .user_publishers
-            .get(user_id)
-            .map(|publishers| publishers.iter().cloned().collect())
-            .unwrap_or_default())
+            .publishers
+            .iter()
+            .filter(|(_, publisher)| publisher.user_id == user_id)
+            .map(|((room_id, media_id), _)| (room_id.clone(), media_id.clone()))
+            .collect())
     }
 
     async fn get_user_publishers_for_room(
@@ -292,29 +211,13 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         validate_stream_id_component(room_id, "room_id")?;
         let state = self.state.lock().await;
         Ok(state
-            .user_publishers
-            .get(user_id)
-            .map(|publishers| {
-                publishers
-                    .iter()
-                    .filter(|(publisher_room_id, _)| publisher_room_id == room_id)
-                    .cloned()
-                    .collect()
+            .publishers
+            .iter()
+            .filter(|((publisher_room_id, _), publisher)| {
+                publisher_room_id == room_id && publisher.user_id == user_id
             })
-            .unwrap_or_default())
-    }
-
-    async fn unregister_all_user_publishers(&self, user_id: &str) -> Result<()> {
-        let mut state = self.state.lock().await;
-        let keys: Vec<_> = state
-            .user_publishers
-            .get(user_id)
-            .map(|publishers| publishers.iter().cloned().collect())
-            .unwrap_or_default();
-        for key in keys {
-            state.remove_publisher(&key);
-        }
-        Ok(())
+            .map(|((room_id, media_id), _)| (room_id.clone(), media_id.clone()))
+            .collect())
     }
 
     async fn validate_epoch(&self, room_id: &str, media_id: &str, epoch: u64) -> Result<bool> {
@@ -330,10 +233,11 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
     async fn cleanup_all_publishers_for_node(&self, node_id: &str) -> Result<()> {
         let mut state = self.state.lock().await;
         let keys: Vec<_> = state
-            .node_publishers
-            .get(node_id)
-            .map(|publishers| publishers.iter().cloned().collect())
-            .unwrap_or_default();
+            .publishers
+            .iter()
+            .filter(|(_, publisher)| publisher.node_id == node_id)
+            .map(|(key, _)| key.clone())
+            .collect();
         for key in keys {
             state.remove_publisher(&key);
         }
@@ -344,6 +248,94 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type TestResult = anyhow::Result<()>;
+
+    #[tokio::test]
+    async fn in_memory_registry_registers_and_rejects_duplicates() -> TestResult {
+        let registry = InMemoryStreamRegistry::new();
+
+        let first = registry
+            .try_register_publisher("room1", "media1", "node1", "user1", "localhost:50051")
+            .await?;
+        assert!(first);
+
+        let second = registry
+            .try_register_publisher("room1", "media1", "node2", "user2", "localhost:50052")
+            .await?;
+        assert!(!second);
+
+        let publisher = registry
+            .get_publisher("room1", "media1")
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("publisher should exist"))?;
+        assert_eq!(publisher.node_id, "node1");
+        assert_eq!(publisher.user_id, "user1");
+        assert_eq!(publisher.api_address, "localhost:50051");
+        assert_eq!(publisher.epoch, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn in_memory_registry_keeps_epoch_monotonic_after_unregister() -> TestResult {
+        let registry = InMemoryStreamRegistry::new();
+
+        registry
+            .try_register_publisher("room1", "media1", "node1", "user1", "localhost:50051")
+            .await?;
+        let first_epoch = registry
+            .get_publisher("room1", "media1")
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("publisher should exist"))?
+            .epoch;
+
+        registry.unregister_publisher("room1", "media1").await?;
+        registry
+            .try_register_publisher("room1", "media1", "node2", "user2", "localhost:50052")
+            .await?;
+
+        let second_epoch = registry
+            .get_publisher("room1", "media1")
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("publisher should exist"))?
+            .epoch;
+        assert!(second_epoch > first_epoch);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn in_memory_registry_user_indexes_and_epoch_checks_work() -> TestResult {
+        let registry = InMemoryStreamRegistry::new();
+
+        registry
+            .try_register_publisher("room1", "media1", "node1", "user1", "localhost:50051")
+            .await?;
+        registry
+            .try_register_publisher("room2", "media2", "node1", "user1", "localhost:50051")
+            .await?;
+
+        let publisher = registry
+            .get_publisher("room1", "media1")
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("publisher should exist"))?;
+        assert!(
+            registry
+                .validate_epoch("room1", "media1", publisher.epoch)
+                .await?
+        );
+        assert!(!registry.validate_epoch("room1", "media1", 999).await?);
+
+        let user_publishers = registry.get_user_publishers("user1").await?;
+        assert_eq!(user_publishers.len(), 2);
+
+        let wrong_node = registry
+            .refresh_publisher_ttl("room1", "media1", "user1", "node2", publisher.epoch)
+            .await?;
+        assert_eq!(wrong_node, PublisherRefreshOutcome::OwnershipChanged);
+
+        assert_eq!(registry.get_user_publishers("user1").await?.len(), 2);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn in_memory_registry_rejects_ambiguous_stream_ids() {

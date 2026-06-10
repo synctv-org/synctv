@@ -34,7 +34,6 @@ impl HevcNal {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct Mpeg4Hevc {
     configuration_version: u8, // 1-only
@@ -198,12 +197,12 @@ impl Mpeg4HevcProcessor {
     /// Read the NAL unit size from the MP4 container format.
     /// The size is stored in `nalu_length` bytes as a big-endian integer.
     fn read_nalu_size(&mut self, bytes_reader: &mut BytesReader) -> Result<u32, Mpeg4AvcHevcError> {
-        // Default to 4 bytes if not initialized (e.g., in test scenarios)
-        let nalu_length = if self.mpeg4_hevc.nalu_length == 0 {
-            4
-        } else {
-            self.mpeg4_hevc.nalu_length
-        };
+        let nalu_length = self.mpeg4_hevc.nalu_length;
+        if !(1..=4).contains(&nalu_length) {
+            return Err(Mpeg4AvcHevcError {
+                value: MpegErrorValue::InvalidNaluLength(nalu_length),
+            });
+        }
 
         let mut size: u32 = 0;
         for _ in 0..nalu_length {
@@ -275,7 +274,7 @@ impl Mpeg4HevcProcessor {
             // The size field includes the first byte
             if size == 0 {
                 return Err(Mpeg4AvcHevcError {
-                    value: MpegErrorValue::ShouldNotComeHere,
+                    value: MpegErrorValue::EmptyNalu,
                 });
             }
             let data = bytes_reader.read_bytes(size as usize)?;
@@ -340,10 +339,7 @@ mod tests {
         let mut reader = BytesReader::new(data);
         let result = processor.hevc_mp4toannexb(&mut reader);
 
-        if let Err(ref e) = result {
-            eprintln!("Error: {e:?}");
-        }
-        assert!(result.is_ok(), "hevc_mp4toannexb failed");
+        assert!(result.is_ok(), "hevc_mp4toannexb failed: {result:?}");
         let annexb = result.unwrap();
 
         // Should have start code + original data
@@ -488,6 +484,21 @@ mod tests {
         // Should have start code + original data
         assert_eq!(&annexb[..4], &[0x00, 0x00, 0x00, 0x01]);
         assert_eq!(&annexb[4..], &[0x02, 0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn test_hevc_mp4toannexb_rejects_uninitialized_nalu_length() {
+        let mut processor = Mpeg4HevcProcessor::default();
+        let mut data = BytesMut::new();
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]);
+        data.extend_from_slice(&[0x02, 0xAA]);
+
+        let mut reader = BytesReader::new(data);
+        let err = processor
+            .hevc_mp4toannexb(&mut reader)
+            .expect_err("uninitialized NALU length should return an error");
+
+        assert!(matches!(err.value, MpegErrorValue::InvalidNaluLength(0)));
     }
 
     #[test]

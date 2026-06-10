@@ -15,8 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use synctv_cluster::discovery::{NodeInfo, NodeRegistry};
-use synctv_realtime::sync::RealtimeManager;
-use synctv_realtime::sync::{realtime_manager::RealtimeConfig, RoomMessageHub};
+use synctv_realtime::sync::{RealtimeConfig, RealtimeManager, RoomMessageHub};
 
 /// Helper to create a `NodeRegistry` for testing (local mode, no actual Redis connection needed)
 fn make_registry(node_id: &str) -> Arc<NodeRegistry> {

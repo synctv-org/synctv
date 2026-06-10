@@ -43,90 +43,88 @@ pub fn forwarded_header_ip(
     headers: &HeaderMap,
 ) -> Result<Option<std::net::IpAddr>, ClientIpHeaderError> {
     if let Some(forwarded_for) = headers.get("x-forwarded-for") {
-        let value = forwarded_for
-            .to_str()
-            .map_err(|_| ClientIpHeaderError::NonAscii {
-                header: "x-forwarded-for",
-            })?
-            .split(',')
-            .next()
-            .unwrap_or_default()
-            .trim();
-        return value.parse::<std::net::IpAddr>().map(Some).map_err(|_| {
-            ClientIpHeaderError::InvalidIp {
-                header: "x-forwarded-for",
-                value: value.to_string(),
-            }
-        });
+        return parse_forwarded_ip_header("x-forwarded-for", forwarded_for, true).map(Some);
     }
 
     if let Some(real_ip) = headers.get("x-real-ip") {
-        let value = real_ip
-            .to_str()
-            .map_err(|_| ClientIpHeaderError::NonAscii {
-                header: "x-real-ip",
-            })?
-            .trim();
-        return value.parse::<std::net::IpAddr>().map(Some).map_err(|_| {
-            ClientIpHeaderError::InvalidIp {
-                header: "x-real-ip",
-                value: value.to_string(),
-            }
-        });
+        return parse_forwarded_ip_header("x-real-ip", real_ip, false).map(Some);
     }
 
     Ok(None)
+}
+
+fn parse_forwarded_ip_header(
+    header: &'static str,
+    value: &axum::http::HeaderValue,
+    comma_separated: bool,
+) -> Result<std::net::IpAddr, ClientIpHeaderError> {
+    let raw = value
+        .to_str()
+        .map_err(|_| ClientIpHeaderError::NonAscii { header })?;
+    let value = if comma_separated {
+        raw.split(',').next().unwrap_or("").trim()
+    } else {
+        raw.trim()
+    };
+    if value.is_empty() {
+        return Err(ClientIpHeaderError::InvalidIp {
+            header,
+            value: value.to_string(),
+        });
+    }
+    value
+        .parse::<std::net::IpAddr>()
+        .map_err(|_| ClientIpHeaderError::InvalidIp {
+            header,
+            value: value.to_string(),
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
     #[test]
-    fn test_extract_client_ip_from_headers_uses_forwarded_for_when_proxy_trusted() {
+    fn test_extract_client_ip_from_headers_uses_forwarded_for_when_proxy_trusted() -> TestResult {
         let mut config = synctv_core::Config::default();
         config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-forwarded-for",
-            "203.0.113.50, 70.41.3.18".parse().unwrap(),
-        );
+        headers.insert("x-forwarded-for", "203.0.113.50, 70.41.3.18".parse()?);
+        let peer_ip = "127.0.0.1".parse::<std::net::IpAddr>()?;
+        let expected_ip = "203.0.113.50".parse::<std::net::IpAddr>()?;
 
         assert_eq!(
-            extract_client_ip_from_headers(
-                &config,
-                "127.0.0.1".parse::<std::net::IpAddr>().unwrap(),
-                &headers
-            ),
-            Ok("203.0.113.50".parse::<std::net::IpAddr>().unwrap())
+            extract_client_ip_from_headers(&config, peer_ip, &headers),
+            Ok(expected_ip)
         );
+        Ok(())
     }
 
     #[test]
-    fn test_extract_client_ip_from_headers_falls_back_to_peer_when_proxy_untrusted() {
+    fn test_extract_client_ip_from_headers_falls_back_to_peer_when_proxy_untrusted() -> TestResult {
         let mut config = synctv_core::Config::default();
         config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", "203.0.113.50".parse().unwrap());
-        headers.insert("x-real-ip", "198.51.100.42".parse().unwrap());
+        headers.insert("x-forwarded-for", "203.0.113.50".parse()?);
+        headers.insert("x-real-ip", "198.51.100.42".parse()?);
+        let peer_ip = "192.168.1.100".parse::<std::net::IpAddr>()?;
 
         assert_eq!(
-            extract_client_ip_from_headers(
-                &config,
-                "192.168.1.100".parse::<std::net::IpAddr>().unwrap(),
-                &headers
-            ),
-            Ok("192.168.1.100".parse::<std::net::IpAddr>().unwrap())
+            extract_client_ip_from_headers(&config, peer_ip, &headers),
+            Ok(peer_ip)
         );
+        Ok(())
     }
 
     #[test]
-    fn test_forwarded_header_ip_rejects_invalid_forwarded_for() {
+    fn test_forwarded_header_ip_rejects_invalid_forwarded_for() -> TestResult {
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", "not-an-ip".parse().unwrap());
-        headers.insert("x-real-ip", "198.51.100.42".parse().unwrap());
+        headers.insert("x-forwarded-for", "not-an-ip".parse()?);
+        headers.insert("x-real-ip", "198.51.100.42".parse()?);
 
         assert!(matches!(
             forwarded_header_ip(&headers),
@@ -135,16 +133,46 @@ mod tests {
                 ..
             })
         ));
+        Ok(())
     }
 
     #[test]
-    fn test_forwarded_header_ip_uses_x_real_ip_when_forwarded_for_absent() {
+    fn test_forwarded_header_ip_rejects_empty_forwarded_for() -> TestResult {
         let mut headers = HeaderMap::new();
-        headers.insert("x-real-ip", "198.51.100.42".parse().unwrap());
+        headers.insert("x-forwarded-for", "".parse()?);
 
-        assert_eq!(
+        assert!(matches!(
             forwarded_header_ip(&headers),
-            Ok(Some("198.51.100.42".parse::<std::net::IpAddr>().unwrap()))
-        );
+            Err(ClientIpHeaderError::InvalidIp {
+                header: "x-forwarded-for",
+                value
+            }) if value.is_empty()
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_forwarded_header_ip_rejects_empty_first_forwarded_for_entry() -> TestResult {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", ", 198.51.100.42".parse()?);
+
+        assert!(matches!(
+            forwarded_header_ip(&headers),
+            Err(ClientIpHeaderError::InvalidIp {
+                header: "x-forwarded-for",
+                value
+            }) if value.is_empty()
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_forwarded_header_ip_uses_x_real_ip_when_forwarded_for_absent() -> TestResult {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-real-ip", "198.51.100.42".parse()?);
+        let expected_ip = "198.51.100.42".parse::<std::net::IpAddr>()?;
+
+        assert_eq!(forwarded_header_ip(&headers), Ok(Some(expected_ip)));
+        Ok(())
     }
 }

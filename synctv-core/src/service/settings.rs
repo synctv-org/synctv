@@ -77,19 +77,20 @@ pub struct SettingsService {
 
 #[derive(Clone)]
 pub struct SettingsServiceRuntime {
-    pub version_fence: Option<Arc<dyn VersionFenceStore>>,
-    pub l2_cache: Option<Arc<dyn CacheL2Backend>>,
+    pub version_fence: Arc<dyn VersionFenceStore>,
+    pub l2_cache: Arc<dyn CacheL2Backend>,
     pub cache_key_prefix: String,
     pub cache_max_capacity: u64,
     pub cache_ttl_secs: u64,
     pub cache_l2_ttl_secs: u64,
 }
 
-impl Default for SettingsServiceRuntime {
-    fn default() -> Self {
+impl SettingsServiceRuntime {
+    #[must_use]
+    pub fn local_only() -> Self {
         Self {
-            version_fence: None,
-            l2_cache: None,
+            version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
+            l2_cache: Arc::new(NoopCacheL2),
             cache_key_prefix: "runtime_settings:".to_string(),
             cache_max_capacity: 512,
             cache_ttl_secs: 300,
@@ -118,7 +119,7 @@ impl std::fmt::Debug for SettingsService {
 impl SettingsService {
     #[must_use]
     pub fn new(repository: SettingsRepository, pool: PgPool) -> Self {
-        Self::new_with_runtime(repository, pool, SettingsServiceRuntime::default())
+        Self::new_with_runtime(repository, pool, SettingsServiceRuntime::local_only())
     }
 
     #[must_use]
@@ -128,11 +129,8 @@ impl SettingsService {
         runtime: SettingsServiceRuntime,
     ) -> Self {
         let (reload_sender, _) = broadcast::channel(256);
-        let version_fence = runtime
-            .version_fence
-            .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
         let runtime_cache = RuntimeSettingsCache::new(
-            runtime.l2_cache.unwrap_or_else(|| Arc::new(NoopCacheL2)),
+            runtime.l2_cache,
             normalize_cache_capacity(runtime.cache_max_capacity),
             normalize_cache_ttl(runtime.cache_ttl_secs),
             normalize_cache_ttl(runtime.cache_l2_ttl_secs),
@@ -145,7 +143,7 @@ impl SettingsService {
             reload_sender,
             setting_providers: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
             batch_validators: Arc::new(parking_lot::RwLock::new(Vec::new())),
-            consistency: ConsistencyCoordinator::new(version_fence),
+            consistency: ConsistencyCoordinator::new(runtime.version_fence),
             runtime_cache,
         }
     }
@@ -153,11 +151,8 @@ impl SettingsService {
     #[cfg(test)]
     fn new_without_backend_for_tests(runtime: SettingsServiceRuntime) -> Self {
         let (reload_sender, _) = broadcast::channel(256);
-        let version_fence = runtime
-            .version_fence
-            .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
         let runtime_cache = RuntimeSettingsCache::new(
-            runtime.l2_cache.unwrap_or_else(|| Arc::new(NoopCacheL2)),
+            runtime.l2_cache,
             normalize_cache_capacity(runtime.cache_max_capacity),
             normalize_cache_ttl(runtime.cache_ttl_secs),
             normalize_cache_ttl(runtime.cache_l2_ttl_secs),
@@ -170,7 +165,7 @@ impl SettingsService {
             reload_sender,
             setting_providers: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
             batch_validators: Arc::new(parking_lot::RwLock::new(Vec::new())),
-            consistency: ConsistencyCoordinator::new(version_fence),
+            consistency: ConsistencyCoordinator::new(runtime.version_fence),
             runtime_cache,
         }
     }
@@ -457,11 +452,7 @@ impl SettingsService {
         // trigger (settings_change_trigger on the settings table). No manual
         // notification is needed here; the trigger fires on UPDATE automatically.
 
-        // Notify SettingsStorage subscribers so their inner HashMap stays in sync
-        // immediately, without waiting for the PG NOTIFY round-trip.
-        let _ = self
-            .reload_sender
-            .send((key.to_string(), Some(setting.value.clone())));
+        self.notify_reload_subscribers(key, Some(setting.value.clone()));
 
         info!("Updated setting '{}'", setting.key);
         Ok(setting)
@@ -612,11 +603,7 @@ impl SettingsService {
         for setting in &updated {
             self.store_cache_entry(setting.clone()).await;
 
-            // Notify SettingsStorage subscribers so their inner HashMap stays in sync
-            // immediately, without waiting for the PG NOTIFY round-trip.
-            let _ = self
-                .reload_sender
-                .send((setting.key.clone(), Some(setting.value.clone())));
+            self.notify_reload_subscribers(&setting.key, Some(setting.value.clone()));
 
             info!("Updated setting '{}' (batch)", setting.key);
         }
@@ -655,9 +642,7 @@ impl SettingsService {
         })?;
 
         self.store_cache_entry(setting.clone()).await;
-        let _ = self
-            .reload_sender
-            .send((setting.key.clone(), Some(setting.value.clone())));
+        self.notify_reload_subscribers(&setting.key, Some(setting.value.clone()));
 
         Ok(setting)
     }
@@ -807,10 +792,7 @@ impl SettingsService {
                     )
                     .await;
 
-                // Notify SettingsStorage subscribers so their inner HashMap stays in sync
-                let _ = self
-                    .reload_sender
-                    .send((key.to_string(), Some(setting.value.clone())));
+                self.notify_reload_subscribers(key, Some(setting.value.clone()));
 
                 info!("Setting '{}' reloaded from database", key);
                 Ok(())
@@ -914,6 +896,21 @@ impl SettingsService {
             );
         }
     }
+
+    fn notify_reload_subscribers(&self, key: &str, value: Option<String>) {
+        match self.reload_sender.send((key.to_string(), value)) {
+            Ok(subscriber_count) => debug!(
+                key = %key,
+                subscriber_count,
+                "Runtime setting reload notified SettingsStorage subscribers"
+            ),
+            Err(error) => debug!(
+                key = %key,
+                error = %error,
+                "Runtime setting reload had no active SettingsStorage subscribers"
+            ),
+        }
+    }
 }
 
 fn group_name_from_setting_key(key: &str) -> String {
@@ -930,6 +927,27 @@ mod tests {
     };
     use crate::models::settings::{get_default_settings, SettingsGroup};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
+        match result {
+            Ok(_) => std::panic::panic_any(context.to_string()),
+            Err(error) => error,
+        }
+    }
+
+    fn some<T>(value: Option<T>, context: &str) -> T {
+        match value {
+            Some(value) => value,
+            None => std::panic::panic_any(context.to_string()),
+        }
+    }
 
     #[test]
     fn test_unknown_group_returns_none() {
@@ -1079,8 +1097,8 @@ mod tests {
         broadcast::Receiver<(String, Option<String>)>,
     ) {
         let service = SettingsService::new_without_backend_for_tests(SettingsServiceRuntime {
-            version_fence: Some(store),
-            ..SettingsServiceRuntime::default()
+            version_fence: store,
+            ..SettingsServiceRuntime::local_only()
         });
         let receiver = service.subscribe_reloads();
         (service, receiver)
@@ -1091,7 +1109,7 @@ mod tests {
         let providers = provider_map_with_test_provider("test.key");
         let result = validate_setting_with_providers(&providers, "test.key", "invalid");
         assert!(result.is_err(), "Should reject invalid values");
-        let err = result.unwrap_err();
+        let err = err(result, "invalid setting should be rejected");
         assert!(
             matches!(err, crate::Error::InvalidInput(_)),
             "Error should be InvalidInput, got: {err:?}"
@@ -1110,11 +1128,8 @@ mod tests {
         let store = Arc::new(FailingCommitFenceStore::default());
         let (service, mut reloads) = service_with_fence_store(store.clone());
         let domain = SettingsService::runtime_setting_domain("test.key");
-        let reservation = service
-            .consistency
-            .begin_observed_write(&domain, 0)
-            .await
-            .expect("reservation should be created");
+        let reservation = service.consistency.begin_observed_write(&domain, 0).await;
+        let reservation = ok(reservation, "reservation should be created");
 
         service
             .finalize_committed_write_best_effort(&domain, reservation.as_ref(), 1, "test")
@@ -1124,22 +1139,20 @@ mod tests {
         setting.key = "test.key".to_string();
         setting.version = 1;
         service.store_cache_entry(setting.clone()).await;
-        let _ = service
-            .reload_sender
-            .send((setting.key.clone(), Some(setting.value.clone())));
+        service.notify_reload_subscribers(&setting.key, Some(setting.value.clone()));
 
-        let cached = service
-            .cache
-            .get("test.key")
-            .expect("committed setting must be cached even if fence finalization failed");
+        let cached = some(
+            service.cache.get("test.key"),
+            "committed setting must be cached even if fence finalization failed",
+        );
         assert_eq!(cached.value().value, "\"fresh\"");
         assert_eq!(store.commit_attempts.load(Ordering::SeqCst), 1);
         assert_eq!(store.repair_attempts.load(Ordering::SeqCst), 1);
         assert_eq!(
-            reloads
-                .recv()
-                .await
-                .expect("reload subscriber should receive committed setting"),
+            ok(
+                reloads.recv().await,
+                "reload subscriber should receive committed setting",
+            ),
             ("test.key".to_string(), Some("\"fresh\"".to_string()))
         );
     }
@@ -1154,11 +1167,8 @@ mod tests {
             ("test.second", "\"two\"", 1_i32),
         ] {
             let domain = SettingsService::runtime_setting_domain(key);
-            let reservation = service
-                .consistency
-                .begin_observed_write(&domain, 0)
-                .await
-                .expect("reservation should be created");
+            let reservation = service.consistency.begin_observed_write(&domain, 0).await;
+            let reservation = ok(reservation, "reservation should be created");
             service
                 .finalize_committed_write_best_effort(
                     &domain,
@@ -1172,39 +1182,37 @@ mod tests {
             setting.key = key.to_string();
             setting.version = version;
             service.store_cache_entry(setting.clone()).await;
-            let _ = service
-                .reload_sender
-                .send((setting.key.clone(), Some(setting.value.clone())));
+            service.notify_reload_subscribers(&setting.key, Some(setting.value.clone()));
         }
 
         assert_eq!(
-            service
-                .cache
-                .get("test.first")
-                .expect("first committed setting should be cached")
-                .value()
-                .value,
+            some(
+                service.cache.get("test.first"),
+                "first committed setting should be cached",
+            )
+            .value()
+            .value,
             "\"one\""
         );
         assert_eq!(
-            service
-                .cache
-                .get("test.second")
-                .expect("second committed setting should be cached")
-                .value()
-                .value,
+            some(
+                service.cache.get("test.second"),
+                "second committed setting should be cached",
+            )
+            .value()
+            .value,
             "\"two\""
         );
         assert_eq!(store.commit_attempts.load(Ordering::SeqCst), 2);
         assert_eq!(store.repair_attempts.load(Ordering::SeqCst), 2);
-        let first = reloads
-            .recv()
-            .await
-            .expect("first reload event should be delivered");
-        let second = reloads
-            .recv()
-            .await
-            .expect("second reload event should be delivered");
+        let first = ok(
+            reloads.recv().await,
+            "first reload event should be delivered",
+        );
+        let second = ok(
+            reloads.recv().await,
+            "second reload event should be delivered",
+        );
         assert_eq!(
             vec![first, second],
             vec![
@@ -1234,7 +1242,7 @@ mod tests {
     #[tokio::test]
     async fn test_reload_setting_preserves_cache_on_non_not_found_error() {
         let service =
-            SettingsService::new_without_backend_for_tests(SettingsServiceRuntime::default());
+            SettingsService::new_without_backend_for_tests(SettingsServiceRuntime::local_only());
 
         let existing = SettingsGroup::new(
             "server".to_string(),
@@ -1256,10 +1264,10 @@ mod tests {
             "database connectivity errors must not be treated as setting deletion"
         );
 
-        let cached = service
-            .cache
-            .get("server.default")
-            .expect("existing cache entry must be preserved on transient DB errors");
+        let cached = some(
+            service.cache.get("server.default"),
+            "existing cache entry must be preserved on transient DB errors",
+        );
         assert_eq!(cached.value().value, existing.value);
     }
 }

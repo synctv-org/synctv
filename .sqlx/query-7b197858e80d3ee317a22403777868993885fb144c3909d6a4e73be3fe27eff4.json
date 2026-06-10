@@ -6,22 +6,46 @@
       {
         "ordinal": 0,
         "name": "request_hash",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_idempotency",
+            "name": "request_hash"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "message_id",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_idempotency",
+            "name": "message_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "message_created_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_idempotency",
+            "name": "message_created_at"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "event_id",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_idempotency",
+            "name": "event_id"
+          }
+        }
       }
     ],
     "parameters": {

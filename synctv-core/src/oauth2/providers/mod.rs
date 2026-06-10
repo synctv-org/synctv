@@ -21,7 +21,6 @@ pub use oidc::{OidcConfig, OidcProvider};
 use crate::{Error, InternalExt};
 use oauth2::{AsyncHttpClient, HttpClientError, HttpRequest, HttpResponse};
 use reqwest::Client;
-#[cfg(test)]
 use std::time::Duration;
 use std::{future::Future, pin::Pin, sync::Arc};
 use url::{Host, Url};
@@ -67,7 +66,6 @@ impl<'c> AsyncHttpClient<'c> for OAuth2HttpClient {
     }
 }
 
-#[cfg(test)]
 fn build_ssrf_safe_provider_client(
     timeout: Duration,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
@@ -162,15 +160,9 @@ pub(super) fn validate_oauth2_redirect_url(url: &str, context: &str) -> Result<(
 pub(super) fn build_provider_http_client(
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<Arc<Client>, Error> {
-    Ok(Arc::new(
-        synctv_common::http::SsrfSafeClientBuilder::new()
-            .ssrf_guard(ssrf_guard.clone())
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .request_timeout(OAUTH2_PROVIDER_HTTP_TIMEOUT)
-            .pool_max_idle_per_host(10)
-            .build()
-            .internal_with_err("Failed to build HTTP client")?,
-    ))
+    build_ssrf_safe_provider_client(OAUTH2_PROVIDER_HTTP_TIMEOUT, ssrf_guard)
+        .map(Arc::new)
+        .internal_with_err("Failed to build HTTP client")
 }
 
 #[cfg(test)]
@@ -186,16 +178,10 @@ pub(super) fn build_oauth2_http_client_with_timeout(
 pub(super) fn build_oauth2_http_client(
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<Arc<OAuth2HttpClient>, Error> {
-    Ok(Arc::new(
-        synctv_common::http::SsrfSafeClientBuilder::new()
-            .ssrf_guard(ssrf_guard.clone())
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .request_timeout(OAUTH2_PROVIDER_HTTP_TIMEOUT)
-            .pool_max_idle_per_host(10)
-            .build()
-            .internal_with_err("Failed to build OAuth2 HTTP client")
-            .map(OAuth2HttpClient::new)?,
-    ))
+    build_ssrf_safe_provider_client(OAUTH2_PROVIDER_HTTP_TIMEOUT, ssrf_guard)
+        .map(OAuth2HttpClient::new)
+        .map(Arc::new)
+        .internal_with_err("Failed to build OAuth2 HTTP client")
 }
 
 pub(super) fn map_provider_http_error<E>(context: &str, err: E) -> Error
@@ -253,6 +239,7 @@ pub fn provider_registry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::TestResultExt;
     use oauth2::{
         basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, RedirectUrl,
         TokenUrl,
@@ -268,7 +255,7 @@ mod tests {
             "Unsafe userinfo endpoint",
             &guard,
         )
-        .expect("disabled SSRF policy should allow loopback IPs");
+        .checked("disabled SSRF policy should allow loopback IPs");
         assert_eq!(parsed.as_str(), "http://127.0.0.1:8080/userinfo");
     }
 
@@ -280,7 +267,7 @@ mod tests {
             "Unsafe token endpoint",
             &guard,
         )
-        .expect("disabled SSRF policy should allow localhost");
+        .checked("disabled SSRF policy should allow localhost");
         assert_eq!(parsed.as_str(), "http://localhost:8080/token");
     }
 
@@ -294,7 +281,7 @@ mod tests {
             "OIDC issuer URL",
             &guard,
         )
-        .expect("private-network policy should allow loopback provider ports");
+        .checked("private-network policy should allow loopback provider ports");
         assert_eq!(
             parsed.as_str(),
             "http://127.0.0.1:18000/.well-known/openid-configuration"
@@ -314,22 +301,29 @@ mod tests {
     #[tokio::test]
     async fn token_exchange_client_allows_localhost_but_request_still_fails_without_server() {
         let guard = synctv_common::ssrf::SsrfGuard::disabled();
-        let http_client =
-            build_oauth2_http_client_with_timeout(Duration::from_millis(50), &guard).unwrap();
+        let http_client = build_oauth2_http_client_with_timeout(Duration::from_millis(50), &guard)
+            .checked("operation should succeed");
 
         let client = BasicClient::new(ClientId::new("client_id".to_string()))
             .set_client_secret(ClientSecret::new("client_secret".to_string()))
-            .set_auth_uri(AuthUrl::new("https://example.com/auth".to_string()).unwrap())
-            .set_token_uri(TokenUrl::new("http://localhost/token".to_string()).unwrap())
+            .set_auth_uri(
+                AuthUrl::new("https://example.com/auth".to_string())
+                    .checked("operation should succeed"),
+            )
+            .set_token_uri(
+                TokenUrl::new("http://localhost/token".to_string())
+                    .checked("operation should succeed"),
+            )
             .set_redirect_uri(
-                RedirectUrl::new("https://example.com/callback".to_string()).unwrap(),
+                RedirectUrl::new("https://example.com/callback".to_string())
+                    .checked("operation should succeed"),
             );
 
         let err = client
             .exchange_code(AuthorizationCode::new("code".to_string()))
             .request_async(&http_client)
             .await
-            .expect_err("localhost request should still fail because no token server is running");
+            .failed("localhost request should still fail because no token server is running");
         let mapped = map_provider_http_error("Failed to exchange code", err);
         assert!(matches!(
             mapped,

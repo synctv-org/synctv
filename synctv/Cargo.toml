@@ -118,6 +118,7 @@ synctv-proxy = { workspace = true, default-features = false }
 synctv-proto = { workspace = true, default-features = false }
 synctv-management = { workspace = true, default-features = false }
 synctv-common = { workspace = true, default-features = false }
+synctv-xiu = { workspace = true, default-features = false }
 
 # Async
 tokio.workspace = true
@@ -171,7 +172,6 @@ synctv-media-providers = { workspace = true, default-features = false }
 synctv-common = { workspace = true, default-features = false }
 synctv-core = { workspace = true, default-features = false, features = ["test-support"] }
 synctv-core-testing.workspace = true
-synctv-xiu = { workspace = true, default-features = false }
 base64.workspace = true
 tonic-health.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

@@ -4,7 +4,6 @@
 //! These correspond to nginx's header/body filter chain -- the top-level
 //! request handling that decides whether to use slice caching or passthrough.
 
-use std::collections::HashMap;
 use std::io;
 use std::time::Duration;
 
@@ -17,7 +16,7 @@ use synctv_common::ExecutionControl;
 
 use crate::{
     apply_provider_headers, run_with_proxy_cancellation,
-    send_with_redirect_validation_with_control_and_timeout, ProxyError,
+    send_with_redirect_validation_with_control_and_timeout, ProviderHeaders, ProxyError,
 };
 
 use super::etag::CachedResourceMeta;
@@ -33,6 +32,17 @@ use super::range::{
 use super::status::CacheStatus;
 use super::store::SliceCache;
 use super::types::{CachedSlice, HeadResourceResult, SliceFetchResult};
+
+struct RangeSliceRequest<'a> {
+    cache: &'a SliceCache,
+    range_str: &'a str,
+    url: &'a str,
+    provider_headers: &'a ProviderHeaders,
+    request_control: Option<&'a ExecutionControl>,
+    upstream_header_timeout: Option<Duration>,
+    plan: ClientRangePlan,
+    known_total_size: Option<u64>,
+}
 
 fn proxy_error_from_client_range_error(error: ClientRangeError) -> ProxyError {
     match error {
@@ -59,7 +69,7 @@ fn check_stream_active(request_control: Option<&ExecutionControl>) -> Result<(),
 struct FullResourceStream {
     cache: SliceCache,
     url: String,
-    provider_headers: HashMap<String, String>,
+    provider_headers: ProviderHeaders,
     total_size: u64,
     total_slices: u64,
     first_chunk: Bytes,
@@ -124,9 +134,9 @@ fn crop_slice_for_range(
     range_start: u64,
     range_end: u64,
 ) -> Result<Bytes, io::Error> {
-    #[allow(clippy::cast_possible_truncation)]
     let offset_start = if range_start > slice_start {
-        (range_start - slice_start) as usize
+        usize::try_from(range_start - slice_start)
+            .map_err(|_| io::Error::other("Slice crop start exceeds platform usize"))?
     } else {
         0
     };
@@ -135,9 +145,11 @@ fn crop_slice_for_range(
     let slice_end = slice_start
         .checked_add(slice_len as u64)
         .ok_or_else(|| io::Error::other("Slice end overflow"))?;
-    #[allow(clippy::cast_possible_truncation)]
     let offset_end = if range_end < slice_end {
-        (range_end - slice_start) as usize + 1
+        usize::try_from(range_end - slice_start)
+            .map_err(|_| io::Error::other("Slice crop end exceeds platform usize"))?
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("Slice crop end overflow"))?
     } else {
         slice_len
     };
@@ -152,7 +164,7 @@ fn crop_slice_for_range(
 async fn stream_original_range_with_learned_meta(
     cache: &SliceCache,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     range_str: &str,
     request_control: Option<&ExecutionControl>,
     upstream_header_timeout: Option<Duration>,
@@ -210,22 +222,20 @@ async fn stream_original_range_with_learned_meta(
 /// Falls back to a constrained `GET Range: bytes=0-0` request when the origin
 /// rejects HEAD or omits `Content-Length`, while still reusing the proxy's
 /// SSRF-safe redirect validation path.
-#[allow(clippy::implicit_hasher)]
 pub async fn head_content_length(
     client: &reqwest::Client,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
 ) -> Result<u64, anyhow::Error> {
     head::head_content_length(client, ssrf_guard, url, provider_headers).await
 }
 
-#[allow(clippy::implicit_hasher)]
 pub async fn head_content_length_with_control(
     client: &reqwest::Client,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     request_control: Option<&ExecutionControl>,
 ) -> Result<u64, anyhow::Error> {
     head::head_content_length_with_control(
@@ -238,12 +248,11 @@ pub async fn head_content_length_with_control(
     .await
 }
 
-#[allow(clippy::implicit_hasher)]
 pub async fn head_content_length_with_control_and_timeout(
     client: &reqwest::Client,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     request_control: Option<&ExecutionControl>,
     upstream_header_timeout: Option<Duration>,
 ) -> Result<u64, anyhow::Error> {
@@ -272,22 +281,20 @@ pub async fn head_content_length_with_control_and_timeout(
 /// - **Multi-Range**: bypasses the slice cache and streams the original
 ///   upstream response so standards-compliant multipart range requests remain
 ///   valid without implementing multipart assembly in the cache.
-#[allow(clippy::implicit_hasher)]
 pub async fn proxy_with_cache(
     cache: &SliceCache,
     range_header: Option<&str>,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
 ) -> Result<Response, anyhow::Error> {
     proxy_with_cache_with_control(cache, range_header, url, provider_headers, None).await
 }
 
-#[allow(clippy::implicit_hasher)]
 pub async fn proxy_with_cache_with_control(
     cache: &SliceCache,
     range_header: Option<&str>,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     request_control: Option<&ExecutionControl>,
 ) -> Result<Response, anyhow::Error> {
     proxy_with_cache_with_control_and_timeout(
@@ -301,12 +308,11 @@ pub async fn proxy_with_cache_with_control(
     .await
 }
 
-#[allow(clippy::implicit_hasher)]
 pub async fn proxy_with_cache_with_control_and_timeout(
     cache: &SliceCache,
     range_header: Option<&str>,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     request_control: Option<&ExecutionControl>,
     upstream_header_timeout: Option<Duration>,
 ) -> Result<Response, anyhow::Error> {
@@ -327,13 +333,12 @@ pub async fn proxy_with_cache_with_control_and_timeout(
 /// This allows callers that support dynamic runtime settings to bypass the
 /// startup-time `SliceCacheConfig.enabled` snapshot and decide cache usage from
 /// their live configuration source.
-#[allow(clippy::implicit_hasher)]
 pub async fn proxy_with_cache_enabled(
     cache: &SliceCache,
     cache_enabled: bool,
     range_header: Option<&str>,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
 ) -> Result<Response, anyhow::Error> {
     proxy_with_cache_enabled_with_control(
         cache,
@@ -346,13 +351,12 @@ pub async fn proxy_with_cache_enabled(
     .await
 }
 
-#[allow(clippy::implicit_hasher)]
 pub async fn proxy_with_cache_enabled_with_control(
     cache: &SliceCache,
     cache_enabled: bool,
     range_header: Option<&str>,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     request_control: Option<&ExecutionControl>,
 ) -> Result<Response, anyhow::Error> {
     proxy_with_cache_enabled_with_control_and_timeout(
@@ -367,13 +371,12 @@ pub async fn proxy_with_cache_enabled_with_control(
     .await
 }
 
-#[allow(clippy::implicit_hasher)]
 pub async fn proxy_with_cache_enabled_with_control_and_timeout(
     cache: &SliceCache,
     cache_enabled: bool,
     range_header: Option<&str>,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     request_control: Option<&ExecutionControl>,
     upstream_header_timeout: Option<Duration>,
 ) -> Result<Response, anyhow::Error> {
@@ -474,7 +477,7 @@ pub async fn proxy_with_cache_enabled_with_control_and_timeout(
         }
     }
 
-    range_slice_cache_path(
+    range_slice_cache_path(RangeSliceRequest {
         cache,
         range_str,
         url,
@@ -483,17 +486,16 @@ pub async fn proxy_with_cache_enabled_with_control_and_timeout(
         upstream_header_timeout,
         plan,
         known_total_size,
-    )
+    })
     .await
 }
 
-#[allow(clippy::implicit_hasher)]
 pub async fn proxy_head_with_cache_enabled_with_control(
     cache: &SliceCache,
     cache_enabled: bool,
     range_header: Option<&str>,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     request_control: Option<&ExecutionControl>,
 ) -> Result<Response, anyhow::Error> {
     proxy_head_with_cache_enabled_with_control_and_timeout(
@@ -508,13 +510,12 @@ pub async fn proxy_head_with_cache_enabled_with_control(
     .await
 }
 
-#[allow(clippy::implicit_hasher)]
 pub async fn proxy_head_with_cache_enabled_with_control_and_timeout(
     cache: &SliceCache,
     cache_enabled: bool,
     range_header: Option<&str>,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     request_control: Option<&ExecutionControl>,
     upstream_header_timeout: Option<Duration>,
 ) -> Result<Response, anyhow::Error> {
@@ -578,17 +579,18 @@ pub(super) fn build_head_cache_response(
         .map_err(|e| anyhow::anyhow!("Failed to build HEAD cache response: {e}"))
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn range_slice_cache_path(
-    cache: &SliceCache,
-    range_str: &str,
-    url: &str,
-    provider_headers: &HashMap<String, String>,
-    request_control: Option<&ExecutionControl>,
-    upstream_header_timeout: Option<Duration>,
-    plan: ClientRangePlan,
-    known_total_size: Option<u64>,
-) -> Result<Response, anyhow::Error> {
+async fn range_slice_cache_path(request: RangeSliceRequest<'_>) -> Result<Response, anyhow::Error> {
+    let RangeSliceRequest {
+        cache,
+        range_str,
+        url,
+        provider_headers,
+        request_control,
+        upstream_header_timeout,
+        plan,
+        known_total_size,
+    } = request;
+
     let first_byte = match plan {
         ClientRangePlan::Explicit { start, .. } | ClientRangePlan::OpenEnded { start } => start,
         ClientRangePlan::Suffix { .. } => {
@@ -739,7 +741,7 @@ async fn range_slice_cache_path(
 async fn no_range_slice_cache_path(
     cache: &SliceCache,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     request_control: Option<&ExecutionControl>,
     upstream_header_timeout: Option<Duration>,
 ) -> Result<Response, anyhow::Error> {
@@ -757,12 +759,15 @@ async fn no_range_slice_cache_path(
         SliceFetchResult::Slice(slice) => slice,
         SliceFetchResult::Bypass(resp) => {
             if !resp.status().is_success() {
-                let _ = run_with_proxy_cancellation(
+                if let Err(error) = run_with_proxy_cancellation(
                     "no-range slice probe rejection drain",
                     request_control,
                     resp.bytes(),
                 )
-                .await;
+                .await
+                {
+                    tracing::debug!(%error, "failed to drain rejected no-range slice probe");
+                }
                 return stream_through_with_status(StreamThroughRequest {
                     client: cache.client(),
                     ssrf_guard: cache.ssrf_guard(),

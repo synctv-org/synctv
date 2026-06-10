@@ -98,11 +98,11 @@ pub struct CreateNotificationRequest {
     pub notification_type: NotificationType,
     pub title: String,
     pub content: String,
-    #[serde(default = "default_empty_data")]
+    #[serde(default = "default_notification_data")]
     pub data: serde_json::Value,
 }
 
-fn default_empty_data() -> serde_json::Value {
+pub(crate) fn default_notification_data() -> serde_json::Value {
     serde_json::json!({})
 }
 
@@ -135,6 +135,27 @@ pub struct MarkAllAsReadRequest {
 mod tests {
     use super::*;
 
+    fn json_ok<T>(result: serde_json::Result<T>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    fn parse_notification_type(value: &str) -> NotificationType {
+        match value.parse::<NotificationType>() {
+            Ok(notification_type) => notification_type,
+            Err(error) => std::panic::panic_any(format!("notification type should parse: {error}")),
+        }
+    }
+
+    fn parse_notification_type_error(value: &str) -> anyhow::Error {
+        match value.parse::<NotificationType>() {
+            Ok(_) => std::panic::panic_any("notification type should fail to parse"),
+            Err(error) => error,
+        }
+    }
+
     #[test]
     fn notification_type_string_contract_is_stable() {
         for (notification_type, value) in [
@@ -145,23 +166,26 @@ mod tests {
             (NotificationType::EmailBind, "email_bind"),
         ] {
             assert_eq!(notification_type.to_string(), value);
-            assert_eq!(
-                value.parse::<NotificationType>().unwrap(),
-                notification_type
-            );
+            assert_eq!(parse_notification_type(value), notification_type);
         }
 
-        let invalid = "invalid_type".parse::<NotificationType>().unwrap_err();
+        let invalid = parse_notification_type_error("invalid_type");
         assert!(invalid.to_string().contains("Invalid notification type"));
     }
 
     #[test]
     fn notification_type_serde_roundtrip_uses_snake_case() {
         let notification_type = NotificationType::RoomInvitation;
-        let json = serde_json::to_string(&notification_type).unwrap();
+        let json = json_ok(
+            serde_json::to_string(&notification_type),
+            "notification type should serialize",
+        );
         assert_eq!(json, "\"room_invitation\"");
         assert_eq!(
-            serde_json::from_str::<NotificationType>(&json).unwrap(),
+            json_ok(
+                serde_json::from_str::<NotificationType>(&json),
+                "notification type should deserialize"
+            ),
             notification_type
         );
     }
@@ -174,7 +198,10 @@ mod tests {
             "title": "You have been invited",
             "content": "Join room ABC"
         });
-        let req: CreateNotificationRequest = serde_json::from_value(json).unwrap();
+        let req: CreateNotificationRequest = json_ok(
+            serde_json::from_value(json),
+            "notification request should deserialize",
+        );
         assert_eq!(req.user_id.as_i64(), 123);
         assert_eq!(req.notification_type, NotificationType::RoomInvitation);
         assert_eq!(req.title, "You have been invited");
@@ -191,7 +218,10 @@ mod tests {
             "content": "System will be down",
             "data": {"severity": "high", "eta_minutes": 30}
         });
-        let req: CreateNotificationRequest = serde_json::from_value(json).unwrap();
+        let req: CreateNotificationRequest = json_ok(
+            serde_json::from_value(json),
+            "notification request should deserialize",
+        );
         assert_eq!(req.data["severity"], "high");
         assert_eq!(req.data["eta_minutes"], 30);
     }
@@ -204,20 +234,29 @@ mod tests {
                 6_978_100
             ]
         });
-        let req: MarkAsReadRequest = serde_json::from_value(json).unwrap();
+        let req: MarkAsReadRequest = json_ok(
+            serde_json::from_value(json),
+            "mark-as-read should deserialize",
+        );
         assert_eq!(req.notification_ids.len(), 2);
     }
 
     #[test]
     fn mark_all_as_read_request_accepts_optional_cutoff() {
         let json = serde_json::json!({});
-        let req: MarkAllAsReadRequest = serde_json::from_value(json).unwrap();
+        let req: MarkAllAsReadRequest = json_ok(
+            serde_json::from_value(json),
+            "mark-all-as-read should deserialize",
+        );
         assert!(req.before.is_none());
 
         let json = serde_json::json!({
             "before": "2025-01-01T00:00:00Z"
         });
-        let req: MarkAllAsReadRequest = serde_json::from_value(json).unwrap();
+        let req: MarkAllAsReadRequest = json_ok(
+            serde_json::from_value(json),
+            "mark-all-as-read cutoff should deserialize",
+        );
         assert!(req.before.is_some());
     }
 }

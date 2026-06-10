@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
 use synctv_core::models::id::{RoomId, UserId};
-use synctv_realtime::ConnectionManager;
+use synctv_realtime::sync::ConnectionManager;
 
 fn stable_test_id(s: &str) -> i64 {
     s.bytes().fold(0_i64, |acc, byte| {

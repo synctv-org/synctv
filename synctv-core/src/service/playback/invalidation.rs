@@ -190,7 +190,7 @@ impl PlaybackService {
         }
     }
 
-    pub(super) async fn broadcast_invalidation_with_retry(
+    pub(super) async fn broadcast_invalidation(
         &self,
         room_id: &RoomId,
         state: &RoomPlaybackState,
@@ -199,33 +199,11 @@ impl PlaybackService {
         let Some(ref service) = self.invalidation_service else {
             return;
         };
-        let broadcast_delays = [50u64, 100, 200];
-        let mut broadcast_ok = false;
-        for (attempt, delay_ms) in broadcast_delays.iter().enumerate() {
-            match service.update_playback_state(room_id, state).await {
-                Ok(()) => {
-                    broadcast_ok = true;
-                    break;
-                }
-                Err(error) => {
-                    if attempt + 1 < broadcast_delays.len() {
-                        tracing::warn!(
-                            error = %error,
-                            room_id = %room_id,
-                            attempt = attempt + 1,
-                            max_attempts = broadcast_delays.len(),
-                            "{context}: broadcast failed, retrying..."
-                        );
-                        tokio::time::sleep(Duration::from_millis(*delay_ms)).await;
-                    }
-                }
-            }
-        }
-        if !broadcast_ok {
+        if let Err(error) = service.update_playback_state(room_id, state).await {
             tracing::error!(
+                error = %error,
                 room_id = %room_id,
-                attempts = broadcast_delays.len(),
-                "{context}: broadcast failed after all retry attempts, replicas may have stale state"
+                "{context}: playback invalidation broadcast failed; replicas may rely on L2/db fallback"
             );
         }
     }

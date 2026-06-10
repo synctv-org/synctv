@@ -3,11 +3,10 @@
 //! Tests in-memory rate limiter behavior and Redis rate limiter with testcontainers.
 //!
 //! Run Docker tests: cargo test --test `rate_limiter_tests` -- --ignored
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 use synctv_core::service::{RateLimitError, RateLimiter};
-use synctv_core_testing::{start_redis_client_manager, RedisContainer};
+use synctv_core_testing::{ok, start_redis_client_manager, RedisContainer};
 use tokio::sync::RwLock;
 
 // In-memory rate limiter tests
@@ -17,10 +16,10 @@ async fn test_in_memory_rate_limiter_allows_under_limit() {
     let limiter = RateLimiter::local_only("test_allow:".to_string());
 
     for i in 0..5 {
-        limiter
-            .check_rate_limit("user:1:chat", 10, 1)
-            .await
-            .unwrap_or_else(|_| panic!("Request {i} should succeed under limit"));
+        ok(
+            limiter.check_rate_limit("user:1:chat", 10, 1).await,
+            &format!("request {i} should succeed under limit"),
+        );
     }
 }
 
@@ -31,10 +30,10 @@ async fn test_in_memory_rate_limiter_blocks_over_limit() {
 
     // Exhaust the limit
     for i in 0..5 {
-        limiter
-            .check_rate_limit(key, 5, 1)
-            .await
-            .unwrap_or_else(|_| panic!("Request {i} should succeed within limit"));
+        ok(
+            limiter.check_rate_limit(key, 5, 1).await,
+            &format!("request {i} should succeed within limit"),
+        );
     }
 
     // Next request should be blocked
@@ -52,7 +51,10 @@ async fn test_in_memory_rate_limiter_window_expiry() {
 
     // Exhaust the limit
     for _ in 0..3 {
-        limiter.check_rate_limit(key, 3, 1).await.unwrap();
+        ok(
+            limiter.check_rate_limit(key, 3, 1).await,
+            "request should succeed before window is exhausted",
+        );
     }
     assert!(limiter.check_rate_limit(key, 3, 1).await.is_err());
 
@@ -71,7 +73,10 @@ async fn test_in_memory_independent_keys() {
 
     // Exhaust key1
     for _ in 0..5 {
-        limiter.check_rate_limit("key1", 5, 1).await.unwrap();
+        ok(
+            limiter.check_rate_limit("key1", 5, 1).await,
+            "key1 request should succeed before limit is exhausted",
+        );
     }
     assert!(limiter.check_rate_limit("key1", 5, 1).await.is_err());
 
@@ -84,7 +89,10 @@ fn test_in_memory_sync_check() {
     let limiter = RateLimiter::local_only("sync_test:".to_string());
 
     for _ in 0..5 {
-        limiter.check_rate_limit_sync("key", 5, 1).unwrap();
+        ok(
+            limiter.check_rate_limit_sync("key", 5, 1),
+            "sync request should succeed before limit is exhausted",
+        );
     }
     assert!(matches!(
         limiter.check_rate_limit_sync("key", 5, 1),
@@ -100,10 +108,10 @@ async fn test_in_memory_distributed_uses_governor() {
     // Note: check_rate_limit_distributed (check_strict) intentionally fails
     // closed without Redis. Use check_rate_limit (check) for in-memory fallback.
     for i in 0..5 {
-        limiter
-            .check_rate_limit("key", 5, 1)
-            .await
-            .unwrap_or_else(|_| panic!("Request {i} should succeed via in-memory governor"));
+        ok(
+            limiter.check_rate_limit("key", 5, 1).await,
+            &format!("request {i} should succeed via in-memory governor"),
+        );
     }
 
     let result = limiter.check_rate_limit("key", 5, 1).await;
@@ -130,13 +138,16 @@ async fn test_redis_rate_limiter_allows_under_limit() {
     );
 
     let key = "user:redis_allow:chat";
-    limiter.reset(key).await.unwrap();
+    ok(
+        limiter.reset(key).await,
+        "Redis rate limit key should reset",
+    );
 
     for i in 0..10 {
-        limiter
-            .check_rate_limit(key, 10, 1)
-            .await
-            .unwrap_or_else(|_| panic!("Redis request {i} should succeed under limit"));
+        ok(
+            limiter.check_rate_limit(key, 10, 1).await,
+            &format!("Redis request {i} should succeed under limit"),
+        );
     }
 }
 
@@ -150,13 +161,16 @@ async fn test_redis_rate_limiter_blocks_over_limit() {
     );
 
     let key = "user:redis_block:chat";
-    limiter.reset(key).await.unwrap();
+    ok(
+        limiter.reset(key).await,
+        "Redis rate limit key should reset",
+    );
 
     for i in 0..5 {
-        limiter
-            .check_rate_limit(key, 5, 1)
-            .await
-            .unwrap_or_else(|_| panic!("Redis request {i} should succeed within limit"));
+        ok(
+            limiter.check_rate_limit(key, 5, 1).await,
+            &format!("Redis request {i} should succeed within limit"),
+        );
     }
 
     let result = limiter.check_rate_limit(key, 5, 1).await;
@@ -176,7 +190,10 @@ async fn test_redis_rate_limiter_concurrent_requests() {
     );
 
     let key = "user:redis_conc:chat";
-    limiter.reset(key).await.unwrap();
+    ok(
+        limiter.reset(key).await,
+        "Redis rate limit key should reset",
+    );
 
     // Launch 20 concurrent requests with a limit of 10
     let mut handles = Vec::new();
@@ -190,7 +207,7 @@ async fn test_redis_rate_limiter_concurrent_requests() {
     let results: Vec<_> = futures::future::join_all(handles)
         .await
         .into_iter()
-        .map(|r| r.unwrap())
+        .map(|r| ok(r, "concurrent rate-limit task should join"))
         .collect();
 
     let successes = results.iter().filter(|r| r.is_ok()).count();
@@ -213,14 +230,17 @@ async fn test_redis_rate_limiter_strict_enforcement() {
     );
 
     let key = "user:redis_strict:auth";
-    limiter.reset(key).await.unwrap();
+    ok(
+        limiter.reset(key).await,
+        "Redis rate limit key should reset",
+    );
 
     // Strict check should work within limits
     for i in 0..5 {
-        limiter
-            .check_rate_limit_distributed(key, 5, 1)
-            .await
-            .unwrap_or_else(|_| panic!("Strict request {i} should succeed within limit"));
+        ok(
+            limiter.check_rate_limit_distributed(key, 5, 1).await,
+            &format!("strict request {i} should succeed within limit"),
+        );
     }
 
     let result = limiter.check_rate_limit_distributed(key, 5, 1).await;

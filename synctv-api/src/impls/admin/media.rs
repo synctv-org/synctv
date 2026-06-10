@@ -6,9 +6,8 @@ use synctv_core::{
 };
 
 use crate::impls::client::convert::{
-    try_media_list_to_proto, try_media_to_proto, try_media_to_proto_with_availability,
-    try_playlist_list_to_proto, try_playlist_path_node_to_proto, try_playlist_to_proto,
-    try_playlist_to_proto_with_availability,
+    try_media_to_proto, try_media_to_proto_with_availability, try_playlist_path_node_to_proto,
+    try_playlist_to_proto, try_playlist_to_proto_with_availability,
 };
 use crate::impls::client::media::{
     build_move_media_fanout_plan, prepare_delete_entries_outbox_fanout,
@@ -154,7 +153,7 @@ impl AdminApiImpl {
             .iter()
             .map(|entry| {
                 let item_count = i64_to_i32_api(
-                    counts.get(&entry.playlist.id).copied().unwrap_or(0),
+                    crate::impls::playlist_media_count_or_zero(&counts, &entry.playlist.id),
                     "playlist item count",
                 )?;
                 try_playlist_to_proto_with_availability(
@@ -435,26 +434,31 @@ impl AdminApiImpl {
                 .count_playlist_media_batch(&folder_ids)
                 .await
                 .map_err(ApiError::from)?;
-            let proto_playlists = try_playlist_list_to_proto(&playlists, |entry| {
-                let item_count = i64_to_i32_api(
-                    counts.get(&entry.playlist.id).copied().unwrap_or(0),
-                    "playlist item count",
-                )?;
-                try_playlist_to_proto_with_availability(
-                    &entry.playlist,
-                    item_count,
-                    entry.is_available,
-                    &self.public_id_codec,
-                )
-            })?;
-            let proto_media =
-                crate::impls::client::convert::try_map_slice_preserve_order(&media, |entry| {
+            let proto_playlists = playlists
+                .iter()
+                .map(|entry| {
+                    let item_count = i64_to_i32_api(
+                        crate::impls::playlist_media_count_or_zero(&counts, &entry.playlist.id),
+                        "playlist item count",
+                    )?;
+                    try_playlist_to_proto_with_availability(
+                        &entry.playlist,
+                        item_count,
+                        entry.is_available,
+                        &self.public_id_codec,
+                    )
+                })
+                .collect::<Result<Vec<_>, ApiError>>()?;
+            let proto_media = media
+                .iter()
+                .map(|entry| {
                     try_media_to_proto_with_availability(
                         &entry.media,
                         entry.is_available,
                         &self.public_id_codec,
                     )
-                })?;
+                })
+                .collect::<Result<Vec<_>, ApiError>>()?;
 
             let mut response = synctv_proto::client::ListPlaylistItemsResponse {
                 playlists: proto_playlists,
@@ -550,8 +554,8 @@ impl AdminApiImpl {
                             .size
                             .map(|size| u64_to_i64_api(size, "dynamic playlist item size"))
                             .transpose()?,
-                        thumbnail: Some(item.thumbnail.unwrap_or_default()),
-                        modified_at: Some(item.modified_at.unwrap_or(0)),
+                        thumbnail: item.thumbnail,
+                        modified_at: item.modified_at,
                         description: item.description.unwrap_or_default(),
                     })
                 })
@@ -683,26 +687,31 @@ impl AdminApiImpl {
             .count_playlist_media_batch(&folder_ids)
             .await
             .map_err(ApiError::from)?;
-        let proto_playlists = try_playlist_list_to_proto(&playlists, |entry| {
-            let item_count = i64_to_i32_api(
-                counts.get(&entry.playlist.id).copied().unwrap_or(0),
-                "playlist item count",
-            )?;
-            try_playlist_to_proto_with_availability(
-                &entry.playlist,
-                item_count,
-                entry.is_available,
-                &self.public_id_codec,
-            )
-        })?;
-        let proto_media =
-            crate::impls::client::convert::try_map_slice_preserve_order(&media, |entry| {
+        let proto_playlists = playlists
+            .iter()
+            .map(|entry| {
+                let item_count = i64_to_i32_api(
+                    crate::impls::playlist_media_count_or_zero(&counts, &entry.playlist.id),
+                    "playlist item count",
+                )?;
+                try_playlist_to_proto_with_availability(
+                    &entry.playlist,
+                    item_count,
+                    entry.is_available,
+                    &self.public_id_codec,
+                )
+            })
+            .collect::<Result<Vec<_>, ApiError>>()?;
+        let proto_media = media
+            .iter()
+            .map(|entry| {
                 try_media_to_proto_with_availability(
                     &entry.media,
                     entry.is_available,
                     &self.public_id_codec,
                 )
-            })?;
+            })
+            .collect::<Result<Vec<_>, ApiError>>()?;
 
         let mut response = synctv_proto::client::ListPlaylistItemsResponse {
             playlists: proto_playlists,
@@ -857,7 +866,10 @@ impl AdminApiImpl {
 
         Ok(synctv_proto::client::MoveMediaResponse {
             moved_count: usize_to_i32_api(media.len(), "moved media count")?,
-            media: try_media_list_to_proto(&media, &self.public_id_codec)?,
+            media: media
+                .iter()
+                .map(|media| try_media_to_proto(media, &self.public_id_codec))
+                .collect::<Result<Vec<_>, ApiError>>()?,
         })
     }
 }

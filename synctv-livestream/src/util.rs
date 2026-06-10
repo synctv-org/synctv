@@ -10,7 +10,7 @@ const MAX_HLS_SEGMENT_URL_PART_LEN: usize = 2048;
 
 /// Validate a stream identifier component before it is used in internal
 /// registry/cache keys.
-pub fn validate_stream_id_component(component: &str, field: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_stream_id_component(component: &str, field: &str) -> anyhow::Result<()> {
     if component.is_empty() {
         return Err(anyhow::anyhow!("{field} must not be empty"));
     }
@@ -38,7 +38,7 @@ pub fn validate_stream_id_component(component: &str, field: &str) -> anyhow::Res
 }
 
 /// Validate canonical room/media identifiers used by livestream internals.
-pub fn validate_stream_ids(room_id: &str, media_id: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_stream_ids(room_id: &str, media_id: &str) -> anyhow::Result<()> {
     validate_stream_id_component(room_id, "room_id")?;
     validate_stream_id_component(media_id, "media_id")?;
     Ok(())
@@ -73,12 +73,12 @@ pub fn validate_hls_segment_name(segment_name: &str) -> anyhow::Result<()> {
 }
 
 /// Validate the segment URL prefix embedded into remote HLS playlists.
-pub fn validate_hls_segment_url_base(segment_url_base: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_hls_segment_url_base(segment_url_base: &str) -> anyhow::Result<()> {
     validate_hls_segment_url_part(segment_url_base, "segment_url_base")
 }
 
 /// Validate the segment URL suffix embedded into remote HLS playlists.
-pub fn validate_hls_segment_url_suffix(segment_url_suffix: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_hls_segment_url_suffix(segment_url_suffix: &str) -> anyhow::Result<()> {
     validate_hls_segment_url_part(segment_url_suffix, "segment_url_suffix")
 }
 
@@ -101,7 +101,7 @@ fn validate_hls_segment_url_part(value: &str, field: &str) -> anyhow::Result<()>
 ///
 /// Delays for `initial_ms * 2^(attempt-1)` capped at `max_ms`, with +/- 25% jitter
 /// to prevent thundering herd on retry storms.
-pub async fn backoff(attempt: u32, initial_ms: u64, max_ms: u64) {
+pub(crate) async fn backoff(attempt: u32, initial_ms: u64, max_ms: u64) {
     let base = initial_ms.saturating_mul(1u64 << attempt.min(16));
     let capped = base.min(max_ms);
     // Add jitter: +/- 25% using proper RNG
@@ -119,7 +119,7 @@ pub async fn backoff(attempt: u32, initial_ms: u64, max_ms: u64) {
 ///
 /// This is intended for `Drop` paths and other fire-and-forget cleanup where
 /// panicking during runtime teardown would be worse than skipping async cleanup.
-pub fn try_spawn<F>(future: F) -> Option<JoinHandle<F::Output>>
+pub(crate) fn try_spawn<F>(future: F) -> Option<JoinHandle<F::Output>>
 where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
@@ -133,6 +133,12 @@ where
 mod tests {
     use super::*;
 
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
+    }
+
     #[test]
     fn try_spawn_returns_none_without_runtime() {
         let result = try_spawn(async {});
@@ -140,9 +146,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_spawn_spawns_when_runtime_exists() {
-        let handle = try_spawn(async { 42 }).expect("runtime should be available");
-        assert_eq!(handle.await.expect("task should complete"), 42);
+    async fn try_spawn_spawns_when_runtime_exists() -> TestResult {
+        let Some(handle) = try_spawn(async { 42 }) else {
+            return Err(test_error("runtime should be available"));
+        };
+        assert_eq!(handle.await?, 42);
+        Ok(())
     }
 
     #[test]

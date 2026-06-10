@@ -232,11 +232,14 @@ pub(super) fn millis_since_epoch() -> u64 {
 
 /// Convert a [`SystemTime`] to milliseconds since the Unix epoch.
 pub(super) fn system_time_to_millis(t: SystemTime) -> u64 {
-    t.duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
+    let millis = match t.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis(),
+        Err(error) => {
+            tracing::warn!(%error, "system time is before Unix epoch");
+            0
+        }
+    };
+    millis.try_into().unwrap_or(u64::MAX)
 }
 
 pub(super) const fn cache_entry_deadline_millis(inserted_at_millis: u64, ttl_secs: u64) -> u64 {

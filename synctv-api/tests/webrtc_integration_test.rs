@@ -10,6 +10,8 @@
 //! to peer connection establishment through signaling messages.
 
 #![allow(clippy::unwrap_used)]
+
+mod support;
 use synctv_core::config::{Config, WebRTCConfig, WebRTCMode};
 use synctv_core::models::{RoomGuestPermissionBits, RoomMemberPermissionBits};
 
@@ -232,18 +234,18 @@ mod permissions {
                 publish_key_service: None,
                 jwt_service,
                 live_streaming_infrastructure: None,
-                providers_manager: None,
                 settings_registry: Some(settings_registry.clone()),
-                public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
+                public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
                 chat_service: None,
-                credential_encryption: None,
-                provider_stores: None,
+                provider_stores: Arc::new(
+                    synctv_core::provider::ProviderStoreRegistry::local_only("test:provider:"),
+                ),
                 email_api: None,
                 passkey_service: None,
             },
             synctv_api::impls::ClientApiRuntime {
                 builtin_stun_url: Some(builtin_stun_url),
-                ..synctv_api::impls::ClientApiRuntime::test_disabled()
+                ..support::client_api_runtime()
             },
         );
 

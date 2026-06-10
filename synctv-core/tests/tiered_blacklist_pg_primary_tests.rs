@@ -2,14 +2,11 @@
 //!
 //! These tests guard the production invariant that the durable store is the
 //! source of truth and Redis is only a cache / coordination layer.
-
-#![allow(clippy::unwrap_used)]
-
 use std::sync::Arc;
 
 use redis::AsyncCommands;
 use synctv_core::service::{auth::token_blacklist::TieredTokenBlacklistStore, TokenBlacklistStore};
-use synctv_core_testing::{redis_connection_manager, start_redis_with_client};
+use synctv_core_testing::{ok, redis_connection_manager, start_redis_with_client};
 use tokio::sync::RwLock;
 
 async fn start_redis() -> (synctv_core_testing::RedisContainer, redis::Client) {
@@ -83,10 +80,10 @@ async fn test_blacklist_if_not_exists_requires_pg_success_before_redis_cache_wri
     );
 
     let mut verify_conn = redis_connection_manager(&redis_client).await;
-    let cached: Option<String> = verify_conn
-        .get(&redis_key)
-        .await
-        .expect("Redis lookup should succeed");
+    let cached: Option<String> = ok(
+        verify_conn.get(&redis_key).await,
+        "Redis lookup should succeed",
+    );
     assert!(
         cached.is_none(),
         "Redis cache must not be populated when PG primary write fails"

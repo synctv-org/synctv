@@ -12,7 +12,9 @@
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use std::sync::Arc;
-use synctv_xiu::streamhub::define::{DataSender, SubscribeType, TStreamHandler};
+use synctv_xiu::streamhub::define::{
+    BroadcastEvent, DataSender, FrameData, PublishType, SubscribeType, TStreamHandler,
+};
 use synctv_xiu::streamhub::errors::StreamHubError;
 
 struct MockHandler;
@@ -38,6 +40,25 @@ impl TStreamHandler for MockHandler2 {
         _sub_type: SubscribeType,
     ) -> Result<(), StreamHubError> {
         Ok(())
+    }
+}
+
+fn expect_video_frame(frame: FrameData) -> (u32, Bytes) {
+    match frame {
+        FrameData::Video { timestamp, data } => (timestamp, data),
+        other => panic!("expected video frame, got {other:?}"),
+    }
+}
+
+fn expect_publish_event(
+    event: BroadcastEvent,
+) -> (synctv_xiu::streamhub::stream::StreamIdentifier, PublishType) {
+    match event {
+        BroadcastEvent::Publish {
+            identifier,
+            pub_type,
+        } => (identifier, pub_type),
+        other => panic!("expected publish event, got {other:?}"),
     }
 }
 
@@ -169,21 +190,6 @@ fn test_stream_identifier_rtmp() {
     assert!(display.contains("RTMP"));
     assert!(display.contains("live"));
     assert!(display.contains("test"));
-}
-
-#[test]
-fn test_stream_identifier_unknown() {
-    use synctv_xiu::streamhub::stream::StreamIdentifier;
-    let id = StreamIdentifier::Unknown;
-    let display = format!("{id}");
-    assert_eq!(display, "Unknown");
-}
-
-#[test]
-fn test_stream_identifier_default() {
-    use synctv_xiu::streamhub::stream::StreamIdentifier;
-    let id = StreamIdentifier::default();
-    assert_eq!(id, StreamIdentifier::Unknown);
 }
 
 #[test]
@@ -343,45 +349,28 @@ fn test_mpegts_stream_types() {
 
 #[test]
 fn test_frame_data_video_clone() {
-    use synctv_xiu::streamhub::define::FrameData;
     let frame = FrameData::Video {
         timestamp: 100,
         data: Bytes::from(vec![1, 2, 3, 4]),
     };
     let cloned = frame.clone();
-    if let (
-        FrameData::Video {
-            timestamp: t1,
-            data: d1,
-        },
-        FrameData::Video {
-            timestamp: t2,
-            data: d2,
-        },
-    ) = (&frame, &cloned)
-    {
-        assert_eq!(t1, t2);
-        assert_eq!(d1, d2);
-    } else {
-        panic!("Expected Video variant");
-    }
+    let (timestamp, data) = expect_video_frame(frame);
+    let (cloned_timestamp, cloned_data) = expect_video_frame(cloned);
+    assert_eq!(timestamp, cloned_timestamp);
+    assert_eq!(data, cloned_data);
 }
 
 #[test]
 fn test_frame_data_serialization_roundtrip() {
-    use synctv_xiu::streamhub::define::FrameData;
     let frame = FrameData::Video {
         timestamp: 42,
         data: Bytes::from(vec![0xDE, 0xAD, 0xBE, 0xEF]),
     };
     let serialized = serde_json::to_string(&frame).unwrap();
     let deserialized: FrameData = serde_json::from_str(&serialized).unwrap();
-    if let FrameData::Video { timestamp, data } = deserialized {
-        assert_eq!(timestamp, 42);
-        assert_eq!(data.as_ref(), &[0xDE, 0xAD, 0xBE, 0xEF]);
-    } else {
-        panic!("Expected Video variant");
-    }
+    let (timestamp, data) = expect_video_frame(deserialized);
+    assert_eq!(timestamp, 42);
+    assert_eq!(data.as_ref(), &[0xDE, 0xAD, 0xBE, 0xEF]);
 }
 
 #[test]
@@ -431,7 +420,7 @@ fn test_streamhub_error_display() {
     let err = StreamHubError {
         value: StreamHubErrorValue::SendError,
     };
-    assert_eq!(err.to_string(), "send error");
+    assert_eq!(err.to_string(), "streamhub internal channel send failed");
 
     let err = StreamHubError {
         value: StreamHubErrorValue::NoAppOrStreamName,
@@ -621,19 +610,12 @@ async fn test_streams_hub_broadcast_event() {
     )
     .unwrap();
 
-    // Should receive the publish broadcast event
-    let event = broadcast_rx.try_recv();
-    assert!(event.is_ok());
-    if let Ok(BroadcastEvent::Publish {
-        identifier: id,
-        pub_type,
-    }) = event
-    {
-        assert_eq!(id, identifier);
-        assert!(matches!(pub_type, PublishType::RtmpPush));
-    } else {
-        panic!("Expected BroadcastEvent::Publish");
-    }
+    let event = broadcast_rx
+        .try_recv()
+        .expect("publish event should be sent");
+    let (event_identifier, pub_type) = expect_publish_event(event);
+    assert_eq!(event_identifier, identifier);
+    assert!(matches!(pub_type, PublishType::RtmpPush));
 }
 
 #[test]

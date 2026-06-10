@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::{
     body::Body,
     http::{header, HeaderName, HeaderValue, StatusCode},
@@ -210,12 +208,8 @@ impl CorsConfig {
 /// - Origins not in the allowed list receive 403 Forbidden.
 /// - When the allowed list is empty, all origins are rejected (secure default).
 /// - The `Vary: Origin` header is included for proper caching.
-#[allow(clippy::unused_async)]
-pub async fn proxy_options_preflight_with_cors(
-    origin: Option<&str>,
-    config: Arc<CorsConfig>,
-) -> Response {
-    handle_cors_preflight(origin, &config)
+pub fn proxy_options_preflight_with_cors(origin: Option<&str>, config: &CorsConfig) -> Response {
+    handle_cors_preflight(origin, config)
 }
 
 #[cfg(test)]

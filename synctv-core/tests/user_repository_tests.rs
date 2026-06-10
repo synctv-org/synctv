@@ -2,7 +2,6 @@
 //!
 //! Tests optimistic locking, soft-delete interactions, and batch queries.
 //!
-#![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
 use synctv_core::{
@@ -10,7 +9,7 @@ use synctv_core::{
     repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
     Error,
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, err, ok};
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -37,22 +36,28 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     let (_container, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
 
-    let user = repo.create(&make_user("user_stale")).await.unwrap();
+    let user = ok(
+        repo.create(&make_user("user_stale")).await,
+        "stale-version test user should be created",
+    );
     let original_version = user.version;
 
     // First update succeeds
     let mut updated_user = user.clone();
     updated_user.username = "user_stale_v1".to_string();
-    let v1 = repo.update(&updated_user, original_version).await.unwrap();
+    let v1 = ok(
+        repo.update(&updated_user, original_version).await,
+        "user update with current version should succeed",
+    );
     assert_eq!(v1.version, original_version + 1);
 
     // Second update with stale version (original_version) -> should get OptimisticLockConflict
     let mut stale_user = user.clone();
     stale_user.username = "user_stale_v2".to_string();
-    let err = repo
-        .update(&stale_user, original_version)
-        .await
-        .unwrap_err();
+    let err = err(
+        repo.update(&stale_user, original_version).await,
+        "stale user update should fail",
+    );
     assert!(
         matches!(err, Error::OptimisticLockConflict),
         "Expected OptimisticLockConflict, got: {err:?}"
@@ -65,17 +70,23 @@ async fn test_update_soft_deleted_user_returns_not_found() {
     let (_container, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
 
-    let user = repo.create(&make_user("user_softdel")).await.unwrap();
+    let user = ok(
+        repo.create(&make_user("user_softdel")).await,
+        "soft-delete test user should be created",
+    );
     let version = user.version;
 
     // Soft delete the user
-    let deleted = repo.delete(&user.id).await.unwrap();
+    let deleted = ok(repo.delete(&user.id).await, "user should be soft-deleted");
     assert!(deleted);
 
     // Trying to update the deleted user should return NotFound (not OptimisticLockConflict)
     let mut updated = user.clone();
     updated.username = "user_softdel_updated".to_string();
-    let err = repo.update(&updated, version).await.unwrap_err();
+    let err = err(
+        repo.update(&updated, version).await,
+        "soft-deleted user update should fail",
+    );
     assert!(
         matches!(err, Error::NotFound(_)),
         "Expected NotFound for soft-deleted user, got: {err:?}"
@@ -88,10 +99,13 @@ async fn test_update_password_deleted_user_returns_not_found() {
     let (_container, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
 
-    let user = repo.create(&make_user("user_delpw")).await.unwrap();
+    let user = ok(
+        repo.create(&make_user("user_delpw")).await,
+        "password deletion test user should be created",
+    );
 
     // Soft delete
-    repo.delete(&user.id).await.unwrap();
+    ok(repo.delete(&user.id).await, "user should be soft-deleted");
 
     let opaque_record = OpaquePasswordRecord {
         record: b"opaque-record".to_vec(),
@@ -102,14 +116,16 @@ async fn test_update_password_deleted_user_returns_not_found() {
 
     // Trying to update password credentials on deleted user should return NotFound
     let password_repo = UserPasswordRepository::new(pool.clone());
-    let err = password_repo
-        .update_with_executor(
-            &user.id,
-            PasswordCredentialMaterial::opaque_only(&opaque_record),
-            &pool,
-        )
-        .await
-        .unwrap_err();
+    let err = err(
+        password_repo
+            .update_with_executor(
+                &user.id,
+                PasswordCredentialMaterial::opaque_only(&opaque_record),
+                &pool,
+            )
+            .await,
+        "deleted user password credential update should fail",
+    );
     assert!(
         matches!(err, Error::NotFound(_)),
         "Expected NotFound for deleted user password update, got: {err:?}"
@@ -122,16 +138,31 @@ async fn test_get_by_ids_mixed_existing_and_deleted() {
     let (_container, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
 
-    let user1 = repo.create(&make_user("user_mix_1")).await.unwrap();
-    let user2 = repo.create(&make_user("user_mix_2")).await.unwrap();
-    let user3 = repo.create(&make_user("user_mix_3")).await.unwrap();
+    let user1 = ok(
+        repo.create(&make_user("user_mix_1")).await,
+        "first mixed query user should be created",
+    );
+    let user2 = ok(
+        repo.create(&make_user("user_mix_2")).await,
+        "second mixed query user should be created",
+    );
+    let user3 = ok(
+        repo.create(&make_user("user_mix_3")).await,
+        "third mixed query user should be created",
+    );
 
     // Soft delete user2
-    repo.delete(&user2.id).await.unwrap();
+    ok(
+        repo.delete(&user2.id).await,
+        "second user should be soft-deleted",
+    );
 
     // Query all three IDs
     let ids = vec![user1.id, user2.id, user3.id];
-    let results = repo.get_by_ids(&ids).await.unwrap();
+    let results = ok(
+        repo.get_by_ids(&ids).await,
+        "mixed user id query should succeed",
+    );
 
     // Should only return user1 and user3 (user2 is soft-deleted)
     assert_eq!(results.len(), 2);
@@ -147,14 +178,29 @@ async fn test_get_by_ids_all_deleted() {
     let (_container, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
 
-    let user1 = repo.create(&make_user("user_alldel_1")).await.unwrap();
-    let user2 = repo.create(&make_user("user_alldel_2")).await.unwrap();
+    let user1 = ok(
+        repo.create(&make_user("user_alldel_1")).await,
+        "first all-deleted query user should be created",
+    );
+    let user2 = ok(
+        repo.create(&make_user("user_alldel_2")).await,
+        "second all-deleted query user should be created",
+    );
 
-    repo.delete(&user1.id).await.unwrap();
-    repo.delete(&user2.id).await.unwrap();
+    ok(
+        repo.delete(&user1.id).await,
+        "first user should be soft-deleted",
+    );
+    ok(
+        repo.delete(&user2.id).await,
+        "second user should be soft-deleted",
+    );
 
     let ids = vec![user1.id, user2.id];
-    let results = repo.get_by_ids(&ids).await.unwrap();
+    let results = ok(
+        repo.get_by_ids(&ids).await,
+        "all-deleted user id query should succeed",
+    );
 
     assert!(results.is_empty());
 }
@@ -165,6 +211,9 @@ async fn test_get_by_ids_empty_input() {
     let (_container, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
 
-    let results = repo.get_by_ids(&[]).await.unwrap();
+    let results = ok(
+        repo.get_by_ids(&[]).await,
+        "empty user id query should succeed",
+    );
     assert!(results.is_empty());
 }

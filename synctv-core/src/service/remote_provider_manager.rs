@@ -16,7 +16,6 @@ use crate::provider::provider_client::{validate_auth_secret, RemoteProviderConne
 use crate::provider::{AlistProvider, BilibiliProvider, EmbyProvider, ProviderError};
 use crate::repository::ProviderInstanceRepository;
 use std::collections::HashMap;
-use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -263,19 +262,6 @@ impl RemoteProviderManager {
         )
     }
 
-    async fn run_with_control<T, F>(
-        control: Option<&ExecutionControl>,
-        future: F,
-    ) -> crate::Result<T>
-    where
-        F: Future<Output = crate::Result<T>>,
-    {
-        match control {
-            Some(control) => control.run(future).await.map_err(crate::Error::from)?,
-            None => future.await,
-        }
-    }
-
     fn provider_connection_setup_error(
         message: &'static str,
         error: impl std::fmt::Display,
@@ -403,7 +389,7 @@ impl RemoteProviderManager {
                     return Err(LoadError::NotCacheable);
                 }
 
-                let channel = self.create_grpc_channel(&config).await.map_err(|error| {
+                let channel = self.create_grpc_channel(&config).map_err(|error| {
                     LoadError::Provider(Self::map_remote_resolution_error(error))
                 })?;
                 let connection =
@@ -555,7 +541,7 @@ impl RemoteProviderManager {
 
             Self::validate_config_with_ssrf_guard(&config, &self.ssrf_guard)?;
 
-            match self.create_grpc_channel(&config).await {
+            match self.create_grpc_channel(&config) {
                 Ok(channel) => match self.build_remote_connection(&config, channel) {
                     Ok(connection) => {
                         self.channel_cache
@@ -612,11 +598,7 @@ impl RemoteProviderManager {
         config: &ProviderInstance,
         control: Option<&ExecutionControl>,
     ) -> crate::Result<RemoteProviderConnection> {
-        let channel = Box::pin(Self::run_with_control(
-            control,
-            self.create_grpc_channel(config),
-        ))
-        .await?;
+        let channel = self.create_grpc_channel(config)?;
         let connection = self.build_remote_connection(config, channel)?;
         self.validate_management_connection_with_control(config, &connection, control)
             .await?;

@@ -22,7 +22,7 @@ const REFRESH_RATE_LIMIT_REQUESTS: u32 = 10;
 const REFRESH_RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
 fn nonnegative_i64_to_u64(value: i64) -> u64 {
-    u64::try_from(value.max(0)).unwrap_or(0)
+    value.max(0).cast_unsigned()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -72,8 +72,8 @@ pub struct UserService {
 
 pub struct UserServiceRuntimeOptions {
     pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
-    pub refresh_rate_limiter: Option<Arc<dyn RequestRateLimiterService>>,
-    pub refresh_rate_limit_config: Option<RefreshRateLimitConfig>,
+    pub refresh_rate_limiter: Arc<dyn RequestRateLimiterService>,
+    pub refresh_rate_limit_config: RefreshRateLimitConfig,
     pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
     pub password_registration_policy_override: Option<RegistrationPolicy>,
     /// Stable OPAQUE server setup used for password registration, login, and reset.
@@ -81,33 +81,38 @@ pub struct UserServiceRuntimeOptions {
     /// Composition roots for real deployments must inject a service derived from
     /// the configured `security.opaque_server_setup_secret`.
     pub opaque_password_service: Arc<OpaquePasswordService>,
-    pub opaque_login_session_store: Option<Arc<dyn OpaqueLoginSessionStore>>,
-    pub opaque_registration_session_store: Option<Arc<dyn OpaqueRegistrationSessionStore>>,
-    pub mfa_session_store: Option<Arc<dyn MfaSessionStore>>,
-    pub sensitive_verification_session_store: Option<Arc<dyn SensitiveVerificationSessionStore>>,
+    pub opaque_login_session_store: Arc<dyn OpaqueLoginSessionStore>,
+    pub opaque_registration_session_store: Arc<dyn OpaqueRegistrationSessionStore>,
+    pub mfa_session_store: Arc<dyn MfaSessionStore>,
+    pub sensitive_verification_session_store: Arc<dyn SensitiveVerificationSessionStore>,
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     pub permission_service: Option<PermissionService>,
-    pub version_fence: Option<Arc<dyn VersionFenceStore>>,
+    pub version_fence: Arc<dyn VersionFenceStore>,
     pub file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
 
 impl UserServiceRuntimeOptions {
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn test_defaults() -> Self {
         Self {
             cache_invalidation: None,
-            refresh_rate_limiter: None,
-            refresh_rate_limit_config: None,
+            refresh_rate_limiter: Arc::new(crate::service::rate_limit::RateLimiter::local_only(
+                "synctv:test:".to_string(),
+            )),
+            refresh_rate_limit_config: RefreshRateLimitConfig::default(),
             settings_registry: None,
             password_registration_policy_override: None,
             opaque_password_service: Arc::new(OpaquePasswordService::new_ephemeral_for_process()),
-            opaque_login_session_store: None,
-            opaque_registration_session_store: None,
-            mfa_session_store: None,
-            sensitive_verification_session_store: None,
+            opaque_login_session_store: crate::service::user::local_opaque_login_session_store(),
+            opaque_registration_session_store:
+                crate::service::user::local_opaque_registration_session_store(),
+            mfa_session_store: crate::service::user::local_mfa_session_store(),
+            sensitive_verification_session_store:
+                crate::service::user::local_sensitive_verification_session_store(),
             realtime_outbox: None,
             permission_service: None,
-            version_fence: None,
+            version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
             file_storage_service: None,
         }
     }
@@ -162,19 +167,21 @@ pub use session_types::{
     SensitiveVerificationOutcome, SensitiveVerificationSession,
 };
 mod tokens;
-pub use session_stores::{
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use session_stores::{
     local_mfa_session_store, local_opaque_login_session_store,
     local_opaque_registration_session_store, local_sensitive_verification_session_store,
+};
+pub(crate) use session_stores::{
     mfa_session_store_from_shared_state_profile,
     opaque_login_session_store_from_shared_state_profile,
     opaque_registration_session_store_from_shared_state_profile,
-    sensitive_verification_session_store_from_shared_state_profile, shared_mfa_session_store,
-    shared_opaque_login_session_store, shared_opaque_registration_session_store,
-    shared_sensitive_verification_session_store, InMemoryMfaSessionStore,
-    InMemoryOpaqueLoginSessionStore, InMemoryOpaqueRegistrationSessionStore,
-    InMemorySensitiveVerificationSessionStore, MfaSessionStore, OpaqueLoginSessionStore,
-    OpaqueRegistrationSessionStore, RedisMfaSessionStore, RedisOpaqueLoginSessionStore,
-    RedisOpaqueRegistrationSessionStore, RedisSensitiveVerificationSessionStore,
+    sensitive_verification_session_store_from_shared_state_profile,
+};
+pub use session_stores::{
+    InMemoryMfaSessionStore, InMemoryOpaqueLoginSessionStore,
+    InMemoryOpaqueRegistrationSessionStore, InMemorySensitiveVerificationSessionStore,
+    MfaSessionStore, OpaqueLoginSessionStore, OpaqueRegistrationSessionStore,
     SensitiveVerificationSessionStore,
 };
 

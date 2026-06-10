@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use synctv_core::models::id::{MediaId, RoomId, UserId};
-use synctv_realtime::sync::events::RealtimeEvent;
+use synctv_realtime::sync::RealtimeEvent;
 mod integration_test_helpers;
 use integration_test_helpers::{
     broadcast_until_admin_event, broadcast_until_room_event, create_node, wait_until, TestRedis,

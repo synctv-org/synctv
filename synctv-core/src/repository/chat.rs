@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use sqlx::{Executor, PgPool, Postgres, Transaction};
 
@@ -12,6 +14,16 @@ use crate::{
     repository::FileStorageRepository,
     Error, Result,
 };
+
+type ChatMessageKey = (i64, DateTime<Utc>);
+
+fn chat_message_key(message: &ChatMessage) -> ChatMessageKey {
+    (message.id, message.created_at)
+}
+
+fn chat_image_message_key(image: &ChatImage) -> ChatMessageKey {
+    (image.message_id, image.message_created_at)
+}
 
 #[derive(Clone)]
 pub struct ChatRepository {
@@ -277,7 +289,7 @@ impl ChatRepository {
                 Some(&request.user_id),
             )
             .await?
-            .remove(&(message.id, message.created_at))
+            .remove(&chat_message_key(&message))
             .unwrap_or_default();
         reactions.sort_by(|left, right| {
             right
@@ -1385,7 +1397,7 @@ impl ChatRepository {
         let reactions = self
             .reaction_summaries_for_messages(std::slice::from_ref(&message), viewer_user_id)
             .await?
-            .remove(&(message.id, message.created_at))
+            .remove(&chat_message_key(&message))
             .unwrap_or_default();
         Ok(Some(ChatMessageWithImages {
             message,
@@ -2413,10 +2425,10 @@ impl ChatRepository {
             .cloned()
             .collect::<Vec<_>>();
         let images = self.images_for_messages(&visible_image_messages).await?;
-        let mut grouped = std::collections::HashMap::<(i64, DateTime<Utc>), Vec<ChatImage>>::new();
+        let mut grouped = HashMap::<ChatMessageKey, Vec<ChatImage>>::new();
         for image in images {
             grouped
-                .entry((image.message_id, image.message_created_at))
+                .entry(chat_image_message_key(&image))
                 .or_default()
                 .push(image);
         }
@@ -2427,7 +2439,7 @@ impl ChatRepository {
         Ok(messages
             .drain(..)
             .map(|message| {
-                let key = (message.id, message.created_at);
+                let key = chat_message_key(&message);
                 let images = grouped.remove(&key).unwrap_or_default();
                 let reactions = reaction_grouped.remove(&key).unwrap_or_default();
                 ChatMessageWithImages {
@@ -2443,7 +2455,7 @@ impl ChatRepository {
         &self,
         messages: &[ChatMessage],
         viewer_user_id: Option<&UserId>,
-    ) -> Result<std::collections::HashMap<(i64, DateTime<Utc>), Vec<ChatReactionSummary>>> {
+    ) -> Result<HashMap<ChatMessageKey, Vec<ChatReactionSummary>>> {
         self.reaction_summaries_for_messages_with_executor(&self.pool, messages, viewer_user_id)
             .await
     }
@@ -2453,7 +2465,7 @@ impl ChatRepository {
         executor: E,
         messages: &[ChatMessage],
         viewer_user_id: Option<&UserId>,
-    ) -> Result<std::collections::HashMap<(i64, DateTime<Utc>), Vec<ChatReactionSummary>>>
+    ) -> Result<HashMap<ChatMessageKey, Vec<ChatReactionSummary>>>
     where
         E: Executor<'e, Database = Postgres>,
     {
@@ -2485,8 +2497,7 @@ impl ChatRepository {
         .fetch_all(executor)
         .await?;
 
-        let mut grouped =
-            std::collections::HashMap::<(i64, DateTime<Utc>), Vec<ChatReactionSummary>>::new();
+        let mut grouped = HashMap::<ChatMessageKey, Vec<ChatReactionSummary>>::new();
         for row in rows {
             grouped
                 .entry((row.message_id, row.message_created_at))

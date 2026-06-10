@@ -23,14 +23,14 @@ use super::common::{
 };
 
 /// Alist endpoints that perform authentication or credential mutation.
-pub fn alist_auth_routes() -> Router<AppState> {
+pub(crate) fn alist_auth_routes() -> Router<AppState> {
     Router::new()
         .route("/login", post(login))
         .route("/logout", post(logout))
 }
 
 /// Alist read/query endpoints.
-pub fn alist_read_routes() -> Router<AppState> {
+pub(crate) fn alist_read_routes() -> Router<AppState> {
     Router::new()
         .route("/list", post(list))
         .route("/search", post(search))

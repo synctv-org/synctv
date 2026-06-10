@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 
-use tracing::error;
+use tracing::{error, warn};
 
 /// Number of consecutive failures before the circuit opens.
 pub const CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
@@ -18,6 +18,16 @@ pub struct CircuitBreaker {
     opened_at: AtomicI64,
     // Whether a half-open probe request is currently in flight.
     half_open_probe_in_flight: AtomicBool,
+}
+
+fn unix_timestamp_secs() -> i64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
+        Err(error) => {
+            warn!(%error, "system clock is before Unix epoch");
+            0
+        }
+    }
 }
 
 impl CircuitBreaker {
@@ -42,9 +52,7 @@ impl CircuitBreaker {
             return true;
         }
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs().cast_signed());
+        let now = unix_timestamp_secs();
         if now.saturating_sub(opened_at) < CIRCUIT_BREAKER_TIMEOUT_SECS {
             return false;
         }
@@ -67,9 +75,7 @@ impl CircuitBreaker {
         let prev = self.consecutive_failures.fetch_add(1, Ordering::SeqCst);
         let new_failures = prev + 1;
         if new_failures >= CIRCUIT_BREAKER_THRESHOLD {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs().cast_signed());
+            let now = unix_timestamp_secs();
             self.opened_at.store(now, Ordering::SeqCst);
             self.half_open_probe_in_flight
                 .store(false, Ordering::SeqCst);

@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used)]
 //! Shared test helpers for synctv-core tests
 //!
 //! This crate provides common test utilities to reduce code duplication
@@ -12,13 +11,18 @@ pub(crate) mod docker;
 pub mod external_service;
 pub mod postgres;
 pub mod redis;
+pub mod result;
 pub mod services;
 
 pub(crate) fn test_temp_dir() -> PathBuf {
     let path = std::env::temp_dir();
-    std::fs::create_dir_all(&path)
-        .unwrap_or_else(|e| panic!("failed to create test temp dir {}: {e}", path.display()));
-    path
+    match std::fs::create_dir_all(&path) {
+        Ok(()) => path,
+        Err(error) => std::panic::panic_any(format!(
+            "failed to create test temp dir {}: {error}",
+            path.display()
+        )),
+    }
 }
 
 pub use external_service::{
@@ -38,14 +42,11 @@ pub use redis::{
     start_redis_url, start_redis_url_with_label, start_redis_with_client, test_redis_key_prefix,
     wait_for_redis_ready, RedisContainer,
 };
+pub use result::{err, ok, some, TestOptionExt, TestResultExt};
 pub use services::{
-    create_empty_provider_instance_manager, create_empty_provider_instance_store,
-    create_test_attempt_tracker, create_test_brute_force_protection,
-    create_test_brute_force_protection_service, create_test_jwt_service,
-    create_test_jwt_service_with_secret, create_test_request_rate_limiter,
-    create_test_room_service, create_test_streaming_publish_key_service,
-    create_test_token_blacklist_store, create_test_token_blacklist_store_service,
-    create_test_user_service, create_test_websocket_ticket_service, failing_redis_runtime,
+    create_empty_provider_instance_manager, create_test_brute_force_protection_service,
+    create_test_jwt_service, create_test_request_rate_limiter, create_test_room_service,
+    create_test_token_blacklist_store_service, create_test_user_service, failing_redis_runtime,
     opaque_login_user, opaque_login_user_with_challenge, opaque_register_user,
     opaque_register_user_with_client_ip,
 };

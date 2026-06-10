@@ -1,26 +1,24 @@
 //! Integration tests for audit partition management against real PostgreSQL.
 
-#![allow(clippy::unwrap_used)]
-
 use std::sync::Arc;
 
 use synctv_core::service::{AlwaysLeader, AuditPartitionManager};
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, ok};
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
 async fn audit_partition_manager_get_stats_returns_partition_stats() {
     let (_postgres, pool) = create_test_pool().await;
     let manager = AuditPartitionManager::new(pool, Arc::new(AlwaysLeader));
-    manager
-        .ensure_future_partitions(1)
-        .await
-        .expect("audit partitions should be created before stats are read");
+    ok(
+        manager.ensure_future_partitions(1).await,
+        "audit partitions should be created before stats are read",
+    );
 
-    let stats = manager
-        .get_stats()
-        .await
-        .expect("audit partition stats should be returned from catalog data");
+    let stats = ok(
+        manager.get_stats().await,
+        "audit partition stats should be returned from catalog data",
+    );
 
     assert!(stats.total_partitions >= 1);
     assert!(stats.total_records >= 0);

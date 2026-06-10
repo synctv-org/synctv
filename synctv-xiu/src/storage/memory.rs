@@ -15,11 +15,11 @@
 // Eviction uses a BTreeMap index keyed by sequence number for O(log N) oldest
 // lookup instead of scanning all entries.
 
-use super::HlsStorage;
+use super::{validate_component, validate_storage_key, HlsStorage};
 use async_trait::async_trait;
 use bytes::Bytes;
-use rayon::prelude::*;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -32,6 +32,23 @@ struct Entry {
     data: Bytes,
     seq: u64,
     write_time: std::time::Instant,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct StorageKey {
+    app: String,
+    stream: String,
+    name: String,
+}
+
+impl StorageKey {
+    fn new(app: &str, stream: &str, name: &str) -> Self {
+        Self {
+            app: app.to_string(),
+            stream: stream.to_string(),
+            name: name.to_string(),
+        }
+    }
 }
 
 /// In-memory storage backend with configurable memory limits.
@@ -47,9 +64,9 @@ pub struct MemoryStorage {
 
 struct MemoryStorageInner {
     /// Primary map: key -> entry
-    data: std::collections::HashMap<String, Entry>,
+    data: HashMap<StorageKey, Entry>,
     /// Time-ordered index: (seq, key) for O(log N) eviction of oldest entry
-    time_index: BTreeMap<u64, String>,
+    time_index: BTreeMap<u64, StorageKey>,
     /// Running total of data bytes for O(1) memory usage queries
     total_bytes: usize,
     /// Monotonic sequence number used as a total ordering for entries.
@@ -68,7 +85,7 @@ impl MemoryStorageInner {
     }
 
     /// Remove a key, updating both the data map and time index.
-    fn remove(&mut self, key: &str) -> bool {
+    fn remove(&mut self, key: &StorageKey) -> bool {
         if let Some(entry) = self.data.remove(key) {
             self.total_bytes -= entry.data.len();
             self.time_index.remove(&entry.seq);
@@ -136,11 +153,6 @@ impl MemoryStorageInner {
     }
 }
 
-/// Build internal key from structured components.
-fn make_key(app: &str, stream: &str, name: &str) -> String {
-    format!("{app}/{stream}/{name}")
-}
-
 impl MemoryStorage {
     /// Create new memory storage with default limits (512 MB, 10,000 keys)
     #[must_use]
@@ -206,7 +218,8 @@ impl Default for MemoryStorage {
 #[async_trait]
 impl HlsStorage for MemoryStorage {
     async fn write(&self, app: &str, stream: &str, name: &str, data: Bytes) -> Result<()> {
-        let key = make_key(app, stream, name);
+        validate_storage_key(app, stream, name)?;
+        let key = StorageKey::new(app, stream, name);
         let size = data.len();
 
         if self.max_memory_bytes > 0 && size > self.max_memory_bytes {
@@ -241,53 +254,69 @@ impl HlsStorage for MemoryStorage {
         );
         drop(inner);
 
-        tracing::trace!("Wrote to memory: {} ({} bytes)", key, size);
+        tracing::trace!(
+            "Wrote to memory: {}/{}/{} ({} bytes)",
+            app,
+            stream,
+            name,
+            size
+        );
 
         Ok(())
     }
 
     async fn read(&self, app: &str, stream: &str, name: &str) -> Result<Bytes> {
-        let key = make_key(app, stream, name);
+        validate_storage_key(app, stream, name)?;
+        let key = StorageKey::new(app, stream, name);
         let inner = self.inner.read();
         inner.data.get(&key).map_or_else(
             || {
-                tracing::warn!("Key not found in memory: {}", key);
+                tracing::warn!("Key not found in memory: {}/{}/{}", app, stream, name);
                 Err(Error::new(
                     ErrorKind::NotFound,
-                    format!("Key not found: {key}"),
+                    format!("Key not found: {app}/{stream}/{name}"),
                 ))
             },
             |entry| {
-                tracing::trace!("Read from memory: {} ({} bytes)", key, entry.data.len());
+                tracing::trace!(
+                    "Read from memory: {}/{}/{} ({} bytes)",
+                    app,
+                    stream,
+                    name,
+                    entry.data.len()
+                );
                 Ok(entry.data.clone())
             },
         )
     }
 
     async fn delete(&self, app: &str, stream: &str, name: &str) -> Result<()> {
-        let key = make_key(app, stream, name);
+        validate_storage_key(app, stream, name)?;
+        let key = StorageKey::new(app, stream, name);
         let mut inner = self.inner.write();
         if inner.remove(&key) {
-            tracing::trace!("Deleted from memory: {}", key);
+            tracing::trace!("Deleted from memory: {}/{}/{}", app, stream, name);
         }
         drop(inner);
         Ok(())
     }
 
     async fn exists(&self, app: &str, stream: &str, name: &str) -> Result<bool> {
-        let key = make_key(app, stream, name);
+        validate_storage_key(app, stream, name)?;
+        let key = StorageKey::new(app, stream, name);
         let inner = self.inner.read();
         Ok(inner.data.contains_key(&key))
     }
 
     async fn delete_app_stream(&self, app: &str, stream: &str) -> Result<usize> {
-        let prefix = format!("{app}/{stream}/");
+        validate_component(app, "app")?;
+        validate_component(stream, "stream")?;
         let mut inner = self.inner.write();
 
-        let matching_keys: Vec<String> = inner
+        let matching_keys: Vec<StorageKey> = inner
             .data
             .keys()
-            .filter(|key| key.starts_with(&prefix))
+            .filter(|key| key.app == app && key.stream == stream)
             .cloned()
             .collect();
 
@@ -300,9 +329,10 @@ impl HlsStorage for MemoryStorage {
 
         if deleted > 0 {
             tracing::debug!(
-                "Deleted {} keys with prefix '{}' from memory storage",
+                "Deleted {} keys for {}/{} from memory storage",
                 deleted,
-                prefix
+                app,
+                stream
             );
         }
 
@@ -310,13 +340,13 @@ impl HlsStorage for MemoryStorage {
     }
 
     async fn delete_app(&self, app: &str) -> Result<usize> {
-        let prefix = format!("{app}/");
+        validate_component(app, "app")?;
         let mut inner = self.inner.write();
 
-        let matching_keys: Vec<String> = inner
+        let matching_keys: Vec<StorageKey> = inner
             .data
             .keys()
-            .filter(|key| key.starts_with(&prefix))
+            .filter(|key| key.app == app)
             .cloned()
             .collect();
 
@@ -329,9 +359,9 @@ impl HlsStorage for MemoryStorage {
 
         if deleted > 0 {
             tracing::debug!(
-                "Deleted {} keys with prefix '{}' from memory storage",
+                "Deleted {} keys for app {} from memory storage",
                 deleted,
-                prefix
+                app
             );
         }
 
@@ -342,19 +372,20 @@ impl HlsStorage for MemoryStorage {
         let inner = self.inner.read();
         let mut streams = std::collections::HashSet::new();
         for key in inner.data.keys() {
-            // Keys are "app/stream/name"
-            let mut parts = key.splitn(3, '/');
-            if let (Some(app), Some(stream), Some(_)) = (parts.next(), parts.next(), parts.next()) {
-                streams.insert((app.to_string(), stream.to_string()));
-            }
+            streams.insert((key.app.clone(), key.stream.clone()));
         }
         Ok(streams.into_iter().collect())
     }
 
     async fn count_stream_segments(&self, app: &str, stream: &str) -> Result<usize> {
-        let prefix = format!("{app}/{stream}/");
+        validate_component(app, "app")?;
+        validate_component(stream, "stream")?;
         let inner = self.inner.read();
-        Ok(inner.data.keys().filter(|k| k.starts_with(&prefix)).count())
+        Ok(inner
+            .data
+            .keys()
+            .filter(|key| key.app == app && key.stream == stream)
+            .count())
     }
 
     async fn delete_oldest_stream_segments(
@@ -363,17 +394,18 @@ impl HlsStorage for MemoryStorage {
         stream: &str,
         max_count: usize,
     ) -> Result<usize> {
-        let prefix = format!("{app}/{stream}/");
+        validate_component(app, "app")?;
+        validate_component(stream, "stream")?;
         let mut inner = self.inner.write();
 
         // Collect (seq, key) for matching segments, sorted by seq (oldest first)
-        let mut matching: Vec<(u64, String)> = inner
+        let mut matching: Vec<(u64, StorageKey)> = inner
             .data
             .iter()
-            .filter(|(k, _)| k.starts_with(&prefix))
+            .filter(|(key, _)| key.app == app && key.stream == stream)
             .map(|(k, e)| (e.seq, k.clone()))
             .collect();
-        matching.par_sort_unstable_by_key(|(seq, _)| *seq);
+        matching.sort_unstable_by_key(|(seq, _)| *seq);
 
         let total = matching.len();
         if total <= max_count {
@@ -418,10 +450,10 @@ impl HlsStorage for MemoryStorage {
         let expired_seqs: Vec<u64> = inner
             .time_index
             .iter()
-            .take_while(|(&seq, _)| {
+            .take_while(|(_, key)| {
                 inner
                     .data
-                    .get(inner.time_index.get(&seq).map_or("", |k| k.as_str()))
+                    .get(key)
                     .is_some_and(|entry| entry.write_time < cutoff)
             })
             .map(|(&seq, _)| seq)
@@ -433,7 +465,12 @@ impl HlsStorage for MemoryStorage {
                 if let Some(entry) = inner.data.remove(&key) {
                     inner.total_bytes -= entry.data.len();
                     deleted += 1;
-                    tracing::trace!("Deleted expired key from memory: {}", key);
+                    tracing::trace!(
+                        "Deleted expired key from memory: {}/{}/{}",
+                        key.app,
+                        key.stream,
+                        key.name
+                    );
                 }
             }
         }
@@ -445,6 +482,11 @@ impl HlsStorage for MemoryStorage {
         );
 
         Ok(deleted)
+    }
+
+    async fn get_public_url(&self, app: &str, stream: &str, name: &str) -> Result<Option<String>> {
+        validate_storage_key(app, stream, name)?;
+        Ok(None)
     }
 }
 
@@ -685,5 +727,30 @@ mod tests {
         assert!(!storage.exists("app1", "stream1", "seg0").await.unwrap());
         assert!(!storage.exists("app1", "stream2", "seg0").await.unwrap());
         assert!(storage.exists("app2", "stream1", "seg0").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_path_traversal_rejected() {
+        let storage = MemoryStorage::new();
+
+        assert!(storage
+            .write("..", "stream", "name", Bytes::from_static(b"x"))
+            .await
+            .is_err());
+        assert!(storage
+            .write("app", "..", "name", Bytes::from_static(b"x"))
+            .await
+            .is_err());
+        assert!(storage
+            .write("app", "stream", "../name", Bytes::from_static(b"x"))
+            .await
+            .is_err());
+        assert!(storage.read("app", "stream", "a/b").await.is_err());
+        assert!(storage.delete("app", "stream", "a/b").await.is_err());
+        assert!(storage.exists("app", "stream", "a/b").await.is_err());
+        assert!(storage
+            .get_public_url("app", "stream", "a/b")
+            .await
+            .is_err());
     }
 }

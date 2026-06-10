@@ -2,7 +2,6 @@
 //!
 //! Tests for version-based optimistic locking in `MediaRepository`.
 //!
-#![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
 use serde_json::json;
@@ -14,7 +13,7 @@ use synctv_core::{
     },
     repository::{MediaRepository, PlaylistRepository, RoomRepository, UserRepository},
 };
-use synctv_core_testing::{create_test_pool, TestContainer};
+use synctv_core_testing::{create_test_pool, ok, some, TestContainer};
 
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -50,51 +49,57 @@ async fn setup_test_context(suffix: &str) -> TestContext {
     let room_repo = RoomRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
-    let owner = user_repo
-        .create(&make_user(&format!("optlock_owner_{suffix}")))
-        .await
-        .unwrap();
-    let room = room_repo
-        .create(&{
-            let now = Utc::now();
-            Room {
-                id: RoomId::new(),
-                name: format!("OptLock Room {suffix}"),
+    let owner = ok(
+        user_repo
+            .create(&make_user(&format!("optlock_owner_{suffix}")))
+            .await,
+        "optimistic lock owner should be created",
+    );
+    let room = ok(
+        room_repo
+            .create(&{
+                let now = Utc::now();
+                Room {
+                    id: RoomId::new(),
+                    name: format!("OptLock Room {suffix}"),
+                    description: String::new(),
+                    cover_file_reference_id: None,
+                    created_by: owner.id,
+                    status: RoomStatus::Active,
+                    is_banned: false,
+                    closed_at: None,
+                    created_at: now,
+                    updated_at: now,
+                    deleted_at: None,
+                    version: 0,
+                    last_activity_at: now,
+                }
+            })
+            .await,
+        "optimistic lock room should be created",
+    );
+
+    let root_playlist = ok(
+        playlist_repo
+            .create(&Playlist {
+                id: PlaylistId::new(),
+                room_id: room.id,
+                creator_id: Some(owner.id),
+                name: String::new(),
                 description: String::new(),
                 cover_file_reference_id: None,
-                created_by: owner.id,
-                status: RoomStatus::Active,
-                is_banned: false,
-                closed_at: None,
-                created_at: now,
-                updated_at: now,
-                deleted_at: None,
+                parent_id: None,
+                position: 0.0,
+                source_provider: None,
+                source_config: None,
+                provider_instance_name: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
                 version: 0,
-                last_activity_at: now,
-            }
-        })
-        .await
-        .unwrap();
-
-    let root_playlist = playlist_repo
-        .create(&Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id,
-            creator_id: Some(owner.id),
-            name: String::new(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 0.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            version: 0,
-        })
-        .await
-        .unwrap();
+            })
+            .await,
+        "optimistic lock root playlist should be created",
+    );
 
     TestContext {
         _container: container,
@@ -124,24 +129,23 @@ fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: 
     }
 }
 
-// Optimistic Locking Tests with version field
-
-/// Test: `update_with_version` should succeed when version matches
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_with_version_succeeds_when_version_matches() {
     let ctx = setup_test_context("v1").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    let media = media_repo
-        .create(&make_media(
-            &ctx.root_playlist.id,
-            &ctx.room.id,
-            "version_test.mp4",
-            0,
-        ))
-        .await
-        .unwrap();
+    let media = ok(
+        media_repo
+            .create(&make_media(
+                &ctx.root_playlist.id,
+                &ctx.room.id,
+                "version_test.mp4",
+                0,
+            ))
+            .await,
+        "media should be created",
+    );
 
     // Initial version should be 0
     assert_eq!(media.version, 0, "New media should have version 0");
@@ -150,54 +154,62 @@ async fn test_update_with_version_succeeds_when_version_matches() {
     let mut updated = media.clone();
     updated.name = "version_test_updated.mp4".to_string();
 
-    let result = media_repo
-        .update_with_version(&updated, media.version)
-        .await
-        .unwrap();
+    let result = ok(
+        media_repo
+            .update_with_version(&updated, media.version)
+            .await,
+        "media update with matching version should succeed",
+    );
 
     assert!(
         result.is_some(),
         "Update should succeed when version matches"
     );
-    let result = result.unwrap();
+    let result = some(
+        result,
+        "media update with matching version should return media",
+    );
     assert_eq!(result.name, "version_test_updated.mp4");
     assert_eq!(result.version, 1, "Version should be incremented to 1");
 }
 
-/// Test: `update_with_version` should return `OptimisticLockConflict` error when version mismatch
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_with_version_conflict_when_version_mismatch() {
     let ctx = setup_test_context("v2").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    let media = media_repo
-        .create(&make_media(
-            &ctx.root_playlist.id,
-            &ctx.room.id,
-            "conflict_test.mp4",
-            0,
-        ))
-        .await
-        .unwrap();
+    let media = ok(
+        media_repo
+            .create(&make_media(
+                &ctx.root_playlist.id,
+                &ctx.room.id,
+                "conflict_test.mp4",
+                0,
+            ))
+            .await,
+        "media should be created",
+    );
 
     // First update succeeds, version becomes 1
     let mut first_update = media.clone();
     first_update.name = "first_update.mp4".to_string();
-    let first_result = media_repo
-        .update_with_version(&first_update, 0)
-        .await
-        .unwrap()
-        .expect("First update should succeed");
+    let first_result = some(
+        ok(
+            media_repo.update_with_version(&first_update, 0).await,
+            "first media update should succeed",
+        ),
+        "first media update should return media",
+    );
     assert_eq!(first_result.version, 1);
 
     // Try to update with stale version 0 - should fail with conflict
     let mut stale_update = media.clone();
     stale_update.name = "stale_update.mp4".to_string();
-    let result = media_repo
-        .update_with_version(&stale_update, 0) // Using old version 0, but DB has 1
-        .await
-        .unwrap();
+    let result = ok(
+        media_repo.update_with_version(&stale_update, 0).await,
+        "stale media update should be evaluated",
+    );
 
     assert!(
         result.is_none(),
@@ -205,7 +217,13 @@ async fn test_update_with_version_conflict_when_version_mismatch() {
     );
 
     // Verify the data wasn't corrupted
-    let current = media_repo.get_by_id(&media.id).await.unwrap().unwrap();
+    let current = some(
+        ok(
+            media_repo.get_by_id(&media.id).await,
+            "current media should be fetched",
+        ),
+        "current media should exist",
+    );
     assert_eq!(
         current.name, "first_update.mp4",
         "Name should be from first update"
@@ -213,22 +231,23 @@ async fn test_update_with_version_conflict_when_version_mismatch() {
     assert_eq!(current.version, 1, "Version should still be 1");
 }
 
-/// Test: Concurrent updates should detect conflict
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_updates_detect_conflict() {
     let ctx = setup_test_context("v3").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    let media = media_repo
-        .create(&make_media(
-            &ctx.root_playlist.id,
-            &ctx.room.id,
-            "concurrent.mp4",
-            0,
-        ))
-        .await
-        .unwrap();
+    let media = ok(
+        media_repo
+            .create(&make_media(
+                &ctx.root_playlist.id,
+                &ctx.room.id,
+                "concurrent.mp4",
+                0,
+            ))
+            .await,
+        "media should be created",
+    );
 
     // Simulate two clients reading the same data
     let client1_media = media.clone();
@@ -238,11 +257,13 @@ async fn test_concurrent_updates_detect_conflict() {
     let mut c1_update = client1_media.clone();
     c1_update.name = "client1_update.mp4".to_string();
     c1_update.position = 1.0;
-    let c1_result = media_repo
-        .update_with_version(&c1_update, 0)
-        .await
-        .unwrap()
-        .expect("Client 1 update should succeed");
+    let c1_result = some(
+        ok(
+            media_repo.update_with_version(&c1_update, 0).await,
+            "first concurrent media update should succeed",
+        ),
+        "first concurrent media update should return media",
+    );
     assert_eq!(c1_result.version, 1);
 
     // Client 2 tries to update with same version 0 -> should fail
@@ -250,10 +271,10 @@ async fn test_concurrent_updates_detect_conflict() {
     let mut c2_update = client2_media.clone();
     c2_update.name = "client2_update.mp4".to_string();
     c2_update.position = 2.0;
-    let c2_result = media_repo
-        .update_with_version(&c2_update, 0) // Stale version!
-        .await
-        .unwrap();
+    let c2_result = ok(
+        media_repo.update_with_version(&c2_update, 0).await,
+        "stale concurrent media update should be evaluated",
+    );
 
     assert!(
         c2_result.is_none(),
@@ -261,7 +282,13 @@ async fn test_concurrent_updates_detect_conflict() {
     );
 
     // Verify only client1's changes persisted
-    let current = media_repo.get_by_id(&media.id).await.unwrap().unwrap();
+    let current = some(
+        ok(
+            media_repo.get_by_id(&media.id).await,
+            "current media should be fetched",
+        ),
+        "current media should exist",
+    );
     assert_eq!(current.name, "client1_update.mp4");
     assert!((current.position - 1.0).abs() < f64::EPSILON);
     assert_eq!(
@@ -271,83 +298,96 @@ async fn test_concurrent_updates_detect_conflict() {
     assert_eq!(current.version, 1);
 }
 
-/// Test: Multiple sequential updates increment version correctly
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_sequential_updates_increment_version() {
     let ctx = setup_test_context("v4").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    let mut media = media_repo
-        .create(&make_media(
-            &ctx.root_playlist.id,
-            &ctx.room.id,
-            "sequential.mp4",
-            0,
-        ))
-        .await
-        .unwrap();
+    let mut media = ok(
+        media_repo
+            .create(&make_media(
+                &ctx.root_playlist.id,
+                &ctx.room.id,
+                "sequential.mp4",
+                0,
+            ))
+            .await,
+        "media should be created",
+    );
     assert_eq!(media.version, 0);
 
     // Update 1: version 0 -> 1
     media.name = "update1.mp4".to_string();
-    media = media_repo
-        .update_with_version(&media, 0)
-        .await
-        .unwrap()
-        .expect("Update 1 should succeed");
+    media = some(
+        ok(
+            media_repo.update_with_version(&media, 0).await,
+            "first sequential media update should succeed",
+        ),
+        "first sequential media update should return media",
+    );
     assert_eq!(media.version, 1);
 
     // Update 2: version 1 -> 2
     media.name = "update2.mp4".to_string();
-    media = media_repo
-        .update_with_version(&media, 1)
-        .await
-        .unwrap()
-        .expect("Update 2 should succeed");
+    media = some(
+        ok(
+            media_repo.update_with_version(&media, 1).await,
+            "second sequential media update should succeed",
+        ),
+        "second sequential media update should return media",
+    );
     assert_eq!(media.version, 2);
 
     // Update 3: version 2 -> 3
     media.name = "update3.mp4".to_string();
-    media = media_repo
-        .update_with_version(&media, 2)
-        .await
-        .unwrap()
-        .expect("Update 3 should succeed");
+    media = some(
+        ok(
+            media_repo.update_with_version(&media, 2).await,
+            "third sequential media update should succeed",
+        ),
+        "third sequential media update should return media",
+    );
     assert_eq!(media.version, 3);
 
     // Stale update with version 1 should fail (current is 3)
     let mut stale = media.clone();
     stale.name = "stale.mp4".to_string();
-    let result = media_repo.update_with_version(&stale, 1).await.unwrap();
+    let result = ok(
+        media_repo.update_with_version(&stale, 1).await,
+        "stale sequential media update should be evaluated",
+    );
     assert!(result.is_none(), "Stale update should fail");
 
     // Correct update with version 3 should succeed
     media.name = "update4.mp4".to_string();
-    media = media_repo
-        .update_with_version(&media, 3)
-        .await
-        .unwrap()
-        .expect("Update 4 should succeed");
+    media = some(
+        ok(
+            media_repo.update_with_version(&media, 3).await,
+            "fourth sequential media update should succeed",
+        ),
+        "fourth sequential media update should return media",
+    );
     assert_eq!(media.version, 4);
 }
 
-/// Test: `update_with_version` does not mutate `source_config`
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_with_version_preserves_source_config() {
     let ctx = setup_test_context("v5").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    let media = media_repo
-        .create(&make_media(
-            &ctx.root_playlist.id,
-            &ctx.room.id,
-            "config_test.mp4",
-            0,
-        ))
-        .await
-        .unwrap();
+    let media = ok(
+        media_repo
+            .create(&make_media(
+                &ctx.root_playlist.id,
+                &ctx.room.id,
+                "config_test.mp4",
+                0,
+            ))
+            .await,
+        "media should be created",
+    );
 
     // Attempting to alter source_config through optimistic updates should not
     // persist because source_config is creation-time provider state.
@@ -362,11 +402,13 @@ async fn test_update_with_version_preserves_source_config() {
         "default_mode": "direct"
     });
 
-    let result = media_repo
-        .update_with_version(&updated, 0)
-        .await
-        .unwrap()
-        .expect("metadata update should succeed");
+    let result = some(
+        ok(
+            media_repo.update_with_version(&updated, 0).await,
+            "metadata media update should succeed",
+        ),
+        "metadata media update should return media",
+    );
 
     assert_eq!(result.version, 1);
     assert_eq!(result.name, "config_test_updated.mp4");
@@ -377,11 +419,13 @@ async fn test_update_with_version_preserves_source_config() {
     let mut stale = media.clone();
     stale.name = "stale_config_test.mp4".to_string();
     stale.source_config = json!({"stale": true});
-    let stale_result = media_repo.update_with_version(&stale, 0).await.unwrap();
+    let stale_result = ok(
+        media_repo.update_with_version(&stale, 0).await,
+        "stale metadata media update should be evaluated",
+    );
     assert!(stale_result.is_none(), "Stale metadata update should fail");
 }
 
-/// Test: Non-existent media returns None
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_with_version_nonexistent_media() {
@@ -390,10 +434,10 @@ async fn test_update_with_version_nonexistent_media() {
 
     let missing_media = make_media(&ctx.root_playlist.id, &ctx.room.id, "nonexistent.mp4", 0);
 
-    let result = media_repo
-        .update_with_version(&missing_media, 0)
-        .await
-        .unwrap();
+    let result = ok(
+        media_repo.update_with_version(&missing_media, 0).await,
+        "nonexistent media update should be evaluated",
+    );
 
     assert!(
         result.is_none(),
@@ -401,7 +445,6 @@ async fn test_update_with_version_nonexistent_media() {
     );
 }
 
-/// Test: Verify version is returned in all read operations
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_version_returned_in_read_operations() {
@@ -409,34 +452,44 @@ async fn test_version_returned_in_read_operations() {
     let pool = ctx.pool.clone();
     let media_repo = MediaRepository::new(pool);
 
-    let mut media = media_repo
-        .create(&make_media(
-            &ctx.root_playlist.id,
-            &ctx.room.id,
-            "read_ops.mp4",
-            0,
-        ))
-        .await
-        .unwrap();
+    let mut media = ok(
+        media_repo
+            .create(&make_media(
+                &ctx.root_playlist.id,
+                &ctx.room.id,
+                "read_ops.mp4",
+                0,
+            ))
+            .await,
+        "media should be created",
+    );
     assert_eq!(media.version, 0);
 
     // Update to version 1
     media.name = "read_ops_v1.mp4".to_string();
-    media = media_repo
-        .update_with_version(&media, 0)
-        .await
-        .unwrap()
-        .expect("Update should succeed");
+    media = some(
+        ok(
+            media_repo.update_with_version(&media, 0).await,
+            "media update before read checks should succeed",
+        ),
+        "media update before read checks should return media",
+    );
 
     // get_by_id should return correct version
-    let by_id = media_repo.get_by_id(&media.id).await.unwrap().unwrap();
+    let by_id = some(
+        ok(
+            media_repo.get_by_id(&media.id).await,
+            "media should be fetched by id",
+        ),
+        "media should exist by id",
+    );
     assert_eq!(by_id.version, 1, "get_by_id should return version 1");
 
     // get_by_playlist should return correct version
-    let by_playlist = media_repo
-        .get_by_playlist(&ctx.root_playlist.id)
-        .await
-        .unwrap();
+    let by_playlist = ok(
+        media_repo.get_by_playlist(&ctx.root_playlist.id).await,
+        "media should be fetched by playlist",
+    );
     assert_eq!(by_playlist.len(), 1);
     assert_eq!(
         by_playlist[0].version, 1,
@@ -444,7 +497,10 @@ async fn test_version_returned_in_read_operations() {
     );
 
     // get_by_ids should return correct version
-    let by_ids = media_repo.get_by_ids(&[media.id]).await.unwrap();
+    let by_ids = ok(
+        media_repo.get_by_ids(&[media.id]).await,
+        "media should be fetched by ids",
+    );
     assert_eq!(by_ids.len(), 1);
     assert_eq!(by_ids[0].version, 1, "get_by_ids should return version 1");
 }

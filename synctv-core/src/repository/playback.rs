@@ -195,14 +195,15 @@ impl RoomPlaybackStateRepository {
         if state.playing_media_id.is_none() && state.playing_playlist_id.is_none() {
             if let Some(progress) = current_progress {
                 let snapshot_position = previous_progress_position.unwrap_or(state.position);
-                let _ = self
-                    .update_progress_position_with_executor(
+                drop(
+                    self.update_progress_position_with_executor(
                         progress.id,
                         &state.room_id,
                         snapshot_position,
                         conn,
                     )
-                    .await?;
+                    .await?,
+                );
             }
             return Ok((None, 0.0));
         }
@@ -225,14 +226,15 @@ impl RoomPlaybackStateRepository {
             }
 
             let snapshot_position = previous_progress_position.unwrap_or(state.position);
-            let _ = self
-                .update_progress_position_with_executor(
+            drop(
+                self.update_progress_position_with_executor(
                     progress.id,
                     &state.room_id,
                     snapshot_position,
                     conn,
                 )
-                .await?;
+                .await?,
+            );
         }
 
         let target_hash = state.target_hash();

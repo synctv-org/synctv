@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
 use synctv_core::models::id::{RoomId, UserId};
-use synctv_realtime::ConnectionManager;
+use synctv_realtime::sync::ConnectionManager;
 
 fn stable_id(s: &str) -> i64 {
     i64::from(
@@ -24,36 +24,13 @@ fn rid(s: &str) -> RoomId {
 }
 
 #[tokio::test]
-async fn test_disconnect_signal_queued_when_no_receiver() {
+async fn test_disconnect_signal_with_no_receiver_is_ignored() {
     let mgr = ConnectionManager::default();
     let user = uid("u1");
 
     mgr.register("c1".to_string(), user).await.unwrap();
 
-    // Disconnect without subscribing first - signal should be handled gracefully
-    // The signal won't be queued since there are no receivers (receiver_count == 0)
     mgr.disconnect_connection("c1");
-
-    // Give the retry task a moment to process
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Check metrics - should have no pending signals (no receivers case)
-    let metrics = mgr.disconnect_signal_metrics();
-    assert_eq!(
-        metrics.pending_count, 0,
-        "No pending signals when no receivers"
-    );
-}
-
-#[tokio::test]
-async fn test_disconnect_signal_metrics_initial_state() {
-    let mgr = ConnectionManager::default();
-
-    // Initial metrics should all be zero
-    let metrics = mgr.disconnect_signal_metrics();
-    assert_eq!(metrics.pending_count, 0);
-    assert_eq!(metrics.dropped_count, 0);
-    assert_eq!(metrics.retried_count, 0);
 }
 
 #[tokio::test]
@@ -196,7 +173,7 @@ async fn test_join_room_rejection_preserves_previous_room_membership() {
 
 #[tokio::test]
 async fn test_max_duration_timeout() {
-    use synctv_realtime::ConnectionManager;
+    use synctv_realtime::sync::ConnectionManager;
 
     let limits = synctv_realtime::sync::ConnectionLimits {
         max_duration: Duration::from_millis(50),

@@ -17,25 +17,25 @@ use {
     tokio::sync::{broadcast, mpsc, oneshot},
 };
 
-/* Subscribe streams from stream hub */
+/// How a consumer subscribes to a stream in `StreamsHub`.
 #[derive(Debug, Serialize, Clone, Eq, PartialEq)]
 pub enum SubscribeType {
-    /* Remote client request pulling(play) a rtmp stream.*/
+    /// RTMP player pulls frames from a local stream.
     RtmpPull,
-    /* Remote request to play httpflv triggers remux from RTMP to httpflv. */
+    /// HTTP-FLV session remuxes RTMP frames to FLV.
     RtmpRemux2HttpFlv,
-    /* The publishing of RTMP stream triggers remuxing from RTMP to HLS protocol.(NOTICE:It is not triggerred by players.)*/
+    /// HLS remuxer subscribes after an RTMP publish event.
     RtmpRemux2Hls,
-    /* Relay(Push) local RTMP stream from stream hub to other RTMP nodes.*/
+    /// Relay publisher pushes a local stream to another RTMP node.
     RtmpRelay,
 }
 
-/* Publish streams to stream hub */
+/// How a producer publishes a stream into `StreamsHub`.
 #[derive(Debug, Serialize, Clone, Eq, PartialEq)]
 pub enum PublishType {
-    /* Receive rtmp stream from remote push client. */
+    /// Remote RTMP client pushes into this node.
     RtmpPush,
-    /* Relay(Pull) remote RTMP stream to local stream hub. */
+    /// This node pulls a remote RTMP stream and republishes it locally.
     RtmpRelay,
 }
 
@@ -58,7 +58,7 @@ impl Serialize for SubscriberInfo {
     where
         S: Serializer,
     {
-        // 3 is the number of fields in the struct.
+        // Runtime-only routing fields are omitted from serialized diagnostics.
         let mut state = serializer.serialize_struct("SubscriberInfo", 3)?;
 
         state.serialize_field("id", &self.id.to_string())?;
@@ -81,7 +81,7 @@ impl Serialize for PublisherInfo {
     where
         S: Serializer,
     {
-        // 3 is the number of fields in the struct.
+        // Runtime-only routing fields are omitted from serialized diagnostics.
         let mut state = serializer.serialize_struct("PublisherInfo", 3)?;
 
         state.serialize_field("id", &self.id.to_string())?;
@@ -91,13 +91,13 @@ impl Serialize for PublisherInfo {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum VideoCodecType {
     H264,
     H265,
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MediaInfo {
     pub audio_clock_rate: u32,
     pub video_clock_rate: u32,
@@ -122,7 +122,7 @@ impl MediaInfo {
 ///
 /// `Bytes::clone()` is O(1) -- only bumps Arc reference count, no data copy.
 /// Publishers create `BytesMut` and call `.freeze()` before wrapping in `FrameData`.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FrameData {
     Video {
         timestamp: u32,
@@ -179,8 +179,7 @@ pub enum FrameTrySendError<T> {
     Closed(T),
 }
 
-// Used to transfer a/v frame between different protocols (rtmp/rtsp/webrtc/http-flv/hls)
-// or send a/v frame data from publisher to subscribers.
+/// Sender used for frame fan-out between publishers, subscribers, and remuxers.
 #[derive(Debug, Clone)]
 pub enum FrameDataSender {
     Bounded(mpsc::Sender<FrameData>),
@@ -422,6 +421,7 @@ pub enum BroadcastEvent {
     },
 }
 
+#[derive(Debug)]
 pub enum StatisticData {
     AudioCodec {
         sound_format: SoundFormat,

@@ -6,37 +6,79 @@
       {
         "ordinal": 0,
         "name": "id: EmailRegistrationTokenId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "auth_email_registration_tokens",
+            "name": "id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "token_hash",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "auth_email_registration_tokens",
+            "name": "token_hash"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "username",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "auth_email_registration_tokens",
+            "name": "username"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "email",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "auth_email_registration_tokens",
+            "name": "email"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "expires_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_email_registration_tokens",
+            "name": "expires_at"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "used_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_email_registration_tokens",
+            "name": "used_at"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "created_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_email_registration_tokens",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {

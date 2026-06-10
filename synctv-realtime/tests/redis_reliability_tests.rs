@@ -11,9 +11,10 @@ use std::time::Duration;
 
 use chrono::Utc;
 use synctv_core::models::id::{RoomId, UserId};
-use synctv_realtime::sync::events::RealtimeEvent;
-use synctv_realtime::sync::redis_pubsub::RedisPubSub;
-use synctv_realtime::{ConnectionId, MessageDeduplicator, RoomMessageHub};
+use synctv_realtime::sync::RealtimeEvent;
+use synctv_realtime::sync::{
+    ConnectionId, MessageDeduplicator, RedisPubSub, RedisPubSubConfig, RoomMessageHub,
+};
 use tokio::sync::broadcast;
 
 mod integration_test_helpers;
@@ -148,7 +149,7 @@ async fn test_redis_stream_catchup() {
     // Use raw RedisPubSub to test catchup mechanism directly
     let message_hub = Arc::new(RoomMessageHub::new());
     let (admin_tx, _admin_rx) = broadcast::channel::<RealtimeEvent>(256);
-    let dedup = Arc::new(MessageDeduplicator::with_defaults());
+    let dedup = Arc::new(MessageDeduplicator::default());
 
     let room_id = RoomId::expect_positive(10_000_058);
     let user_id = UserId::expect_positive(10_000_059);
@@ -190,16 +191,17 @@ async fn test_redis_stream_catchup() {
     let redis_client =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
     let subscriber_node = Arc::new(
-        RedisPubSub::with_key_prefix(
-            synctv_core::coordination_runtime_from_client(redis_client),
-            message_hub.clone(),
-            "subscriber_node".to_string(),
-            &key_prefix,
-            admin_tx,
-            None,
-            dedup,
-            300,
-            10_000,
+        RedisPubSub::from_config(
+            RedisPubSubConfig::new(
+                synctv_core::coordination_runtime_from_client(redis_client),
+                message_hub.clone(),
+                "subscriber_node".to_string(),
+                admin_tx,
+                dedup,
+            )
+            .key_prefix(&key_prefix)
+            .catchup_window_secs(300)
+            .stream_max_length(10_000),
         )
         .expect("Failed to create subscriber RedisPubSub"),
     );

@@ -37,7 +37,14 @@ impl JwtValidator {
             ));
         }
 
-        Ok(auth_value[7..].to_string())
+        let token = auth_value[7..].trim();
+        if token.is_empty() {
+            return Err(Error::Authentication(
+                "Authorization bearer token cannot be empty".to_string(),
+            ));
+        }
+
+        Ok(token.to_string())
     }
 
     /// Validate JWT token and return claims
@@ -65,7 +72,7 @@ impl JwtValidator {
     /// User ID extracted from the token
     pub fn validate_and_extract_user_id(&self, token: &str) -> Result<UserId> {
         let claims = self.validate_token(token)?;
-        claims.sub.parse().map_err(crate::Error::Internal)
+        claims.user_id()
     }
 }
 
@@ -105,7 +112,7 @@ impl JwtValidator {
     /// User ID extracted from the token
     pub fn validate_http_extract_user_id(&self, auth_header: &str) -> Result<UserId> {
         let claims = self.validate_http(auth_header)?;
-        claims.sub.parse().map_err(crate::Error::Internal)
+        claims.user_id()
     }
 }
 
@@ -162,7 +169,7 @@ impl JwtValidator {
     /// User ID extracted from the token
     pub fn validate_grpc_extract_user_id(&self, metadata: &MetadataMap) -> Result<UserId> {
         let claims = self.validate_grpc(metadata)?;
-        claims.sub.parse().map_err(crate::Error::Internal)
+        claims.user_id()
     }
 
     /// Validate JWT from gRPC metadata and return as gRPC Status
@@ -199,31 +206,66 @@ impl JwtValidator {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
+        match result {
+            Ok(_) => std::panic::panic_any(context.to_string()),
+            Err(error) => error,
+        }
+    }
+
     fn create_test_jwt_service() -> Arc<JwtService> {
         use super::super::jwt::JwtService;
-        Arc::new(
-            JwtService::new("test-secret-for-validator-that-is-long-enough-1234567890").unwrap(),
+        Arc::new(ok(
+            JwtService::new("test-secret-for-validator-that-is-long-enough-1234567890"),
+            "JWT service should build",
+        ))
+    }
+
+    fn auth_header(
+        value: impl Into<String>,
+    ) -> tonic::metadata::MetadataValue<tonic::metadata::Ascii> {
+        ok(
+            value.into().parse(),
+            "authorization metadata value should parse",
         )
     }
 
     fn create_test_token(jwt_service: &JwtService, user_id: i64) -> String {
         let user_id = UserId::expect_positive(user_id);
-        jwt_service.sign_access_token(&user_id, 0).unwrap()
+        ok(
+            jwt_service.sign_access_token(&user_id, 0),
+            "access token should sign",
+        )
     }
 
     #[test]
     fn test_extract_bearer_token() {
-        // Valid "Bearer " format
-        let token = JwtValidator::extract_bearer_token("Bearer abc123").unwrap();
+        let token = ok(
+            JwtValidator::extract_bearer_token("Bearer abc123"),
+            "Bearer token should extract",
+        );
         assert_eq!(token, "abc123");
 
-        // Valid "bearer " format
-        let token = JwtValidator::extract_bearer_token("bearer def456").unwrap();
+        let token = ok(
+            JwtValidator::extract_bearer_token("bearer def456"),
+            "lowercase bearer token should extract",
+        );
         assert_eq!(token, "def456");
 
-        // Invalid format
         let result = JwtValidator::extract_bearer_token("Basic abc123");
-        assert!(result.is_err());
+        assert!(matches!(result, Err(Error::Authentication(_))));
+
+        let result = JwtValidator::extract_bearer_token("Bearer    ");
+        assert!(
+            matches!(result, Err(Error::Authentication(message)) if message.contains("cannot be empty"))
+        );
     }
 
     #[test]
@@ -233,13 +275,11 @@ mod tests {
 
         let token = create_test_token(&jwt_service, 98_001);
 
-        // Valid token
-        let claims = validator.validate_token(&token).unwrap();
+        let claims = ok(validator.validate_token(&token), "token should validate");
         assert_eq!(claims.sub, "98001");
 
-        // Invalid token
         let result = validator.validate_token("invalid.token.here");
-        assert!(result.is_err());
+        assert!(matches!(result, Err(Error::Authentication(_))));
     }
 
     #[test]
@@ -249,13 +289,14 @@ mod tests {
 
         let token = create_test_token(&jwt_service, 98_002);
 
-        // Valid HTTP authorization header
-        let claims = validator.validate_http(&format!("Bearer {token}")).unwrap();
+        let claims = ok(
+            validator.validate_http(&format!("Bearer {token}")),
+            "HTTP bearer token should validate",
+        );
         assert_eq!(claims.sub, "98002");
 
-        // Invalid format
         let result = validator.validate_http("Basic invalid");
-        assert!(result.is_err());
+        assert!(matches!(result, Err(Error::Authentication(_))));
     }
 
     #[test]
@@ -265,9 +306,8 @@ mod tests {
 
         let token = create_test_token(&jwt_service, 98_003);
 
-        let user_id = validator
-            .validate_http_extract_user_id(&format!("Bearer {token}"))
-            .unwrap();
+        let user_id = validator.validate_http_extract_user_id(&format!("Bearer {token}"));
+        let user_id = ok(user_id, "HTTP bearer token user ID should extract");
         assert_eq!(user_id.to_string(), "98003");
     }
 
@@ -278,17 +318,18 @@ mod tests {
 
         let token = create_test_token(&jwt_service, 98_004);
 
-        // Valid gRPC metadata
         let mut metadata = MetadataMap::new();
-        metadata.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        metadata.insert("authorization", auth_header(format!("Bearer {token}")));
 
-        let claims = validator.validate_grpc(&metadata).unwrap();
+        let claims = ok(
+            validator.validate_grpc(&metadata),
+            "gRPC token should validate",
+        );
         assert_eq!(claims.sub, "98004");
 
-        // Missing authorization
         let metadata = MetadataMap::new();
         let result = validator.validate_grpc(&metadata);
-        assert!(result.is_err());
+        assert!(matches!(result, Err(Error::Authentication(_))));
     }
 
     #[test]
@@ -299,9 +340,12 @@ mod tests {
         let token = create_test_token(&jwt_service, 98_005);
 
         let mut metadata = MetadataMap::new();
-        metadata.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        metadata.insert("authorization", auth_header(format!("Bearer {token}")));
 
-        let user_id = validator.validate_grpc_extract_user_id(&metadata).unwrap();
+        let user_id = ok(
+            validator.validate_grpc_extract_user_id(&metadata),
+            "gRPC token user ID should extract",
+        );
         assert_eq!(user_id.to_string(), "98005");
     }
 
@@ -312,20 +356,26 @@ mod tests {
 
         let token = create_test_token(&jwt_service, 98_006);
 
-        // Valid token
         let mut metadata = MetadataMap::new();
-        metadata.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        metadata.insert("authorization", auth_header(format!("Bearer {token}")));
 
-        let claims = validator.validate_grpc_as_status(&metadata).unwrap();
+        let claims = ok(
+            validator.validate_grpc_as_status(&metadata),
+            "gRPC status validator should accept token",
+        );
         assert_eq!(claims.sub, "98006");
 
-        // Invalid token
         let mut metadata = MetadataMap::new();
-        metadata.insert("authorization", "Bearer invalid".parse().unwrap());
+        metadata.insert("authorization", auth_header("Bearer invalid"));
 
-        let result = validator.validate_grpc_as_status(&metadata);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().code(), tonic::Code::Unauthenticated);
+        assert_eq!(
+            err(
+                validator.validate_grpc_as_status(&metadata),
+                "invalid token should be rejected"
+            )
+            .code(),
+            tonic::Code::Unauthenticated
+        );
     }
 
     #[test]
@@ -334,11 +384,12 @@ mod tests {
         let validator = JwtValidator::new(jwt_service);
 
         let mut metadata = MetadataMap::new();
-        metadata.insert("authorization", "Bearer invalid".parse().unwrap());
+        metadata.insert("authorization", auth_header("Bearer invalid"));
 
-        let status = validator
-            .validate_grpc_as_status(&metadata)
-            .expect_err("invalid token should be rejected");
+        let status = err(
+            validator.validate_grpc_as_status(&metadata),
+            "invalid token should be rejected",
+        );
 
         assert_eq!(status.code(), tonic::Code::Unauthenticated);
         assert_eq!(
@@ -354,9 +405,10 @@ mod tests {
 
         let metadata = MetadataMap::new();
 
-        let status = validator
-            .validate_grpc_as_status(&metadata)
-            .expect_err("missing authorization header should be rejected");
+        let status = err(
+            validator.validate_grpc_as_status(&metadata),
+            "missing authorization header should be rejected",
+        );
 
         assert_eq!(status.code(), tonic::Code::Unauthenticated);
         assert_eq!(status.message(), "Invalid authorization header");

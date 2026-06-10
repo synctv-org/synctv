@@ -843,6 +843,7 @@ struct CachedAlistSession {
 mod tests {
     use super::*;
     use crate::provider::store::InMemoryProviderStore;
+    use crate::test_helpers::TestResultExt;
     use chrono::Utc;
     use std::sync::Mutex;
 
@@ -874,7 +875,7 @@ mod tests {
             Ok(self
                 .records
                 .lock()
-                .expect("credential reader lock should be available")
+                .checked("credential reader lock should be available")
                 .iter()
                 .find(|record| {
                     record.user_id == user_id
@@ -886,7 +887,7 @@ mod tests {
     }
 
     fn test_encryption() -> CredentialEncryption {
-        CredentialEncryption::new(&[0x42; 32]).expect("test encryption key should be valid")
+        CredentialEncryption::new(&[0x42; 32]).checked("test encryption key should be valid")
     }
 
     fn test_service(store: Arc<dyn ProviderStore>) -> CachedProviderAccessService {
@@ -898,7 +899,7 @@ mod tests {
         credential_reader: Arc<dyn ProviderCredentialReader>,
     ) -> CachedProviderAccessService {
         let alist_provider =
-            Arc::new(AlistProvider::new_local_only().expect("provider should build"));
+            Arc::new(AlistProvider::new_local_only().checked("provider should build"));
 
         CachedProviderAccessService::new(credential_reader, alist_provider)
             .with_store(store)
@@ -919,7 +920,7 @@ mod tests {
             provider: provider.to_string(),
             server_id: server_id.to_string(),
             provider_instance_name: provider_instance_name.map(std::string::ToString::to_string),
-            credential_data: serde_json::to_value(credential).expect("credential serializes"),
+            credential_data: serde_json::to_value(credential).checked("credential serializes"),
             expires_at: None,
             created_at: now,
             updated_at: now,
@@ -933,7 +934,7 @@ mod tests {
     ) {
         let envelope = service
             .encode_sensitive(record)
-            .expect("credential cache entry encodes");
+            .checked("credential cache entry encodes");
         store
             .set(
                 &CachedProviderAccessService::binding_key(
@@ -945,14 +946,14 @@ mod tests {
                 Duration::from_mins(1),
             )
             .await
-            .expect("credential cache write succeeds");
+            .checked("credential cache write succeeds");
     }
 
     #[tokio::test]
     async fn encode_sensitive_requires_credential_encryption() {
         let store = Arc::new(InMemoryProviderStore::new(16));
         let alist_provider =
-            Arc::new(AlistProvider::new_local_only().expect("provider should build"));
+            Arc::new(AlistProvider::new_local_only().checked("provider should build"));
         let service =
             CachedProviderAccessService::new(InMemoryCredentialReader::empty(), alist_provider)
                 .with_store(store);
@@ -962,7 +963,7 @@ mod tests {
                 host: "https://alist.example.test".to_string(),
                 token: "token".to_string(),
             })
-            .expect_err("sensitive cache writes require encryption");
+            .failed("sensitive cache writes require encryption");
 
         assert!(error
             .to_string()
@@ -992,7 +993,7 @@ mod tests {
         let access = service
             .bilibili_access(user_id, None)
             .await
-            .expect("bilibili access resolves from credential reader");
+            .checked("bilibili access resolves from credential reader");
 
         assert!(access.authenticated);
         assert_eq!(
@@ -1006,7 +1007,7 @@ mod tests {
                 &server_id,
             ))
             .await
-            .expect("binding cache read succeeds")
+            .checked("binding cache read succeeds")
             .is_some());
     }
 
@@ -1036,7 +1037,7 @@ mod tests {
                 host: "https://stale.example.test".to_string(),
                 token: "stale-token".to_string(),
             })
-            .expect("stale session encodes");
+            .checked("stale session encodes");
         store
             .set(
                 &CachedProviderAccessService::alist_session_key(
@@ -1049,13 +1050,13 @@ mod tests {
                 Duration::from_mins(1),
             )
             .await
-            .expect("stale session cache write succeeds");
+            .checked("stale session cache write succeeds");
         let bound_session = service
             .encode_sensitive(&CachedAlistSession {
                 host: "https://bound.example.test".to_string(),
                 token: "bound-token".to_string(),
             })
-            .expect("bound session encodes");
+            .checked("bound session encodes");
         store
             .set(
                 &CachedProviderAccessService::alist_session_key(
@@ -1068,12 +1069,12 @@ mod tests {
                 Duration::from_mins(1),
             )
             .await
-            .expect("bound session cache write succeeds");
+            .checked("bound session cache write succeeds");
 
         let access = service
             .alist_access(user_id, server_id, Some("bound-instance"), None)
             .await
-            .expect("alist access resolves");
+            .checked("alist access resolves");
 
         assert_eq!(access.host, "https://bound.example.test");
         assert_eq!(access.token, "bound-token");
@@ -1105,7 +1106,7 @@ mod tests {
         let access = service
             .emby_access(user_id, server_id, Some("bound-instance"), None)
             .await
-            .expect("emby access resolves");
+            .checked("emby access resolves");
 
         assert_eq!(
             access.provider_instance_name.as_deref(),
@@ -1157,12 +1158,12 @@ mod tests {
                     Duration::from_mins(1),
                 )
                 .await
-                .expect("missing cache write succeeds");
+                .checked("missing cache write succeeds");
 
             service
                 .invalidate(user_id, provider, server_id)
                 .await
-                .expect("provider access cache invalidates");
+                .checked("provider access cache invalidates");
 
             assert!(
                 store
@@ -1170,7 +1171,7 @@ mod tests {
                         provider, user_id, server_id
                     ))
                     .await
-                    .expect("binding cache read succeeds")
+                    .checked("binding cache read succeeds")
                     .is_none(),
                 "{provider} binding cache should be removed"
             );
@@ -1180,7 +1181,7 @@ mod tests {
                         provider, user_id, server_id
                     ))
                     .await
-                    .expect("missing cache read succeeds")
+                    .checked("missing cache read succeeds")
                     .is_none(),
                 "{provider} missing cache should be removed"
             );

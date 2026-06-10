@@ -4,7 +4,6 @@
 //! and that the chat partition manager creates future partitions.
 //! Also verifies `audit_logs` DEFAULT partition.
 //!
-#![allow(clippy::unwrap_used)]
 
 use chrono::{Duration, Utc};
 use std::sync::Arc;
@@ -18,7 +17,7 @@ use synctv_core::{
         global_settings::SettingsRegistry, AlwaysLeader, ChatPartitionManager, SettingsService,
     },
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, ok};
 /// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -54,31 +53,33 @@ async fn test_chat_message_default_partition_routing() {
     let room_repo = RoomRepository::new(pool.clone());
     let chat_repo = ChatRepository::new(pool.clone());
 
-    let owner = user_repo
-        .create(&make_user("partition_owner_1"))
-        .await
-        .unwrap();
-    let room = room_repo
-        .create(&{
-            let now = Utc::now();
-            Room {
-                id: RoomId::new(),
-                name: "Partition Test Room".to_string(),
-                description: String::new(),
-                cover_file_reference_id: None,
-                created_by: owner.id,
-                status: RoomStatus::Active,
-                is_banned: false,
-                closed_at: None,
-                created_at: now,
-                updated_at: now,
-                deleted_at: None,
-                version: 0,
-                last_activity_at: now,
-            }
-        })
-        .await
-        .unwrap();
+    let owner = ok(
+        user_repo.create(&make_user("partition_owner_1")).await,
+        "partition owner should be created",
+    );
+    let room = ok(
+        room_repo
+            .create(&{
+                let now = Utc::now();
+                Room {
+                    id: RoomId::new(),
+                    name: "Partition Test Room".to_string(),
+                    description: String::new(),
+                    cover_file_reference_id: None,
+                    created_by: owner.id,
+                    status: RoomStatus::Active,
+                    is_banned: false,
+                    closed_at: None,
+                    created_at: now,
+                    updated_at: now,
+                    deleted_at: None,
+                    version: 0,
+                    last_activity_at: now,
+                }
+            })
+            .await,
+        "partition test room should be created",
+    );
 
     // Insert a message with a far-future date (no specific partition exists)
     // This should route to the DEFAULT partition instead of failing
@@ -108,14 +109,16 @@ async fn test_chat_message_default_partition_routing() {
         "Message with far-future date should insert into DEFAULT partition, got: {:?}",
         created.err()
     );
-    let created = created.expect("message should be returned");
+    let created = ok(created, "message should be returned");
 
     // Verify we can retrieve it
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE id = $1")
-        .bind(created.id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let count: i64 = ok(
+        sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE id = $1")
+            .bind(created.id)
+            .fetch_one(&pool)
+            .await,
+        "chat message count query should succeed",
+    );
     assert_eq!(count, 1);
 }
 
@@ -126,19 +129,24 @@ async fn test_chat_partition_manager_creates_future_partitions() {
     let settings = make_settings_registry(pool.clone());
     let manager = ChatPartitionManager::new(pool.clone(), settings, Arc::new(AlwaysLeader));
 
-    let created_count = manager.ensure_future_partitions(5).await.unwrap();
+    let created_count = ok(
+        manager.ensure_future_partitions(5).await,
+        "chat partitions should be created",
+    );
     assert_eq!(created_count, 6);
 
     // Verify partitions exist
-    let partition_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pg_tables
+    let partition_count: i64 = ok(
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pg_tables
          WHERE schemaname = 'public'
            AND tablename LIKE 'chat_messages_%'
            AND tablename ~ '^chat_messages_[0-9]{4}_[0-9]{2}_[0-9]{2}$'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+        )
+        .fetch_one(&pool)
+        .await,
+        "chat partition count query should succeed",
+    );
 
     // Should have at least some partitions (migrations create 31, plus our 6)
     assert!(partition_count > 0, "Should have chat message partitions");
@@ -173,7 +181,13 @@ async fn test_check_chat_message_partitions_health() {
     let settings = make_settings_registry(pool.clone());
     let manager = ChatPartitionManager::new(pool, settings, Arc::new(AlwaysLeader));
 
-    manager.ensure_future_partitions(7).await.unwrap();
-    let health = manager.check_health(7).await.unwrap();
+    ok(
+        manager.ensure_future_partitions(7).await,
+        "chat partitions should be created before health check",
+    );
+    let health = ok(
+        manager.check_health(7).await,
+        "chat partition health check should succeed",
+    );
     assert_eq!(health.health_status, "healthy");
 }

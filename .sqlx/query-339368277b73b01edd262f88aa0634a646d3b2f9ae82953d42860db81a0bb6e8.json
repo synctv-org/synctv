@@ -6,62 +6,134 @@
       {
         "ordinal": 0,
         "name": "name",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "media_provider_instances",
+            "name": "name"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "endpoint",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "media_provider_instances",
+            "name": "endpoint"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "comment",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "media_provider_instances",
+            "name": "comment"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "jwt_secret",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "media_provider_instances",
+            "name": "jwt_secret"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "custom_ca",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "media_provider_instances",
+            "name": "custom_ca"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "timeout",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "media_provider_instances",
+            "name": "timeout"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "tls",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "media_provider_instances",
+            "name": "tls"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "insecure_tls",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "media_provider_instances",
+            "name": "insecure_tls"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "providers",
-        "type_info": "Int2Array"
+        "type_info": "Int2Array",
+        "origin": {
+          "Table": {
+            "table": "media_provider_instances",
+            "name": "providers"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "enabled",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "media_provider_instances",
+            "name": "enabled"
+          }
+        }
       },
       {
         "ordinal": 10,
         "name": "created_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "media_provider_instances",
+            "name": "created_at"
+          }
+        }
       },
       {
         "ordinal": 11,
         "name": "updated_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "media_provider_instances",
+            "name": "updated_at"
+          }
+        }
       }
     ],
     "parameters": {

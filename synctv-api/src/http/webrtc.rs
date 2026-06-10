@@ -80,8 +80,10 @@ mod tests {
     use axum::http::StatusCode;
     use synctv_proto::client::{GetIceServersResponse, IceServer};
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
     #[test]
-    fn test_stun_ice_server_serialization_never_exposes_auth_fields() {
+    fn test_stun_ice_server_serialization_never_exposes_auth_fields() -> TestResult {
         let server = IceServer {
             urls: vec![
                 "stun:stun-auth.example.com:3478".to_string(),
@@ -91,7 +93,7 @@ mod tests {
             credential: None,
         };
 
-        let json = serde_json::to_value(&server).expect("IceServer should serialize");
+        let json = serde_json::to_value(&server)?;
         assert_eq!(
             json["urls"],
             serde_json::json!([
@@ -101,10 +103,11 @@ mod tests {
         );
         assert_eq!(json["username"], serde_json::Value::Null);
         assert_eq!(json["credential"], serde_json::Value::Null);
+        Ok(())
     }
 
     #[test]
-    fn test_ice_servers_response_includes_webrtc_status() {
+    fn test_ice_servers_response_includes_webrtc_status() -> TestResult {
         let response = GetIceServersResponse {
             servers: Vec::new(),
             webrtc: Some(crate::webrtc_status::to_proto_status(
@@ -116,15 +119,15 @@ mod tests {
             )),
         };
 
-        let json = serde_json::to_value(&response).expect("response should serialize");
+        let json = serde_json::to_value(&response)?;
         assert_eq!(json["webrtc"]["builtin_stun_state"], "degraded");
         assert_eq!(json["webrtc"]["reason"], "external_addr_invalid");
         assert_eq!(json["webrtc"]["external_addr"], "127.0.0.1:3478");
+        Ok(())
     }
 
     #[test]
     fn test_map_api_error_authorization_returns_forbidden() {
-        // Verify that Authorization errors map to 403 Forbidden
         let api_err = ApiError::Authorization("User is not a member of this room".to_string());
         let app_err = map_api_error(api_err);
         assert_eq!(app_err.status, StatusCode::FORBIDDEN);

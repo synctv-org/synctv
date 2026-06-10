@@ -1,13 +1,11 @@
 //! Playback state machine position tests.
 
-#![allow(clippy::unwrap_used)]
-
 use chrono::Utc;
 use synctv_core::{
     models::{Media, MediaId},
     repository::{MediaRepository, UserRepository},
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, TestResultExt};
 
 mod playback_state_machine_support;
 
@@ -20,7 +18,10 @@ async fn test_position_preserved_on_pause() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("sm_pos_pause")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("sm_pos_pause"))
+        .await
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -31,23 +32,23 @@ async fn test_position_preserved_on_pause() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let playback_service = room_service.playback_service();
     set_current_test_media(&pool, room.id, owner.id, "Pause Position Video").await;
     playback_service
         .seek(room.id, owner.id, 120.0)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     playback_service
         .set_playing(room.id, owner.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let state = playback_service
         .set_playing(room.id, owner.id, false)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     assert!(state.position >= 119.0);
 
@@ -63,7 +64,10 @@ async fn test_position_reset_on_media_switch() {
     let media_repo = MediaRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("sm_pos_switch")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("sm_pos_switch"))
+        .await
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -74,7 +78,7 @@ async fn test_position_reset_on_media_switch() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let media = Media {
         id: MediaId::new(),
@@ -92,19 +96,22 @@ async fn test_position_reset_on_media_switch() {
         updated_at: Utc::now(),
         version: 0,
     };
-    media_repo.create(&media).await.unwrap();
+    media_repo
+        .create(&media)
+        .await
+        .checked("operation should succeed");
 
     let playback_service = room_service.playback_service();
     set_current_test_media(&pool, room.id, owner.id, "Previous Video").await;
     playback_service
         .seek(room.id, owner.id, 150.0)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let state = playback_service
         .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     assert!((state.position - 0.0).abs() < f64::EPSILON);
     assert!(state.is_playing);
@@ -123,7 +130,7 @@ async fn test_reset_preserves_progress_for_current_media() {
     let owner = user_repo
         .create(&make_user("sm_pos_reset_resume"))
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -134,29 +141,32 @@ async fn test_reset_preserves_progress_for_current_media() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let playback_service = room_service.playback_service();
     let media = set_current_test_media(&pool, room.id, owner.id, "Reset Resume Video").await;
     playback_service
         .seek(room.id, owner.id, 90.0)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     playback_service
         .set_playing(room.id, owner.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
 
-    let reset_state = playback_service.reset(room.id, owner.id).await.unwrap();
+    let reset_state = playback_service
+        .reset(room.id, owner.id)
+        .await
+        .checked("operation should succeed");
     assert!(reset_state.playing_media_id.is_none());
     assert!((reset_state.position - 0.0).abs() < f64::EPSILON);
 
     let resumed_state = playback_service
         .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(resumed_state.playing_media_id, Some(media.id));
     assert!(
         resumed_state.position >= 90.0,

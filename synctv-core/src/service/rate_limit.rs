@@ -42,8 +42,8 @@ mod memory;
 mod redis_backend;
 
 use memory::InMemoryGovernorLimiter;
-pub use memory::InMemoryRateLimitBackend;
-pub use redis_backend::RedisRateLimitBackend;
+use memory::InMemoryRateLimitBackend;
+use redis_backend::RedisRateLimitBackend;
 
 /// Rate limiting error
 #[derive(Error, Debug)]
@@ -208,7 +208,7 @@ fn parse_quota_count_result(result: &[u32]) -> std::result::Result<u32, RateLimi
 /// Implementations handle the distributed (Redis) or local (in-memory) rate
 /// limiting logic. The `RateLimiter` wraps this trait and adds sync support.
 #[async_trait]
-pub trait RateLimitBackend: Send + Sync {
+trait RateLimitBackend: Send + Sync {
     /// Check if a request is allowed. Returns `Ok(())` if allowed.
     /// On Redis errors, implementations may fall back to in-memory.
     async fn check(
@@ -316,20 +316,6 @@ pub trait RequestRateLimiterService: Send + Sync {
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError>;
 
-    async fn check_rate_limit_distributed_with_control(
-        &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
-        control: Option<&ExecutionControl>,
-    ) -> std::result::Result<(), RateLimitError> {
-        if let Some(control) = control {
-            control.check_active()?;
-        }
-        self.check_rate_limit_distributed(key, max_requests, window_seconds)
-            .await
-    }
-
     /// Get remaining quota for a rate limit.
     async fn get_quota(
         &self,
@@ -340,97 +326,6 @@ pub trait RequestRateLimiterService: Send + Sync {
 
     /// Reset rate limit state for a key.
     async fn reset(&self, key: &str) -> Result<()>;
-}
-
-/// Build a request rate limiter behind the service abstraction.
-///
-/// Callers should depend on the returned trait object instead of branching on
-/// the concrete local or shared implementation.
-pub fn request_rate_limiter_from_shared_state_profile(
-    profile: &SharedStateProfile,
-) -> Result<Arc<dyn RequestRateLimiterService>> {
-    Ok(Arc::new(RateLimiter::from_shared_state_profile(profile)?))
-}
-
-#[async_trait]
-impl<T> RequestRateLimiterService for Arc<T>
-where
-    T: RequestRateLimiterService + ?Sized,
-{
-    async fn health_check(&self) -> std::result::Result<(), String> {
-        self.as_ref().health_check().await
-    }
-
-    fn check_rate_limit_sync(
-        &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
-    ) -> std::result::Result<(), RateLimitError> {
-        self.as_ref()
-            .check_rate_limit_sync(key, max_requests, window_seconds)
-    }
-
-    async fn check_rate_limit(
-        &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
-    ) -> std::result::Result<(), RateLimitError> {
-        self.as_ref()
-            .check_rate_limit(key, max_requests, window_seconds)
-            .await
-    }
-
-    async fn check_rate_limit_with_control(
-        &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
-        control: Option<&ExecutionControl>,
-    ) -> std::result::Result<(), RateLimitError> {
-        self.as_ref()
-            .check_rate_limit_with_control(key, max_requests, window_seconds, control)
-            .await
-    }
-
-    async fn check_rate_limit_distributed(
-        &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
-    ) -> std::result::Result<(), RateLimitError> {
-        self.as_ref()
-            .check_rate_limit_distributed(key, max_requests, window_seconds)
-            .await
-    }
-
-    async fn check_rate_limit_distributed_with_control(
-        &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
-        control: Option<&ExecutionControl>,
-    ) -> std::result::Result<(), RateLimitError> {
-        self.as_ref()
-            .check_rate_limit_distributed_with_control(key, max_requests, window_seconds, control)
-            .await
-    }
-
-    async fn get_quota(
-        &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
-    ) -> Result<(u32, u64)> {
-        self.as_ref()
-            .get_quota(key, max_requests, window_seconds)
-            .await
-    }
-
-    async fn reset(&self, key: &str) -> Result<()> {
-        self.as_ref().reset(key).await
-    }
 }
 
 // RateLimiter (public API)
@@ -450,7 +345,7 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     /// Create a new `RateLimiter` with a custom backend.
-    pub fn from_backend(backend: Arc<dyn RateLimitBackend>, key_prefix: String) -> Self {
+    fn from_backend(backend: Arc<dyn RateLimitBackend>, key_prefix: String) -> Self {
         Self {
             backend,
             sync_limiter: InMemoryGovernorLimiter::new(),
@@ -480,7 +375,7 @@ impl RateLimiter {
         }
     }
 
-    pub fn from_shared_state_profile(profile: &SharedStateProfile) -> Result<Self> {
+    pub(crate) fn from_shared_state_profile(profile: &SharedStateProfile) -> Result<Self> {
         match profile.state_mode() {
             SharedStateMode::SharedRequired => Ok(Self::from_redis_runtime(
                 Some(profile.require_shared_runtime("rate-limit state")?),
@@ -550,14 +445,15 @@ impl RateLimiter {
         window_seconds: u64,
         control: Option<&ExecutionControl>,
     ) -> std::result::Result<(), RateLimitError> {
+        if let Some(control) = control {
+            control.check_active()?;
+        }
         if self.strict_distributed {
             self.backend
-                .check_strict_with_control(key, max_requests, window_seconds, control)
+                .check_strict(key, max_requests, window_seconds)
                 .await
         } else {
-            self.backend
-                .check_with_control(key, max_requests, window_seconds, control)
-                .await
+            self.backend.check(key, max_requests, window_seconds).await
         }
     }
 
@@ -568,19 +464,8 @@ impl RateLimiter {
         max_requests: u32,
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
-        self.check_rate_limit_distributed_with_control(key, max_requests, window_seconds, None)
-            .await
-    }
-
-    pub async fn check_rate_limit_distributed_with_control(
-        &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
-        control: Option<&ExecutionControl>,
-    ) -> std::result::Result<(), RateLimitError> {
         self.backend
-            .check_strict_with_control(key, max_requests, window_seconds, control)
+            .check_strict(key, max_requests, window_seconds)
             .await
     }
 
@@ -643,23 +528,6 @@ impl RequestRateLimiterService for RateLimiter {
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
         Self::check_rate_limit_distributed(self, key, max_requests, window_seconds).await
-    }
-
-    async fn check_rate_limit_distributed_with_control(
-        &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
-        control: Option<&ExecutionControl>,
-    ) -> std::result::Result<(), RateLimitError> {
-        Self::check_rate_limit_distributed_with_control(
-            self,
-            key,
-            max_requests,
-            window_seconds,
-            control,
-        )
-        .await
     }
 
     async fn get_quota(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_helpers::{TestOptionExt, TestResultExt};
 use std::collections::HashMap;
 use tempfile::tempdir;
 
@@ -46,14 +47,14 @@ fn test_grpc_message_size_validation() {
 
     // Invalid: below minimum
     config.server.grpc_max_message_size_bytes = 1024 * 1024 - 1; // Just under 1 MB
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors
         .iter()
         .any(|e| e.contains("grpc_max_message_size_bytes") && e.contains("1 MB")));
 
     // Invalid: above maximum
     config.server.grpc_max_message_size_bytes = 1024 * 1024 * 1024 + 1; // Just over 1 GB
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors
         .iter()
         .any(|e| e.contains("grpc_max_message_size_bytes") && e.contains("1 GB")));
@@ -66,7 +67,7 @@ fn test_validate_rejects_cors_origin_with_path() {
 
     let errors = config
         .validate()
-        .expect_err("CORS origins with paths must be rejected during config validation");
+        .failed("CORS origins with paths must be rejected during config validation");
 
     assert!(
         errors
@@ -219,7 +220,7 @@ fn test_cluster_mode_rejects_unroutable_advertise_host() {
 
     let errors = config
         .validate_with_env_map(&HashMap::new())
-        .expect_err("cluster mode must reject unroutable advertise_host");
+        .failed("cluster mode must reject unroutable advertise_host");
 
     assert!(
         errors.iter().any(|e| e.contains("server.advertise_host")),
@@ -235,7 +236,7 @@ fn test_cluster_mode_requires_explicit_routable_advertise_host_source() {
 
     let errors = config
         .validate_with_env_map(&HashMap::new())
-        .expect_err("cluster mode must not fall back to implicit hostname advertise address");
+        .failed("cluster mode must not fall back to implicit hostname advertise address");
 
     assert!(
         errors.iter().any(|e| {
@@ -255,13 +256,13 @@ fn test_cluster_mode_accepts_pod_ip_as_explicit_advertise_host_source() {
 
     config
         .validate_with_env_map(&env_map(&[("POD_IP", "10.2.3.4")]))
-        .expect("cluster mode should accept POD_IP as the explicit advertise host source");
+        .checked("cluster mode should accept POD_IP as the explicit advertise host source");
 }
 
 #[test]
 fn test_from_env_rejects_invalid_numeric_override() {
     let error = Config::from_env_map(&env_map(&[("SYNCTV_SERVER_PORT", "not-a-port")]))
-        .expect_err("invalid numeric override must fail closed");
+        .failed("invalid numeric override must fail closed");
 
     let message = error.to_string();
     assert!(message.contains("SYNCTV_SERVER_PORT"));
@@ -275,13 +276,13 @@ fn test_load_with_explicit_missing_config_path_fails_closed() {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time before unix epoch")
+            .checked("system time before unix epoch")
             .as_nanos()
     );
     let path = std::env::temp_dir().join(unique);
 
-    let error = Config::load_with_env_map(Some(path.to_str().expect("utf-8 path")), &env_map(&[]))
-        .expect_err("explicit missing config path must not fall back to defaults");
+    let error = Config::load_with_env_map(Some(path.to_str().checked("utf-8 path")), &env_map(&[]))
+        .failed("explicit missing config path must not fall back to defaults");
 
     let message = error.to_string();
     assert!(
@@ -293,7 +294,7 @@ fn test_load_with_explicit_missing_config_path_fails_closed() {
 #[test]
 fn test_from_env_rejects_invalid_boolean_override() {
     let error = Config::from_env_map(&env_map(&[("SYNCTV_METRICS_ENABLED", "maybe")]))
-        .expect_err("invalid boolean override must fail closed");
+        .failed("invalid boolean override must fail closed");
 
     let message = error.to_string();
     assert!(message.contains("SYNCTV_METRICS_ENABLED"));
@@ -303,7 +304,7 @@ fn test_from_env_rejects_invalid_boolean_override() {
 #[test]
 fn test_from_env_rejects_invalid_redis_deployment_mode_override() {
     let error = Config::from_env_map(&env_map(&[("SYNCTV_REDIS_DEPLOYMENT_MODE", "sentinal")]))
-        .expect_err("invalid redis deployment mode override must fail closed");
+        .failed("invalid redis deployment mode override must fail closed");
 
     let message = error.to_string();
     assert!(message.contains("SYNCTV_REDIS_DEPLOYMENT_MODE"));
@@ -313,7 +314,7 @@ fn test_from_env_rejects_invalid_redis_deployment_mode_override() {
 #[test]
 fn test_from_env_rejects_unsupported_redis_cluster_mode_override() {
     let error = Config::from_env_map(&env_map(&[("SYNCTV_REDIS_DEPLOYMENT_MODE", "cluster")]))
-        .expect_err("unsupported redis cluster mode override must fail closed");
+        .failed("unsupported redis cluster mode override must fail closed");
 
     let message = error.to_string();
     assert!(message.contains("SYNCTV_REDIS_DEPLOYMENT_MODE"));
@@ -325,7 +326,7 @@ fn test_from_env_rejects_unsupported_redis_cluster_mode_override() {
 #[test]
 fn test_from_env_rejects_invalid_webrtc_mode_override() {
     let error = Config::from_env_map(&env_map(&[("SYNCTV_WEBRTC_MODE", "p2p")]))
-        .expect_err("invalid webrtc mode override must fail closed");
+        .failed("invalid webrtc mode override must fail closed");
 
     let message = error.to_string();
     assert!(message.contains("SYNCTV_WEBRTC_MODE"));
@@ -338,7 +339,7 @@ fn test_from_env_rejects_invalid_hls_storage_backend_override() {
         "SYNCTV_LIVESTREAM_HLS_STORAGE_BACKEND",
         "nfs",
     )]))
-    .expect_err("invalid HLS storage backend override must fail closed");
+    .failed("invalid HLS storage backend override must fail closed");
 
     let message = error.to_string();
     assert!(message.contains("SYNCTV_LIVESTREAM_HLS_STORAGE_BACKEND"));
@@ -355,7 +356,7 @@ fn test_from_env_rejects_unknown_server_port_env_vars() {
         ("SYNCTV_SERVER_HTTP_PORT", "8080"),
         ("SYNCTV_SERVER_PORT", "18080"),
     ]))
-    .expect_err("unknown split-port env vars must fail fast");
+    .failed("unknown split-port env vars must fail fast");
 
     let message = error.to_string();
     assert!(message.contains("SYNCTV_SERVER_GRPC_PORT"));
@@ -368,7 +369,7 @@ fn test_from_env_rejects_unknown_database_and_redis_keys() {
         ("SYNCTV_DATABASE_UNKNOWN_KEY", "synctv"),
         ("SYNCTV_REDIS_UNKNOWN_KEY", "cache-user"),
     ]))
-    .expect_err("unknown nested env keys must fail fast");
+    .failed("unknown nested env keys must fail fast");
 
     let message = error.to_string();
     assert!(message.contains("SYNCTV_DATABASE_UNKNOWN_KEY"));
@@ -406,7 +407,7 @@ fn test_inspect_unknowns_with_env_map_reports_file_and_env_unknowns() {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time before unix epoch")
+            .checked("system time before unix epoch")
             .as_nanos()
     );
     let path = std::env::temp_dir().join(unique);
@@ -414,14 +415,14 @@ fn test_inspect_unknowns_with_env_map_reports_file_and_env_unknowns() {
         &path,
         format!(r#"{{"jwt":{{"secret":"{secret}"}},"metrics":{{"obsolete_token":"ignored"}}}}"#),
     )
-    .expect("write config fixture");
+    .checked("write config fixture");
 
     let diagnostics = Config::inspect_unknowns_with_env_map(
-        Some(path.to_str().expect("utf-8 path")),
+        Some(path.to_str().checked("utf-8 path")),
         &env_map(&[("SYNCTV_UNKNOWN_FLAG", "1")]),
         None,
     )
-    .expect("unknown inspection should still parse known config");
+    .checked("unknown inspection should still parse known config");
     let _ = std::fs::remove_file(&path);
 
     assert_eq!(
@@ -439,15 +440,15 @@ fn test_inspect_unknowns_with_env_map_reports_file_and_env_unknowns() {
 
 #[test]
 fn test_public_ids_default_to_prefixed_decimal_ids() {
-    let config = Config::from_env_map(&HashMap::new()).expect("default config should load");
+    let config = Config::from_env_map(&HashMap::new()).checked("default config should load");
     let codec = crate::PublicIdCodec::from_config(&config.public_ids)
-        .expect("default public IDs config should be valid");
+        .checked("default public IDs config should be valid");
 
     assert!(config.public_ids.sqids.is_none());
     assert_eq!(
         codec
             .encode_user_id(crate::models::UserId::expect_positive(1))
-            .expect("user ID should encode"),
+            .checked("user ID should encode"),
         "usr_1"
     );
 }
@@ -455,19 +456,19 @@ fn test_public_ids_default_to_prefixed_decimal_ids() {
 #[test]
 fn test_public_ids_sqids_env_enables_prefixed_sqids() {
     let config = Config::from_env_map(&env_map(&[("SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH", "8")]))
-        .expect("sqids env config should load");
+        .checked("sqids env config should load");
     let codec = crate::PublicIdCodec::from_config(&config.public_ids)
-        .expect("sqids public IDs config should be valid");
+        .checked("sqids public IDs config should be valid");
     let encoded = codec
         .encode_user_id(crate::models::UserId::expect_positive(1))
-        .expect("user ID should encode");
+        .checked("user ID should encode");
 
     assert_eq!(
         config
             .public_ids
             .sqids
             .as_ref()
-            .expect("sqids should be enabled")
+            .checked("sqids should be enabled")
             .min_length,
         8
     );
@@ -476,7 +477,7 @@ fn test_public_ids_sqids_env_enables_prefixed_sqids() {
     assert_eq!(
         codec
             .decode_user_id(&encoded)
-            .expect("user ID should decode"),
+            .checked("user ID should decode"),
         crate::models::UserId::expect_positive(1)
     );
 }
@@ -485,19 +486,22 @@ fn test_public_ids_sqids_env_enables_prefixed_sqids() {
 fn test_checked_in_yaml_configs_deserialize() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("synctv-core should be inside the workspace root");
+        .checked("synctv-core should be inside the workspace root");
 
     let config_file = "synctv.example.yaml";
     let path = workspace_root.join(config_file);
     let path_str = path
         .to_str()
-        .expect("checked-in config path should be valid UTF-8");
+        .checked("checked-in config path should be valid UTF-8");
     Config::load_config_file(path_str).map_or_else(
-        |error| panic!("{config_file} should deserialize: {error}"),
+        |error| {
+            std::panic::panic_any(format!("{config_file} should deserialize: {error}"));
+        },
         |(config, _)| config,
     );
-    let unknown_keys = Config::collect_unknown_config_file_keys(path_str)
-        .unwrap_or_else(|error| panic!("{config_file} unknown-key scan failed: {error}"));
+    let unknown_keys = Config::collect_unknown_config_file_keys(path_str).unwrap_or_else(|error| {
+        std::panic::panic_any(format!("{config_file} unknown-key scan failed: {error}"));
+    });
     assert!(
         unknown_keys.is_empty(),
         "{config_file} should not contain unsupported keys: {unknown_keys:?}"
@@ -621,14 +625,14 @@ fn test_validate_standalone_mode_allows_hls_local_storage() {
 fn test_validate_single_api_port_is_allowed() {
     let mut config = valid_prod_config();
     config.server.port = 8080;
-    config.validate().expect("single API port should be valid");
+    config.validate().checked("single API port should be valid");
 }
 
 #[test]
 fn test_validate_port_conflict_rtmp_http() {
     let mut config = valid_prod_config();
     config.livestream.rtmp_port = 8080;
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors
         .iter()
         .any(|e| e.contains("rtmp_port") && e.contains("server.port")));
@@ -638,7 +642,7 @@ fn test_validate_port_conflict_rtmp_http() {
 fn test_validate_zero_port() {
     let mut config = valid_prod_config();
     config.server.port = 0;
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors
         .iter()
         .any(|e| e.contains("server.port") && e.contains('0')));
@@ -648,7 +652,7 @@ fn test_validate_zero_port() {
 fn test_validate_default_jwt_secret_production() {
     let mut config = valid_prod_config();
     config.jwt.secret = "change-me-in-production".to_string();
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors.iter().any(|e| e.contains("JWT secret")));
 }
 
@@ -657,7 +661,7 @@ fn test_validate_known_development_jwt_secret() {
     let mut config = valid_prod_config();
     for known_secret in KNOWN_DEV_JWT_SECRETS {
         config.jwt.secret = (*known_secret).to_string();
-        let errors = config.validate().unwrap_err();
+        let errors = config.validate().failed("operation should fail");
         assert!(
             errors
                 .iter()
@@ -671,7 +675,7 @@ fn test_validate_known_development_jwt_secret() {
 fn test_validate_empty_jwt_secret() {
     let mut config = valid_prod_config();
     config.jwt.secret = String::new();
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors.iter().any(|e| e.contains("JWT secret is empty")));
 }
 
@@ -682,7 +686,7 @@ fn test_validate_known_development_security_secrets() {
     config.security.opaque_server_setup_secret =
         KNOWN_DEV_OPAQUE_SERVER_SETUP_SECRETS[0].to_string();
 
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
 
     assert!(
         errors.iter().any(|e| {
@@ -707,7 +711,7 @@ fn test_validate_historical_development_security_secrets() {
         KNOWN_DEV_OPAQUE_SERVER_SETUP_SECRETS[1].to_string();
     config.cluster.secret = KNOWN_DEV_CLUSTER_SECRETS[0].to_string();
 
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
 
     assert!(
         errors.iter().any(|e| {
@@ -735,7 +739,7 @@ fn test_validate_jwt_secret_too_short() {
     let mut config = valid_prod_config();
     // 31 characters - just under the 32 minimum
     config.jwt.secret = "a".repeat(31);
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors
         .iter()
         .any(|e| e.contains("JWT secret") && e.contains("32") && e.contains("characters")));
@@ -756,7 +760,7 @@ fn test_from_file_merges_partial_nested_sections_with_defaults() {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time before unix epoch")
+            .checked("system time before unix epoch")
             .as_nanos()
     );
     let path = std::env::temp_dir().join(unique);
@@ -771,11 +775,11 @@ jwt:
   secret: "12345678901234567890123456789012"
 "#,
     )
-    .expect("write config");
+    .checked("write config");
 
     let config =
-        Config::load_with_env_map(Some(path.to_str().expect("utf-8 path")), &HashMap::new())
-            .expect("partial config should merge with defaults");
+        Config::load_with_env_map(Some(path.to_str().checked("utf-8 path")), &HashMap::new())
+            .checked("partial config should merge with defaults");
     let _ = std::fs::remove_file(&path);
 
     assert_eq!(config.server.port, 50051);
@@ -796,7 +800,7 @@ fn test_from_file_parses_explicit_local_media_provider_config() {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time before unix epoch")
+            .checked("system time before unix epoch")
             .as_nanos()
     );
     let path = std::env::temp_dir().join(unique);
@@ -815,11 +819,11 @@ media_providers:
     connect_timeout_seconds: 10
 ",
     )
-    .expect("write config");
+    .checked("write config");
 
     let config =
-        Config::load_with_env_map(Some(path.to_str().expect("utf-8 path")), &HashMap::new())
-            .expect("explicit local media provider config should load");
+        Config::load_with_env_map(Some(path.to_str().checked("utf-8 path")), &HashMap::new())
+            .checked("explicit local media provider config should load");
     let _ = std::fs::remove_file(&path);
 
     assert_eq!(config.media_providers.alist.request_timeout_seconds, 40);
@@ -832,57 +836,57 @@ media_providers:
 
 #[test]
 fn test_from_file_resolves_typed_secret_file_references_relative_to_config_path() {
-    let temp_dir = tempdir().expect("temp dir should be created");
+    let temp_dir = tempdir().checked("temp dir should be created");
     let config_dir = temp_dir.path().join("config");
-    std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+    std::fs::create_dir_all(&config_dir).checked("config dir should be created");
     let data_dir = config_dir.join("state");
-    std::fs::create_dir_all(&data_dir).expect("data dir should be created");
+    std::fs::create_dir_all(&data_dir).checked("data dir should be created");
 
     std::fs::write(config_dir.join("jwt.secret"), "jwt-secret-from-file\n")
-        .expect("jwt secret file should be written");
+        .checked("jwt secret file should be written");
     std::fs::write(
         config_dir.join("cluster.secret"),
         "cluster-secret-from-file\n",
     )
-    .expect("cluster secret file should be written");
+    .checked("cluster secret file should be written");
     std::fs::write(
         config_dir.join("management.token"),
         "management-token-from-file\n",
     )
-    .expect("management token file should be written");
+    .checked("management token file should be written");
     std::fs::write(
         config_dir.join("metrics.password"),
         "metrics-basic-password\n",
     )
-    .expect("metrics password file should be written");
+    .checked("metrics password file should be written");
     std::fs::write(config_dir.join("metrics.bearer"), "metrics-bearer-token\n")
-        .expect("metrics bearer token file should be written");
+        .checked("metrics bearer token file should be written");
     std::fs::write(
         config_dir.join("database.url"),
         "postgresql://synctv:secret@db.example.com:5432/synctv\n",
     )
-    .expect("database url file should be written");
+    .checked("database url file should be written");
     std::fs::write(config_dir.join("database.password"), "database-password\n")
-        .expect("database password file should be written");
+        .checked("database password file should be written");
     std::fs::write(
         config_dir.join("redis.url"),
         "redis://:secret@redis.example.com:6379/0\n",
     )
-    .expect("redis url file should be written");
+    .checked("redis url file should be written");
     std::fs::write(config_dir.join("redis.password"), "redis-password\n")
-        .expect("redis password file should be written");
+        .checked("redis password file should be written");
     std::fs::write(config_dir.join("root.password"), "StrongPwd12345!\n")
-        .expect("root password file should be written");
+        .checked("root password file should be written");
     std::fs::write(
         config_dir.join("credential.key"),
         "111102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n",
     )
-    .expect("credential encryption key file should be written");
+    .checked("credential encryption key file should be written");
     std::fs::write(
         config_dir.join("opaque.secret"),
         "opaque-server-setup-secret-from-file\n",
     )
-    .expect("opaque server setup secret file should be written");
+    .checked("opaque server setup secret file should be written");
 
     let config_path = config_dir.join("synctv.yaml");
     std::fs::write(
@@ -918,16 +922,16 @@ bootstrap:
   root_password_file: "./root.password"
 "#,
     )
-    .expect("config file should be written");
+    .checked("config file should be written");
 
     let unknown_keys =
-        Config::collect_unknown_config_file_keys(config_path.to_str().expect("utf-8 path"))
-            .expect("supported _file keys should not be reported as unknown");
+        Config::collect_unknown_config_file_keys(config_path.to_str().checked("utf-8 path"))
+            .checked("supported _file keys should not be reported as unknown");
     let config = Config::load_with_env_map(
-        Some(config_path.to_str().expect("utf-8 path")),
+        Some(config_path.to_str().checked("utf-8 path")),
         &HashMap::new(),
     )
-    .expect("typed _file references should load");
+    .checked("typed _file references should load");
 
     assert!(
         unknown_keys.is_empty(),
@@ -958,13 +962,13 @@ bootstrap:
 
 #[test]
 fn test_from_file_builds_database_and_redis_urls_from_split_config() {
-    let temp_dir = tempdir().expect("temp dir should be created");
+    let temp_dir = tempdir().checked("temp dir should be created");
     let config_dir = temp_dir.path().join("config");
-    std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+    std::fs::create_dir_all(&config_dir).checked("config dir should be created");
     std::fs::write(config_dir.join("database.password"), "pg-password\n")
-        .expect("database password file should be written");
+        .checked("database password file should be written");
     std::fs::write(config_dir.join("redis.password"), "redis-password\n")
-        .expect("redis password file should be written");
+        .checked("redis password file should be written");
 
     let config_path = config_dir.join("synctv.yaml");
     std::fs::write(
@@ -984,13 +988,13 @@ redis:
   database: 7
 "#,
     )
-    .expect("config file should be written");
+    .checked("config file should be written");
 
     let config = Config::load_with_env_map(
-        Some(config_path.to_str().expect("utf-8 path")),
+        Some(config_path.to_str().checked("utf-8 path")),
         &HashMap::new(),
     )
-    .expect("split database config should load");
+    .checked("split database config should load");
 
     assert!(config.database.url.is_empty());
     assert_eq!(config.database.username, "synctv");
@@ -1027,7 +1031,7 @@ fn test_split_database_and_redis_urls_escape_reserved_characters() {
         "postgresql://sync%40tv:p%40ss%2Fword%3Awith%3Fsymbols%23frag@db.example.com:5432/sync%2Ftv%20prod"
     );
     let parsed_database =
-        url::Url::parse(&database_url).expect("escaped database URL should parse");
+        url::Url::parse(&database_url).checked("escaped database URL should parse");
     assert_eq!(parsed_database.host_str(), Some("db.example.com"));
     assert_eq!(parsed_database.port(), Some(5432));
 
@@ -1037,7 +1041,7 @@ fn test_split_database_and_redis_urls_escape_reserved_characters() {
         "redis://cache%3Auser:p%40ss%2Fword%3Awith%3Fsymbols%23frag@redis.example.com:6379/7"
     );
     let redis_client =
-        redis::Client::open(redis_url.as_str()).expect("escaped Redis URL should parse");
+        redis::Client::open(redis_url.as_str()).checked("escaped Redis URL should parse");
     let parsed_redis = redis_client.get_connection_info();
     assert_eq!(
         parsed_redis.addr(),
@@ -1053,17 +1057,17 @@ fn test_split_database_and_redis_urls_escape_reserved_characters() {
 
 #[test]
 fn test_data_dir_override_does_not_rebase_typed_secret_file_references() {
-    let temp_dir = tempdir().expect("temp dir should be created");
+    let temp_dir = tempdir().checked("temp dir should be created");
     let config_dir = temp_dir.path().join("config");
     let override_data_dir = temp_dir.path().join("override-state");
-    std::fs::create_dir_all(&config_dir).expect("config dir should be created");
-    std::fs::create_dir_all(&override_data_dir).expect("override data dir should be created");
+    std::fs::create_dir_all(&config_dir).checked("config dir should be created");
+    std::fs::create_dir_all(&override_data_dir).checked("override data dir should be created");
 
     std::fs::write(
         config_dir.join("jwt.secret"),
         "jwt-secret-from-config-dir\n",
     )
-    .expect("jwt secret file should be written");
+    .checked("jwt secret file should be written");
 
     let config_path = config_dir.join("synctv.yaml");
     std::fs::write(
@@ -1073,23 +1077,23 @@ jwt:
   secret_file: "./jwt.secret"
 "#,
     )
-    .expect("config file should be written");
+    .checked("config file should be written");
 
     let config = Config::load_with_env_map_and_data_dir_override(
-        Some(config_path.to_str().expect("utf-8 path")),
+        Some(config_path.to_str().checked("utf-8 path")),
         &HashMap::new(),
-        Some(override_data_dir.to_str().expect("utf-8 path")),
+        Some(override_data_dir.to_str().checked("utf-8 path")),
     )
-    .expect("data_dir override should not change secret file lookup");
+    .checked("data_dir override should not change secret file lookup");
 
     assert_eq!(config.jwt.secret, "jwt-secret-from-config-dir");
 }
 
 #[test]
 fn test_from_file_resolves_owned_local_paths_relative_to_data_dir() {
-    let temp_dir = tempdir().expect("temp dir should be created");
+    let temp_dir = tempdir().checked("temp dir should be created");
     let config_dir = temp_dir.path().join("config");
-    std::fs::create_dir_all(&config_dir).expect("config dir should be created");
+    std::fs::create_dir_all(&config_dir).checked("config dir should be created");
     let config_path = config_dir.join("synctv.yaml");
     std::fs::write(
         &config_path,
@@ -1119,10 +1123,10 @@ livestream:
   hls_storage_path: "hls"
 "#,
     )
-    .expect("config file should be written");
+    .checked("config file should be written");
 
-    let config = Config::from_file(config_path.to_str().expect("utf-8 path"))
-        .expect("config file with data_dir should load");
+    let config = Config::from_file(config_path.to_str().checked("utf-8 path"))
+        .checked("config file with data_dir should load");
     let expected_data_dir = config_dir.join("state");
 
     assert_eq!(Path::new(&config.data_dir), expected_data_dir);
@@ -1166,7 +1170,7 @@ livestream:
 
 #[test]
 fn test_collect_unknown_config_file_keys_ignores_top_level_data_dir() {
-    let temp_dir = tempdir().expect("temp dir should be created");
+    let temp_dir = tempdir().checked("temp dir should be created");
     let config_path = temp_dir.path().join("synctv.yaml");
     std::fs::write(
         &config_path,
@@ -1176,11 +1180,11 @@ management:
   transport: "unix"
 "#,
     )
-    .expect("config file should be written");
+    .checked("config file should be written");
 
     let unknown_keys =
-        Config::collect_unknown_config_file_keys(config_path.to_str().expect("utf-8 path"))
-            .expect("top-level data_dir should deserialize cleanly");
+        Config::collect_unknown_config_file_keys(config_path.to_str().checked("utf-8 path"))
+            .checked("top-level data_dir should deserialize cleanly");
 
     assert!(
         unknown_keys.is_empty(),
@@ -1190,7 +1194,7 @@ management:
 
 #[test]
 fn test_from_env_map_resolves_relative_data_dir_from_current_dir() {
-    let cwd = std::env::current_dir().expect("current dir should resolve");
+    let cwd = std::env::current_dir().checked("current dir should resolve");
     let env = HashMap::from([
         ("SYNCTV_DATA_DIR".to_string(), "var/synctv".to_string()),
         (
@@ -1215,7 +1219,7 @@ fn test_from_env_map_resolves_relative_data_dir_from_current_dir() {
         ),
     ]);
 
-    let config = Config::from_env_map(&env).expect("env-backed config should load");
+    let config = Config::from_env_map(&env).checked("env-backed config should load");
     let expected_data_dir = cwd.join("var").join("synctv");
 
     assert_eq!(Path::new(&config.data_dir), expected_data_dir);
@@ -1243,7 +1247,7 @@ fn test_from_env_map_resolves_relative_data_dir_from_current_dir() {
 
 #[test]
 fn test_from_env_map_resolves_proxy_slice_cache_dir_relative_to_data_dir() {
-    let cwd = std::env::current_dir().expect("current dir should resolve");
+    let cwd = std::env::current_dir().checked("current dir should resolve");
     let env = HashMap::from([
         ("SYNCTV_DATA_DIR".to_string(), "var/synctv".to_string()),
         (
@@ -1284,7 +1288,7 @@ fn test_from_env_map_resolves_proxy_slice_cache_dir_relative_to_data_dir() {
         ),
     ]);
 
-    let config = Config::from_env_map(&env).expect("env-backed config should load");
+    let config = Config::from_env_map(&env).checked("env-backed config should load");
     let expected_data_dir = cwd.join("var").join("synctv");
 
     assert!(!config.proxy_slice_cache.enabled);
@@ -1307,7 +1311,7 @@ fn test_from_env_map_resolves_proxy_slice_cache_dir_relative_to_data_dir() {
 
 #[test]
 fn test_from_file_rejects_missing_secret_file_reference() {
-    let temp_dir = tempdir().expect("temp dir should be created");
+    let temp_dir = tempdir().checked("temp dir should be created");
     let config_path = temp_dir.path().join("synctv.yaml");
     std::fs::write(
         &config_path,
@@ -1316,10 +1320,10 @@ jwt:
   secret_file: "./missing.secret"
 "#,
     )
-    .expect("config file should be written");
+    .checked("config file should be written");
 
-    let error = Config::from_file(config_path.to_str().expect("utf-8 path"))
-        .expect_err("missing _file target must fail closed");
+    let error = Config::from_file(config_path.to_str().checked("utf-8 path"))
+        .failed("missing _file target must fail closed");
 
     assert!(
         error.to_string().contains("jwt.secret_file"),
@@ -1334,13 +1338,13 @@ fn test_from_file_rejects_missing_path() {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time before unix epoch")
+            .checked("system time before unix epoch")
             .as_nanos()
     );
     let path = std::env::temp_dir().join(unique);
 
-    let error = Config::from_file(path.to_str().expect("utf-8 path"))
-        .expect_err("missing file must not fall back to defaults");
+    let error = Config::from_file(path.to_str().checked("utf-8 path"))
+        .failed("missing file must not fall back to defaults");
 
     assert!(
         error.to_string().contains("not found"),
@@ -1355,7 +1359,7 @@ fn test_from_file_rejects_unknown_server_port_keys() {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time before unix epoch")
+            .checked("system time before unix epoch")
             .as_nanos()
     );
     let path = std::env::temp_dir().join(unique);
@@ -1370,12 +1374,13 @@ jwt:
   secret: "12345678901234567890123456789012"
 "#,
     )
-    .expect("write config");
+    .checked("write config");
 
-    let unknown_keys = Config::collect_unknown_config_file_keys(path.to_str().expect("utf-8 path"))
-        .expect("unknown split-port keys should be collected");
-    let error = Config::from_file(path.to_str().expect("utf-8 path"))
-        .expect_err("unknown split-port file keys must fail fast");
+    let unknown_keys =
+        Config::collect_unknown_config_file_keys(path.to_str().checked("utf-8 path"))
+            .checked("unknown split-port keys should be collected");
+    let error = Config::from_file(path.to_str().checked("utf-8 path"))
+        .failed("unknown split-port file keys must fail fast");
     let _ = std::fs::remove_file(&path);
 
     assert!(
@@ -1398,7 +1403,7 @@ fn test_from_file_rejects_unknown_database_and_redis_keys() {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time before unix epoch")
+            .checked("system time before unix epoch")
             .as_nanos()
     );
     let path = std::env::temp_dir().join(unique);
@@ -1419,10 +1424,10 @@ jwt:
   secret: "12345678901234567890123456789012"
 "#,
     )
-    .expect("write config");
+    .checked("write config");
 
-    let error = Config::from_file(path.to_str().expect("utf-8 path"))
-        .expect_err("unknown nested config keys must fail fast");
+    let error = Config::from_file(path.to_str().checked("utf-8 path"))
+        .failed("unknown nested config keys must fail fast");
     let _ = std::fs::remove_file(&path);
 
     let message = error.to_string();
@@ -1437,7 +1442,7 @@ fn test_validate_allows_empty_root_password_until_bootstrap_creation() {
     config.bootstrap.root_password.clear();
     config
         .validate()
-        .expect("static config validation should not require a root password");
+        .checked("static config validation should not require a root password");
 }
 
 #[test]
@@ -1498,7 +1503,7 @@ fn test_validate_root_email_must_be_valid_when_provided() {
     let mut config = valid_prod_config();
     config.bootstrap.root_email = "not-an-email".to_string();
 
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
 
     assert!(
         errors
@@ -1544,7 +1549,7 @@ fn test_validate_root_password_for_creation_rejects_no_digit() {
 fn test_validate_root_username_too_short() {
     let mut config = valid_prod_config();
     config.bootstrap.root_username = "ab".to_string();
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors
         .iter()
         .any(|e| e.contains("Root username") && e.contains('3')));
@@ -1555,7 +1560,7 @@ fn test_validate_db_pool_min_exceeds_max() {
     let mut config = valid_prod_config();
     config.database.min_connections = 30;
     config.database.max_connections = 10;
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors
         .iter()
         .any(|e| e.contains("min_connections") && e.contains("max_connections")));
@@ -1565,7 +1570,7 @@ fn test_validate_db_pool_min_exceeds_max() {
 fn test_validate_db_pool_max_zero() {
     let mut config = valid_prod_config();
     config.database.max_connections = 0;
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors
         .iter()
         .any(|e| e.contains("max_connections") && e.contains("greater than 0")));
@@ -1576,7 +1581,7 @@ fn test_validate_shutdown_drain_timeout_zero() {
     let mut config = valid_prod_config();
     config.server.shutdown_drain_timeout_seconds = 0;
 
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
 
     assert!(errors
         .iter()
@@ -1590,7 +1595,7 @@ fn test_validate_database_timeouts_zero() {
     config.database.idle_timeout_seconds = 0;
     config.database.max_lifetime_seconds = 0;
 
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
 
     assert!(errors
         .iter()
@@ -1607,17 +1612,17 @@ fn test_validate_database_timeouts_zero() {
 fn test_validate_connection_limits_zero() {
     let mut config = valid_prod_config();
     config.connection_limits.max_per_user = 0;
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors.iter().any(|e| e.contains("max_per_user")));
 
     let mut config = valid_prod_config();
     config.connection_limits.max_per_room = 0;
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors.iter().any(|e| e.contains("max_per_room")));
 
     let mut config = valid_prod_config();
     config.connection_limits.max_total = 0;
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors.iter().any(|e| e.contains("max_total")));
 }
 
@@ -1628,14 +1633,14 @@ fn test_validate_messaging_rate_limits_zero() {
     config.messaging_rate_limits.chat_per_second = 0;
     let errors = config
         .validate()
-        .expect_err("chat rate limit must be validated");
+        .failed("chat rate limit must be validated");
     assert!(errors
         .iter()
         .any(|e| e.contains("messaging_rate_limits.chat_per_second")));
 
     config.messaging_rate_limits.chat_per_second = 1;
     config.messaging_rate_limits.window_seconds = 0;
-    let errors = config.validate().expect_err("window must be validated");
+    let errors = config.validate().failed("window must be validated");
     assert!(errors
         .iter()
         .any(|e| e.contains("messaging_rate_limits.window_seconds")));
@@ -1647,7 +1652,7 @@ fn test_from_env_overrides_messaging_rate_limits() {
         ("SYNCTV_MESSAGING_RATE_LIMITS_CHAT_PER_SECOND", "17"),
         ("SYNCTV_MESSAGING_RATE_LIMITS_WINDOW_SECONDS", "4"),
     ]))
-    .expect("messaging rate env overrides should parse");
+    .checked("messaging rate env overrides should parse");
 
     assert_eq!(config.messaging_rate_limits.chat_per_second, 17);
     assert_eq!(config.messaging_rate_limits.window_seconds, 4);
@@ -1659,7 +1664,7 @@ fn test_from_env_overrides_request_websocket_rate_limits() {
         ("SYNCTV_REQUEST_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS", "13"),
         ("SYNCTV_REQUEST_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS", "17"),
     ]))
-    .expect("request websocket rate limit env overrides should parse");
+    .checked("request websocket rate limit env overrides should parse");
 
     assert_eq!(config.request_rate_limits.websocket_max_requests, 13);
     assert_eq!(config.request_rate_limits.websocket_window_seconds, 17);
@@ -1671,13 +1676,13 @@ fn test_from_env_overrides_request_rate_limit_scope_rules() {
         "SYNCTV_REQUEST_RATE_LIMITS_SCOPES",
         r#"{"room_members":{"max_requests":90,"window_seconds":15,"strategy":"fixed_window"}}"#,
     )]))
-    .expect("request scope rate limit env override should parse");
+    .checked("request scope rate limit env override should parse");
 
     let rule = config
         .request_rate_limits
         .scopes
         .get("room_members")
-        .expect("room_members scope should be configured");
+        .checked("room_members scope should be configured");
     assert_eq!(rule.max_requests, Some(90));
     assert_eq!(rule.window_seconds, Some(15));
     assert_eq!(rule.strategy, RateLimitScopeStrategy::FixedWindow);
@@ -1699,7 +1704,7 @@ fn test_validate_api_rate_limits_zero() {
 
     let errors = config
         .validate()
-        .expect_err("zero API rate limits should be rejected");
+        .failed("zero API rate limits should be rejected");
     assert!(errors
         .iter()
         .any(|e| e.contains("request_rate_limits.read.max_requests")));
@@ -1719,7 +1724,7 @@ fn test_validate_database_url_is_mutually_exclusive_with_split_database_fields()
 
     let errors = config
         .validate()
-        .expect_err("database URL and split fields must be exclusive");
+        .failed("database URL and split fields must be exclusive");
     assert!(errors
         .iter()
         .any(|e| e.contains("database.url is mutually exclusive")));
@@ -1733,7 +1738,7 @@ fn test_validate_redis_url_is_mutually_exclusive_with_split_redis_fields() {
 
     let errors = config
         .validate()
-        .expect_err("redis URL and split fields must be exclusive");
+        .failed("redis URL and split fields must be exclusive");
     assert!(errors
         .iter()
         .any(|e| e.contains("redis.url is mutually exclusive")));
@@ -1751,7 +1756,7 @@ fn test_validate_split_database_config_requires_all_fields() {
 
     let errors = config
         .validate()
-        .expect_err("incomplete split database config must fail");
+        .failed("incomplete split database config must fail");
     assert!(errors
         .iter()
         .any(|e| e.contains("database.password must be set")));
@@ -1769,7 +1774,7 @@ fn test_validate_split_redis_config_requires_host_and_port() {
 
     let errors = config
         .validate()
-        .expect_err("incomplete split redis config must fail");
+        .failed("incomplete split redis config must fail");
     assert!(errors
         .iter()
         .any(|e| e.contains("redis.port must be greater than 0")));
@@ -1781,7 +1786,7 @@ fn test_from_env_overrides_logging_filter_and_backtrace() {
         ("SYNCTV_LOGGING_FILTER", "info,synctv=debug"),
         ("SYNCTV_LOGGING_BACKTRACE", "true"),
     ]))
-    .expect("logging env overrides should parse");
+    .checked("logging env overrides should parse");
 
     assert_eq!(config.logging.filter.as_deref(), Some("info,synctv=debug"));
     assert!(config.logging.backtrace);
@@ -1790,7 +1795,7 @@ fn test_from_env_overrides_logging_filter_and_backtrace() {
 #[test]
 fn test_from_env_resolves_timezone_from_synctv_env() {
     let config = Config::from_env_map(&env_map(&[("SYNCTV_TIME_TIMEZONE", "Asia/Shanghai")]))
-        .expect("SYNCTV_TIME_TIMEZONE should resolve");
+        .checked("SYNCTV_TIME_TIMEZONE should resolve");
 
     assert_eq!(config.time.timezone, "Asia/Shanghai");
 }
@@ -1798,7 +1803,7 @@ fn test_from_env_resolves_timezone_from_synctv_env() {
 #[test]
 fn test_from_env_resolves_timezone_from_tz_fallback() {
     let config = Config::from_env_map(&env_map(&[("TZ", "America/New_York")]))
-        .expect("TZ fallback should resolve");
+        .checked("TZ fallback should resolve");
 
     assert_eq!(config.time.timezone, "America/New_York");
 }
@@ -1817,7 +1822,7 @@ fn test_management_tcp_endpoint_is_always_loopback() {
 #[test]
 fn test_default_management_unix_socket_path_uses_home_hidden_runtime_dir_on_macos() {
     let socket_path = default_management_unix_socket_path();
-    let home = user_home_dir().expect("macOS test environment should expose HOME");
+    let home = user_home_dir().checked("macOS test environment should expose HOME");
     assert_eq!(
         socket_path,
         home.join(".synctv").join("run").join("synctv.sock")
@@ -1828,7 +1833,7 @@ fn test_default_management_unix_socket_path_uses_home_hidden_runtime_dir_on_maco
 #[test]
 fn test_default_data_dir_uses_home_hidden_dir_on_macos() {
     let data_dir = default_data_dir();
-    let home = user_home_dir().expect("macOS test environment should expose HOME");
+    let home = user_home_dir().checked("macOS test environment should expose HOME");
 
     assert_eq!(data_dir, home.join(".synctv"));
 }
@@ -1836,7 +1841,7 @@ fn test_default_data_dir_uses_home_hidden_dir_on_macos() {
 #[cfg(target_os = "macos")]
 #[test]
 fn test_default_config_search_paths_use_home_hidden_config_dir_on_macos() {
-    let home = user_home_dir().expect("macOS test environment should expose HOME");
+    let home = user_home_dir().checked("macOS test environment should expose HOME");
     let expected = [
         home.join(".synctv").join("synctv.yaml"),
         home.join(".synctv").join("synctv.yml"),
@@ -1858,7 +1863,7 @@ fn test_validate_management_tcp_requires_auth_token() {
 
     let errors = config
         .validate()
-        .expect_err("management tcp transport must reject missing auth token");
+        .failed("management tcp transport must reject missing auth token");
 
     assert!(errors
         .iter()
@@ -1881,22 +1886,22 @@ fn test_validate_management_unix_allows_empty_auth_token() {
 #[test]
 fn test_from_env_overrides_management_auth_token() {
     let config = Config::from_env_map(&env_map(&[("SYNCTV_MANAGEMENT_AUTH_TOKEN", "mgmt-secret")]))
-        .expect("management auth token env override should parse");
+        .checked("management auth token env override should parse");
 
     assert_eq!(config.management.auth_token, "mgmt-secret");
 }
 
 #[test]
 fn test_from_env_loads_management_auth_token_file() {
-    let temp_dir = tempdir().expect("temp dir should be created");
+    let temp_dir = tempdir().checked("temp dir should be created");
     let token_path = temp_dir.path().join("management.token");
     std::fs::write(&token_path, "mgmt-file-secret\n")
-        .expect("management token file should be written");
+        .checked("management token file should be written");
     let config = Config::from_env_map(&env_map(&[(
         "SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE",
-        token_path.to_str().expect("token path should be utf-8"),
+        token_path.to_str().checked("token path should be utf-8"),
     )]))
-    .expect("management auth token file env override should parse");
+    .checked("management auth token file env override should parse");
 
     assert_eq!(config.management.auth_token, "mgmt-file-secret");
 }
@@ -1910,7 +1915,7 @@ fn test_validate_webauthn_requires_rp_id_and_origin_when_enabled() {
 
     let errors = config
         .validate()
-        .expect_err("enabled WebAuthn must require relying-party identity");
+        .failed("enabled WebAuthn must require relying-party identity");
 
     assert!(errors.iter().any(|error| error.contains("webauthn.rp_id")));
     assert!(errors
@@ -1927,7 +1932,7 @@ fn test_validate_webauthn_rejects_origin_with_path_query_or_fragment() {
 
     let errors = config
         .validate()
-        .expect_err("WebAuthn origins must be bare origins");
+        .failed("WebAuthn origins must be bare origins");
 
     assert!(errors
         .iter()
@@ -1959,7 +1964,7 @@ fn test_validate_webauthn_requires_redis_in_cluster_mode() {
 
     let errors = config
         .validate()
-        .expect_err("clustered WebAuthn must use shared challenge storage");
+        .failed("clustered WebAuthn must use shared challenge storage");
 
     assert!(errors.iter().any(|error| {
         error.contains("WebAuthn/passkey requires Redis for challenge state in cluster mode")
@@ -1968,10 +1973,10 @@ fn test_validate_webauthn_requires_redis_in_cluster_mode() {
 
 #[test]
 fn test_from_env_loads_top_level_secret_file_overrides() {
-    let temp_dir = tempdir().expect("temp dir should be created");
+    let temp_dir = tempdir().checked("temp dir should be created");
     let write_secret = |name: &str, value: &str| -> std::path::PathBuf {
         let path = temp_dir.path().join(name);
-        std::fs::write(&path, format!("{value}\n")).expect("secret file should be written");
+        std::fs::write(&path, format!("{value}\n")).checked("secret file should be written");
         path
     };
     let jwt_secret = write_secret("jwt.secret", "jwt-secret-from-env-file");
@@ -1999,54 +2004,54 @@ fn test_from_env_loads_top_level_secret_file_overrides() {
     let config = Config::from_env_map(&env_map(&[
         (
             "SYNCTV_JWT_SECRET_FILE",
-            jwt_secret.to_str().expect("utf-8 path"),
+            jwt_secret.to_str().checked("utf-8 path"),
         ),
         (
             "SYNCTV_CLUSTER_SECRET_FILE",
-            cluster_secret.to_str().expect("utf-8 path"),
+            cluster_secret.to_str().checked("utf-8 path"),
         ),
         (
             "SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE",
-            credential_key.to_str().expect("utf-8 path"),
+            credential_key.to_str().checked("utf-8 path"),
         ),
         (
             "SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE",
-            opaque_secret.to_str().expect("utf-8 path"),
+            opaque_secret.to_str().checked("utf-8 path"),
         ),
         (
             "SYNCTV_METRICS_AUTH_BEARER_TOKEN_FILE",
-            metrics_bearer.to_str().expect("utf-8 path"),
+            metrics_bearer.to_str().checked("utf-8 path"),
         ),
         (
             "SYNCTV_METRICS_AUTH_BASIC_PASSWORD_FILE",
-            metrics_password.to_str().expect("utf-8 path"),
+            metrics_password.to_str().checked("utf-8 path"),
         ),
         (
             "SYNCTV_DATABASE_URL_FILE",
-            database_url.to_str().expect("utf-8 path"),
+            database_url.to_str().checked("utf-8 path"),
         ),
         (
             "SYNCTV_DATABASE_PASSWORD_FILE",
-            database_password.to_str().expect("utf-8 path"),
+            database_password.to_str().checked("utf-8 path"),
         ),
         (
             "SYNCTV_REDIS_URL_FILE",
-            redis_url.to_str().expect("utf-8 path"),
+            redis_url.to_str().checked("utf-8 path"),
         ),
         (
             "SYNCTV_REDIS_PASSWORD_FILE",
-            redis_password.to_str().expect("utf-8 path"),
+            redis_password.to_str().checked("utf-8 path"),
         ),
         (
             "SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE",
-            chat_upload_token_secret.to_str().expect("utf-8 path"),
+            chat_upload_token_secret.to_str().checked("utf-8 path"),
         ),
         (
             "SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE",
-            root_password.to_str().expect("utf-8 path"),
+            root_password.to_str().checked("utf-8 path"),
         ),
     ]))
-    .expect("secret file env overrides should parse");
+    .checked("secret file env overrides should parse");
 
     assert_eq!(config.jwt.secret, "jwt-secret-from-env-file");
     assert_eq!(config.cluster.secret, "cluster-secret-from-env-file");
@@ -2083,20 +2088,20 @@ fn test_from_env_loads_top_level_secret_file_overrides() {
 #[test]
 fn test_from_env_overrides_cluster_stream_max_length() {
     let config = Config::from_env_map(&env_map(&[("SYNCTV_CLUSTER_STREAM_MAX_LENGTH", "25000")]))
-        .expect("cluster stream max length env override should parse");
+        .checked("cluster stream max length env override should parse");
 
     assert_eq!(config.cluster.stream_max_length, 25_000);
 }
 
 #[test]
 fn test_from_env_builds_database_and_redis_urls_from_split_config() {
-    let temp_dir = tempdir().expect("temp dir should be created");
+    let temp_dir = tempdir().checked("temp dir should be created");
     let database_password = temp_dir.path().join("database.password");
     let redis_password = temp_dir.path().join("redis.password");
     std::fs::write(&database_password, "pg-password\n")
-        .expect("database password file should be written");
+        .checked("database password file should be written");
     std::fs::write(&redis_password, "redis-password\n")
-        .expect("redis password file should be written");
+        .checked("redis password file should be written");
 
     let config = Config::from_env_map(&env_map(&[
         ("SYNCTV_DATABASE_HOST", "db.example.com"),
@@ -2104,7 +2109,7 @@ fn test_from_env_builds_database_and_redis_urls_from_split_config() {
         ("SYNCTV_DATABASE_USERNAME", "synctv"),
         (
             "SYNCTV_DATABASE_PASSWORD_FILE",
-            database_password.to_str().expect("utf-8 path"),
+            database_password.to_str().checked("utf-8 path"),
         ),
         ("SYNCTV_DATABASE_NAME", "synctv_prod"),
         ("SYNCTV_REDIS_HOST", "redis.example.com"),
@@ -2112,11 +2117,11 @@ fn test_from_env_builds_database_and_redis_urls_from_split_config() {
         ("SYNCTV_REDIS_USERNAME", "cache-user"),
         (
             "SYNCTV_REDIS_PASSWORD_FILE",
-            redis_password.to_str().expect("utf-8 path"),
+            redis_password.to_str().checked("utf-8 path"),
         ),
         ("SYNCTV_REDIS_DATABASE", "7"),
     ]))
-    .expect("split database env config should parse");
+    .checked("split database env config should parse");
 
     assert!(config.database.url.is_empty());
     assert_eq!(config.database.username, "synctv");
@@ -2133,7 +2138,7 @@ fn test_from_env_builds_database_and_redis_urls_from_split_config() {
 
 #[test]
 fn test_redis_split_env_overrides_file_url() {
-    let temp_dir = tempdir().expect("temp dir should be created");
+    let temp_dir = tempdir().checked("temp dir should be created");
     let config_path = temp_dir.path().join("synctv.yaml");
     std::fs::write(
         &config_path,
@@ -2146,10 +2151,10 @@ jwt:
   secret: "12345678901234567890123456789012"
 "#,
     )
-    .expect("config file should be written");
+    .checked("config file should be written");
 
     let config = Config::load_with_env_map(
-        Some(config_path.to_str().expect("utf-8 path")),
+        Some(config_path.to_str().checked("utf-8 path")),
         &env_map(&[
             ("SYNCTV_REDIS_HOST", "redis.example.com"),
             ("SYNCTV_REDIS_PORT", "6380"),
@@ -2157,7 +2162,7 @@ jwt:
             ("SYNCTV_REDIS_DATABASE", "7"),
         ]),
     )
-    .expect("split redis env config should replace file URL");
+    .checked("split redis env config should replace file URL");
 
     assert_eq!(
         config.redis.url,
@@ -2171,11 +2176,11 @@ jwt:
 
 #[test]
 fn test_redis_url_partial_env_overrides_preserve_configured_endpoint() {
-    let temp_dir = tempdir().expect("temp dir should be created");
+    let temp_dir = tempdir().checked("temp dir should be created");
     let config_path = temp_dir.path().join("synctv.yaml");
     let redis_password = temp_dir.path().join("redis.password");
     std::fs::write(&redis_password, "redis-password\n")
-        .expect("redis password file should be written");
+        .checked("redis password file should be written");
     std::fs::write(
         &config_path,
         r#"
@@ -2187,19 +2192,19 @@ jwt:
   secret: "12345678901234567890123456789012"
 "#,
     )
-    .expect("config file should be written");
+    .checked("config file should be written");
 
     let config = Config::load_with_env_map(
-        Some(config_path.to_str().expect("utf-8 path")),
+        Some(config_path.to_str().checked("utf-8 path")),
         &env_map(&[
             (
                 "SYNCTV_REDIS_PASSWORD_FILE",
-                redis_password.to_str().expect("utf-8 path"),
+                redis_password.to_str().checked("utf-8 path"),
             ),
             ("SYNCTV_REDIS_DATABASE", "7"),
         ]),
     )
-    .expect("partial redis env config should update the configured URL");
+    .checked("partial redis env config should update the configured URL");
 
     assert!(config.redis.host.is_empty());
     assert_eq!(
@@ -2218,7 +2223,7 @@ fn test_validate_rejects_unix_management_transport_on_unsupported_platform() {
 
     let errors = config
         .validate()
-        .expect_err("unix management transport must be rejected on unsupported platforms");
+        .failed("unix management transport must be rejected on unsupported platforms");
 
     assert!(errors.iter().any(|error| {
         error.contains("management.transport=unix")
@@ -2255,16 +2260,16 @@ fn test_from_file_supports_yaml_yml_json_and_toml() {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time before unix epoch")
+                .checked("system time before unix epoch")
                 .as_nanos(),
             extension
         );
         let path = std::env::temp_dir().join(unique);
-        std::fs::write(&path, contents).expect("write config fixture");
+        std::fs::write(&path, contents).checked("write config fixture");
 
         let config =
-            Config::load_with_env_map(Some(path.to_str().expect("utf-8 path")), &HashMap::new())
-                .expect("supported config format should load");
+            Config::load_with_env_map(Some(path.to_str().checked("utf-8 path")), &HashMap::new())
+                .checked("supported config format should load");
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(config.jwt.secret, secret);
@@ -2303,18 +2308,18 @@ fn test_from_file_rejects_unknown_keys_for_json_and_toml() {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time before unix epoch")
+                .checked("system time before unix epoch")
                 .as_nanos(),
             extension
         );
         let path = std::env::temp_dir().join(unique);
-        std::fs::write(&path, contents).expect("write config fixture");
+        std::fs::write(&path, contents).checked("write config fixture");
 
         let unknown_keys =
-            Config::collect_unknown_config_file_keys(path.to_str().expect("utf-8 path"))
-                .expect("unknown keys should be collected");
-        let error = Config::from_file(path.to_str().expect("utf-8 path"))
-            .expect_err("unknown config keys must fail fast");
+            Config::collect_unknown_config_file_keys(path.to_str().checked("utf-8 path"))
+                .checked("unknown keys should be collected");
+        let error = Config::from_file(path.to_str().checked("utf-8 path"))
+            .failed("unknown config keys must fail fast");
         let _ = std::fs::remove_file(&path);
 
         assert!(
@@ -2335,7 +2340,7 @@ fn test_from_file_rejects_unsupported_extension() {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time before unix epoch")
+            .checked("system time before unix epoch")
             .as_nanos()
     );
     let path = std::env::temp_dir().join(unique);
@@ -2343,10 +2348,10 @@ fn test_from_file_rejects_unsupported_extension() {
         &path,
         "[jwt]\nsecret = \"12345678901234567890123456789012\"\n",
     )
-    .expect("write config");
+    .checked("write config");
 
-    let error = Config::from_file(path.to_str().expect("utf-8 path"))
-        .expect_err("unsupported extension must fail");
+    let error = Config::from_file(path.to_str().checked("utf-8 path"))
+        .failed("unsupported extension must fail");
     let _ = std::fs::remove_file(&path);
 
     assert!(
@@ -2365,7 +2370,7 @@ fn test_validate_rejects_invalid_logging_filter() {
 
     let errors = config
         .validate()
-        .expect_err("invalid logging.filter must fail validation");
+        .failed("invalid logging.filter must fail validation");
 
     assert!(errors.iter().any(|error| error.contains("logging.filter")));
 }
@@ -2391,7 +2396,7 @@ fn test_from_env_overrides_livestream_extended_runtime_limits() {
         ("SYNCTV_LIVESTREAM_FLV_WRITE_TIMEOUT_SECONDS", "45"),
         ("SYNCTV_LIVESTREAM_PUBLIC_RTMP_HOST", "stream.example.com"),
     ]))
-    .expect("livestream env overrides should parse");
+    .checked("livestream env overrides should parse");
 
     assert_eq!(config.livestream.hls_memory_max_mb, 768);
     assert_eq!(
@@ -2424,7 +2429,7 @@ fn test_from_env_overrides_file_s3_storage() {
             r#"{"s3_public":{"type":"s3","s3":{"endpoint":"https://s3.example.com","bucket":"synctv-files","region":"auto","base_path":"/synctv/files","access_key_id":"access-key","secret_access_key":"secret-key","public_base_url":"https://cdn.example.com/files","upload_expires_seconds":600}}}"#,
         ),
     ]))
-    .expect("file storage S3 env overrides should parse");
+    .checked("file storage S3 env overrides should parse");
 
     assert_eq!(config.file_storage.default_backend, "s3_public");
     assert_eq!(config.file_storage.backend_for_chat_images(), "s3_public");
@@ -2440,7 +2445,7 @@ fn test_from_env_overrides_file_s3_storage() {
         .file_storage
         .backends
         .get("s3_public")
-        .expect("s3 backend")
+        .checked("s3 backend")
         .s3;
     assert_eq!(s3.endpoint, "https://s3.example.com");
     assert_eq!(s3.bucket, "synctv-files");
@@ -2458,15 +2463,20 @@ fn test_from_env_overrides_file_s3_storage() {
 #[test]
 fn test_file_storage_backend_accepts_disabled_database_and_s3() {
     assert_eq!(
-        "disabled".parse::<FileStorageBackendType>().unwrap(),
+        "disabled"
+            .parse::<FileStorageBackendType>()
+            .checked("operation should succeed"),
         FileStorageBackendType::Disabled
     );
     assert_eq!(
-        "database".parse::<FileStorageBackendType>().unwrap(),
+        "database"
+            .parse::<FileStorageBackendType>()
+            .checked("operation should succeed"),
         FileStorageBackendType::Database
     );
     assert_eq!(
-        "s3".parse::<FileStorageBackendType>().unwrap(),
+        "s3".parse::<FileStorageBackendType>()
+            .checked("operation should succeed"),
         FileStorageBackendType::S3
     );
     assert!("metadata".parse::<FileStorageBackendType>().is_err());
@@ -2485,7 +2495,7 @@ fn test_validate_file_storage_unreferenced_retention_floor() {
     let mut config = valid_prod_config();
     config.file_storage.unreferenced_object_retention_seconds = 3599;
 
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
 
     assert!(
         errors
@@ -2511,7 +2521,7 @@ fn test_from_env_overrides_local_media_provider_timeouts() {
         ("SYNCTV_MEDIA_PROVIDERS_EMBY_REQUEST_TIMEOUT_SECONDS", "60"),
         ("SYNCTV_MEDIA_PROVIDERS_EMBY_CONNECT_TIMEOUT_SECONDS", "10"),
     ]))
-    .expect("local media provider env overrides should parse");
+    .checked("local media provider env overrides should parse");
 
     assert_eq!(config.media_providers.alist.request_timeout_seconds, 40);
     assert_eq!(config.media_providers.alist.connect_timeout_seconds, 8);
@@ -2531,7 +2541,7 @@ fn test_validate_local_media_provider_timeouts() {
 
     let errors = config
         .validate()
-        .expect_err("invalid local provider timeout config must fail validation");
+        .failed("invalid local provider timeout config must fail validation");
 
     assert!(errors
         .iter()
@@ -2610,7 +2620,7 @@ fn test_public_rtmp_host_formats_ipv6_bind_host_for_urls() {
 fn test_validate_livestream_zero_timeout() {
     let mut config = valid_prod_config();
     config.livestream.stream_timeout_seconds = 0;
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(errors.iter().any(|e| e.contains("stream_timeout_seconds")));
 }
 
@@ -2658,7 +2668,7 @@ fn test_validate_cluster_enabled_requires_redis() {
     config.cluster.enabled = true;
     config.redis.url = String::new();
     // cluster.enabled=true with no Redis URL must produce an error
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(
         errors
             .iter()
@@ -2708,7 +2718,7 @@ fn test_validate_cluster_enabled_with_sentinel_rejects_k8s_lease() {
             ("POD_NAME", "synctv-0"),
             ("POD_NAMESPACE", "default"),
         ]))
-        .unwrap_err();
+        .failed("operation should fail");
 
     assert!(
         errors
@@ -2729,7 +2739,7 @@ fn test_validate_cluster_enabled_with_sentinel_rejects_redis_leader_election() {
     config.cluster.leader_election_mode = ClusterLeaderElectionMode::Redis;
     config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
 
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(
         errors
             .iter()
@@ -2761,7 +2771,7 @@ fn test_validate_metrics_endpoint_requires_bearer_token_when_enabled() {
 
     let errors = config
         .validate()
-        .expect_err("metrics endpoint must fail closed when enabled without auth");
+        .failed("metrics endpoint must fail closed when enabled without auth");
 
     assert!(
         errors.iter().any(|e| {
@@ -2810,7 +2820,7 @@ fn test_validate_metrics_endpoint_requires_basic_password_when_basic_auth_enable
 
     let errors = config
         .validate()
-        .expect_err("metrics basic auth must reject missing password");
+        .failed("metrics basic auth must reject missing password");
 
     assert!(
         errors
@@ -2832,7 +2842,7 @@ fn test_validate_metrics_tls_requires_cert_and_key_paths() {
 
     let errors = config
         .validate()
-        .expect_err("metrics TLS must require cert and key paths");
+        .failed("metrics TLS must require cert and key paths");
 
     assert!(
         errors.iter().any(|e| e.contains("metrics.tls.cert_path")),
@@ -2850,7 +2860,7 @@ fn test_validate_cluster_enabled_requires_cluster_secret() {
     let mut config = valid_prod_config();
     config.cluster.enabled = true;
     config.cluster.secret = String::new(); // clear the secret
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(
         errors
             .iter()
@@ -2889,7 +2899,7 @@ fn test_validate_cluster_secret_too_short_rejected() {
     let mut config = valid_prod_config();
     config.cluster.enabled = true;
     config.cluster.secret = "short".to_string();
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
     assert!(
         errors
             .iter()
@@ -2901,7 +2911,7 @@ fn test_validate_cluster_secret_too_short_rejected() {
 #[test]
 fn test_from_env_rejects_unknown_cluster_discovery_mode() {
     let error = Config::from_env_map(&env_map(&[("SYNCTV_CLUSTER_DISCOVERY_MODE", "mystery")]))
-        .expect_err("invalid discovery mode override must fail closed");
+        .failed("invalid discovery mode override must fail closed");
 
     assert!(
         error.to_string().contains("SYNCTV_CLUSTER_DISCOVERY_MODE")
@@ -2918,7 +2928,7 @@ fn test_from_env_rejects_unknown_cluster_leader_election_mode() {
         "SYNCTV_CLUSTER_LEADER_ELECTION_MODE",
         "mystery",
     )]))
-    .expect_err("invalid leader election mode override must fail closed");
+    .failed("invalid leader election mode override must fail closed");
 
     assert!(
         error
@@ -2937,7 +2947,9 @@ fn test_validate_k8s_dns_requires_env_vars_in_cluster_mode() {
     config.cluster.enabled = true;
     config.cluster.discovery_mode = ClusterDiscoveryMode::K8sDns;
 
-    let errors = config.validate_with_env_map(&HashMap::new()).unwrap_err();
+    let errors = config
+        .validate_with_env_map(&HashMap::new())
+        .failed("operation should fail");
 
     assert!(
         errors
@@ -2965,7 +2977,9 @@ fn test_validate_k8s_lease_requires_env_vars_in_cluster_mode() {
     config.cluster.enabled = true;
     config.cluster.leader_election_mode = ClusterLeaderElectionMode::K8sLease;
 
-    let errors = config.validate_with_env_map(&HashMap::new()).unwrap_err();
+    let errors = config
+        .validate_with_env_map(&HashMap::new())
+        .failed("operation should fail");
 
     assert!(
         errors
@@ -3005,7 +3019,7 @@ fn test_validate_k8s_dns_requires_compiled_k8s_support() {
             ("HEADLESS_SERVICE_NAME", "synctv-headless"),
             ("POD_NAMESPACE", "default"),
         ]))
-        .unwrap_err();
+        .failed("operation should fail");
 
     assert!(
         errors
@@ -3030,7 +3044,7 @@ fn test_validate_k8s_lease_requires_compiled_k8s_support() {
             ("POD_NAME", "synctv-0"),
             ("POD_NAMESPACE", "default"),
         ]))
-        .unwrap_err();
+        .failed("operation should fail");
 
     assert!(
         errors
@@ -3046,7 +3060,7 @@ fn test_validate_shared_file_hls_storage_requires_storage_path() {
     config.livestream.hls_storage_backend = HlsStorageBackend::SharedFile;
     config.livestream.hls_storage_path = String::new();
 
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
 
     assert!(
         errors
@@ -3064,7 +3078,7 @@ fn test_validate_oss_hls_storage_requires_required_fields() {
     config.livestream.hls_storage_backend = HlsStorageBackend::Oss;
     config.livestream.hls_oss = HlsOssConfig::default();
 
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
 
     assert!(
         errors.iter().any(|e| e.contains("hls_oss.endpoint")),
@@ -3104,7 +3118,7 @@ fn test_validate_file_s3_storage_requires_required_fields() {
         },
     );
 
-    let errors = config.validate().unwrap_err();
+    let errors = config.validate().failed("operation should fail");
 
     assert!(
         errors

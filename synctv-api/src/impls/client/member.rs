@@ -106,7 +106,7 @@ fn usize_to_i64_api(value: usize, field: &'static str) -> Result<i64, ApiError> 
 
 fn room_join_review_row_to_proto(
     row: &RoomJoinReviewRecord,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::RoomJoinReview, ApiError> {
     Ok(synctv_proto::client::RoomJoinReview {
         id: public_id_codec
@@ -730,18 +730,28 @@ impl crate::impls::room_members_snapshot::RoomMembersSnapshotService for ClientA
 mod tests {
     use super::{proto_room_member_list_sort_by, proto_sort_direction};
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn api_ok<T>(result: Result<T, crate::impls::ApiError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("{error:?}")))
+    }
+
     #[test]
-    fn room_member_query_enum_mappers_reject_unknown_values_and_preserve_defaults() {
+    fn room_member_query_enum_mappers_reject_unknown_values_and_preserve_defaults() -> TestResult {
         assert_eq!(
-            proto_room_member_list_sort_by(
+            api_ok(proto_room_member_list_sort_by(
                 synctv_proto::client::RoomMemberListSortBy::Unspecified as i32
-            )
-            .expect("unspecified room member sort should be accepted"),
+            ))?,
             synctv_core::models::RoomMemberListSortBy::JoinedAt
         );
         assert_eq!(
-            proto_sort_direction(synctv_proto::client::SortDirection::Unspecified as i32)
-                .expect("unspecified sort direction should be accepted"),
+            api_ok(proto_sort_direction(
+                synctv_proto::client::SortDirection::Unspecified as i32
+            ))?,
             synctv_core::models::SortDirection::Asc
         );
 
@@ -753,5 +763,6 @@ mod tests {
             proto_sort_direction(99),
             Err(crate::impls::ApiError::InvalidInput(message)) if message.contains("sort direction")
         ));
+        Ok(())
     }
 }

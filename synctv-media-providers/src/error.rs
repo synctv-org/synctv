@@ -48,9 +48,6 @@ pub enum ProviderClientError {
     #[error("Invalid header value: {0}")]
     InvalidHeader(String),
 
-    #[error("Not implemented: {0}")]
-    NotImplemented(String),
-
     #[error("Response too large ({size} bytes, max {MAX_RESPONSE_SIZE})")]
     ResponseTooLarge { size: u64 },
 }
@@ -326,7 +323,8 @@ mod tests {
 
     #[test]
     fn test_error_from_serde_json() {
-        let json_err = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid json")
+            .expect_err("invalid JSON should fail");
         let err: ProviderClientError = json_err.into();
         assert!(matches!(err, ProviderClientError::Parse(_)));
     }

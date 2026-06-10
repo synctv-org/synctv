@@ -83,15 +83,6 @@ impl SharedStateProfile {
     }
 
     #[must_use]
-    pub fn from_runtime(
-        shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
-        key_prefix: impl Into<String>,
-        shared_state_required: bool,
-    ) -> Self {
-        Self::for_cluster_runtime(shared_runtime, key_prefix, shared_state_required)
-    }
-
-    #[must_use]
     pub const fn state_mode(&self) -> SharedStateMode {
         self.state_mode
     }
@@ -143,7 +134,7 @@ mod tests {
         let profile = SharedStateProfile::new(SharedStateMode::SharedBestEffort, None, "test:");
 
         let Err(error) = profile.best_effort_shared_runtime("single-use test state") else {
-            panic!("inconsistent best-effort profile should return an error");
+            std::panic::panic_any("inconsistent best-effort profile should return an error");
         };
 
         assert!(

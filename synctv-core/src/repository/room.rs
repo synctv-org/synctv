@@ -134,6 +134,10 @@ fn count_i64_to_i32(count: i64) -> Result<i32> {
     })
 }
 
+fn required_count(count: Option<i64>, context: &'static str) -> Result<i64> {
+    count.ok_or_else(|| Error::Internal(format!("{context} count query returned NULL")))
+}
+
 impl RoomRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
@@ -856,17 +860,19 @@ impl RoomRepository {
 
     /// Get room member count.
     pub async fn get_member_count(&self, room_id: &RoomId) -> Result<i32> {
-        let count = sqlx::query_scalar!(
-            r"
+        let count = required_count(
+            sqlx::query_scalar!(
+                r"
             SELECT COUNT(*) as count
             FROM room_members rm
             WHERE rm.room_id = $1
             ",
-            room_id as &RoomId,
-        )
-        .fetch_one(&self.pool)
-        .await?
-        .unwrap_or(0);
+                room_id as &RoomId,
+            )
+            .fetch_one(&self.pool)
+            .await?,
+            "room member",
+        )?;
 
         count_i64_to_i32(count)
     }
@@ -880,16 +886,17 @@ impl RoomRepository {
         let limit = pagination.limit_i64()?;
         let offset = pagination.offset_i64()?;
 
-        // Get total count
-        let count = sqlx::query_scalar!(
-            "SELECT COUNT(*) as count
+        let count = required_count(
+            sqlx::query_scalar!(
+                "SELECT COUNT(*) as count
              FROM rooms
              WHERE created_by = $1 AND deleted_at IS NULL",
-            creator_id as &UserId,
-        )
-        .fetch_one(&self.pool)
-        .await?
-        .unwrap_or(0);
+                creator_id as &UserId,
+            )
+            .fetch_one(&self.pool)
+            .await?,
+            "rooms by creator",
+        )?;
 
         let rooms = sqlx::query_as!(
             RoomRow,
@@ -938,16 +945,17 @@ impl RoomRepository {
         let limit = pagination.limit_i64()?;
         let offset = pagination.offset_i64()?;
 
-        // Get total count
-        let count = sqlx::query_scalar!(
-            "SELECT COUNT(*) as count
+        let count = required_count(
+            sqlx::query_scalar!(
+                "SELECT COUNT(*) as count
              FROM rooms
              WHERE created_by = $1 AND deleted_at IS NULL",
-            creator_id as &UserId,
-        )
-        .fetch_one(&self.pool)
-        .await?
-        .unwrap_or(0);
+                creator_id as &UserId,
+            )
+            .fetch_one(&self.pool)
+            .await?,
+            "rooms by creator with count",
+        )?;
 
         let rows = sqlx::query!(
             r#"

@@ -732,6 +732,20 @@ impl EmailService {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    fn some<T>(value: Option<T>, context: &str) -> T {
+        match value {
+            Some(value) => value,
+            None => std::panic::panic_any(context.to_string()),
+        }
+    }
+
     #[derive(Clone)]
     struct TestEmailConfigProvider(Option<EmailConfig>);
 
@@ -742,7 +756,10 @@ mod tests {
     }
 
     fn test_service(config: Option<EmailConfig>) -> EmailService {
-        EmailService::new(Arc::new(TestEmailConfigProvider(config))).unwrap()
+        ok(
+            EmailService::new(Arc::new(TestEmailConfigProvider(config))),
+            "email service should build",
+        )
     }
 
     #[test]
@@ -824,16 +841,19 @@ mod tests {
             from_name: "SyncTV".to_string(),
             use_tls: false,
         };
-        service
-            .smtp_transport_for_config(&first)
-            .expect("first SMTP transport should build");
+        ok(
+            service.smtp_transport_for_config(&first),
+            "first SMTP transport should build",
+        );
         assert_eq!(
-            service
-                .smtp_transport
-                .read()
-                .as_ref()
-                .expect("transport should be cached")
-                .config,
+            some(
+                service
+                    .smtp_transport
+                    .read()
+                    .as_ref()
+                    .map(|cached| cached.config.clone()),
+                "transport should be cached",
+            ),
             first
         );
 
@@ -846,16 +866,19 @@ mod tests {
             from_name: "SyncTV Mail".to_string(),
             use_tls: false,
         };
-        service
-            .smtp_transport_for_config(&second)
-            .expect("second SMTP transport should build");
+        ok(
+            service.smtp_transport_for_config(&second),
+            "second SMTP transport should build",
+        );
         assert_eq!(
-            service
-                .smtp_transport
-                .read()
-                .as_ref()
-                .expect("transport should stay cached")
-                .config,
+            some(
+                service
+                    .smtp_transport
+                    .read()
+                    .as_ref()
+                    .map(|cached| cached.config.clone()),
+                "transport should stay cached",
+            ),
             second
         );
     }
@@ -870,7 +893,7 @@ mod tests {
                     "Email delivery is temporarily unavailable. Please try again later."
                 );
             }
-            other => panic!("expected ServiceUnavailable, got: {other:?}"),
+            other => std::panic::panic_any(format!("expected ServiceUnavailable, got: {other:?}")),
         }
     }
 }

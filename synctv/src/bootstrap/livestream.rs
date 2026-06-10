@@ -8,7 +8,7 @@ use crate::rtmp_auth;
 use crate::server;
 
 struct LivestreamRuntimeBindings {
-    publisher_registry: Arc<dyn synctv_livestream::relay::StreamRegistryTrait>,
+    publisher_registry: Arc<dyn synctv_livestream::StreamRegistryTrait>,
     user_stream_index: Arc<dyn rtmp_auth::UserStreamIndex>,
     #[cfg(test)]
     publisher_registry_shared: bool,
@@ -21,7 +21,7 @@ struct CoreRegistryConnectionRuntime {
 }
 
 #[async_trait::async_trait]
-impl synctv_livestream::relay::RegistryConnectionRuntime for CoreRegistryConnectionRuntime {
+impl synctv_livestream::RegistryConnectionRuntime for CoreRegistryConnectionRuntime {
     async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
         self.runtime.snapshot().await
     }
@@ -29,10 +29,10 @@ impl synctv_livestream::relay::RegistryConnectionRuntime for CoreRegistryConnect
 
 fn publisher_registry_from_shared_state_profile(
     profile: &SharedStateProfile,
-) -> Result<(Arc<dyn synctv_livestream::relay::StreamRegistryTrait>, bool)> {
+) -> Result<(Arc<dyn synctv_livestream::StreamRegistryTrait>, bool)> {
     match profile.state_mode() {
         SharedStateMode::SharedRequired => Ok((
-            synctv_livestream::relay::shared_stream_registry(
+            synctv_livestream::shared_stream_registry(
                 Arc::new(CoreRegistryConnectionRuntime {
                     runtime: profile.require_shared_runtime("livestream publisher registry")?,
                 }),
@@ -41,7 +41,7 @@ fn publisher_registry_from_shared_state_profile(
             true,
         )),
         SharedStateMode::SharedBestEffort | SharedStateMode::LocalOnly => {
-            Ok((synctv_livestream::relay::local_stream_registry(), false))
+            Ok((synctv_livestream::local_stream_registry(), false))
         }
     }
 }
@@ -82,10 +82,9 @@ pub async fn init_livestream(
     shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     hls_cleanup_leader: Arc<dyn synctv_core::service::LeaderCheck>,
     node_id: &str,
-    cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(
     Option<server::LivestreamState>,
-    Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
+    Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     Vec<tokio::task::JoinHandle<()>>,
 )> {
     info!("Initializing livestream infrastructure...");
@@ -100,7 +99,7 @@ pub async fn init_livestream(
     let user_stream_index = runtime.user_stream_index.clone();
 
     // Shared tracker for user->stream mapping (kick-on-user-ban)
-    let user_stream_tracker = Arc::new(synctv_livestream::api::StreamTracker::new());
+    let user_stream_tracker = Arc::new(synctv_livestream::StreamTracker::new());
 
     // Stream lifecycle event channel (app-level logging)
     let (stream_lifecycle_tx, mut stream_lifecycle_rx) =
@@ -167,7 +166,7 @@ pub async fn init_livestream(
         is_restarting: Some(livestream_server.restarting_flag()),
         user_stream_index,
     });
-    let rtmp_auth: Arc<dyn synctv_livestream::AuthCallback> = Arc::new(rtmp_auth_impl);
+    let rtmp_auth: Arc<dyn synctv_xiu::rtmp::auth::AuthCallback> = Arc::new(rtmp_auth_impl);
 
     // One-shot facade: start all xiu components
     let handle = livestream_server
@@ -184,12 +183,6 @@ pub async fn init_livestream(
     });
 
     let mut background_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-
-    // Start periodic cleanup of stale stream tracker entries after all fallible
-    // startup work succeeds so the handle is always returned for shutdown.
-    let tracker_cleanup_handle =
-        user_stream_tracker.start_periodic_cleanup(std::time::Duration::from_mins(1), cancel);
-    background_handles.push(tracker_cleanup_handle);
 
     let lifecycle_handle = tokio::spawn(async move {
         while let Ok(event) = stream_lifecycle_rx.recv().await {
@@ -232,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_build_livestream_runtime_bindings_without_runtime_uses_local_backends() {
-        let profile = SharedStateProfile::from_runtime(None, "test:", false);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "test:", false);
 
         let runtime = build_livestream_runtime_bindings(&profile)
             .expect("local-only profile should build local livestream runtime");
@@ -267,7 +260,7 @@ mod tests {
 
     #[test]
     fn test_build_livestream_runtime_bindings_requires_shared_runtime_in_cluster_mode() {
-        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
 
         let Err(error) = build_livestream_runtime_bindings(&profile) else {
             panic!("cluster profile without runtime must be rejected");
@@ -304,7 +297,6 @@ mod tests {
             runtime: Option<Arc<dyn RedisConnectionRuntime>>,
             hls_cleanup_leader: Arc<dyn synctv_core::service::LeaderCheck>,
             node_id: &str,
-            cancel: tokio_util::sync::CancellationToken,
         ) {
             std::mem::drop(init_livestream(
                 config,
@@ -312,7 +304,6 @@ mod tests {
                 runtime,
                 hls_cleanup_leader,
                 node_id,
-                cancel,
             ));
         }
 

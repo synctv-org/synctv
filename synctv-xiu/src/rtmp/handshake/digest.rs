@@ -15,6 +15,12 @@ pub struct DigestProcessor {
     key: BytesMut,
 }
 
+struct HandshakeDigestParts {
+    bytes_before_digest: BytesMut,
+    digest: BytesMut,
+    bytes_after_digest: BytesMut,
+}
+
 impl DigestProcessor {
     #[must_use]
     pub const fn new(data: BytesMut, key: BytesMut) -> Self {
@@ -24,7 +30,6 @@ impl DigestProcessor {
         }
     }
 
-    /* return validate digest and schema version*/
     pub fn read_digest(&mut self) -> Result<(BytesMut, SchemaVersion), DigestError> {
         if let Ok(digest) = self.generate_and_validate(SchemaVersion::Schema0) {
             return Ok((digest, SchemaVersion::Schema0));
@@ -35,21 +40,22 @@ impl DigestProcessor {
     }
 
     pub fn generate_and_fill_digest(&mut self) -> Result<Vec<u8>, DigestError> {
-        let (left_part, _, right_part) = self.cook_raw_message(SchemaVersion::Schema0)?;
-        let raw_message = [left_part.clone(), right_part.clone()].concat();
+        let parts = self.cook_raw_message(SchemaVersion::Schema0)?;
+        let raw_message = [
+            parts.bytes_before_digest.clone(),
+            parts.bytes_after_digest.clone(),
+        ]
+        .concat();
         let computed_digest = self.make_digest(&raw_message)?;
 
-        let result = [left_part, computed_digest, right_part].concat();
+        let result = [
+            parts.bytes_before_digest,
+            computed_digest,
+            parts.bytes_after_digest,
+        ]
+        .concat();
 
         Ok(result)
-    }
-
-    pub fn generate_digest(&mut self) -> Result<BytesMut, DigestError> {
-        let (left_part, _, right_part) = self.cook_raw_message(SchemaVersion::Schema0)?;
-        let raw_message = [left_part, right_part].concat();
-        let digest = self.make_digest(&raw_message)?;
-
-        Ok(digest)
     }
 
     fn find_digest_offset(&self, version: &SchemaVersion) -> Result<usize, DigestError> {
@@ -74,41 +80,30 @@ impl DigestProcessor {
                 digest_offset %= 728;
                 digest_offset += 12;
             }
-            SchemaVersion::Unknown => {
-                return Err(DigestError {
-                    value: DigestErrorValue::UnknowSchema,
-                });
-            }
         }
 
         Ok(digest_offset)
     }
-    /*
-      +-----------------------------------------------------------+
-      |                     764 bytes                             |
-    * +--------------+-----------------------+--------------------+
-    * |   left part  | digest data (32 bytes)|     right part     |
-    * +--------------+-----------------------+--------------------+
-    *                |
-                     /
-                     digest offset
-        pice together the left part and right part to get the raw message.
-     */
     fn cook_raw_message(
         &mut self,
         version: SchemaVersion,
-    ) -> Result<(BytesMut, BytesMut, BytesMut), DigestError> {
+    ) -> Result<HandshakeDigestParts, DigestError> {
         let digest_offset: usize = self.find_digest_offset(&version)?;
 
         let mut new_reader = BytesReader::new(self.reader.get_remaining_bytes());
 
-        let left_part = new_reader.read_bytes(digest_offset)?;
-        let digest_data = new_reader.read_bytes(define::RTMP_DIGEST_LENGTH)?;
-        let right_part = new_reader.extract_remaining_bytes();
+        let bytes_before_digest = new_reader.read_bytes(digest_offset)?;
+        let digest = new_reader.read_bytes(define::RTMP_DIGEST_LENGTH)?;
+        let bytes_after_digest = new_reader.extract_remaining_bytes();
 
-        Ok((left_part, digest_data, right_part))
+        Ok(HandshakeDigestParts {
+            bytes_before_digest,
+            digest,
+            bytes_after_digest,
+        })
     }
-    pub fn make_digest(&mut self, raw_message: &[u8]) -> Result<BytesMut, DigestError> {
+
+    pub fn make_digest(&self, raw_message: &[u8]) -> Result<BytesMut, DigestError> {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.key[..]).map_err(|_| DigestError {
             value: DigestErrorValue::HmacInitError,
         })?;
@@ -117,7 +112,7 @@ impl DigestProcessor {
 
         if result.len() != define::RTMP_DIGEST_LENGTH {
             return Err(DigestError {
-                value: DigestErrorValue::DigestLengthNotCorrect,
+                value: DigestErrorValue::InvalidDigestLength,
             });
         }
 
@@ -128,13 +123,13 @@ impl DigestProcessor {
     }
 
     fn generate_and_validate(&mut self, version: SchemaVersion) -> Result<BytesMut, DigestError> {
-        let (left_part, digest_data, right_part) = self.cook_raw_message(version)?;
-        let raw_message = [left_part, right_part].concat();
+        let parts = self.cook_raw_message(version)?;
+        let raw_message = [parts.bytes_before_digest, parts.bytes_after_digest].concat();
 
         let computed_digest = self.make_digest(&raw_message)?;
 
-        if digest_data == computed_digest {
-            return Ok(digest_data);
+        if parts.digest == computed_digest {
+            return Ok(parts.digest);
         }
 
         Err(DigestError {

@@ -4,7 +4,8 @@
 
 use crate::{
     error::StreamResult,
-    grpc::{GrpcConnectionPool, GrpcStreamPuller, HlsProxyClient},
+    grpc::stream_puller::GrpcStreamPuller,
+    grpc::GrpcConnectionPool,
     livestream::managed_stream::{ManagedStream, StreamLifecycle},
     relay::registry_trait::StreamRegistryTrait,
 };
@@ -20,7 +21,7 @@ use tracing::{debug, error, info, warn};
 /// GOP cache is handled by xiu's `StreamHub` — when the gRPC puller publishes
 /// frames to the local `StreamHub`, and a new subscriber joins, `StreamHub`
 /// automatically sends cached GOP frames via `send_prior_data`.
-pub struct PullStream {
+pub(crate) struct PullStream {
     pub(crate) room_id: String,
     pub(crate) media_id: String,
     pub(crate) publisher_node: String,
@@ -43,18 +44,12 @@ pub struct PullStream {
     grpc_compression_enabled: bool,
     /// Cluster authentication secret passed to `GrpcStreamPuller` for inter-node gRPC requests.
     cluster_secret: Option<String>,
-    /// Optional HLS proxy client for cache invalidation on stale epoch detection.
-    hls_proxy: Option<HlsProxyClient>,
 }
 
 #[async_trait::async_trait]
 impl ManagedStream for PullStream {
     fn lifecycle(&self) -> &StreamLifecycle {
         &self.lifecycle
-    }
-
-    fn stream_key(&self) -> String {
-        format!("{}:{}", self.room_id, self.media_id)
     }
 
     async fn stop_managed(&self) {
@@ -70,30 +65,8 @@ impl ManagedStream for PullStream {
 }
 
 impl PullStream {
-    pub fn new(
-        room_id: String,
-        media_id: String,
-        publisher_node: String,
-        _local_node_id: String,
-        registry: Arc<dyn StreamRegistryTrait>,
-        stream_hub_event_sender: StreamHubEventSender,
-        epoch: u64,
-    ) -> Self {
-        Self::with_pool(
-            room_id,
-            media_id,
-            publisher_node,
-            registry,
-            stream_hub_event_sender,
-            epoch,
-            GrpcConnectionPool::with_defaults(),
-        )
-    }
-
     /// Create a new `PullStream` with a shared gRPC connection pool.
-    ///
-    /// Preferred over `new()` when a pool is available (from `PullStreamManager`).
-    pub fn with_pool(
+    pub(crate) fn with_pool(
         room_id: String,
         media_id: String,
         publisher_node: String,
@@ -116,35 +89,30 @@ impl PullStream {
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
             grpc_compression_enabled: true,
             cluster_secret: None,
-            hls_proxy: None,
         }
     }
 
     /// Set the maximum gRPC message size for relay calls.
     #[must_use]
-    pub const fn with_grpc_max_message_size(mut self, max_message_size_bytes: usize) -> Self {
+    pub(crate) const fn with_grpc_max_message_size(
+        mut self,
+        max_message_size_bytes: usize,
+    ) -> Self {
         self.grpc_max_message_size_bytes = max_message_size_bytes;
         self
     }
 
     /// Enable or disable gzip compression negotiation for relay calls.
     #[must_use]
-    pub const fn with_grpc_compression(mut self, enabled: bool) -> Self {
+    pub(crate) const fn with_grpc_compression(mut self, enabled: bool) -> Self {
         self.grpc_compression_enabled = enabled;
         self
     }
 
     /// Set the cluster authentication secret for inter-node gRPC requests.
     #[must_use]
-    pub fn with_cluster_secret(mut self, secret: Option<String>) -> Self {
+    pub(crate) fn with_cluster_secret(mut self, secret: Option<String>) -> Self {
         self.cluster_secret = secret;
-        self
-    }
-
-    /// Set the HLS proxy client for cache invalidation on stale epoch detection.
-    #[must_use]
-    pub fn with_hls_proxy(mut self, hls_proxy: Option<HlsProxyClient>) -> Self {
-        self.hls_proxy = hls_proxy;
         self
     }
 
@@ -208,7 +176,6 @@ impl PullStream {
         let grpc_compression_enabled = self.grpc_compression_enabled;
         let epoch = self.epoch;
         let registry = Arc::clone(&self.registry);
-        let hls_proxy = self.hls_proxy.clone();
         // Clone the is_running flag to mark failure in the spawned task
         let is_running_flag = self.lifecycle.is_running_clone();
 
@@ -248,70 +215,63 @@ impl PullStream {
                 epoch_interval.tick().await;
 
                 let run_result = tokio::select! {
-                                   r = grpc_puller.run() => r,
-                                   () = child_token.cancelled() => {
-                                       info!("gRPC puller task cancelled for {} / {}", room_id, media_id);
-                                       timer.observe_duration();
-                                       synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
-                                       break Ok(());
-                                   }
-                                   () = async {
-                                       loop {
-                                           epoch_interval.tick().await;
-                                           match registry.validate_epoch(&room_id, &media_id, epoch).await {
-                                               Ok(true) => {
-                                                   // Reset failure counter on success.
-                                                   consecutive_epoch_failures = 0;
-                                                   debug!(
-                                                       "Periodic epoch {} still valid for {}/{}",
-                                                       epoch, room_id, media_id
-                                                   );
-                                               }
-                                               Ok(false) => {
-                                                   warn!(
-                                                       "Periodic epoch re-validation: epoch {} is stale for {}/{}, publisher changed",
-                                                       epoch, room_id, media_id
-                                                   );
-                                                   return;
-                                               }
-                                               Err(e) => {
-                                                   // Track consecutive failures instead of unconditional fail-open.
-                                                   consecutive_epoch_failures += 1;
-                                                   if consecutive_epoch_failures >= max_consecutive_epoch_failures {
-                                                       error!(
-                                                           "Epoch validation failed {} consecutive times for {}/{}: {}. \
-                                                            Terminating pull stream (publisher may be stale). \
-                                                            Stream will reconnect when Redis is available.",
-                                                           consecutive_epoch_failures, room_id, media_id, e
-                                                       );
-                                                       return;
-                                                   }
-                                                   warn!(
-                                                       "Periodic epoch re-validation failed for {}/{}: {} ({}/{} consecutive failures). Continuing.",
-                                                       room_id, media_id, e, consecutive_epoch_failures, max_consecutive_epoch_failures
-                                                   );
-                                               }
-                                           }
-                                       }
-                                   } => {
-                // Epoch became stale during streaming — invalidate HLS cache
-                // so viewers don't see stale segments for up to 90s TTL.
-                // Use delayed invalidation to give the new publisher time to
-                // generate fresh HLS segments before we clear the old cache.
-                                       if let Some(ref hls_proxy) = hls_proxy {
-                                           hls_proxy.invalidate_stream_cache_delayed(
-                                               room_id.clone(),
-                                               media_id.clone(),
-                                               std::time::Duration::from_secs(3),
-                                           );
-                                       }
-                                       timer.observe_duration();
-                                       synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
-                                       break Err(anyhow::anyhow!(
-                                           "Stale epoch detected during streaming: publisher changed for {room_id} / {media_id}"
-                                       ));
-                                   }
-                               };
+                    r = grpc_puller.run() => r,
+                    () = child_token.cancelled() => {
+                        info!("gRPC puller task cancelled for {} / {}", room_id, media_id);
+                        timer.observe_duration();
+                        synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
+                        break Ok(());
+                    }
+                    () = async {
+                        loop {
+                            epoch_interval.tick().await;
+                            match registry.validate_epoch(&room_id, &media_id, epoch).await {
+                                Ok(true) => {
+                                    // Reset failure counter on success.
+                                    consecutive_epoch_failures = 0;
+                                    debug!(
+                                        "Periodic epoch {} still valid for {}/{}",
+                                        epoch, room_id, media_id
+                                    );
+                                }
+                                Ok(false) => {
+                                    warn!(
+                                        "Periodic epoch re-validation: epoch {} is stale for {}/{}, publisher changed",
+                                        epoch, room_id, media_id
+                                    );
+                                    return;
+                                }
+                                Err(e) => {
+                                    // Track consecutive failures instead of unconditional fail-open.
+                                    consecutive_epoch_failures += 1;
+                                    if consecutive_epoch_failures >= max_consecutive_epoch_failures {
+                                        error!(
+                                            "Epoch validation failed {} consecutive times for {}/{}: {}. \
+                                             Terminating pull stream (publisher may be stale). \
+                                             Stream will reconnect when Redis is available.",
+                                            consecutive_epoch_failures, room_id, media_id, e
+                                        );
+                                        return;
+                                    }
+                                    warn!(
+                                        "Periodic epoch re-validation failed for {}/{}: {} ({}/{} consecutive failures). Continuing.",
+                                        room_id, media_id, e, consecutive_epoch_failures, max_consecutive_epoch_failures
+                                    );
+                                }
+                            }
+                        }
+                    } => {
+                        warn!(
+                            "Stale epoch detected during streaming for {}/{}; stopping pull stream",
+                            room_id, media_id
+                        );
+                        timer.observe_duration();
+                        synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
+                        break Err(anyhow::anyhow!(
+                            "Stale epoch detected during streaming: publisher changed for {room_id} / {media_id}"
+                        ));
+                    }
+                };
 
                 timer.observe_duration();
                 synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
@@ -370,11 +330,6 @@ impl PullStream {
                                     "Epoch {} is stale on reconnect for {}/{}, publisher changed. Stopping pull stream.",
                                     epoch, room_id, media_id
                                 );
-                                if let Some(ref hls_proxy) = hls_proxy {
-                                    hls_proxy
-                                        .invalidate_stream_cache_sync(&room_id, &media_id)
-                                        .await;
-                                }
                                 break Err(anyhow::anyhow!(
                                     "Stale epoch on reconnect: publisher changed for {room_id} / {media_id}"
                                 ));
@@ -445,26 +400,10 @@ impl PullStream {
         {
             Ok(()) => {}
             Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                let sender = self.stream_hub_event_sender.clone();
                 warn!(
-                    "PullStream stop: channel full, spawning async UnPublish for {}/{}",
-                    room_id, media_id
+                    "PullStream stop: StreamHub queue full, dropping UnPublish for {}/{}: {:?}",
+                    room_id, media_id, event
                 );
-                if crate::util::try_spawn(async move {
-                    if let Err(e) = sender.send(event).await {
-                        warn!(
-                            "PullStream stop: async UnPublish failed for {}/{}: {}",
-                            room_id, media_id, e
-                        );
-                    }
-                })
-                .is_none()
-                {
-                    warn!(
-                        "PullStream stop: no Tokio runtime available, skipping async UnPublish for {}/{}",
-                        self.room_id, self.media_id
-                    );
-                }
             }
             Err(e) => {
                 warn!(
@@ -480,39 +419,6 @@ impl PullStream {
             self.room_id, self.media_id
         );
         Ok(())
-    }
-
-    #[must_use]
-    pub fn subscriber_count(&self) -> usize {
-        self.lifecycle.subscriber_count()
-    }
-
-    pub fn increment_subscriber_count(&self) {
-        self.lifecycle.increment_subscriber_count();
-    }
-
-    pub fn decrement_subscriber_count(&self) {
-        self.lifecycle.decrement_subscriber_count();
-    }
-
-    pub async fn is_healthy(&self) -> bool {
-        self.lifecycle.is_healthy().await
-    }
-
-    pub fn last_active_elapsed_secs(&self) -> u64 {
-        self.lifecycle.last_active_elapsed_secs()
-    }
-
-    pub fn update_last_active_time(&self) {
-        self.lifecycle.update_last_active_time();
-    }
-
-    pub fn mark_stopping(&self) {
-        self.lifecycle.mark_stopping();
-    }
-
-    pub fn restore_running(&self) {
-        self.lifecycle.restore_running();
     }
 }
 
@@ -531,8 +437,6 @@ impl Drop for PullStream {
         }
 
         // Send UnPublish to StreamHub so the local stream entry is removed.
-        // Use try_send first for the fast path; if the channel is full, spawn
-        // an async task that awaits `.send()` so the event is not silently lost.
         let identifier = StreamIdentifier::Rtmp {
             app_name: self.room_id.clone(),
             stream_name: self.media_id.clone(),
@@ -550,30 +454,10 @@ impl Drop for PullStream {
                 );
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                // Channel full -- spawn a task that awaits capacity so the
-                // UnPublish is not silently dropped.
-                let sender = self.stream_hub_event_sender.clone();
-                let room_id_for_task = room_id.clone();
-                let media_id_for_task = media_id.clone();
                 warn!(
-                    "PullStream drop: channel full, spawning async UnPublish for {}/{}",
-                    room_id, media_id
+                    "PullStream drop: StreamHub queue full, dropping UnPublish for {}/{}: {:?}",
+                    room_id, media_id, event
                 );
-                if crate::util::try_spawn(async move {
-                    if let Err(e) = sender.send(event).await {
-                        warn!(
-                            "PullStream drop: async UnPublish failed for {}/{}: {}",
-                            room_id_for_task, media_id_for_task, e
-                        );
-                    }
-                })
-                .is_none()
-                {
-                    warn!(
-                        "PullStream drop: no Tokio runtime available, skipping async UnPublish for {}/{}",
-                        room_id, media_id
-                    );
-                }
             }
             Err(e) => {
                 warn!(
@@ -583,69 +467,5 @@ impl Drop for PullStream {
             }
         }
         // StreamLifecycle's Drop will abort the task handle
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::relay::TestStreamRegistry;
-
-    #[tokio::test]
-    async fn test_stop_retries_unpublish_when_channel_full() {
-        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-        sender
-            .try_send(StreamHubEvent::UnPublish {
-                identifier: StreamIdentifier::Rtmp {
-                    app_name: "existing-room".to_string(),
-                    stream_name: "existing-media".to_string(),
-                },
-            })
-            .expect("fill channel");
-
-        let stream = PullStream::new(
-            "room-1".to_string(),
-            "media-1".to_string(),
-            "127.0.0.1:50051".to_string(),
-            "node-1".to_string(),
-            Arc::new(TestStreamRegistry::new()) as Arc<dyn crate::relay::StreamRegistryTrait>,
-            sender,
-            1,
-        );
-
-        stream.stop().await.expect("stop should succeed");
-
-        let first = receiver.recv().await.expect("placeholder event");
-        match first {
-            StreamHubEvent::UnPublish { identifier } => match identifier {
-                StreamIdentifier::Rtmp {
-                    app_name,
-                    stream_name,
-                } => {
-                    assert_eq!(app_name, "existing-room");
-                    assert_eq!(stream_name, "existing-media");
-                }
-                other => panic!("unexpected identifier: {other:?}"),
-            },
-            _ => panic!("unexpected event variant"),
-        }
-
-        let retried = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
-            .await
-            .expect("async retry should enqueue unpublish")
-            .expect("retried event should be present");
-        match retried {
-            StreamHubEvent::UnPublish { identifier } => match identifier {
-                StreamIdentifier::Rtmp {
-                    app_name,
-                    stream_name,
-                } => {
-                    assert_eq!(app_name, "room-1");
-                    assert_eq!(stream_name, "media-1");
-                }
-                other => panic!("unexpected identifier: {other:?}"),
-            },
-            _ => panic!("unexpected event variant"),
-        }
     }
 }

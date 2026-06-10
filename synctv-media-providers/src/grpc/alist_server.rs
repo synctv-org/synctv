@@ -7,15 +7,9 @@ use super::alist::{
     FsSearchReq, FsSearchResp, LoginReq, LoginResp, MeReq, MeResp,
 };
 use super::error_mapper::map_provider_error;
-use super::validation::{validate_provider_grpc_host, validate_required};
-use crate::alist::error::AlistError;
 use crate::alist::{AlistInterface, AlistService as AlistServiceImpl};
+use crate::validation::{validate_provider_grpc_host, validate_required};
 use tonic::{Request, Response, Status};
-
-/// Map Alist errors to appropriate gRPC status codes using the shared mapper.
-fn map_alist_error(context: &str, e: &AlistError) -> Status {
-    map_provider_error(context, e)
-}
 
 /// Alist gRPC server
 ///
@@ -56,7 +50,7 @@ impl Alist for AlistService {
             .service
             .login(req)
             .await
-            .map_err(|e| map_alist_error("login", &e))?;
+            .map_err(|e| map_provider_error("login", &e))?;
 
         Ok(Response::new(LoginResp { token }))
     }
@@ -70,7 +64,7 @@ impl Alist for AlistService {
             .service
             .me(req)
             .await
-            .map_err(|e| map_alist_error("me", &e))?;
+            .map_err(|e| map_provider_error("me", &e))?;
 
         Ok(Response::new(resp))
     }
@@ -84,7 +78,7 @@ impl Alist for AlistService {
             .service
             .fs_get(req)
             .await
-            .map_err(|e| map_alist_error("fs_get", &e))?;
+            .map_err(|e| map_provider_error("fs_get", &e))?;
 
         Ok(Response::new(resp))
     }
@@ -98,7 +92,7 @@ impl Alist for AlistService {
             .service
             .fs_list(req)
             .await
-            .map_err(|e| map_alist_error("fs_list", &e))?;
+            .map_err(|e| map_provider_error("fs_list", &e))?;
 
         Ok(Response::new(resp))
     }
@@ -116,7 +110,7 @@ impl Alist for AlistService {
             .service
             .fs_other(req)
             .await
-            .map_err(|e| map_alist_error("fs_other", &e))?;
+            .map_err(|e| map_provider_error("fs_other", &e))?;
 
         Ok(Response::new(resp))
     }
@@ -133,7 +127,7 @@ impl Alist for AlistService {
             .service
             .fs_search(req)
             .await
-            .map_err(|e| map_alist_error("fs_search", &e))?;
+            .map_err(|e| map_provider_error("fs_search", &e))?;
 
         Ok(Response::new(resp))
     }

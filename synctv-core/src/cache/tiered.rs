@@ -222,12 +222,11 @@ where
 
                         match json {
                             Some(json) => {
-                                let value: V = serde_json::from_str(&json).map_err(|e| {
+                                serde_json::from_str::<V>(&json).map(Some).map_err(|error| {
                                     CloneableError::internal(format!(
-                                        "Failed to deserialize cached {cache_type}: {e}"
+                                        "Failed to deserialize cached {cache_type}: {error}"
                                     ))
-                                })?;
-                                Ok(Some(value))
+                                })
                             }
                             None => Ok(None),
                         }
@@ -305,7 +304,6 @@ where
         let l2 = self.l2.clone();
         let l2_prefix = self.key_prefix.clone();
         let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
-        let cache_type = self.cache_type.clone();
         let key_epoch_before = self.key_epochs.get(key).map_or(0, |v| *v);
         let global_epoch_before = self.global_epoch.load(Ordering::Acquire);
 
@@ -314,9 +312,7 @@ where
             return Ok(None);
         };
 
-        let value: V = serde_json::from_str(&json).map_err(|e| {
-            Error::Internal(format!("Failed to deserialize cached {cache_type}: {e}"))
-        })?;
+        let value = self.deserialize_l2_value(&json)?;
 
         let key_epoch_after = self.key_epochs.get(key).map_or(0, |v| *v);
         let global_epoch_after = self.global_epoch.load(Ordering::Acquire);
@@ -593,23 +589,22 @@ where
             // Update result (always) and L1 cache (only if no invalidation for that key)
             for (i, (key, json_opt)) in missing_keys.iter().zip(jsons).enumerate() {
                 if let Some(json) = json_opt {
-                    if let Ok(value) = serde_json::from_str::<V>(&json) {
-                        result.insert(key.clone(), value.clone());
-                        if !global_epoch_changed {
-                            // Per-key epoch check: only skip L1 for keys that were
-                            // specifically invalidated during the batch fetch.
-                            let key_epoch_after = key_epochs_arc
-                                .get(&missing_keys_for_epoch[i])
-                                .map_or(0, |v| *v);
-                            if key_epoch_after == per_key_epochs_before[i] {
-                                self.l1_cache.insert(key.clone(), value).await;
-                            } else {
-                                tracing::debug!(
-                                    key = %key,
-                                    cache_type = %self.cache_type,
-                                    "Skipping L1 write for key in get_batch: per-key epoch changed"
-                                );
-                            }
+                    let value = self.deserialize_l2_value(&json)?;
+                    result.insert(key.clone(), value.clone());
+                    if !global_epoch_changed {
+                        // Per-key epoch check: only skip L1 for keys that were
+                        // specifically invalidated during the batch fetch.
+                        let key_epoch_after = key_epochs_arc
+                            .get(&missing_keys_for_epoch[i])
+                            .map_or(0, |v| *v);
+                        if key_epoch_after == per_key_epochs_before[i] {
+                            self.l1_cache.insert(key.clone(), value).await;
+                        } else {
+                            tracing::debug!(
+                                key = %key,
+                                cache_type = %self.cache_type,
+                                "Skipping L1 write for key in get_batch: per-key epoch changed"
+                            );
                         }
                     }
                 }
@@ -1007,6 +1002,9 @@ fn add_ttl_jitter(ttl_seconds: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::l2_backend::CacheL2Backend;
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
+    use async_trait::async_trait;
     use serde::{Deserialize, Serialize};
 
     /// Test key type
@@ -1053,6 +1051,61 @@ mod tests {
         )
     }
 
+    struct CorruptBatchL2;
+
+    #[async_trait]
+    impl CacheL2Backend for CorruptBatchL2 {
+        async fn get(&self, _key: &str) -> Result<Option<String>> {
+            Err(Error::Internal("unexpected single-key L2 get".to_string()))
+        }
+
+        async fn get_batch(&self, keys: &[String]) -> Result<Vec<Option<String>>> {
+            Ok(keys.iter().map(|_| Some("{bad json".to_string())).collect())
+        }
+
+        async fn set(&self, _key: &str, _json: &str, _ttl_secs: u64) -> Result<()> {
+            Err(Error::Internal("unexpected L2 set".to_string()))
+        }
+
+        async fn delete(&self, _key: &str) -> Result<()> {
+            Err(Error::Internal("unexpected L2 delete".to_string()))
+        }
+
+        async fn set_if_newer(
+            &self,
+            _key: &str,
+            _json: &str,
+            _ttl_secs: u64,
+            _new_ts_millis: i64,
+        ) -> Result<bool> {
+            Err(Error::Internal("unexpected L2 freshness set".to_string()))
+        }
+
+        async fn set_if_version_at_least(
+            &self,
+            _key: &str,
+            _json: &str,
+            _ttl_secs: u64,
+            _version: i64,
+        ) -> Result<bool> {
+            Err(Error::Internal("unexpected L2 version set".to_string()))
+        }
+
+        async fn delete_by_prefix(&self, prefix: &str) -> Result<()> {
+            Err(Error::Internal(format!(
+                "unexpected L2 prefix delete: {prefix}"
+            )))
+        }
+
+        fn is_active(&self) -> bool {
+            true
+        }
+    }
+
+    fn make_cache_with_l2(l2: Arc<dyn CacheL2Backend>) -> TieredCache<TestId, TestValue> {
+        TieredCache::new(l2, 100, 5, 60, "test:".to_string(), "test".to_string())
+    }
+
     fn make_value(name: &str) -> TestValue {
         TestValue {
             name: name.to_string(),
@@ -1068,16 +1121,34 @@ mod tests {
         let value = make_value("alice");
 
         // Cache miss
-        assert!(cache.get(&key).await.unwrap().is_none());
+        assert!(cache
+            .get(&key)
+            .await
+            .checked("operation should succeed")
+            .is_none());
 
         // Set and get
-        cache.set(&key, value.clone()).await.unwrap();
-        let retrieved = cache.get(&key).await.unwrap().unwrap();
+        cache
+            .set(&key, value.clone())
+            .await
+            .checked("operation should succeed");
+        let retrieved = cache
+            .get(&key)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(retrieved.name, "alice");
 
         // Invalidate
-        cache.invalidate(&key).await.unwrap();
-        assert!(cache.get(&key).await.unwrap().is_none());
+        cache
+            .invalidate(&key)
+            .await
+            .checked("operation should succeed");
+        assert!(cache
+            .get(&key)
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[tokio::test]
@@ -1088,13 +1159,19 @@ mod tests {
         let k2 = TestId("k2".to_string());
         let k3 = TestId("k3".to_string());
 
-        cache.set(&k1, make_value("alice")).await.unwrap();
-        cache.set(&k3, make_value("charlie")).await.unwrap();
+        cache
+            .set(&k1, make_value("alice"))
+            .await
+            .checked("operation should succeed");
+        cache
+            .set(&k3, make_value("charlie"))
+            .await
+            .checked("operation should succeed");
 
         let result = cache
             .get_batch(&[k1.clone(), k2.clone(), k3.clone()])
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         assert_eq!(result.len(), 2);
         assert_eq!(result.get(&k1).map(|v| &v.name), Some(&"alice".to_string()));
@@ -1106,15 +1183,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_batch_lookup_rejects_corrupt_l2_json() {
+        let cache = make_cache_with_l2(Arc::new(CorruptBatchL2));
+        let err = cache
+            .get_batch(&[TestId("k1".to_string())])
+            .await
+            .expect_err("corrupt L2 JSON should fail the batch lookup");
+
+        assert!(
+            err.to_string()
+                .contains("Failed to deserialize cached test"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_invalidate_by_id() {
         let cache = make_cache();
 
         let key = TestId("k1".to_string());
-        cache.set(&key, make_value("alice")).await.unwrap();
-        assert!(cache.get(&key).await.unwrap().is_some());
+        cache
+            .set(&key, make_value("alice"))
+            .await
+            .checked("operation should succeed");
+        assert!(cache
+            .get(&key)
+            .await
+            .checked("operation should succeed")
+            .is_some());
 
-        cache.invalidate_by_id("k1").await.unwrap();
-        assert!(cache.get(&key).await.unwrap().is_none());
+        cache
+            .invalidate_by_id("k1")
+            .await
+            .checked("operation should succeed");
+        assert!(cache
+            .get(&key)
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[tokio::test]
@@ -1124,13 +1230,27 @@ mod tests {
         let k1 = TestId("k1".to_string());
         let k2 = TestId("k2".to_string());
 
-        cache.set(&k1, make_value("alice")).await.unwrap();
-        cache.set(&k2, make_value("bob")).await.unwrap();
+        cache
+            .set(&k1, make_value("alice"))
+            .await
+            .checked("operation should succeed");
+        cache
+            .set(&k2, make_value("bob"))
+            .await
+            .checked("operation should succeed");
 
         cache.clear_l1();
 
-        assert!(cache.get(&k1).await.unwrap().is_none());
-        assert!(cache.get(&k2).await.unwrap().is_none());
+        assert!(cache
+            .get(&k1)
+            .await
+            .checked("operation should succeed")
+            .is_none());
+        assert!(cache
+            .get(&k2)
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[tokio::test]
@@ -1150,14 +1270,24 @@ mod tests {
         };
 
         // Set initial value
-        cache.set(&key, new_value.clone()).await.unwrap();
+        cache
+            .set(&key, new_value.clone())
+            .await
+            .checked("operation should succeed");
 
         // Trying to set older value should return false
-        let updated = cache.set_if_newer(&key, old_value).await.unwrap();
+        let updated = cache
+            .set_if_newer(&key, old_value)
+            .await
+            .checked("operation should succeed");
         assert!(!updated);
 
         // Value should still be the new one
-        let retrieved = cache.get(&key).await.unwrap().unwrap();
+        let retrieved = cache
+            .get(&key)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(retrieved.name, "new");
     }
 

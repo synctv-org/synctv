@@ -44,12 +44,12 @@ use crate::impls::{
     ApiError, EndpointRateLimitCategory, EndpointRateLimitScope,
     RequestMetadata as ApiRequestMetadata, TransportProtocol,
 };
-use crate::runtime::RealtimeConnectionService;
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::auth::{AuthErrorCategory, JwtValidator};
 use synctv_core::service::{ContentFilter, PendingValidatedTicket, ValidatedGuestTicket};
 use synctv_proto::client::{ClientMessage, ServerMessage};
+use synctv_realtime::sync::ConnectionRuntime;
 
 /// Threshold for consecutive slow-client drops before disconnecting them
 const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
@@ -193,13 +193,16 @@ where
 {
     type Rejection = Infallible;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        Ok(Self(
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(Ok(Self(
             parts
                 .extensions
                 .get::<ConnectInfo<std::net::SocketAddr>>()
                 .map(|info| info.0.ip()),
-        ))
+        )))
     }
 }
 
@@ -212,11 +215,12 @@ where
 {
     type Rejection = AppError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let _ = parts;
+    fn from_request_parts(
+        _parts: &mut Parts,
+        state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         let app_state = AppState::from_ref(state);
-        validate_websocket_runtime_dependencies(&app_state)?;
-        Ok(Self)
+        std::future::ready(validate_websocket_runtime_dependencies(&app_state).map(|()| Self))
     }
 }
 
@@ -740,7 +744,7 @@ async fn forward_websocket_messages<S>(
     mut outbound_messages: tokio::sync::mpsc::Receiver<axum::extract::ws::Message>,
     mut ws_sender_sink: S,
     is_alive: Arc<std::sync::atomic::AtomicBool>,
-    connection_service: Arc<dyn RealtimeConnectionService>,
+    connection_service: Arc<dyn ConnectionRuntime>,
     connection_id: String,
 ) where
     S: futures::Sink<axum::extract::ws::Message, Error = axum::Error> + Unpin,
@@ -1156,14 +1160,14 @@ async fn run_websocket_handshake_with_timeout<T>(
 }
 
 struct ReservationCleanupGuard {
-    connection_service: Arc<dyn RealtimeConnectionService>,
+    connection_service: Arc<dyn ConnectionRuntime>,
     reservation: HandshakeReservation,
     armed: bool,
 }
 
 impl ReservationCleanupGuard {
     const fn new(
-        connection_service: Arc<dyn RealtimeConnectionService>,
+        connection_service: Arc<dyn ConnectionRuntime>,
         reservation: HandshakeReservation,
     ) -> Self {
         Self {
@@ -1195,14 +1199,14 @@ struct HandshakeReservation {
 }
 
 impl HandshakeReservation {
-    fn release(&self, connection_service: &dyn RealtimeConnectionService) {
+    fn release(&self, connection_service: &dyn ConnectionRuntime) {
         connection_service.release_room_reservation(&self.room_id);
         connection_service.release_user_reservation(&self.user_id);
     }
 }
 
 fn reserve_websocket_upgrade_slots(
-    connection_service: &dyn RealtimeConnectionService,
+    connection_service: &dyn ConnectionRuntime,
     room_id: &RoomId,
     user_id: &UserId,
 ) -> Result<HandshakeReservation, AppError> {
@@ -1299,7 +1303,7 @@ async fn prepare_websocket_upgrade(
 }
 
 fn build_failed_upgrade_cleanup(
-    connection_service: Arc<dyn RealtimeConnectionService>,
+    connection_service: Arc<dyn ConnectionRuntime>,
     reservation: HandshakeReservation,
 ) -> impl FnOnce(axum::Error) + Send + 'static {
     move |error| {
@@ -1394,22 +1398,23 @@ async fn handle_socket(
             concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
         },
         StreamMessageHandlerRuntime {
-            playback_service: Some(state.shared_api_runtime.client_api.clone()),
-            playlist_items_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
-            room_members_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
-            room_settings_snapshot_service: None,
+            playback_service: state.shared_api_runtime.client_api.clone(),
+            playlist_items_snapshot_service: state.shared_api_runtime.client_api.clone(),
+            room_members_snapshot_service: state.shared_api_runtime.client_api.clone(),
+            room_settings_snapshot_service:
+                crate::impls::room_settings_snapshot::default_room_settings_snapshot_service(
+                    state.room_service.clone(),
+                ),
             playback_fanout: state.shared_api_runtime.client_api.playback_fanout.clone(),
             chat_event_dispatcher: crate::chat_event_dispatcher::default_chat_event_dispatcher(
                 event_service.clone(),
             ),
             notification_service: state.notification_service.clone(),
-            ws_message_rate_limit: Some(
-                state
-                    .config
-                    .connection_limits
-                    .ws_message_rate_limit_per_second,
-            ),
-            heartbeat_schedule: Some(state.shared_api_runtime.heartbeat_schedule),
+            ws_message_rate_limit: state
+                .config
+                .connection_limits
+                .ws_message_rate_limit_per_second,
+            heartbeat_schedule: state.shared_api_runtime.heartbeat_schedule,
             filter_private_ice_candidates: state.config.webrtc.filter_private_ice_candidates,
         },
     );

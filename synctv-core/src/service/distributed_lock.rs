@@ -1,60 +1,8 @@
-//! Distributed lock service using Redis
+//! Redis-based distributed lock with fencing tokens.
 //!
-//! Design reference: external design doc 21-key-implementation.md §12.2.3
-//!
-//! Provides distributed locking mechanism for multi-replica deployments.
-//! Uses Redis SET NX EX for atomic lock acquisition.
-//!
-//! # Safety Warning: Single-Instance Only
-//!
-//! **This implementation operates on a single Redis instance and is NOT
-//! Redlock-compliant.** It relies on a single Redis node for lock state, which
-//! means:
-//!
-//! - **Standalone mode**: Safe. The single Redis instance is the source of truth.
-//! - **Sentinel mode**: **Unsafe during failover.** When the Sentinel promotes a
-//!   replica to master, any locks held on the old master are lost because Redis
-//!   replication is asynchronous. Two clients may simultaneously believe they hold
-//!   the same lock (split-brain). The fencing token mechanism mitigates this for
-//!   database writes, but not for all use cases.
-//! - **Cluster mode**: Not supported (rejected at config validation).
-//!
-//! For true distributed lock safety across failovers, consider implementing the
-//! [Redlock algorithm](https://redis.io/docs/manual/patterns/distributed-locks/)
-//! with multiple independent Redis masters.
-//!
-//! **Production recommendation**: If you are deploying with Redis Sentinel,
-//! strongly consider using the Redlock algorithm with multiple independent Redis
-//! masters (minimum 3). Single-instance locking behind Sentinel provides
-//! *availability* (automatic failover) but NOT *correctness* (locks can be lost
-//! during asynchronous replication). Fencing tokens mitigate this for database
-//! writes, but non-idempotent side effects (e.g., sending notifications, billing)
-//! cannot be fenced.
-//!
-//! # Fencing Token Support
-//!
-//! This implementation provides fencing tokens to handle the "split-brain" scenario
-//! where a lock holder's operation outlasts the lock TTL (due to GC pause, network
-//! partition, or slow processing). Each lock acquisition returns a monotonically
-//! increasing token that can be used for CAS (Compare-And-Swap) operations.
-//!
-//! ## Usage Pattern
-//!
-//! ```text
-//! let (lock_value, fencing_token) = lock.acquire_with_token("resource", 10).await?;
-//! if let Some((value, token)) = lock_value {
-//!     // Pass fencing_token to database write as CAS condition
-//!     db.update_with_version(resource_id, data, token).await?;
-//!     lock.release("resource", &value).await?;
-//! }
-//! ```
-//!
-//! ## Token Generation Strategy
-//!
-//! Tokens are generated using Redis INCR on a per-key counter, ensuring:
-//! - Monotonic increase across all clients
-//! - Uniqueness even during network partitions
-//! - Simplicity without requiring clock synchronization
+//! Single-instance Redis provides the lock state. Sentinel failover can drop
+//! in-flight locks during master promotion, so fencing tokens stay part of the
+//! API for protected writes. Cluster mode stays rejected at config validation.
 
 use crate::{Error, InternalExt, RedisConnectionRuntime, Result};
 use redis::aio::ConnectionManager as RedisConnectionManager;
@@ -217,13 +165,7 @@ impl DistributedLock {
 
     fn log_sentinel_warning() {
         tracing::warn!(
-            "Distributed lock is running behind Redis Sentinel. \
-             During a Sentinel failover, there is a brief split-brain window where \
-             locks held on the old master may be lost because Redis replication is \
-             asynchronous. Fencing tokens mitigate this for database writes, but \
-             non-idempotent side effects (notifications, billing) cannot be fenced. \
-             For production Sentinel deployments, consider using the Redlock algorithm \
-             with multiple independent Redis masters."
+            "Distributed lock is running behind Redis Sentinel. Failover can drop locks held on the old master. Fencing tokens stay required for protected writes."
         );
     }
 
@@ -532,12 +474,12 @@ impl DistributedLock {
     ///
     /// # Example
     /// ```text
-    /// match lock.try_with_lock("update_settings:room123", 10, || async {
+    /// let updated = match lock.try_with_lock("update_settings:room123", 10, || async {
     ///     room_service.update_settings(settings).await
     /// }).await? {
-    ///     Some(result) => println!("Updated: {:?}", result),
-    ///     None => println!("Lock already held, skipping update"),
-    /// }
+    ///     Some(result) => result,
+    ///     None => return Ok(()),
+    /// };
     /// ```
     pub async fn try_with_lock<F, Fut, T>(
         &self,
@@ -633,12 +575,12 @@ impl DistributedLock {
     ///
     /// # Example
     /// ```text
-    /// match lock.try_with_lock_token("update_settings:room123", 10, |token| async move {
+    /// let updated = match lock.try_with_lock_token("update_settings:room123", 10, |token| async move {
     ///     room_service.update_settings_with_token(settings, token).await
     /// }).await? {
-    ///     Some(result) => println!("Updated: {:?}", result),
-    ///     None => println!("Lock already held, skipping update"),
-    /// }
+    ///     Some(result) => result,
+    ///     None => return Ok(()),
+    /// };
     /// ```
     pub async fn try_with_lock_token<F, Fut, T>(
         &self,

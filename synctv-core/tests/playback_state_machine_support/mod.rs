@@ -11,10 +11,11 @@ use synctv_core::{
         InMemoryTokenBlacklistStore, RoomService, UserService,
     },
 };
+use synctv_core_testing::ok;
 
 pub fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = ok(JwtService::new(secret), "JWT service should build");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -32,7 +33,10 @@ pub fn make_user_service(pool: &PgPool) -> UserService {
 
 pub fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
-    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+    ok(
+        RoomService::new_for_tests(pool, user_service),
+        "room service should build",
+    )
 }
 
 pub fn make_user(username: &str) -> User {
@@ -57,7 +61,7 @@ pub fn make_user(username: &str) -> User {
 
 #[allow(
     dead_code,
-    reason = "shared integration-test support is compiled once per test target"
+    reason = "shared integration-test support is compiled independently per test target"
 )]
 pub async fn set_current_test_media(
     pool: &PgPool,
@@ -81,24 +85,24 @@ pub async fn set_current_test_media(
         updated_at: Utc::now(),
         version: 0,
     };
-    let media = MediaRepository::new(pool.clone())
-        .create(&media)
-        .await
-        .expect("test media should be created");
+    let media = ok(
+        MediaRepository::new(pool.clone()).create(&media).await,
+        "test media should be created",
+    );
 
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
-    let mut state = playback_repo
-        .create_or_get(&room_id)
-        .await
-        .expect("playback state should be created");
+    let mut state = ok(
+        playback_repo.create_or_get(&room_id).await,
+        "playback state should be created",
+    );
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
     state.target.clear();
     state.position = 0.0;
-    state = playback_repo
-        .update(&state)
-        .await
-        .expect("playback state should point at test media");
+    state = ok(
+        playback_repo.update(&state).await,
+        "playback state should point at test media",
+    );
     assert_eq!(state.playing_media_id, Some(media.id));
 
     media

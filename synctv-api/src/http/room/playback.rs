@@ -178,12 +178,11 @@ pub async fn watch_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Query(query): Query<WatchPlaybackQuery>,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = path.room_id;
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
-    let _ = headers;
     let playback_client_profile = build_playback_client_profile_from_watch_query(&query)?;
     let request = WatchPlaybackRequest {
         delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,

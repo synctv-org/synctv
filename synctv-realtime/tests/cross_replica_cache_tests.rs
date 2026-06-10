@@ -14,10 +14,10 @@ use synctv_core::cache::{CacheInvalidationRuntime, CacheInvalidationService, Inv
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core_testing::redis_connection_manager;
-use synctv_realtime::sync::events::{CacheTarget, RealtimeEvent};
-use synctv_realtime::{
+use synctv_realtime::sync::{
     build_room_message_runtime, RealtimeConfig, RealtimeEventHandler, RealtimeManager,
 };
+use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 mod integration_test_helpers;
 use integration_test_helpers::{
     broadcast_until_cache_invalidation, broadcast_until_room_event, create_node, TestRedis,
@@ -26,10 +26,11 @@ use integration_test_helpers::{
 fn shared_message_runtime(
     redis_conn: redis::aio::ConnectionManager,
     key_prefix: &str,
-) -> Arc<dyn synctv_realtime::RoomMessageRuntime> {
+) -> Arc<dyn synctv_realtime::sync::RoomMessageRuntime> {
     let shared_runtime: Arc<dyn RedisConnectionRuntime> =
         Arc::new(DirectRedisConnectionRuntime::new(redis_conn));
-    let realtime_profile = SharedStateProfile::from_runtime(Some(shared_runtime), key_prefix, true);
+    let realtime_profile =
+        SharedStateProfile::for_cluster_runtime(Some(shared_runtime), key_prefix, true);
     build_room_message_runtime(&realtime_profile).expect("shared message runtime should initialize")
 }
 
@@ -84,7 +85,7 @@ async fn test_cross_replica_cache_invalidation() {
     let conn_a = redis_connection_manager(&client_a).await;
     let config_a = RealtimeConfig {
         distributed_transport_factory: Some(Arc::new(
-            synctv_realtime::RedisRealtimeMessageTransportFactory::new(
+            synctv_realtime::sync::RedisRealtimeMessageTransportFactory::new(
                 synctv_core::coordination_runtime_from_client(client_a),
             ),
         )),
@@ -237,7 +238,7 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
     let conn_a = redis_connection_manager(&client_a).await;
     let config_a = RealtimeConfig {
         distributed_transport_factory: Some(Arc::new(
-            synctv_realtime::RedisRealtimeMessageTransportFactory::new(
+            synctv_realtime::sync::RedisRealtimeMessageTransportFactory::new(
                 synctv_core::coordination_runtime_from_client(client_a),
             ),
         )),
@@ -321,7 +322,7 @@ async fn test_cluster_permission_cache_consistency() {
     let conn_a = redis_connection_manager(&client_a).await;
     let config_a = RealtimeConfig {
         distributed_transport_factory: Some(Arc::new(
-            synctv_realtime::RedisRealtimeMessageTransportFactory::new(
+            synctv_realtime::sync::RedisRealtimeMessageTransportFactory::new(
                 synctv_core::coordination_runtime_from_client(client_a),
             ),
         )),
@@ -346,7 +347,7 @@ async fn test_cluster_permission_cache_consistency() {
     let conn_b = redis_connection_manager(&client_b).await;
     let config_b = RealtimeConfig {
         distributed_transport_factory: Some(Arc::new(
-            synctv_realtime::RedisRealtimeMessageTransportFactory::new(
+            synctv_realtime::sync::RedisRealtimeMessageTransportFactory::new(
                 synctv_core::coordination_runtime_from_client(client_b),
             ),
         )),
@@ -486,7 +487,7 @@ async fn test_concurrent_permission_cache_updates() {
     let conn_a = redis_connection_manager(&client_a).await;
     let config_a = RealtimeConfig {
         distributed_transport_factory: Some(Arc::new(
-            synctv_realtime::RedisRealtimeMessageTransportFactory::new(
+            synctv_realtime::sync::RedisRealtimeMessageTransportFactory::new(
                 synctv_core::coordination_runtime_from_client(client_a),
             ),
         )),
@@ -508,7 +509,7 @@ async fn test_concurrent_permission_cache_updates() {
     let conn_b = redis_connection_manager(&client_b).await;
     let config_b = RealtimeConfig {
         distributed_transport_factory: Some(Arc::new(
-            synctv_realtime::RedisRealtimeMessageTransportFactory::new(
+            synctv_realtime::sync::RedisRealtimeMessageTransportFactory::new(
                 synctv_core::coordination_runtime_from_client(client_b),
             ),
         )),
@@ -530,7 +531,7 @@ async fn test_concurrent_permission_cache_updates() {
     let conn_c = redis_connection_manager(&client_c).await;
     let config_c = RealtimeConfig {
         distributed_transport_factory: Some(Arc::new(
-            synctv_realtime::RedisRealtimeMessageTransportFactory::new(
+            synctv_realtime::sync::RedisRealtimeMessageTransportFactory::new(
                 synctv_core::coordination_runtime_from_client(client_c),
             ),
         )),

@@ -1,6 +1,7 @@
 use super::*;
 use crate::credential_encryption::CredentialEncryption;
 use crate::models::SortDirection;
+use crate::test_helpers::{err, ok};
 use serde_json::json;
 
 fn order_by_sql(query: &ProviderInstanceListQuery) -> String {
@@ -44,11 +45,12 @@ fn test_provider_instance_list_order_by_uses_static_sort_branches() {
 
 #[tokio::test]
 async fn test_provider_instance_repo_rejects_plaintext_sensitive_fields_when_encryption_enabled() {
-    let encryption = CredentialEncryption::new(&[7u8; 32]).unwrap();
+    let encryption = ok(CredentialEncryption::new(&[7u8; 32]), "encryption key");
 
-    let err =
-        ProviderInstanceRepository::decrypt_field_with(Some(&encryption), Some("plaintext-secret"))
-            .unwrap_err();
+    let err = err(
+        ProviderInstanceRepository::decrypt_field_with(Some(&encryption), Some("plaintext-secret")),
+        "plaintext secret should fail",
+    );
     assert!(
         err.to_string().contains("plaintext sensitive data"),
         "unexpected error: {err}"
@@ -57,13 +59,15 @@ async fn test_provider_instance_repo_rejects_plaintext_sensitive_fields_when_enc
 
 #[tokio::test]
 async fn test_user_provider_credential_repo_rejects_plaintext_json_when_encryption_enabled() {
-    let encryption = CredentialEncryption::new(&[9u8; 32]).unwrap();
+    let encryption = ok(CredentialEncryption::new(&[9u8; 32]), "encryption key");
 
-    let err = UserProviderCredentialRepository::decrypt_credential_with(
-        Some(&encryption),
-        &json!({"token": "plaintext"}),
-    )
-    .unwrap_err();
+    let err = err(
+        UserProviderCredentialRepository::decrypt_credential_with(
+            Some(&encryption),
+            &json!({"token": "plaintext"}),
+        ),
+        "plaintext credential should fail",
+    );
     assert!(
         err.to_string()
             .contains("Credential value must be an encrypted string"),
@@ -73,24 +77,26 @@ async fn test_user_provider_credential_repo_rejects_plaintext_json_when_encrypti
 
 #[tokio::test]
 async fn test_provider_instance_repo_requires_encryption_when_sensitive_fields_present() {
-    let err = ProviderInstanceRepository::ensure_encryption_for_sensitive_fields_with(
-        None,
-        &ProviderInstance {
-            name: "remote".to_string(),
-            endpoint: "http://remote.example.com:50051".to_string(),
-            comment: None,
-            jwt_secret: Some("secret".to_string()),
-            custom_ca: None,
-            timeout: "10s".to_string(),
-            tls: false,
-            insecure_tls: false,
-            providers: vec!["alist".to_string()],
-            enabled: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        },
-    )
-    .unwrap_err();
+    let err = err(
+        ProviderInstanceRepository::ensure_encryption_for_sensitive_fields_with(
+            None,
+            &ProviderInstance {
+                name: "remote".to_string(),
+                endpoint: "http://remote.example.com:50051".to_string(),
+                comment: None,
+                jwt_secret: Some("secret".to_string()),
+                custom_ca: None,
+                timeout: "10s".to_string(),
+                tls: false,
+                insecure_tls: false,
+                providers: vec!["alist".to_string()],
+                enabled: true,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+        ),
+        "sensitive fields should require encryption",
+    );
     assert!(
         err.to_string()
             .contains("Credential encryption must be configured"),
@@ -100,30 +106,40 @@ async fn test_provider_instance_repo_requires_encryption_when_sensitive_fields_p
 
 #[tokio::test]
 async fn test_provider_instance_repo_requires_encryption_for_sensitive_reads() {
-    let err =
-        ProviderInstanceRepository::decrypt_field_with(None, Some("enc:placeholder")).unwrap_err();
+    let err = err(
+        ProviderInstanceRepository::decrypt_field_with(None, Some("enc:placeholder")),
+        "encrypted field should require encryption",
+    );
     assert!(
         err.to_string()
             .contains("Credential encryption must be configured"),
         "unexpected error: {err}"
     );
     assert_eq!(
-        ProviderInstanceRepository::decrypt_field_with(None, None).unwrap(),
+        ok(
+            ProviderInstanceRepository::decrypt_field_with(None, None),
+            "empty field should decrypt",
+        ),
         None
     );
     assert_eq!(
-        ProviderInstanceRepository::decrypt_field_with(None, Some("")).unwrap(),
+        ok(
+            ProviderInstanceRepository::decrypt_field_with(None, Some("")),
+            "blank field should decrypt",
+        ),
         None
     );
 }
 
 #[tokio::test]
 async fn test_user_provider_credential_repo_requires_encryption_for_storage() {
-    let err = UserProviderCredentialRepository::encrypt_credential_with(
-        None,
-        &json!({"token": "plaintext"}),
-    )
-    .unwrap_err();
+    let err = err(
+        UserProviderCredentialRepository::encrypt_credential_with(
+            None,
+            &json!({"token": "plaintext"}),
+        ),
+        "credential storage should require encryption",
+    );
     assert!(
         err.to_string()
             .contains("Credential encryption must be configured"),
@@ -133,9 +149,10 @@ async fn test_user_provider_credential_repo_requires_encryption_for_storage() {
 
 #[tokio::test]
 async fn test_user_provider_credential_repo_requires_encryption_for_reads() {
-    let err =
-        UserProviderCredentialRepository::decrypt_credential_with(None, &json!("enc:placeholder"))
-            .unwrap_err();
+    let err = err(
+        UserProviderCredentialRepository::decrypt_credential_with(None, &json!("enc:placeholder")),
+        "encrypted credential should require encryption",
+    );
     assert!(
         err.to_string()
             .contains("Credential encryption must be configured"),

@@ -154,11 +154,12 @@ pub async fn has_any_admin_users(pool: &PgPool) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::TestResultExt;
 
     #[test]
     fn bootstrap_exists_value_rejects_missing_scalar() {
         let error =
-            bootstrap_exists_value(None, "administrator user").expect_err("missing scalar fails");
+            bootstrap_exists_value(None, "administrator user").failed("missing scalar fails");
 
         assert!(matches!(
             error,
@@ -168,7 +169,9 @@ mod tests {
 
     #[test]
     fn bootstrap_exists_value_accepts_scalar() {
-        assert!(bootstrap_exists_value(Some(true), "administrator user").unwrap());
-        assert!(!bootstrap_exists_value(Some(false), "administrator user").unwrap());
+        assert!(bootstrap_exists_value(Some(true), "administrator user")
+            .checked("operation should succeed"));
+        assert!(!bootstrap_exists_value(Some(false), "administrator user")
+            .checked("operation should succeed"));
     }
 }

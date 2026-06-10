@@ -177,6 +177,13 @@ pub fn generate_trace_id() -> String {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn test_parse_log_level() {
         assert!(parse_log_level("trace").is_ok());
@@ -204,7 +211,7 @@ mod tests {
             ..LoggingConfig::default()
         };
 
-        let spec = build_env_filter_spec(&config).expect("filter spec should build");
+        let spec = ok(build_env_filter_spec(&config), "filter spec should build");
 
         assert_eq!(spec.to_lowercase(), "debug,sqlx::postgres::notice=info");
     }
@@ -217,7 +224,7 @@ mod tests {
             ..LoggingConfig::default()
         };
 
-        let spec = build_env_filter_spec(&config).expect("filter spec should build");
+        let spec = ok(build_env_filter_spec(&config), "filter spec should build");
 
         assert_eq!(spec, "warn,synctv=debug,sqlx::postgres::notice=warn");
     }
@@ -230,7 +237,7 @@ mod tests {
             ..LoggingConfig::default()
         };
 
-        let spec = build_env_filter_spec(&config).expect("filter spec should build");
+        let spec = ok(build_env_filter_spec(&config), "filter spec should build");
 
         assert_eq!(spec, "warn,sqlx::postgres::notice=info,synctv=debug");
     }
@@ -254,7 +261,10 @@ mod tests {
             ..LoggingConfig::default()
         };
 
-        let level = effective_log_level(&config).expect("effective log level should resolve");
+        let level = ok(
+            effective_log_level(&config),
+            "effective log level should resolve",
+        );
 
         assert_eq!(level, Level::DEBUG);
     }
@@ -267,7 +277,10 @@ mod tests {
             ..LoggingConfig::default()
         };
 
-        let level = effective_log_level(&config).expect("effective log level should resolve");
+        let level = ok(
+            effective_log_level(&config),
+            "effective log level should resolve",
+        );
 
         assert_eq!(level, Level::WARN);
     }

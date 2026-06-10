@@ -120,7 +120,13 @@ async fn load_cache_file(
                     key = %header.key,
                     "Cache file path does not match header key, deleting"
                 );
-                let _ = fs::remove_file(&path).await;
+                if let Err(error) = fs::remove_file(&path).await {
+                    tracing::warn!(
+                        path = %path.display(),
+                        %error,
+                        "Failed to delete cache file with mismatched key path"
+                    );
+                }
                 result.errors += 1;
                 return;
             }
@@ -157,7 +163,13 @@ async fn load_cache_file(
                 path = %path.display(),
                 "Corrupted cache file during index load, deleting: {e}"
             );
-            let _ = fs::remove_file(&path).await;
+            if let Err(error) = fs::remove_file(&path).await {
+                tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "Failed to delete corrupted cache file during index load"
+                );
+            }
             result.errors += 1;
         }
     }

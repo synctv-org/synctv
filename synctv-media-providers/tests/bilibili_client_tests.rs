@@ -7,7 +7,7 @@
 //! can be verified against a local mock server.
 
 #![allow(clippy::unwrap_used)]
-use synctv_media_providers::bilibili::client::BilibiliEndpoints;
+use synctv_media_providers::bilibili::BilibiliEndpoints;
 use synctv_media_providers::BilibiliClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -27,6 +27,16 @@ fn manual_redirect_client_for_b23(server: &MockServer) -> reqwest::Client {
         .unwrap()
 }
 
+fn test_endpoints(base_url: impl AsRef<str>) -> BilibiliEndpoints {
+    let base = base_url.as_ref().trim_end_matches('/').to_string();
+    BilibiliEndpoints {
+        web_base: base.clone(),
+        api_base: base.clone(),
+        passport_base: base.clone(),
+        live_api_base: base,
+    }
+}
+
 fn bilibili_client_with_short_link_client(
     server: &MockServer,
     client: reqwest::Client,
@@ -34,7 +44,7 @@ fn bilibili_client_with_short_link_client(
     BilibiliClient::new_with_short_link_transport_defaults(
         client,
         manual_redirect_client_for_b23(server),
-        BilibiliEndpoints::for_test(server.uri()),
+        test_endpoints(server.uri()),
     )
 }
 
@@ -177,7 +187,7 @@ async fn test_new_qr_code_uses_injected_endpoints() {
 
     let client = BilibiliClient::new_with_transport_defaults(
         reqwest::Client::new(),
-        BilibiliEndpoints::for_test(server.uri()),
+        test_endpoints(server.uri()),
     )
     .unwrap();
 
@@ -190,7 +200,7 @@ async fn test_new_qr_code_uses_injected_endpoints() {
 async fn test_resolve_short_link_rejects_non_short_link_without_network() {
     let client = BilibiliClient::new_with_transport_defaults(
         reqwest::Client::new(),
-        BilibiliEndpoints::for_test("http://127.0.0.1:9"),
+        test_endpoints("http://127.0.0.1:9"),
     )
     .unwrap();
 
@@ -287,7 +297,7 @@ async fn test_resolve_short_link_supports_relative_location() {
 
 #[test]
 fn test_quality_to_qn() {
-    use synctv_media_providers::bilibili::types::Quality;
+    use synctv_media_providers::bilibili::Quality;
     assert_eq!(Quality::P1080.to_qn(), 80);
     assert_eq!(Quality::P720.to_qn(), 64);
     assert_eq!(Quality::P480.to_qn(), 32);
@@ -296,7 +306,7 @@ fn test_quality_to_qn() {
 
 #[test]
 fn test_quality_from_qn() {
-    use synctv_media_providers::bilibili::types::Quality;
+    use synctv_media_providers::bilibili::Quality;
     assert_eq!(Quality::from_qn(80), Quality::P1080);
     assert_eq!(Quality::from_qn(64), Quality::P720);
     assert_eq!(Quality::from_qn(32), Quality::P480);
@@ -308,7 +318,7 @@ fn test_quality_from_qn() {
 
 #[test]
 fn test_quality_as_str() {
-    use synctv_media_providers::bilibili::types::Quality;
+    use synctv_media_providers::bilibili::Quality;
     assert_eq!(Quality::P1080.as_str(), "1080P");
     assert_eq!(Quality::P720.as_str(), "720P");
     assert_eq!(Quality::P480.as_str(), "480P");
@@ -319,21 +329,21 @@ fn test_quality_as_str() {
 
 #[test]
 fn test_video_id_bvid() {
-    use synctv_media_providers::bilibili::types::VideoId;
+    use synctv_media_providers::bilibili::VideoId;
     let vid = VideoId::Bvid("BV1xx411c7mD".to_string());
     assert_eq!(vid, VideoId::Bvid("BV1xx411c7mD".to_string()));
 }
 
 #[test]
 fn test_video_id_aid() {
-    use synctv_media_providers::bilibili::types::VideoId;
+    use synctv_media_providers::bilibili::VideoId;
     let vid = VideoId::Aid(170_001);
     assert_eq!(vid, VideoId::Aid(170_001));
 }
 
 #[test]
 fn test_episode_id() {
-    use synctv_media_providers::bilibili::types::EpisodeId;
+    use synctv_media_providers::bilibili::EpisodeId;
     let eid = EpisodeId("ep123456".to_string());
     assert_eq!(eid.0, "ep123456");
 }
@@ -342,7 +352,7 @@ fn test_episode_id() {
 
 #[test]
 fn test_video_page_info_resp_deserialize() {
-    use synctv_media_providers::bilibili::types::VideoPageInfoResp;
+    use synctv_media_providers::bilibili::VideoPageInfoResp;
     let json = serde_json::json!({
         "code": 0,
         "message": "0",
@@ -385,7 +395,7 @@ fn test_video_page_info_resp_deserialize() {
 
 #[test]
 fn test_video_url_resp_deserialize() {
-    use synctv_media_providers::bilibili::types::VideoUrlResp;
+    use synctv_media_providers::bilibili::VideoUrlResp;
     let json = serde_json::json!({
         "code": 0,
         "message": "0",
@@ -413,7 +423,7 @@ fn test_video_url_resp_deserialize() {
 
 #[test]
 fn test_dash_video_resp_deserialize() {
-    use synctv_media_providers::bilibili::types::DashVideoResp;
+    use synctv_media_providers::bilibili::DashVideoResp;
     let json = serde_json::json!({
         "code": 0,
         "message": "0",
@@ -476,7 +486,7 @@ fn test_dash_video_resp_deserialize() {
 
 #[test]
 fn test_live_room_play_info_resp_deserialize() {
-    use synctv_media_providers::bilibili::types::RoomPlayInfoResp;
+    use synctv_media_providers::bilibili::RoomPlayInfoResp;
     let json = serde_json::json!({
         "code": 0,
         "message": "0",
@@ -524,7 +534,7 @@ fn test_live_room_play_info_resp_deserialize() {
 
 #[test]
 fn test_season_info_resp_deserialize() {
-    use synctv_media_providers::bilibili::types::SeasonInfoResp;
+    use synctv_media_providers::bilibili::SeasonInfoResp;
     let json = serde_json::json!({
         "code": 0,
         "message": "success",
@@ -556,7 +566,7 @@ fn test_season_info_resp_deserialize() {
 
 #[test]
 fn test_parse_live_page_resp_deserialize() {
-    use synctv_media_providers::bilibili::types::ParseLivePageResp;
+    use synctv_media_providers::bilibili::ParseLivePageResp;
     let json = serde_json::json!({
         "code": 0,
         "message": "0",
@@ -578,7 +588,7 @@ fn test_parse_live_page_resp_deserialize() {
 
 #[test]
 fn test_nav_resp_deserialize() {
-    use synctv_media_providers::bilibili::types::NavResp;
+    use synctv_media_providers::bilibili::NavResp;
     let json = serde_json::json!({
         "code": 0,
         "message": "0",
@@ -605,7 +615,7 @@ fn test_nav_resp_deserialize() {
 
 #[test]
 fn test_nav_resp_deserialize_without_wbi_img() {
-    use synctv_media_providers::bilibili::types::NavResp;
+    use synctv_media_providers::bilibili::NavResp;
     let json = serde_json::json!({
         "code": 0,
         "message": "0",
@@ -626,7 +636,7 @@ fn test_nav_resp_deserialize_without_wbi_img() {
 
 #[test]
 fn test_video_page_info_with_ugc_season() {
-    use synctv_media_providers::bilibili::types::VideoPageInfoResp;
+    use synctv_media_providers::bilibili::VideoPageInfoResp;
     let json = serde_json::json!({
         "code": 0,
         "message": "0",
@@ -687,7 +697,7 @@ fn test_video_page_info_with_ugc_season() {
 
 #[test]
 fn test_live_danmu_info_resp_deserialize() {
-    use synctv_media_providers::bilibili::types::GetLiveDanmuInfoResp;
+    use synctv_media_providers::bilibili::GetLiveDanmuInfoResp;
     let json = serde_json::json!({
         "code": 0,
         "message": "0",
@@ -714,7 +724,7 @@ fn test_live_danmu_info_resp_deserialize() {
 
 #[test]
 fn test_video_page_info_error_code() {
-    use synctv_media_providers::bilibili::types::VideoPageInfoResp;
+    use synctv_media_providers::bilibili::VideoPageInfoResp;
     let json = serde_json::json!({
         "code": -404,
         "message": "Video not found",
@@ -736,7 +746,7 @@ fn test_video_page_info_error_code() {
 
 #[test]
 fn test_dash_pgc_resp_deserialize() {
-    use synctv_media_providers::bilibili::types::DashPgcResp;
+    use synctv_media_providers::bilibili::DashPgcResp;
     let json = serde_json::json!({
         "code": 0,
         "message": "success",
@@ -758,7 +768,7 @@ fn test_dash_pgc_resp_deserialize() {
 
 #[test]
 fn test_pgc_url_resp_deserialize() {
-    use synctv_media_providers::bilibili::types::PgcUrlResp;
+    use synctv_media_providers::bilibili::PgcUrlResp;
     let json = serde_json::json!({
         "code": 0,
         "message": "success",
@@ -779,64 +789,6 @@ fn test_pgc_url_resp_deserialize() {
     assert_eq!(resp.code, 0);
     assert_eq!(resp.result.quality, 80);
     assert_eq!(resp.result.durl.len(), 1);
-}
-
-// Danmaku heartbeat packet tests
-
-/// Test that build_heartbeat_packet produces correct binary format
-/// Header format: packet_length (4) + header_length (2) + version (2) + operation (4) + sequence (4)
-#[test]
-fn test_heartbeat_packet_format() {
-    use synctv_media_providers::bilibili::client::build_heartbeat_packet;
-
-    let packet = build_heartbeat_packet();
-
-    // Heartbeat packet is exactly 16 bytes (header only, no body)
-    assert_eq!(packet.len(), 16);
-
-    // Packet length (big-endian u32) = 16
-    assert_eq!(&packet[0..4], &[0, 0, 0, 16]);
-
-    // Header length (big-endian u16) = 16
-    assert_eq!(&packet[4..6], &[0, 16]);
-
-    // Protocol version (big-endian u16) = 1
-    assert_eq!(&packet[6..8], &[0, 1]);
-
-    // Operation (big-endian u32) = 2 (heartbeat)
-    assert_eq!(&packet[8..12], &[0, 0, 0, 2]);
-
-    // Sequence (big-endian u32) = 1
-    assert_eq!(&packet[12..16], &[0, 0, 0, 1]);
-}
-
-/// Test that build_auth_packet produces correct format
-#[test]
-fn test_auth_packet_format() {
-    use synctv_media_providers::bilibili::client::build_auth_packet;
-
-    let packet = build_auth_packet(12345, "test_token");
-
-    // Minimum size is 16 byte header + some JSON body
-    assert!(packet.len() > 16);
-
-    // Header length (big-endian u16) = 16
-    assert_eq!(&packet[4..6], &[0, 16]);
-
-    // Protocol version (big-endian u16) = 1
-    assert_eq!(&packet[6..8], &[0, 1]);
-
-    // Operation (big-endian u32) = 7 (auth)
-    assert_eq!(&packet[8..12], &[0, 0, 0, 7]);
-
-    // Sequence (big-endian u32) = 1
-    assert_eq!(&packet[12..16], &[0, 0, 0, 1]);
-
-    // Body should contain JSON with roomid
-    let body = &packet[16..];
-    let json: serde_json::Value = serde_json::from_slice(body).unwrap();
-    assert_eq!(json["roomid"], 12345);
-    assert_eq!(json["key"], "test_token");
 }
 
 // DanmakuMessage tests

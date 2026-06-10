@@ -3,7 +3,7 @@ use {
         define, define::ClientHandshakeState, errors::HandshakeError,
         handshake_trait::THandshakeClient, utils,
     },
-    crate::bytesio::{bytes_reader::BytesReader, bytes_writer::AsyncBytesWriter, bytesio::TNetIO},
+    crate::bytesio::{bytes_reader::BytesReader, bytes_writer::AsyncBytesWriter, net_io::TNetIO},
     byteorder::BigEndian,
     bytes::BytesMut,
     std::sync::Arc,
@@ -11,17 +11,12 @@ use {
 };
 
 fn rtmp_version_u8() -> u8 {
-    u8::try_from(define::RTMP_VERSION).expect("RTMP version constant should fit into u8")
+    define::RTMP_VERSION
 }
 
 fn handshake_random_len_u32() -> u32 {
-    u32::try_from(define::RTMP_HANDSHAKE_SIZE - 8)
-        .expect("RTMP handshake random payload length should fit into u32")
+    define::RTMP_HANDSHAKE_RANDOM_SIZE_U32
 }
-
-// use super::define;
-// use super::utils;
-// use super::{define::ClientHandshakeState, handshake_trait::THandshakeClient};
 
 pub struct SimpleHandshakeClient {
     reader: BytesReader,
@@ -109,7 +104,8 @@ impl THandshakeClient for SimpleHandshakeClient {
         Ok(())
     }
     fn read_s2(&mut self) -> Result<(), HandshakeError> {
-        let _ = self.reader.read_bytes(define::RTMP_HANDSHAKE_SIZE)?;
+        let s2_echo = self.reader.read_bytes(define::RTMP_HANDSHAKE_SIZE)?;
+        drop(s2_echo);
         Ok(())
     }
 }

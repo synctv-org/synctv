@@ -6,57 +6,108 @@
       {
         "ordinal": 0,
         "name": "id: ReviewRequestId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_join_requests",
+            "name": "id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "room_id: RoomId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_join_requests",
+            "name": "room_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "room_name!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": "Expression"
       },
       {
         "ordinal": 3,
         "name": "user_id: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_join_requests",
+            "name": "user_id"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "username!",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": "Expression"
       },
       {
         "ordinal": 5,
         "name": "requested_role!",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": "Expression"
       },
       {
         "ordinal": 6,
         "name": "status: ReviewStatus",
-        "type_info": "Int2"
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "room_join_requests",
+            "name": "status"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "requested_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_join_requests",
+            "name": "requested_at"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "reviewed_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_join_requests",
+            "name": "reviewed_at"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "reviewed_by: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_join_requests",
+            "name": "reviewed_by"
+          }
+        }
       },
       {
         "ordinal": 10,
         "name": "rejection_reason",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_join_requests",
+            "name": "rejection_reason"
+          }
+        }
       }
     ],
     "parameters": {

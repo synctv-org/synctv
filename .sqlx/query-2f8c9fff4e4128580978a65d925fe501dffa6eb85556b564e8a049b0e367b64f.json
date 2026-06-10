@@ -6,7 +6,13 @@
       {
         "ordinal": 0,
         "name": "id: crate::models::UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
       }
     ],
     "parameters": {

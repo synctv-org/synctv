@@ -6,7 +6,7 @@ use synctv_core::service::{
     AuditService, BanRecordService, EmailService, RemoteProviderManager, ReviewService,
     RoomService, SettingsRegistry, SettingsService, UserService,
 };
-use synctv_livestream::api::LiveStreamingInfrastructure;
+use synctv_livestream::LiveStreamingInfrastructure;
 
 #[cfg(test)]
 use synctv_core::models::MediaId;
@@ -40,9 +40,8 @@ use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanou
 use crate::room_lifecycle_fanout::{
     default_room_lifecycle_fanout_service_with_realtime, RoomLifecycleFanoutService,
 };
-use crate::runtime::{
-    LocalNoopRealtimeEventService, RealtimeConnectionService, RealtimeEventService,
-};
+use crate::runtime::{LocalNoopRealtimeEventService, RealtimeEventService};
+use synctv_realtime::sync::ConnectionRuntime;
 
 mod audit;
 mod auth;
@@ -84,35 +83,41 @@ pub struct AdminApiConfig {
     pub settings_service: Arc<SettingsService>,
     pub settings_registry: Option<Arc<SettingsRegistry>>,
     pub email_service: Arc<EmailService>,
-    pub connection_service: Arc<dyn RealtimeConnectionService>,
+    pub connection_service: Arc<dyn ConnectionRuntime>,
     pub provider_instance_manager: Arc<RemoteProviderManager>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub config: Arc<synctv_core::Config>,
     pub audit_service: Arc<AuditService>,
-    pub public_id_codec: Arc<crate::PublicIdCodec>,
+    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
 }
 
 pub struct AdminApiRuntime {
     pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
     pub realtime_event_service: Arc<dyn RealtimeEventService>,
-    pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
-    pub provider_access_service: Option<Arc<dyn synctv_core::provider::ProviderAccessService>>,
-    pub request_executor: Option<Arc<RequestExecutor>>,
+    pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
+    pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
+    pub signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
+    pub request_executor: Arc<RequestExecutor>,
 }
 
 impl AdminApiRuntime {
     #[must_use]
-    pub fn test_disabled() -> Self {
+    pub fn local_disabled(
+        request_executor: Arc<RequestExecutor>,
+        signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
+        provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
+    ) -> Self {
         let realtime_event_service = Arc::new(LocalNoopRealtimeEventService::new());
         Self {
             realtime_fanout: crate::realtime_fanout::local_realtime_fanout_service(
                 realtime_event_service.clone(),
             ),
             realtime_event_service,
-            provider_stores: None,
-            provider_access_service: None,
-            request_executor: None,
+            provider_stores,
+            provider_access_service: crate::impls::disabled_provider_access_service(),
+            signing_key,
+            request_executor,
         }
     }
 }
@@ -127,7 +132,7 @@ pub struct AdminApiImpl {
     pub settings_service: Arc<SettingsService>,
     pub settings_registry: Option<Arc<SettingsRegistry>>,
     pub email_service: Arc<EmailService>,
-    pub connection_service: Arc<dyn RealtimeConnectionService>,
+    pub connection_service: Arc<dyn ConnectionRuntime>,
     pub provider_instance_manager: Arc<RemoteProviderManager>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
@@ -143,10 +148,11 @@ pub struct AdminApiImpl {
     pub room_lifecycle_fanout: Arc<dyn RoomLifecycleFanoutService>,
     pub realtime_event_service: Arc<dyn RealtimeEventService>,
     pub audit_service: Arc<AuditService>,
-    pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
-    pub provider_access_service: Option<Arc<dyn synctv_core::provider::ProviderAccessService>>,
-    pub public_id_codec: Arc<crate::PublicIdCodec>,
-    pub request_executor: Option<Arc<RequestExecutor>>,
+    pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
+    pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
+    pub signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
+    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    pub request_executor: Arc<RequestExecutor>,
 }
 
 impl AdminApiImpl {
@@ -215,6 +221,7 @@ impl AdminApiImpl {
             audit_service,
             provider_stores: runtime.provider_stores,
             provider_access_service: runtime.provider_access_service,
+            signing_key: runtime.signing_key,
             public_id_codec,
             request_executor: runtime.request_executor,
         }

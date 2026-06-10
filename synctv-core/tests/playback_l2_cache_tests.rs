@@ -6,7 +6,6 @@
 //! - L2 miss with PostgreSQL fallback
 //! - Cross-replica consistency via L2 cache
 //!
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -27,6 +26,7 @@ use synctv_core_testing::{
     redis_connection_manager, start_redis as start_test_redis,
     start_redis_client_manager_with_label,
 };
+use synctv_core_testing::{TestOptionExt, TestResultExt};
 
 // Test Helpers
 
@@ -39,7 +39,7 @@ async fn start_redis() -> (
 
 fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = JwtService::new(secret).checked("JWT service should be created");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -58,7 +58,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+    RoomService::new_for_tests(pool, user_service).checked("room service should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -105,12 +105,12 @@ async fn attach_test_media(
     let media = MediaRepository::new(pool.clone())
         .create(&media)
         .await
-        .expect("test media should be created");
+        .checked("test media should be created");
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
     let mut state = playback_repo
         .create_or_get(&room_id)
         .await
-        .expect("playback state should be created");
+        .checked("playback state should be created");
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
     state.target.clear();
@@ -118,7 +118,7 @@ async fn attach_test_media(
     playback_repo
         .update(&state)
         .await
-        .expect("playback state should attach test media")
+        .checked("playback state should attach test media")
 }
 
 // Test 1: L1 Cache Hit Behavior
@@ -136,7 +136,10 @@ async fn test_playback_state_l1_cache_hit() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("l1_hit_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("l1_hit_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -147,16 +150,22 @@ async fn test_playback_state_l1_cache_hit() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
 
     // First call - populates L1 cache
-    let state1 = playback_service.get_state(&room.id).await.unwrap();
+    let state1 = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(state1.version >= 0);
 
     // Second call - should hit L1 cache (no DB query)
-    let state2 = playback_service.get_state(&room.id).await.unwrap();
+    let state2 = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(state2.room_id, state1.room_id);
     assert_eq!(state2.version, state1.version);
 }
@@ -178,12 +187,18 @@ async fn test_playback_state_l1_miss_hits_l2() {
 
     // Verify Redis is working
     let mut conn = redis_conn.clone();
-    let _: () = conn.set_ex("test:ping", "pong", 60).await.unwrap();
+    let _: () = conn
+        .set_ex("test:ping", "pong", 60)
+        .await
+        .checked("test operation should succeed");
 
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("l2_hit_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("l2_hit_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -194,23 +209,31 @@ async fn test_playback_state_l1_miss_hits_l2() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
 
     // First call populates L1 and L2.
-    let state1 = playback_service.get_state(&room.id).await.unwrap();
+    let state1 = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
 
     // Manually populate L2 to verify it is checked.
     let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn));
     let l2_key = format!("synctv:playback:{}", room.id);
 
     // Manually set in L2 to simulate it being there
-    let state_json = serde_json::to_string(&state1).unwrap();
-    l2.set(&l2_key, &state_json, 300).await.unwrap();
+    let state_json = serde_json::to_string(&state1).checked("test operation should succeed");
+    l2.set(&l2_key, &state_json, 300)
+        .await
+        .checked("test operation should succeed");
 
     // Verify L2 has the data
-    let from_l2 = l2.get(&l2_key).await.unwrap();
+    let from_l2 = l2
+        .get(&l2_key)
+        .await
+        .checked("test operation should succeed");
     assert!(from_l2.is_some(), "L2 should have the playback state");
 }
 
@@ -234,7 +257,7 @@ async fn test_playback_state_l2_miss_reads_from_db() {
     let owner = user_repo
         .create(&make_user("db_fallback_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -245,12 +268,15 @@ async fn test_playback_state_l2_miss_reads_from_db() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
 
     // Get state from DB
-    let state = playback_service.get_state(&room.id).await.unwrap();
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(state.version >= 0, "Should have valid state from DB");
 
     // Verify in PostgreSQL directly
@@ -272,7 +298,7 @@ async fn test_playback_state_l2_miss_reads_from_db() {
     .bind(room.id)
     .fetch_one(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
 
     assert_eq!(db_state.room_id, room.id);
 }
@@ -289,7 +315,7 @@ async fn test_playback_state_get_state_persists_missing_row() {
     let owner = user_repo
         .create(&make_user("persist_missing_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -300,26 +326,26 @@ async fn test_playback_state_get_state_persists_missing_row() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
         .bind(room.id)
         .execute(&pool)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let state = room_service
         .playback_service()
         .get_state(&room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let persisted: Option<(RoomId,)> =
         sqlx::query_as("SELECT room_id FROM room_playback_state WHERE room_id = $1")
             .bind(room.id)
             .fetch_optional(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
 
     assert_eq!(state.room_id, room.id);
     assert!(
@@ -351,7 +377,7 @@ async fn test_playback_state_cross_replica_consistency() {
     let owner = user_repo
         .create(&make_user("cross_replica_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -362,7 +388,7 @@ async fn test_playback_state_cross_replica_consistency() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
     attach_test_media(&pool, room.id, owner.id).await;
@@ -371,10 +397,13 @@ async fn test_playback_state_cross_replica_consistency() {
     let updated_state = playback_service
         .seek(room.id, owner.id, 123.45)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Verify state is updated in DB
-    let db_state = playback_service.get_state(&room.id).await.unwrap();
+    let db_state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         (db_state.position - 123.45).abs() < f64::EPSILON,
         "State should be updated in DB"
@@ -385,15 +414,22 @@ async fn test_playback_state_cross_replica_consistency() {
     let l2_key = format!("synctv:playback:{}", room.id);
 
     // Set in L2 (simulating what the implementation should do)
-    let state_json = serde_json::to_string(&updated_state.state).unwrap();
-    l2.set(&l2_key, &state_json, 300).await.unwrap();
+    let state_json =
+        serde_json::to_string(&updated_state.state).checked("test operation should succeed");
+    l2.set(&l2_key, &state_json, 300)
+        .await
+        .checked("test operation should succeed");
 
     // Read from L2 (simulating another replica)
-    let from_l2 = l2.get(&l2_key).await.unwrap();
+    let from_l2 = l2
+        .get(&l2_key)
+        .await
+        .checked("test operation should succeed");
     assert!(from_l2.is_some(), "L2 should have the updated state");
 
     let deserialized: synctv_core::models::RoomPlaybackState =
-        serde_json::from_str(&from_l2.unwrap()).unwrap();
+        serde_json::from_str(&from_l2.checked("test operation should succeed"))
+            .checked("test operation should succeed");
     assert!(
         (deserialized.position - 123.45).abs() < f64::EPSILON,
         "L2 should have updated position"
@@ -418,7 +454,7 @@ async fn test_playback_state_cache_invalidation_on_update() {
     let owner = user_repo
         .create(&make_user("cache_inv_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -429,23 +465,29 @@ async fn test_playback_state_cache_invalidation_on_update() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
     attach_test_media(&pool, room.id, owner.id).await;
 
     // Get initial state (populates cache)
-    let initial_state = playback_service.get_state(&room.id).await.unwrap();
+    let initial_state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     let initial_version = initial_state.version;
 
     // Update state (should invalidate cache)
     let _ = playback_service
         .seek(room.id, owner.id, 50.0)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Get state again (should fetch fresh from DB, not stale cache)
-    let updated_state = playback_service.get_state(&room.id).await.unwrap();
+    let updated_state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
 
     // Version should be incremented
     assert!(
@@ -468,7 +510,7 @@ async fn test_playback_get_state_bypasses_stale_l1_without_invalidation() {
     let owner = user_repo
         .create(&make_user("strong_playback_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -479,7 +521,7 @@ async fn test_playback_get_state_bypasses_stale_l1_without_invalidation() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
     let attached_state = attach_test_media(&pool, room.id, owner.id).await;
@@ -487,7 +529,7 @@ async fn test_playback_get_state_bypasses_stale_l1_without_invalidation() {
     let cached_state = playback_service
         .get_state_eventually_consistent(&room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     sqlx::query(
         r#"WITH progress_update AS (
@@ -504,23 +546,26 @@ async fn test_playback_get_state_bypasses_stale_l1_without_invalidation() {
     .bind(
         attached_state
             .current_progress_id
-            .expect("current progress id"),
+            .checked("current progress id"),
     )
     .bind(77.0_f64)
     .execute(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
 
     let eventual_state = playback_service
         .get_state_eventually_consistent(&room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(
         eventual_state.version, cached_state.version,
         "eventual path should demonstrate the stale L1 fixture is still present"
     );
 
-    let strong_state = playback_service.get_state(&room.id).await.unwrap();
+    let strong_state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         strong_state.version > cached_state.version,
         "strong get_state must bypass stale L1"
@@ -547,12 +592,17 @@ async fn test_playback_state_l2_has_proper_ttl() {
     // Set a value with TTL
     let test_state =
         synctv_core::models::RoomPlaybackState::new(RoomId::expect_positive(1_001_000));
-    let state_json = serde_json::to_string(&test_state).unwrap();
-    l2.set(l2_key, &state_json, 60).await.unwrap();
+    let state_json = serde_json::to_string(&test_state).checked("test operation should succeed");
+    l2.set(l2_key, &state_json, 60)
+        .await
+        .checked("test operation should succeed");
 
     // Verify TTL is set
     let mut conn = redis_conn.clone();
-    let ttl: i64 = conn.ttl(l2_key).await.unwrap();
+    let ttl: i64 = conn
+        .ttl(l2_key)
+        .await
+        .checked("test operation should succeed");
     assert!(ttl > 0 && ttl <= 60, "TTL should be set and <= 60 seconds");
 }
 
@@ -578,14 +628,14 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
     newer_state.position = 100.0;
     newer_state.updated_at = Utc::now();
 
-    let newer_json = serde_json::to_string(&newer_state).unwrap();
+    let newer_json = serde_json::to_string(&newer_state).checked("test operation should succeed");
     let newer_ts = newer_state.updated_at.timestamp_millis();
 
     // Set newer state first
     let was_set = l2
         .set_if_newer(l2_key, &newer_json, 300, newer_ts)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(was_set, "Newer state should be set");
 
     let mut older_state =
@@ -594,19 +644,24 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
     older_state.position = 50.0;
     older_state.updated_at = Utc::now() - chrono::Duration::seconds(10);
 
-    let older_json = serde_json::to_string(&older_state).unwrap();
+    let older_json = serde_json::to_string(&older_state).checked("test operation should succeed");
     let older_ts = older_state.updated_at.timestamp_millis();
 
     // Try to set older state - should be rejected
     let was_set = l2
         .set_if_newer(l2_key, &older_json, 300, older_ts)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(!was_set, "Older state should NOT overwrite newer state");
 
     // Verify L2 still has the newer state
-    let from_l2 = l2.get(l2_key).await.unwrap().unwrap();
-    let stored: synctv_core::models::RoomPlaybackState = serde_json::from_str(&from_l2).unwrap();
+    let from_l2 = l2
+        .get(l2_key)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
+    let stored: synctv_core::models::RoomPlaybackState =
+        serde_json::from_str(&from_l2).checked("test operation should succeed");
     assert_eq!(stored.version, 10, "Version should still be 10");
 }
 
@@ -628,7 +683,7 @@ async fn test_playback_state_singleflight_prevents_thundering_herd() {
     let owner = user_repo
         .create(&make_user("singleflight_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -639,7 +694,7 @@ async fn test_playback_state_singleflight_prevents_thundering_herd() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Spawn concurrent get_state requests
     let mut handles = vec![];
@@ -664,8 +719,10 @@ async fn test_playback_state_singleflight_prevents_thundering_herd() {
     for result in &results {
         match result {
             Ok(Ok(_)) => success_count += 1,
-            Ok(Err(e)) => panic!("Request failed: {e:?}"),
-            Err(e) => panic!("Task panicked: {e:?}"),
+            Ok(Err(e)) => {
+                std::panic::panic_any(format!("playback state request failed: {e:?}"));
+            }
+            Err(e) => std::panic::panic_any(format!("playback state task should complete: {e:?}")),
         }
     }
 
@@ -695,7 +752,7 @@ async fn test_playback_state_l2_fallback_when_pubsub_fails() {
     let owner = user_repo
         .create(&make_user("l2_fallback_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -706,7 +763,7 @@ async fn test_playback_state_l2_fallback_when_pubsub_fails() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
     attach_test_media(&pool, room.id, owner.id).await;
@@ -715,17 +772,22 @@ async fn test_playback_state_l2_fallback_when_pubsub_fails() {
     let result = playback_service
         .seek(room.id, owner.id, 200.0)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Write to L2 to simulate a value produced by another replica.
     let l2_key = format!("synctv:playback:{}", room.id);
-    let state_json = serde_json::to_string(&result.state).unwrap();
-    l2.set(&l2_key, &state_json, 300).await.unwrap();
+    let state_json = serde_json::to_string(&result.state).checked("test operation should succeed");
+    l2.set(&l2_key, &state_json, 300)
+        .await
+        .checked("test operation should succeed");
 
     // Clear L1 to simulate another replica
     playback_service.invalidate_playback_cache(&room.id).await;
 
-    let fresh_state = playback_service.get_state(&room.id).await.unwrap();
+    let fresh_state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         (fresh_state.position - 200.0).abs() < f64::EPSILON,
         "State should be read correctly from DB after L1 invalidation"
@@ -763,7 +825,10 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
         "node-subscriber".to_string(),
         cache_stream.clone(),
     ));
-    subscriber.start().await.unwrap();
+    subscriber
+        .start()
+        .await
+        .checked("test operation should succeed");
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let publisher = Arc::new(synctv_core::cache::CacheInvalidationService::from_runtime(
@@ -778,17 +843,21 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
         user_service,
         RoomServiceOptions {
             cache_invalidation: Some(subscriber.clone()),
-            playback_l2_cache: Some(l2_cache.clone()),
-            ..RoomServiceOptions::test_defaults()
+            playback_l2_cache: l2_cache.clone(),
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
-    .expect("room service should build");
-    room_service.playback_service().start().await.unwrap();
+    .checked("room service should build");
+    room_service
+        .playback_service()
+        .start()
+        .await
+        .checked("test operation should succeed");
 
     let owner = user_repo
         .create(&make_user("invalidate_l2_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -799,18 +868,35 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
-    let state = playback_service.get_state(&room.id).await.unwrap();
-    l2_cache.set(&room.id, state.clone()).await.unwrap();
-    assert!(l2_cache.get(&room.id).await.unwrap().is_some());
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
+    l2_cache
+        .set(&room.id, state.clone())
+        .await
+        .checked("test operation should succeed");
+    assert!(l2_cache
+        .get(&room.id)
+        .await
+        .checked("test operation should succeed")
+        .is_some());
 
-    publisher.invalidate_playback_state(&room.id).await.unwrap();
+    publisher
+        .invalidate_playback_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     assert!(
-        l2_cache.get(&room.id).await.unwrap().is_none(),
+        l2_cache
+            .get(&room.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none(),
         "cross-replica invalidation must remove stale playback state from Redis L2"
     );
 }
@@ -837,33 +923,55 @@ async fn test_playback_state_cache_direct_with_redis() {
 
     // Cache miss
     assert!(
-        cache.get(&room_id).await.unwrap().is_none(),
+        cache
+            .get(&room_id)
+            .await
+            .checked("test operation should succeed")
+            .is_none(),
         "Should be a cache miss initially"
     );
 
     // Set in cache
-    cache.set(&room_id, state.clone()).await.unwrap();
+    cache
+        .set(&room_id, state.clone())
+        .await
+        .checked("test operation should succeed");
 
     // L1 hit
-    let from_cache = cache.get(&room_id).await.unwrap().unwrap();
+    let from_cache = cache
+        .get(&room_id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert_eq!(from_cache.room_id, room_id);
 
     // Clear L1, then check L2
     cache.clear_l1();
 
     // L2 hit
-    let from_l2 = cache.get(&room_id).await.unwrap().unwrap();
+    let from_l2 = cache
+        .get(&room_id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert_eq!(
         from_l2.room_id, room_id,
         "Should get from L2 after L1 clear"
     );
 
     // Invalidate both
-    cache.invalidate(&room_id).await.unwrap();
+    cache
+        .invalidate(&room_id)
+        .await
+        .checked("test operation should succeed");
 
     // Both should be gone
     assert!(
-        cache.get(&room_id).await.unwrap().is_none(),
+        cache
+            .get(&room_id)
+            .await
+            .checked("test operation should succeed")
+            .is_none(),
         "Should be gone after invalidation"
     );
 }
@@ -887,7 +995,10 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
     state1.updated_at = Utc::now();
 
     // Set initial state
-    cache.set(&room_id, state1.clone()).await.unwrap();
+    cache
+        .set(&room_id, state1.clone())
+        .await
+        .checked("test operation should succeed");
 
     let mut state2 = synctv_core::models::RoomPlaybackState::new(room_id);
     state2.version = 10;
@@ -895,14 +1006,21 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
     state2.updated_at = Utc::now() + chrono::Duration::seconds(10);
 
     // Set newer state - should succeed
-    let was_set = cache.set_if_newer(&room_id, state2.clone()).await.unwrap();
+    let was_set = cache
+        .set_if_newer(&room_id, state2.clone())
+        .await
+        .checked("test operation should succeed");
     assert!(was_set, "Newer state should be set");
 
     // Clear L1 to force read from L2
     cache.clear_l1();
 
     // Verify we get the newer state
-    let from_cache = cache.get(&room_id).await.unwrap().unwrap();
+    let from_cache = cache
+        .get(&room_id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert_eq!(from_cache.version, 10, "Should have version 10");
     assert!(
         (from_cache.position - 100.0).abs() < f64::EPSILON,
@@ -915,11 +1033,18 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
     state3.updated_at = Utc::now() - chrono::Duration::seconds(30);
 
     // Try to set older state - should be rejected
-    let was_set = cache.set_if_newer(&room_id, state3).await.unwrap();
+    let was_set = cache
+        .set_if_newer(&room_id, state3)
+        .await
+        .checked("test operation should succeed");
     assert!(!was_set, "Older state should be rejected");
 
     // Verify we still have the newer state
     cache.clear_l1();
-    let from_cache = cache.get(&room_id).await.unwrap().unwrap();
+    let from_cache = cache
+        .get(&room_id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert_eq!(from_cache.version, 10, "Should still have version 10");
 }

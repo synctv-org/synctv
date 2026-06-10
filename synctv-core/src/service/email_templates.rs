@@ -1,4 +1,4 @@
-//! Email templates for email binding, password reset, login, and notifications
+//! Email templates for email binding, password reset, login, and test messages.
 //!
 //! Uses Handlebars for template rendering with variable substitution
 
@@ -6,7 +6,7 @@ use handlebars::Handlebars;
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::{Error, InternalExt, Result};
+use crate::{InternalExt, Result};
 
 const EMAIL_BIND_TEMPLATE: &str = include_str!("email_templates/email_bind.html.hbs");
 const EMAIL_BIND_TEXT_TEMPLATE: &str = include_str!("email_templates/email_bind.txt.hbs");
@@ -20,10 +20,8 @@ const EMAIL_REGISTRATION_TEXT_TEMPLATE: &str =
     include_str!("email_templates/email_registration.txt.hbs");
 const TEST_EMAIL_TEMPLATE: &str = include_str!("email_templates/test_email.html.hbs");
 const TEST_EMAIL_TEXT_TEMPLATE: &str = include_str!("email_templates/test_email.txt.hbs");
-const NOTIFICATION_TEMPLATE: &str = include_str!("email_templates/notification.html.hbs");
-const NOTIFICATION_TEXT_TEMPLATE: &str = include_str!("email_templates/notification.txt.hbs");
 
-const TEMPLATE_DEFINITIONS: [(&str, &str, &str); 12] = [
+const TEMPLATE_DEFINITIONS: [(&str, &str, &str); 10] = [
     (
         "email_bind",
         EMAIL_BIND_TEMPLATE,
@@ -74,34 +72,7 @@ const TEMPLATE_DEFINITIONS: [(&str, &str, &str); 12] = [
         TEST_EMAIL_TEXT_TEMPLATE,
         "Failed to register test email text template",
     ),
-    (
-        "notification",
-        NOTIFICATION_TEMPLATE,
-        "Failed to register notification template",
-    ),
-    (
-        "notification_text",
-        NOTIFICATION_TEXT_TEMPLATE,
-        "Failed to register notification text template",
-    ),
 ];
-
-/// Email template type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EmailTemplateType {
-    /// Email bind template
-    EmailBind,
-    /// Password reset template
-    PasswordReset,
-    /// Passwordless email login template
-    EmailLogin,
-    /// Email registration template
-    EmailRegistration,
-    /// Test email template
-    TestEmail,
-    /// General notification template
-    Notification,
-}
 
 /// Email template manager
 pub struct EmailTemplateManager {
@@ -263,56 +234,25 @@ impl EmailTemplateManager {
 
         Ok((html, plain_text))
     }
-
-    /// Render notification email template
-    ///
-    /// # Arguments
-    /// * `title` - Notification title
-    /// * `message` - Notification message
-    /// * `action_text` - Optional action button text
-    /// * `action_url` - Optional action button URL
-    pub fn render_notification_email(
-        &self,
-        title: &str,
-        message: &str,
-        action_text: Option<&str>,
-        action_url: Option<&str>,
-    ) -> Result<(String, String)> {
-        // Validate action_url scheme to prevent XSS via javascript:/data:/vbscript: URIs
-        if let Some(url) = action_url {
-            let lower = url.trim().to_lowercase();
-            if !(lower.starts_with("https://") || lower.starts_with("http://")) {
-                return Err(Error::InvalidInput(
-                    "action_url must use http:// or https:// scheme".to_string(),
-                ));
-            }
-        }
-
-        let data = json!({
-            "title": title,
-            "message": message,
-            "action_text": action_text,
-            "action_url": action_url,
-            "has_action": action_text.is_some() && action_url.is_some(),
-        });
-
-        let html = self
-            .handlebars
-            .render("notification", &data)
-            .internal_with_err("Failed to render template")?;
-
-        let plain_text = self
-            .handlebars
-            .render("notification_text", &data)
-            .internal_with_err("Failed to render template")?;
-
-        Ok((html, plain_text))
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    fn manager() -> EmailTemplateManager {
+        ok(
+            EmailTemplateManager::new(),
+            "email template manager should build",
+        )
+    }
 
     #[test]
     fn test_create_template_manager() {
@@ -322,11 +262,11 @@ mod tests {
 
     #[test]
     fn test_render_email_bind_email() {
-        let manager = EmailTemplateManager::new().unwrap();
+        let manager = manager();
         let result = manager.render_email_bind_email("123456", "24 hours");
         assert!(result.is_ok());
 
-        let (html, plain_text) = result.unwrap();
+        let (html, plain_text) = ok(result, "email bind template should render");
         assert!(html.contains("123456"));
         assert!(html.contains("24 hours"));
         assert!(plain_text.contains("123456"));
@@ -334,11 +274,11 @@ mod tests {
 
     #[test]
     fn test_render_email_login_email() {
-        let manager = EmailTemplateManager::new().unwrap();
+        let manager = manager();
         let result = manager.render_email_login_email("654321", "15 minutes");
         assert!(result.is_ok());
 
-        let (html, plain_text) = result.unwrap();
+        let (html, plain_text) = ok(result, "email login template should render");
         assert!(html.contains("654321"));
         assert!(html.contains("15 minutes"));
         assert!(plain_text.contains("654321"));
@@ -347,11 +287,11 @@ mod tests {
 
     #[test]
     fn test_render_email_registration_email() {
-        let manager = EmailTemplateManager::new().unwrap();
+        let manager = manager();
         let result = manager.render_email_registration_email("654321", "15 minutes");
         assert!(result.is_ok());
 
-        let (html, plain_text) = result.unwrap();
+        let (html, plain_text) = ok(result, "email registration template should render");
         assert!(html.contains("654321"));
         assert!(html.contains("15 minutes"));
         assert!(plain_text.contains("654321"));
@@ -360,11 +300,11 @@ mod tests {
 
     #[test]
     fn test_render_password_reset_email() {
-        let manager = EmailTemplateManager::new().unwrap();
+        let manager = manager();
         let result = manager.render_password_reset_email("ABC123", "1 hour");
         assert!(result.is_ok());
 
-        let (html, plain_text) = result.unwrap();
+        let (html, plain_text) = ok(result, "password reset template should render");
         assert!(html.contains("ABC123"));
         assert!(html.contains("1 hour"));
         assert!(plain_text.contains("ABC123"));
@@ -372,103 +312,13 @@ mod tests {
 
     #[test]
     fn test_render_test_email() {
-        let manager = EmailTemplateManager::new().unwrap();
+        let manager = manager();
         let result = manager.render_test_email("smtp.example.com", 587, "2024-01-01 12:00:00");
         assert!(result.is_ok());
 
-        let (html, plain_text) = result.unwrap();
+        let (html, plain_text) = ok(result, "test email template should render");
         assert!(html.contains("smtp.example.com"));
         assert!(html.contains("587"));
         assert!(plain_text.contains("smtp.example.com:587"));
-    }
-
-    #[test]
-    fn test_render_notification_email() {
-        let manager = EmailTemplateManager::new().unwrap();
-
-        // Without action button
-        let result = manager.render_notification_email(
-            "System Update",
-            "The system has been updated successfully.",
-            None,
-            None,
-        );
-        assert!(result.is_ok());
-
-        // With action button
-        let result = manager.render_notification_email(
-            "New Message",
-            "You have a new message in your inbox.",
-            Some("View Message"),
-            Some("https://example.com/messages"),
-        );
-        assert!(result.is_ok());
-
-        let (html, _) = result.unwrap();
-        assert!(html.contains("View Message"));
-        assert!(html.contains("https://example.com/messages"));
-    }
-
-    #[test]
-    fn test_notification_rejects_javascript_url() {
-        let manager = EmailTemplateManager::new().unwrap();
-
-        // javascript: scheme should be rejected
-        let result = manager.render_notification_email(
-            "Test",
-            "Test message",
-            Some("Click"),
-            Some("javascript:alert(1)"),
-        );
-        assert!(result.is_err());
-
-        // data: scheme should be rejected
-        let result = manager.render_notification_email(
-            "Test",
-            "Test message",
-            Some("Click"),
-            Some("data:text/html,<script>alert(1)</script>"),
-        );
-        assert!(result.is_err());
-
-        // vbscript: scheme should be rejected
-        let result = manager.render_notification_email(
-            "Test",
-            "Test message",
-            Some("Click"),
-            Some("vbscript:MsgBox"),
-        );
-        assert!(result.is_err());
-
-        // Case-insensitive check
-        let result = manager.render_notification_email(
-            "Test",
-            "Test message",
-            Some("Click"),
-            Some("JAVASCRIPT:alert(1)"),
-        );
-        assert!(result.is_err());
-
-        // http:// should be allowed
-        let result = manager.render_notification_email(
-            "Test",
-            "Test message",
-            Some("Click"),
-            Some("http://example.com"),
-        );
-        assert!(result.is_ok());
-
-        // https:// should be allowed
-        let result = manager.render_notification_email(
-            "Test",
-            "Test message",
-            Some("Click"),
-            Some("https://example.com"),
-        );
-        assert!(result.is_ok());
-
-        // None action_url should be allowed
-        let result = manager.render_notification_email("Test", "Test message", None, None);
-        assert!(result.is_ok());
     }
 }

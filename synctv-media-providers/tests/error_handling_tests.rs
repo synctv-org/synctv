@@ -5,7 +5,7 @@
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
 
-use synctv_media_providers::error::*;
+use synctv_media_providers::*;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use wiremock::matchers::method;

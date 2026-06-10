@@ -223,11 +223,9 @@ impl ProviderProxy for DirectUrlProvider {
         ctx: &ProxyRequestContext<'_>,
     ) -> Result<ProxyAction, ProviderError> {
         let sub_path = ctx.sub_path;
-        let (version, maybe_rest) = sub_path
-            .split_once('/')
-            .map_or((sub_path, None), |(version, rest)| (version, Some(rest)));
+        let version = super::proxy::proxy_version_segment(sub_path)?;
 
-        if !version.is_empty() {
+        {
             let versioned =
                 super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
 
@@ -240,9 +238,7 @@ impl ProviderProxy for DirectUrlProvider {
                 return super::proxy::action_for_signed_target_url(ctx, version, url, headers);
             }
 
-            let Some(rest) = maybe_rest else {
-                return Err(ProviderError::NotFound);
-            };
+            let (_, rest) = super::proxy::split_versioned_proxy_path(sub_path)?;
 
             if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
                 let (playback_info, index_str) =
@@ -265,9 +261,7 @@ impl ProviderProxy for DirectUrlProvider {
                             subtitle_path,
                         )
                     };
-                let Ok(index) = index_str.parse::<usize>() else {
-                    return Err(ProviderError::NotFound);
-                };
+                let index = super::proxy::parse_proxy_index(index_str)?;
                 let subtitle = playback_info
                     .subtitles
                     .get(index)
@@ -301,9 +295,7 @@ impl ProviderProxy for DirectUrlProvider {
                             stream_path,
                         )
                     };
-                let Ok(index) = index_str.parse::<usize>() else {
-                    return Err(ProviderError::NotFound);
-                };
+                let index = super::proxy::parse_proxy_index(index_str)?;
                 let url = playback_info
                     .urls
                     .get(index)
@@ -341,9 +333,8 @@ impl ProviderProxy for DirectUrlProvider {
                 }
                 _ => {}
             }
+            Err(ProviderError::NotFound)
         }
-
-        Err(ProviderError::NotFound)
     }
 }
 
@@ -437,6 +428,7 @@ impl MediaProvider for DirectUrlProvider {
 mod tests {
     use super::*;
     use crate::provider::store::InMemoryProviderStore;
+    use crate::test_helpers::TestResultExt;
     use std::sync::Arc;
 
     #[test]
@@ -625,7 +617,7 @@ mod tests {
         let err = provider
             .generate_playback(&ProviderContext::new("synctv"), &source_config)
             .await
-            .expect_err("embedded playback result source_config should be rejected");
+            .failed("embedded playback result source_config should be rejected");
 
         assert!(
             err.to_string().contains("DirectUrl"),
@@ -643,7 +635,7 @@ mod tests {
         let err = provider
             .generate_playback(&ProviderContext::new("synctv"), &source_config)
             .await
-            .expect_err("DirectUrl must reject RTMP URLs");
+            .failed("DirectUrl must reject RTMP URLs");
 
         assert!(matches!(
             err,
@@ -686,7 +678,7 @@ mod tests {
                 Duration::from_mins(5),
             )
             .await
-            .unwrap();
+            .checked("operation should succeed");
         let claims = crate::proxy_signature::ProxyUrlClaims {
             provider: "direct_url".to_string(),
             version: version.to_string(),
@@ -707,7 +699,10 @@ mod tests {
             request_headers: &http::HeaderMap::new(),
         };
 
-        let action = DirectUrlProvider::new().resolve_proxy(&ctx).await.unwrap();
+        let action = DirectUrlProvider::new()
+            .resolve_proxy(&ctx)
+            .await
+            .checked("operation should succeed");
         match action {
             ProxyAction::M3u8Rewrite {
                 url,
@@ -722,7 +717,7 @@ mod tests {
                 );
                 assert_eq!(proxy_base, "/api/providers/proxy/direct_url/direct-hls");
             }
-            other => panic!("Expected M3u8Rewrite, got {other:?}"),
+            other => std::panic::panic_any(format!("Expected M3u8Rewrite, got {other:?}")),
         }
     }
 
@@ -741,7 +736,7 @@ mod tests {
             provider
                 .validate_source_config(&ctx, SourceConfig::media(&json!({ "url": url })))
                 .await
-                .expect("disabled SSRF policy should allow blocked hosts and IP literals");
+                .checked("disabled SSRF policy should allow blocked hosts and IP literals");
         }
     }
 
@@ -756,7 +751,7 @@ mod tests {
                 SourceConfig::media(&json!({ "url": "http://example.com:8080/video.mp4" })),
             )
             .await
-            .expect("disabled SSRF policy should allow non-default ports");
+            .checked("disabled SSRF policy should allow non-default ports");
     }
 
     #[tokio::test]
@@ -772,7 +767,7 @@ mod tests {
                 SourceConfig::media(&json!({ "url": "http://127.0.0.1:8080/video.mp4" })),
             )
             .await
-            .expect("private-network policy should allow loopback service ports");
+            .checked("private-network policy should allow loopback service ports");
     }
 
     #[tokio::test]
@@ -787,7 +782,7 @@ mod tests {
                 })),
             )
             .await
-            .expect_err("DirectUrl source_config must not contain provider_instance_name");
+            .failed("DirectUrl source_config must not contain provider_instance_name");
 
         assert!(matches!(
             err,
@@ -808,7 +803,7 @@ mod tests {
                 })),
             )
             .await
-            .expect_err("DirectUrl source_config must not accept proxy");
+            .failed("DirectUrl source_config must not accept proxy");
 
         assert!(matches!(
             err,
@@ -829,9 +824,7 @@ mod tests {
                 }),
             )
             .await
-            .expect_err(
-                "DirectUrl playback must not accept provider_instance_name in source_config",
-            );
+            .failed("DirectUrl playback must not accept provider_instance_name in source_config");
 
         assert!(matches!(
             err,
@@ -850,7 +843,7 @@ mod tests {
                 &json!({ "url": "http://localhost/video.mp4" }),
             )
             .await
-            .expect("disabled SSRF policy should allow blocked hosts");
+            .checked("disabled SSRF policy should allow blocked hosts");
         assert_eq!(
             result.playback_infos["direct"].urls,
             vec!["http://localhost/video.mp4"]
@@ -874,7 +867,7 @@ mod tests {
                 }),
             )
             .await
-            .expect("first playback should be cached");
+            .checked("first playback should be cached");
 
         let second = provider
             .generate_playback(
@@ -887,7 +880,7 @@ mod tests {
                 }),
             )
             .await
-            .expect("second playback should not reuse mismatched cached headers");
+            .checked("second playback should not reuse mismatched cached headers");
 
         assert_eq!(
             first.playback_infos["direct"].headers.get("Referer"),

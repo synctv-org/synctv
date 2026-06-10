@@ -1,5 +1,6 @@
 use super::*;
 use crate::models::SignupMethod;
+use crate::test_helpers::TestResultExt;
 use synctv_core_testing::create_test_pool;
 
 #[test]
@@ -62,18 +63,18 @@ async fn test_list_filters_by_search_and_role_with_total() {
     let alpha = repo
         .create(&User::new("zz_list_alpha".into(), SignupMethod::Email))
         .await
-        .unwrap();
+        .checked("operation should succeed");
     let beta = repo
         .create(&User::new("zz_list_beta".into(), SignupMethod::Email))
         .await
-        .unwrap();
+        .checked("operation should succeed");
     let admin = repo
         .create(&User::new("zz_list_admin".into(), SignupMethod::Email))
         .await
-        .unwrap();
+        .checked("operation should succeed");
     repo.update_role(&admin.id, UserRole::Admin, admin.version)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let query = UserListQuery {
         search: Some("zz_list_".to_string()),
@@ -84,7 +85,7 @@ async fn test_list_filters_by_search_and_role_with_total() {
         sort_direction: crate::models::SortDirection::Asc,
         pagination: crate::models::PageParams::new(Some(1), Some(10)),
     };
-    let (users, total) = repo.list(&query).await.unwrap();
+    let (users, total) = repo.list(&query).await.checked("operation should succeed");
     let usernames: Vec<_> = users.iter().map(|user| user.username.as_str()).collect();
 
     assert_eq!(total, 2);
@@ -103,22 +104,22 @@ async fn test_list_admins_returns_root_and_admin_only() {
     let root = repo
         .create(&User::new("zz_admin_root".into(), SignupMethod::Email))
         .await
-        .unwrap();
+        .checked("operation should succeed");
     let admin = repo
         .create(&User::new("zz_admin_admin".into(), SignupMethod::Email))
         .await
-        .unwrap();
+        .checked("operation should succeed");
     repo.create(&User::new("zz_admin_user".into(), SignupMethod::Email))
         .await
-        .unwrap();
+        .checked("operation should succeed");
     let root = repo
         .update_role(&root.id, UserRole::Root, root.version)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     let admin = repo
         .update_role(&admin.id, UserRole::Admin, admin.version)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let query = UserListQuery {
         search: Some("zz_admin_".to_string()),
@@ -129,7 +130,10 @@ async fn test_list_admins_returns_root_and_admin_only() {
         sort_direction: crate::models::SortDirection::Asc,
         pagination: crate::models::PageParams::new(Some(1), Some(10)),
     };
-    let (users, total) = repo.list_admins(&query).await.unwrap();
+    let (users, total) = repo
+        .list_admins(&query)
+        .await
+        .checked("operation should succeed");
     let usernames: Vec<_> = users.iter().map(|user| user.username.as_str()).collect();
 
     assert_eq!(total, 2);
@@ -145,7 +149,7 @@ async fn test_create_user() {
     let (_postgres, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
     let user = User::new("testuser".into(), SignupMethod::Email);
-    let created = repo.create(&user).await.unwrap();
+    let created = repo.create(&user).await.checked("operation should succeed");
     assert_eq!(created.username, "testuser");
 }
 
@@ -163,7 +167,7 @@ async fn test_create_oauth2_user_without_password_skips_password_credentials() {
     let created = repo
         .create(&user)
         .await
-        .expect("OAuth2 user should be created without password credentials");
+        .checked("OAuth2 user should be created without password credentials");
     let credential_exists = sqlx::query_scalar::<_, bool>(
         r"
         SELECT EXISTS(
@@ -176,7 +180,7 @@ async fn test_create_oauth2_user_without_password_skips_password_credentials() {
     .bind(created.id.as_i64())
     .fetch_one(&pool)
     .await
-    .expect("credential existence query should succeed");
+    .checked("credential existence query should succeed");
 
     assert!(!credential_exists);
 }
@@ -187,9 +191,11 @@ async fn test_create_user_duplicate_username_returns_already_exists() {
     let (_postgres, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
     let user1 = User::new("same_name".into(), SignupMethod::Email);
-    repo.create(&user1).await.unwrap();
+    repo.create(&user1)
+        .await
+        .checked("operation should succeed");
     let user2 = User::new("same_name".into(), SignupMethod::Email);
-    let err = repo.create(&user2).await.unwrap_err();
+    let err = repo.create(&user2).await.failed("operation should fail");
     assert!(matches!(err, Error::AlreadyExists(_)));
 }
 
@@ -199,8 +205,15 @@ async fn test_soft_delete_user() {
     let (_postgres, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
     let user = User::new("deleteme".into(), SignupMethod::Email);
-    let created = repo.create(&user).await.unwrap();
-    assert!(repo.delete(&created.id).await.unwrap());
+    let created = repo.create(&user).await.checked("operation should succeed");
+    assert!(repo
+        .delete(&created.id)
+        .await
+        .checked("operation should succeed"));
     // Soft-deleted users should not be returned by get_by_id
-    assert!(repo.get_by_id(&created.id).await.unwrap().is_none());
+    assert!(repo
+        .get_by_id(&created.id)
+        .await
+        .checked("operation should succeed")
+        .is_none());
 }

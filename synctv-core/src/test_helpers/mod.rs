@@ -9,13 +9,59 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+pub fn ok<T, E: std::fmt::Debug>(result: std::result::Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error:?}")),
+    }
+}
+
+pub fn err<T, E: std::fmt::Debug>(result: std::result::Result<T, E>, context: &str) -> E {
+    match result {
+        Ok(_) => std::panic::panic_any(context.to_string()),
+        Err(error) => error,
+    }
+}
+
+pub fn some<T>(value: Option<T>, context: &str) -> T {
+    match value {
+        Some(value) => value,
+        None => std::panic::panic_any(context.to_string()),
+    }
+}
+
+pub trait TestResultExt<T, E> {
+    fn checked(self, context: &str) -> T;
+    fn failed(self, context: &str) -> E;
+}
+
+impl<T, E: std::fmt::Debug> TestResultExt<T, E> for std::result::Result<T, E> {
+    fn checked(self, context: &str) -> T {
+        ok(self, context)
+    }
+
+    fn failed(self, context: &str) -> E {
+        err(self, context)
+    }
+}
+
+pub trait TestOptionExt<T> {
+    fn checked(self, context: &str) -> T;
+}
+
+impl<T> TestOptionExt<T> for Option<T> {
+    fn checked(self, context: &str) -> T {
+        some(self, context)
+    }
+}
+
 #[derive(Clone)]
 struct FailingRedisRuntime;
 
 #[async_trait::async_trait]
 impl crate::RedisConnectionRuntime for FailingRedisRuntime {
     async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
-        panic!("failing_redis_runtime snapshot should not be called")
+        std::panic::panic_any("failing_redis_runtime snapshot should not be called")
     }
 }
 
@@ -31,7 +77,10 @@ fn stable_test_id(id: &str) -> i64 {
     let mut hasher = DefaultHasher::new();
     id.hash(&mut hasher);
     let bounded = (hasher.finish() % (i64::MAX as u64 - 1)) + 1;
-    i64::try_from(bounded).expect("bounded test id should fit in i64")
+    match i64::try_from(bounded) {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("bounded test id should fit in i64: {error}")),
+    }
 }
 
 /// Create a test user ID
@@ -362,19 +411,19 @@ pub async fn create_top_level_playlist_hierarchy(
     child_name: &str,
 ) -> (crate::models::Playlist, crate::models::Playlist) {
     let top_level = PlaylistFixture::new().with_room_id(room_id).build();
-    let top_level = playlist_repo
-        .create(&top_level)
-        .await
-        .expect("Failed to create top-level playlist");
+    let top_level = ok(
+        playlist_repo.create(&top_level).await,
+        "Failed to create top-level playlist",
+    );
 
     let child = PlaylistFixture::new_child(top_level.id)
         .with_room_id(room_id)
         .with_name(child_name)
         .build();
-    let child = playlist_repo
-        .create(&child)
-        .await
-        .expect("Failed to create child playlist");
+    let child = ok(
+        playlist_repo.create(&child).await,
+        "Failed to create child playlist",
+    );
 
     (top_level, child)
 }

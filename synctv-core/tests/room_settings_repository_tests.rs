@@ -2,7 +2,6 @@
 //!
 //! Tests: `set_settings_with_version` CAS (concurrent insert race, stale version -> `OptimisticLockConflict`),
 //!        batch reads fail closed on invalid room settings JSON.
-#![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
 use sqlx::PgPool;
@@ -11,7 +10,7 @@ use synctv_core::{
     repository::{RoomRepository, RoomSettingsRepository, UserRepository},
     Error,
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, err, ok};
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -54,11 +53,14 @@ fn make_room(name: &str, owner: &UserId) -> Room {
 async fn setup_room(pool: &PgPool, username: &str, room_name: &str) -> (User, Room) {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
-    let user = user_repo.create(&make_user(username)).await.unwrap();
-    let room = room_repo
-        .create(&make_room(room_name, &user.id))
-        .await
-        .unwrap();
+    let user = ok(
+        user_repo.create(&make_user(username)).await,
+        "room settings test user should be created",
+    );
+    let room = ok(
+        room_repo.create(&make_room(room_name, &user.id)).await,
+        "room settings test room should be created",
+    );
     (user, room)
 }
 
@@ -72,14 +74,19 @@ async fn test_set_settings_with_version_initial_insert() {
     let (_user, room) = setup_room(&pool, "cas_user1", "cas_room1").await;
 
     let settings = RoomSettings::default();
-    let new_version = settings_repo
-        .set_settings_with_version(&room.id, &settings, 0)
-        .await
-        .unwrap();
+    let new_version = ok(
+        settings_repo
+            .set_settings_with_version(&room.id, &settings, 0)
+            .await,
+        "initial room settings insert should succeed",
+    );
     assert_eq!(new_version, 1);
 
     // Read back
-    let (read_settings, version) = settings_repo.get_with_version(&room.id).await.unwrap();
+    let (read_settings, version) = ok(
+        settings_repo.get_with_version(&room.id).await,
+        "room settings should be read with version",
+    );
     assert_eq!(version, 1);
     assert!(read_settings.chat_enabled.0); // default is true
 }
@@ -95,10 +102,12 @@ async fn test_set_settings_with_version_concurrent_insert_race() {
 
     // First insert succeeds
     let settings = RoomSettings::default();
-    let v1 = settings_repo
-        .set_settings_with_version(&room.id, &settings, 0)
-        .await
-        .unwrap();
+    let v1 = ok(
+        settings_repo
+            .set_settings_with_version(&room.id, &settings, 0)
+            .await,
+        "initial room settings insert should succeed",
+    );
     assert_eq!(v1, 1);
 
     // Second insert with version=0 should fail (concurrent insert)
@@ -118,27 +127,37 @@ async fn test_set_settings_with_exact_version_updates_existing_zero_version_row(
     let settings_repo = RoomSettingsRepository::new(pool.clone());
     let (_user, room) = setup_room(&pool, "exact_zero_user", "exact_zero_room").await;
 
-    sqlx::query!(
-        "INSERT INTO room_settings (room_id, key, value, version)
+    ok(
+        sqlx::query!(
+            "INSERT INTO room_settings (room_id, key, value, version)
          VALUES ($1, '_settings', $2, 0)",
-        room.id as RoomId,
-        serde_json::to_string(&RoomSettings::default()).unwrap(),
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+            room.id as RoomId,
+            ok(
+                serde_json::to_string(&RoomSettings::default()),
+                "default room settings should serialize",
+            ),
+        )
+        .execute(&pool)
+        .await,
+        "zero-version room settings row should be inserted",
+    );
 
     let changed = RoomSettings {
         chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
         ..Default::default()
     };
-    let version = settings_repo
-        .set_settings_with_exact_version(&room.id, &changed, 0, 1)
-        .await
-        .unwrap();
+    let version = ok(
+        settings_repo
+            .set_settings_with_exact_version(&room.id, &changed, 0, 1)
+            .await,
+        "exact version room settings update should succeed",
+    );
     assert_eq!(version, 1);
 
-    let (stored, stored_version) = settings_repo.get_with_version(&room.id).await.unwrap();
+    let (stored, stored_version) = ok(
+        settings_repo.get_with_version(&room.id).await,
+        "updated room settings should be read with version",
+    );
     assert_eq!(stored_version, 1);
     assert!(!stored.chat_enabled.0);
 }
@@ -153,18 +172,22 @@ async fn test_set_settings_with_version_stale_update() {
     let (_user, room) = setup_room(&pool, "cas_stale_user", "cas_stale_room").await;
 
     let mut settings = RoomSettings::default();
-    let v1 = settings_repo
-        .set_settings_with_version(&room.id, &settings, 0)
-        .await
-        .unwrap();
+    let v1 = ok(
+        settings_repo
+            .set_settings_with_version(&room.id, &settings, 0)
+            .await,
+        "initial room settings insert should succeed",
+    );
     assert_eq!(v1, 1);
 
     // Update with correct version
     settings.chat_enabled = synctv_core::models::room_settings::ChatEnabled(false);
-    let v2 = settings_repo
-        .set_settings_with_version(&room.id, &settings, v1)
-        .await
-        .unwrap();
+    let v2 = ok(
+        settings_repo
+            .set_settings_with_version(&room.id, &settings, v1)
+            .await,
+        "room settings update with current version should succeed",
+    );
     assert_eq!(v2, 2);
 
     // Update with stale version (v1 instead of v2) should fail
@@ -178,7 +201,10 @@ async fn test_set_settings_with_version_stale_update() {
     );
 
     // Verify the settings weren't changed
-    let (read_settings, version) = settings_repo.get_with_version(&room.id).await.unwrap();
+    let (read_settings, version) = ok(
+        settings_repo.get_with_version(&room.id).await,
+        "room settings should be read after stale update rejection",
+    );
     assert_eq!(version, 2);
     assert!(
         !read_settings.chat_enabled.0,
@@ -200,33 +226,35 @@ async fn test_get_batch_rejects_invalid_json() {
 
     // Insert valid settings for room1
     let settings = RoomSettings::default();
-    settings_repo
-        .set_settings(&room1.id, &settings)
-        .await
-        .unwrap();
+    ok(
+        settings_repo.set_settings(&room1.id, &settings).await,
+        "valid settings should be inserted for room1",
+    );
 
     // Insert invalid JSON for room2 directly via SQL
-    sqlx::query(
-        r"INSERT INTO room_settings (room_id, key, value, version) VALUES ($1, '_settings', 'not valid json!!!', 1)"
-    )
-    .bind(room2.id)
-    .execute(&pool)
-    .await
-    .unwrap();
+    ok(
+        sqlx::query(
+            r"INSERT INTO room_settings (room_id, key, value, version) VALUES ($1, '_settings', 'not valid json!!!', 1)"
+        )
+        .bind(room2.id)
+        .execute(&pool)
+        .await,
+        "invalid JSON settings fixture should be inserted",
+    );
 
     // Insert valid settings for room3
-    settings_repo
-        .set_settings(&room3.id, &settings)
-        .await
-        .unwrap();
+    ok(
+        settings_repo.set_settings(&room3.id, &settings).await,
+        "valid settings should be inserted for room3",
+    );
 
     // get_batch must fail instead of silently dropping room2 and letting callers
     // cache defaults for a corrupted settings row.
     let room_ids = vec![room1.id, room2.id, room3.id];
-    let error = settings_repo
-        .get_batch(&room_ids)
-        .await
-        .expect_err("invalid settings JSON should fail batch reads");
+    let error = err(
+        settings_repo.get_batch(&room_ids).await,
+        "invalid settings JSON should fail batch reads",
+    );
 
     assert!(
         error
@@ -246,6 +274,9 @@ async fn test_get_batch_empty_input() {
     let (_container, pool) = create_test_pool().await;
     let settings_repo = RoomSettingsRepository::new(pool.clone());
 
-    let result = settings_repo.get_batch(&[]).await.unwrap();
+    let result = ok(
+        settings_repo.get_batch(&[]).await,
+        "empty room settings batch should succeed",
+    );
     assert!(result.is_empty());
 }

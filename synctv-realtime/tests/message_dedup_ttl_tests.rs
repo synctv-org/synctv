@@ -8,7 +8,7 @@
 
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
-use synctv_realtime::{DedupKey, MessageDeduplicator};
+use synctv_realtime::sync::{DedupKey, MessageDeduplicator};
 
 fn make_key(event_type: &str, ts: i64) -> DedupKey {
     DedupKey {
@@ -186,12 +186,11 @@ async fn test_concurrent_should_process_per_ttl_window() {
     );
 }
 
-/// `len()` and `is_empty()` should reflect TTL expiry.
+/// `len()` should reflect TTL expiry.
 #[tokio::test]
 async fn test_len_reflects_ttl_expiry() {
     let dedup = MessageDeduplicator::new(Duration::from_secs(1));
 
-    assert!(dedup.is_empty());
     assert_eq!(dedup.len(), 0);
 
     let key1 = make_key("chat", 1000);
@@ -201,12 +200,10 @@ async fn test_len_reflects_ttl_expiry() {
     let _ = dedup.should_process(&key2);
 
     assert_eq!(dedup.len(), 2);
-    assert!(!dedup.is_empty());
 
     tokio::time::sleep(Duration::from_millis(1200)).await;
 
     // After TTL, len should eventually drop to 0
     // (moka runs pending tasks lazily)
     assert_eq!(dedup.len(), 0, "len() should be 0 after TTL expiry");
-    assert!(dedup.is_empty());
 }

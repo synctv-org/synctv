@@ -321,7 +321,11 @@ impl OAuth2Service {
                     .internal_with_err("Failed to release OAuth2 user savepoint")?;
 
                     user_service
-                        .cache_oauth2_username_best_effort(&created_user.id, candidate)
+                        .cache_username_best_effort(
+                            &created_user.id,
+                            candidate,
+                            "create_or_load_by_oauth2",
+                        )
                         .await;
 
                     if candidate == base_username {

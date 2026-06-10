@@ -13,8 +13,8 @@ use bytes::BytesMut;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use synctv_xiu::bytesio::bytesio::{NetType, TNetIO};
 use synctv_xiu::bytesio::bytesio_errors::BytesIOError;
+use synctv_xiu::bytesio::net_io::{NetType, TNetIO};
 use synctv_xiu::rtmp::handshake::{
     define::{
         ClientHandshakeState, ServerHandshakeState, RTMP_CLIENT_KEY_FIRST_HALF, RTMP_DIGEST_LENGTH,
@@ -93,15 +93,13 @@ fn make_mock_io() -> Arc<Mutex<Box<dyn TNetIO + Send + Sync>>> {
 fn build_c0c1() -> Vec<u8> {
     let mut data = Vec::with_capacity(1 + RTMP_HANDSHAKE_SIZE);
     // C0: RTMP version byte
-    data.push(u8::try_from(RTMP_VERSION).unwrap_or_default());
+    data.push(RTMP_VERSION);
     // C1: 4 bytes timestamp + 4 bytes zeros + 1528 bytes random
     let timestamp: u32 = 12345;
     data.extend_from_slice(&timestamp.to_be_bytes());
     data.extend_from_slice(&[0u8; 4]); // version zeros
                                        // Fill remaining 1528 bytes with pattern
-    for i in 0..(RTMP_HANDSHAKE_SIZE - 8) {
-        data.push(u8::try_from(i % 256).unwrap_or_default());
-    }
+    data.extend((0u8..=u8::MAX).cycle().take(RTMP_HANDSHAKE_SIZE - 8));
     data
 }
 
@@ -109,7 +107,7 @@ fn build_c0c1() -> Vec<u8> {
 fn build_s0s1s2(c1_echo: &[u8]) -> Vec<u8> {
     let mut data = Vec::with_capacity(1 + RTMP_HANDSHAKE_SIZE * 2);
     // S0: RTMP version byte
-    data.push(u8::try_from(RTMP_VERSION).unwrap_or_default());
+    data.push(RTMP_VERSION);
     // S1: 4 bytes time + 4 bytes zero + 1528 bytes random
     data.extend_from_slice(&[0, 0, 0, 0]); // time
     data.extend_from_slice(&[0, 0, 0, 0]); // zero
@@ -200,9 +198,7 @@ mod simple_handshake_server_tests {
     fn test_server_read_c0_valid() {
         let io = make_mock_io();
         let mut server = SimpleHandshakeServer::new(io);
-        server
-            .extend_data(&[u8::try_from(RTMP_VERSION).unwrap_or_default()])
-            .unwrap();
+        server.extend_data(&[RTMP_VERSION]).unwrap();
         let result = server.read_c0();
         assert!(result.is_ok());
     }
@@ -220,9 +216,7 @@ mod simple_handshake_server_tests {
     fn test_server_read_c1_insufficient_data() {
         let io = make_mock_io();
         let mut server = SimpleHandshakeServer::new(io);
-        server
-            .extend_data(&[u8::try_from(RTMP_VERSION).unwrap_or_default()])
-            .unwrap();
+        server.extend_data(&[RTMP_VERSION]).unwrap();
         server.read_c0().unwrap();
         // Only C0, no C1 data
         let result = server.read_c1();
@@ -282,9 +276,7 @@ mod complex_handshake_server_tests {
     fn test_complex_server_read_c0_valid() {
         let io = make_mock_io();
         let mut server = ComplexHandshakeServer::new(io);
-        server
-            .extend_data(&[u8::try_from(RTMP_VERSION).unwrap_or_default()])
-            .unwrap();
+        server.extend_data(&[RTMP_VERSION]).unwrap();
         let result = server.read_c0();
         assert!(result.is_ok());
     }
@@ -307,7 +299,7 @@ mod digest_processor_tests {
     fn test_digest_processor_make_digest_basic() {
         let data = BytesMut::from(&[0u8; RTMP_HANDSHAKE_SIZE][..]);
         let key = BytesMut::from(RTMP_SERVER_KEY_FIRST_HALF.as_bytes());
-        let mut processor = DigestProcessor::new(data, key);
+        let processor = DigestProcessor::new(data, key);
 
         let message = vec![1, 2, 3, 4, 5];
         let result = processor.make_digest(&message);
@@ -320,7 +312,7 @@ mod digest_processor_tests {
     fn test_digest_processor_make_digest_empty_message() {
         let data = BytesMut::new();
         let key = BytesMut::from(RTMP_SERVER_KEY_FIRST_HALF.as_bytes());
-        let mut processor = DigestProcessor::new(data, key);
+        let processor = DigestProcessor::new(data, key);
 
         let message: Vec<u8> = vec![];
         let result = processor.make_digest(&message);
@@ -336,10 +328,10 @@ mod digest_processor_tests {
 
         let message = vec![42u8; 100];
 
-        let mut processor1 = DigestProcessor::new(data.clone(), key.clone());
+        let processor1 = DigestProcessor::new(data.clone(), key.clone());
         let digest1 = processor1.make_digest(&message).unwrap();
 
-        let mut processor2 = DigestProcessor::new(data, key);
+        let processor2 = DigestProcessor::new(data, key);
         let digest2 = processor2.make_digest(&message).unwrap();
 
         assert_eq!(digest1, digest2, "Same input should produce same digest");
@@ -353,10 +345,10 @@ mod digest_processor_tests {
 
         let message = vec![1, 2, 3, 4, 5];
 
-        let mut processor1 = DigestProcessor::new(data.clone(), key1);
+        let processor1 = DigestProcessor::new(data.clone(), key1);
         let digest1 = processor1.make_digest(&message).unwrap();
 
-        let mut processor2 = DigestProcessor::new(data, key2);
+        let processor2 = DigestProcessor::new(data, key2);
         let digest2 = processor2.make_digest(&message).unwrap();
 
         assert_ne!(
@@ -412,10 +404,10 @@ mod error_handling_tests {
     #[test]
     fn test_handshake_error_display() {
         let error = HandshakeError {
-            value: HandshakeErrorValue::S0VersionNotCorrect,
+            value: HandshakeErrorValue::InvalidS0Version,
         };
         let message = error.to_string();
-        assert!(message.contains("s0 version"));
+        assert!(message.contains("S0 version"));
     }
 
     #[test]
@@ -423,12 +415,12 @@ mod error_handling_tests {
         let error = HandshakeError {
             value: HandshakeErrorValue::DigestError(
                 synctv_xiu::rtmp::handshake::errors::DigestError {
-                    value: DigestErrorValue::UnknowSchema,
+                    value: DigestErrorValue::InvalidDigestLength,
                 },
             ),
         };
         let message = error.to_string();
-        assert!(message.contains("schema") || message.contains("digest"));
+        assert!(message.contains("digest"));
     }
 
     #[test]
@@ -487,9 +479,7 @@ mod utils_tests {
     #[test]
     fn test_timestamp_ms_returns_value() {
         let time = utils::timestamp_ms();
-        // timestamp_ms returns a u32 timestamp
-        // Just verify it returns something (not testing exact value)
-        let _ = time;
+        assert_ne!(time, 0);
     }
 }
 

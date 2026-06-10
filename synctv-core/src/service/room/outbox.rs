@@ -8,8 +8,10 @@ use crate::{
     service::{
         audit::AuditEventParams,
         room::{
-            PermissionChangedOutboxSnapshot, RealtimeOutboxPermissionChangedEventFactory,
-            RealtimeOutboxUserLeftEventFactory, RoomService, UserLeftOutboxSnapshot,
+            MemberResourceCleanupResult, PermissionChangedOutboxSnapshot,
+            RealtimeOutboxMemberResourceCleanupEventFactory,
+            RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxUserLeftEventFactory,
+            RoomService, UserLeftOutboxSnapshot,
         },
     },
     Error, Result,
@@ -212,6 +214,21 @@ impl RoomService {
             for event in outbox_events {
                 outbox.insert_with_executor(event, &mut **tx).await?;
             }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn insert_member_resource_cleanup_outbox_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        cleanup: &MemberResourceCleanupResult,
+        outbox_event_factory: Option<&RealtimeOutboxMemberResourceCleanupEventFactory>,
+    ) -> Result<()> {
+        if let Some(events) = outbox_event_factory
+            .map(|factory| factory(cleanup))
+            .transpose()?
+        {
+            self.insert_realtime_outbox_events_tx(tx, &events).await?;
         }
         Ok(())
     }

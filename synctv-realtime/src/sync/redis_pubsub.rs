@@ -15,16 +15,12 @@ const REDIS_TIMEOUT_SECS: u64 = 5;
 /// Maximum time to wait for the subscriber to finish its initial subscriptions.
 const SUBSCRIBER_READY_TIMEOUT_SECS: u64 = 5;
 
-/// Returns `true` if the Redis error indicates the current connection has become
-/// read-only or is still loading data — both symptoms of a Sentinel failover in
-/// progress.  When detected, callers should drop the connection and reconnect
-/// immediately rather than treating the error as a retryable publish failure.
 /// Returns `true` if the Redis error looks like a Sentinel failover.
-///
-/// Public for testing. Production code already uses this internally.
 pub fn is_sentinel_failover_error(e: &anyhow::Error) -> bool {
-    let msg = e.to_string();
-    msg.contains("READONLY") || msg.contains("LOADING")
+    e.chain().any(|cause| {
+        let msg = cause.to_string();
+        msg.contains("READONLY") || msg.contains("LOADING")
+    })
 }
 
 fn publish_admin_event(admin_event_tx: &broadcast::Sender<RealtimeEvent>, event: RealtimeEvent) {
@@ -106,7 +102,7 @@ const BUFFER_WARN_THRESHOLD: usize =
 // broadcast uniformly.
 
 use super::backpressure::BufferPressureState;
-pub use super::backpressure::{BufferPressure, PublishBackpressure};
+use super::backpressure::PublishBackpressure;
 use super::dedup::{DedupKey, MessageDeduplicator};
 use super::events::RealtimeEvent;
 use super::room_hub::RoomLifecycleEvent;
@@ -195,17 +191,76 @@ impl RealtimeMessageTransportFactory for RedisRealtimeMessageTransportFactory {
         &self,
         config: RealtimeMessageTransportConfig,
     ) -> crate::error::Result<Arc<dyn RealtimeMessageTransport>> {
-        Ok(Arc::new(RedisPubSub::with_key_prefix(
-            self.redis_runtime.clone(),
-            config.message_runtime,
-            config.node_id,
-            &config.key_prefix,
-            config.admin_event_tx,
-            config.event_handler,
-            config.deduplicator,
-            config.catchup_window_secs,
-            config.stream_max_length,
-        )?))
+        Ok(Arc::new(RedisPubSub::from_config(RedisPubSubConfig {
+            redis_runtime: self.redis_runtime.clone(),
+            message_hub: config.message_runtime,
+            node_id: config.node_id,
+            key_prefix: config.key_prefix,
+            admin_event_tx: config.admin_event_tx,
+            event_handler: config.event_handler,
+            deduplicator: config.deduplicator,
+            catchup_window_secs: config.catchup_window_secs,
+            stream_max_length: config.stream_max_length,
+        })?))
+    }
+}
+
+pub struct RedisPubSubConfig {
+    pub redis_runtime: Arc<dyn RedisCoordinationRuntime>,
+    pub message_hub: Arc<dyn RoomMessageRuntime>,
+    pub node_id: String,
+    pub key_prefix: String,
+    pub admin_event_tx: broadcast::Sender<RealtimeEvent>,
+    pub event_handler: Option<Arc<dyn RealtimeEventHandler>>,
+    pub deduplicator: Arc<MessageDeduplicator>,
+    pub catchup_window_secs: u64,
+    pub stream_max_length: usize,
+}
+
+impl RedisPubSubConfig {
+    #[must_use]
+    pub fn new(
+        redis_runtime: Arc<dyn RedisCoordinationRuntime>,
+        message_hub: Arc<dyn RoomMessageRuntime>,
+        node_id: impl Into<String>,
+        admin_event_tx: broadcast::Sender<RealtimeEvent>,
+        deduplicator: Arc<MessageDeduplicator>,
+    ) -> Self {
+        Self {
+            redis_runtime,
+            message_hub,
+            node_id: node_id.into(),
+            key_prefix: "synctv:".to_string(),
+            admin_event_tx,
+            event_handler: None,
+            deduplicator,
+            catchup_window_secs: 300,
+            stream_max_length: DEFAULT_MAX_STREAM_LENGTH,
+        }
+    }
+
+    #[must_use]
+    pub fn key_prefix(mut self, key_prefix: impl Into<String>) -> Self {
+        self.key_prefix = key_prefix.into();
+        self
+    }
+
+    #[must_use]
+    pub fn event_handler(mut self, handler: Arc<dyn RealtimeEventHandler>) -> Self {
+        self.event_handler = Some(handler);
+        self
+    }
+
+    #[must_use]
+    pub fn catchup_window_secs(mut self, catchup_window_secs: u64) -> Self {
+        self.catchup_window_secs = catchup_window_secs;
+        self
+    }
+
+    #[must_use]
+    pub fn stream_max_length(mut self, stream_max_length: usize) -> Self {
+        self.stream_max_length = stream_max_length;
+        self
     }
 }
 
@@ -219,49 +274,36 @@ impl RedisPubSub {
         event_handler: Option<Arc<dyn RealtimeEventHandler>>,
         deduplicator: Arc<MessageDeduplicator>,
     ) -> Result<Self> {
-        Self::with_key_prefix(
+        let mut config = RedisPubSubConfig::new(
             redis_runtime,
             message_hub,
             node_id,
-            "synctv:",
             admin_event_tx,
-            event_handler,
             deduplicator,
-            300,
-            DEFAULT_MAX_STREAM_LENGTH,
-        )
+        );
+        config.event_handler = event_handler;
+        Self::from_config(config)
     }
 
-    /// Create a new `RedisPubSub` service with a custom key prefix.
+    /// Create a new `RedisPubSub` service from explicit runtime configuration.
     ///
     /// `catchup_window_secs` controls how far back to replay Redis Stream events
     /// when this node first connects.  Pass `300` for the default (5 minutes).
     /// `stream_max_length` controls the maximum number of entries per Redis Stream.
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_key_prefix(
-        redis_runtime: Arc<dyn RedisCoordinationRuntime>,
-        message_hub: Arc<dyn RoomMessageRuntime>,
-        node_id: String,
-        key_prefix: &str,
-        admin_event_tx: broadcast::Sender<RealtimeEvent>,
-        event_handler: Option<Arc<dyn RealtimeEventHandler>>,
-        deduplicator: Arc<MessageDeduplicator>,
-        catchup_window_secs: u64,
-        stream_max_length: usize,
-    ) -> Result<Self> {
+    pub fn from_config(config: RedisPubSubConfig) -> Result<Self> {
         Ok(Self {
-            redis_runtime,
+            redis_runtime: config.redis_runtime,
             shared_conn: tokio::sync::OnceCell::new(),
-            message_hub,
-            node_id,
-            key_prefix: key_prefix.to_string(),
-            admin_event_tx,
-            event_handler,
-            deduplicator,
+            message_hub: config.message_hub,
+            node_id: config.node_id,
+            key_prefix: config.key_prefix,
+            admin_event_tx: config.admin_event_tx,
+            event_handler: config.event_handler,
+            deduplicator: config.deduplicator,
             cancel_token: CancellationToken::new(),
-            catchup_window_ms: u128::from(catchup_window_secs) * 1000,
-            room_stream_ttl_secs: Self::room_stream_ttl_secs(catchup_window_secs),
-            stream_max_length,
+            catchup_window_ms: u128::from(config.catchup_window_secs) * 1000,
+            room_stream_ttl_secs: Self::room_stream_ttl_secs(config.catchup_window_secs),
+            stream_max_length: config.stream_max_length,
             subscriber_handle: tokio::sync::Mutex::new(None),
         })
     }
@@ -416,11 +458,6 @@ impl RedisPubSub {
             // This ensures user access control events are always delivered even during
             // prolonged Redis outages.
             let mut critical_retry_buffer: Vec<PublishRequest> = Vec::new();
-            // Track whether we've already logged a warning about buffer approaching capacity.
-            // Reset to false on each successful reconnection inside the loop.
-            #[allow(unused_assignments)]
-            let mut buffer_warn_logged = false;
-
             // Helper to update buffer pressure state
             let update_pressure = |retry_len: usize, critical_len: usize| {
                 buffer_pressure_state.set_retry_size(retry_len);
@@ -475,9 +512,6 @@ impl RedisPubSub {
 
                 info!("Redis publisher task (re)connected");
                 let mut conn = conn;
-
-                // Reset buffer warning flag on successful reconnection
-                buffer_warn_logged = false;
 
                 // CRITICAL EVENTS: Always retry first (highest priority)
                 if !critical_retry_buffer.is_empty() {
@@ -554,6 +588,7 @@ impl RedisPubSub {
 
                 // Track whether this session was healthy (at least one event sent)
                 let mut session_healthy = false;
+                let mut buffer_warn_logged = false;
 
                 // Process events until connection breaks or cancelled
                 loop {
@@ -1791,7 +1826,12 @@ impl RedisPubSub {
                         "Handled terminal room lifecycle event from admin channel"
                     );
                 } else {
-                    let _ = self.message_hub.broadcast(&room_id, &event);
+                    let sent_count = self.message_hub.broadcast(&room_id, &event);
+                    debug!(
+                        room_id = %room_id,
+                        local_subscribers = sent_count,
+                        "Forwarded non-terminal admin room event to local subscribers"
+                    );
                 }
             }
             return;

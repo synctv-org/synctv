@@ -282,8 +282,8 @@ message LinkedProvider {
   // Provider instance name that owns this external identity namespace.
   string provider_instance_name = 4;
 
-  // Optional issuer metadata when known for OIDC-like providers.
-  string provider_issuer = 5;
+  // Issuer metadata when known for OIDC-like providers.
+  optional string provider_issuer = 5;
 
   // External user ID in the provider instance namespace. Clients must pass
   // this with provider_instance_name to unlink one specific OAuth2 identity.

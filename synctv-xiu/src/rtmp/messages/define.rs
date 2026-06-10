@@ -1,9 +1,9 @@
 use {crate::flv::amf0::define::Amf0ValueType, bytes::BytesMut};
 
-#[allow(dead_code)]
+#[derive(Debug)]
 pub struct SetPeerBandwidthProperties {
     pub window_size: u32,
-    limit_type: u8,
+    pub limit_type: u8,
 }
 
 impl SetPeerBandwidthProperties {
@@ -15,14 +15,18 @@ impl SetPeerBandwidthProperties {
         }
     }
 }
-#[allow(clippy::large_enum_variant)]
+
+#[derive(Debug)]
+pub struct Amf0CommandMessage {
+    pub command_name: Amf0ValueType,
+    pub transaction_id: Amf0ValueType,
+    pub command_object: Amf0ValueType,
+    pub others: Vec<Amf0ValueType>,
+}
+
+#[derive(Debug)]
 pub enum RtmpMessageData {
-    Amf0Command {
-        command_name: Amf0ValueType,
-        transaction_id: Amf0ValueType,
-        command_object: Amf0ValueType,
-        others: Vec<Amf0ValueType>,
-    },
+    Amf0Command(Box<Amf0CommandMessage>),
     AmfData {
         raw_data: BytesMut,
         // values: Vec<Amf0ValueType>,
@@ -58,8 +62,6 @@ pub enum RtmpMessageData {
     StreamIsRecorded {
         stream_id: u32,
     },
-
-    Unknow,
 }
 
 pub mod msg_type_id {

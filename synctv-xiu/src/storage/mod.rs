@@ -7,6 +7,7 @@
 
 pub mod file;
 pub mod memory;
+#[cfg(feature = "oss")]
 pub mod oss;
 
 use async_trait::async_trait;
@@ -49,10 +50,13 @@ pub(crate) fn minute_bucket_is_expired(bucket: &str, older_than: Duration) -> bo
         return false;
     };
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let cutoff = now.checked_sub(older_than).unwrap_or_default().as_secs();
+    let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return false;
+    };
+    let Some(cutoff) = now.checked_sub(older_than) else {
+        return false;
+    };
+    let cutoff = cutoff.as_secs();
 
     bucket_end_secs <= cutoff
 }
@@ -133,17 +137,13 @@ pub trait HlsStorage: Send + Sync {
     ///
     /// # Returns
     /// Number of items deleted
-    async fn delete_app_stream(&self, _app: &str, _stream: &str) -> Result<usize> {
-        Ok(0)
-    }
+    async fn delete_app_stream(&self, app: &str, stream: &str) -> Result<usize>;
 
     /// Delete all items under app/
     ///
     /// # Returns
     /// Number of items deleted
-    async fn delete_app(&self, _app: &str) -> Result<usize> {
-        Ok(0)
-    }
+    async fn delete_app(&self, app: &str) -> Result<usize>;
 
     /// List all distinct (app, stream) pairs currently stored.
     ///
@@ -151,9 +151,7 @@ pub trait HlsStorage: Send + Sync {
     ///
     /// # Returns
     /// List of (app, stream) tuples
-    async fn list_streams(&self) -> Result<Vec<(String, String)>> {
-        Ok(Vec::new())
-    }
+    async fn list_streams(&self) -> Result<Vec<(String, String)>>;
 
     /// Count segments for a specific stream.
     ///
@@ -161,9 +159,7 @@ pub trait HlsStorage: Send + Sync {
     ///
     /// # Returns
     /// Number of segments stored for this app/stream
-    async fn count_stream_segments(&self, _app: &str, _stream: &str) -> Result<usize> {
-        Ok(0)
-    }
+    async fn count_stream_segments(&self, app: &str, stream: &str) -> Result<usize>;
 
     /// Delete the oldest segments for a stream until count is at or below `max_count`.
     ///
@@ -173,12 +169,10 @@ pub trait HlsStorage: Send + Sync {
     /// Number of segments deleted
     async fn delete_oldest_stream_segments(
         &self,
-        _app: &str,
-        _stream: &str,
-        _max_count: usize,
-    ) -> Result<usize> {
-        Ok(0)
-    }
+        app: &str,
+        stream: &str,
+        max_count: usize,
+    ) -> Result<usize>;
 
     /// Cleanup expired data
     ///
@@ -187,9 +181,7 @@ pub trait HlsStorage: Send + Sync {
     ///
     /// # Returns
     /// Number of keys successfully deleted
-    async fn cleanup(&self, _older_than: std::time::Duration) -> Result<usize> {
-        Ok(0)
-    }
+    async fn cleanup(&self, older_than: std::time::Duration) -> Result<usize>;
 
     /// Get public URL for direct access (async)
     ///
@@ -202,14 +194,7 @@ pub trait HlsStorage: Send + Sync {
     /// - `Ok(Some(url))` - Public URL (CDN or presigned) for direct access
     /// - `Ok(None)` - No public URL available (File/Memory storage)
     /// - `Err(e)` - Failed to generate presigned URL
-    async fn get_public_url(
-        &self,
-        _app: &str,
-        _stream: &str,
-        _name: &str,
-    ) -> Result<Option<String>> {
-        Ok(None)
-    }
+    async fn get_public_url(&self, app: &str, stream: &str, name: &str) -> Result<Option<String>>;
 }
 
 /// Storage backend type
@@ -225,6 +210,7 @@ pub enum StorageBackend {
 
 pub use file::FileStorage;
 pub use memory::MemoryStorage;
+#[cfg(feature = "oss")]
 pub use oss::{OssConfig, OssStorage};
 
 #[cfg(test)]

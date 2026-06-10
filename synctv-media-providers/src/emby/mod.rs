@@ -8,12 +8,12 @@
 //! - Playback info generation
 //! - Device profile management
 
-pub mod client;
-pub mod error;
-pub mod service;
-pub mod types;
+mod client;
+mod error;
+mod service;
+mod types;
 
-pub use client::EmbyClient;
+pub use client::{EmbyClient, PlaybackInfoRequest};
 pub use error::EmbyError;
 pub use service::{EmbyInterface, EmbyService};
 pub use types::{

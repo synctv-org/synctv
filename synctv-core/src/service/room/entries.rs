@@ -10,10 +10,40 @@ use super::{
     ensure_actor_has_room_permission_now_tx, has_active_room_membership_in_tx,
     has_room_permission_in_tx, plan_clear_playlist_scope_in_tx, plan_delete_entries_in_room_in_tx,
     AuthorizedAdminActor, ClearPlaylistResult, DeleteEntriesPlan, DeleteEntriesRequest,
-    DeleteEntriesResult, RealtimeOutboxDeleteEntriesEventFactory, RoomService, MAX_DELETE_TARGETS,
+    DeleteEntriesResult, EntryDeletionImpact, RealtimeOutboxDeleteEntriesEventFactory, RoomService,
+    MAX_DELETE_TARGETS,
 };
 
 impl RoomService {
+    fn committed_delete_entries_plan(impact: &EntryDeletionImpact) -> DeleteEntriesPlan {
+        DeleteEntriesPlan {
+            deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
+            deleted_media_ids: impact.deleted_media_ids.clone(),
+            playback_reset: impact.playback_reset,
+            playback_state: impact.playback_state.clone(),
+        }
+    }
+
+    async fn insert_delete_entries_outbox_events_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        impact: &EntryDeletionImpact,
+        outbox_event_factory: Option<&RealtimeOutboxDeleteEntriesEventFactory>,
+    ) -> Result<()> {
+        let Some(outbox) = &self.realtime_outbox else {
+            return Ok(());
+        };
+        let Some(factory) = outbox_event_factory else {
+            return Ok(());
+        };
+
+        let committed_plan = Self::committed_delete_entries_plan(impact);
+        for event in factory(&committed_plan)? {
+            outbox.insert_with_executor(&event, &mut **tx).await?;
+        }
+        Ok(())
+    }
+
     pub async fn remove_media(
         &self,
         room_id: RoomId,
@@ -189,22 +219,12 @@ impl RoomService {
         };
         let precommit_result = precommit(plan.clone()).await?;
         apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
-        let committed_plan = DeleteEntriesPlan {
-            deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
-            deleted_media_ids: impact.deleted_media_ids.clone(),
-            playback_reset: impact.playback_reset,
-            playback_state: impact.playback_state.clone(),
-        };
-        let outbox_events = outbox_event_factory
-            .as_ref()
-            .map(|factory| factory(&committed_plan))
-            .transpose()?
-            .unwrap_or_default();
-        if let Some(outbox) = &self.realtime_outbox {
-            for event in &outbox_events {
-                outbox.insert_with_executor(event, &mut *tx).await?;
-            }
-        }
+        self.insert_delete_entries_outbox_events_tx(
+            &mut tx,
+            &impact,
+            outbox_event_factory.as_ref(),
+        )
+        .await?;
 
         tx.commit().await?;
 
@@ -365,22 +385,12 @@ impl RoomService {
         };
         let precommit_result = precommit(plan.clone()).await?;
         apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
-        let committed_plan = DeleteEntriesPlan {
-            deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
-            deleted_media_ids: impact.deleted_media_ids.clone(),
-            playback_reset: impact.playback_reset,
-            playback_state: impact.playback_state.clone(),
-        };
-        let outbox_events = outbox_event_factory
-            .as_ref()
-            .map(|factory| factory(&committed_plan))
-            .transpose()?
-            .unwrap_or_default();
-        if let Some(outbox) = &self.realtime_outbox {
-            for event in &outbox_events {
-                outbox.insert_with_executor(event, &mut *tx).await?;
-            }
-        }
+        self.insert_delete_entries_outbox_events_tx(
+            &mut tx,
+            &impact,
+            outbox_event_factory.as_ref(),
+        )
+        .await?;
 
         tx.commit().await?;
 
@@ -519,22 +529,12 @@ impl RoomService {
 
         let mut impact = plan_clear_playlist_scope_in_tx(&mut tx, &room_id, playlist_id).await?;
         apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
-        let committed_plan = DeleteEntriesPlan {
-            deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
-            deleted_media_ids: impact.deleted_media_ids.clone(),
-            playback_reset: impact.playback_reset,
-            playback_state: impact.playback_state.clone(),
-        };
-        let outbox_events = outbox_event_factory
-            .as_ref()
-            .map(|factory| factory(&committed_plan))
-            .transpose()?
-            .unwrap_or_default();
-        if let Some(outbox) = &self.realtime_outbox {
-            for event in &outbox_events {
-                outbox.insert_with_executor(event, &mut *tx).await?;
-            }
-        }
+        self.insert_delete_entries_outbox_events_tx(
+            &mut tx,
+            &impact,
+            outbox_event_factory.as_ref(),
+        )
+        .await?;
 
         tx.commit().await?;
 

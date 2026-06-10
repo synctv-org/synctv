@@ -45,7 +45,7 @@ impl LiveProxyProvider {
         Self { ssrf_guard }
     }
 
-    fn validate_live_source_url(
+    async fn validate_live_source_url(
         url: &str,
         guard: &synctv_common::ssrf::SsrfGuard,
     ) -> Result<(), ProviderError> {
@@ -77,6 +77,29 @@ impl LiveProxyProvider {
             if guard.is_ip_blocked(&ip) {
                 return Err(ProviderError::InvalidConfig(format!(
                     "LiveProxy source IP '{ip}' is blocked by SSRF policy"
+                )));
+            }
+        } else if is_rtmp && guard.dns_resolver().is_some() {
+            let port = parsed_url.port().unwrap_or(1935);
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+                .await
+                .map_err(|error| {
+                    ProviderError::InvalidConfig(format!(
+                        "LiveProxy RTMP source host '{host}' could not be resolved: {error}"
+                    ))
+                })?
+                .collect();
+
+            if addrs.is_empty() {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "LiveProxy RTMP source host '{host}' did not resolve to any addresses"
+                )));
+            }
+
+            if let Some(blocked_addr) = addrs.iter().find(|addr| guard.is_ip_blocked(&addr.ip())) {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "LiveProxy RTMP source host '{host}' resolved to blocked IP '{}'",
+                    blocked_addr.ip()
                 )));
             }
         }
@@ -243,7 +266,7 @@ impl MediaProvider for LiveProxyProvider {
             .get("url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
-        Self::validate_live_source_url(source_url, &self.ssrf_guard)?;
+        Self::validate_live_source_url(source_url, &self.ssrf_guard).await?;
 
         let mut result = super::build_live_playback(*media_id, *room_id);
         // External live_proxy sources are lazy-started by the FLV path today.
@@ -287,7 +310,7 @@ impl MediaProvider for LiveProxyProvider {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
 
-        Self::validate_live_source_url(url, &self.ssrf_guard)
+        Self::validate_live_source_url(url, &self.ssrf_guard).await
     }
 
     fn as_provider_proxy(&self) -> Option<&dyn ProviderProxy> {
@@ -301,10 +324,7 @@ impl ProviderProxy for LiveProxyProvider {
         &self,
         ctx: &ProxyRequestContext<'_>,
     ) -> Result<ProxyAction, ProviderError> {
-        let (version, rest) = ctx
-            .sub_path
-            .split_once('/')
-            .ok_or(ProviderError::NotFound)?;
+        let (version, rest) = super::proxy::split_versioned_proxy_path(ctx.sub_path)?;
         let versioned =
             super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
         Self::build_proxy_action(rest, &versioned, ctx)
@@ -315,11 +335,13 @@ impl ProviderProxy for LiveProxyProvider {
 mod tests {
     use super::*;
     use crate::models::{MediaId, RoomId, UserId};
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
     use serde_json::json;
 
     #[tokio::test]
     async fn test_live_proxy_metadata_does_not_expose_source_url() {
-        let provider = LiveProxyProvider::new();
+        let provider =
+            LiveProxyProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
         let ctx = ProviderContext::new("test")
             .with_room_id(RoomId::expect_positive(10))
             .with_media_id(MediaId::expect_positive(100));
@@ -331,7 +353,7 @@ mod tests {
         let result = provider
             .generate_playback(&ctx, &source_config)
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         // The metadata must NOT contain the full source URL.
         // Exposing it would leak internal infrastructure URLs to clients.
@@ -354,12 +376,35 @@ mod tests {
     #[test]
     fn test_live_proxy_provider_can_be_constructed_without_base_url() {
         let provider = LiveProxyProvider::new();
-        let _ = provider;
+        assert_eq!(provider.name(), LiveProxyProvider::NAME);
+    }
+
+    #[tokio::test]
+    async fn resolve_proxy_rejects_empty_action() {
+        let provider = LiveProxyProvider::new();
+        let ctx = ProxyRequestContext {
+            sub_path: "v1/",
+            query_string: None,
+            store: None,
+            proxy_base: "/api/providers/proxy/live_proxy",
+            services: None,
+            public_id_codec: None,
+            verified_claims: None,
+            request_context: None,
+            request_headers: &http::HeaderMap::new(),
+        };
+
+        let err = provider
+            .resolve_proxy(&ctx)
+            .await
+            .failed("empty proxy action should fail before store lookup");
+        assert!(matches!(err, ProviderError::NotFound));
     }
 
     #[tokio::test]
     async fn test_live_proxy_metadata_contains_provider_tag() {
-        let provider = LiveProxyProvider::new();
+        let provider =
+            LiveProxyProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
         let ctx = ProviderContext::new("test")
             .with_room_id(RoomId::expect_positive(10))
             .with_media_id(MediaId::expect_positive(100));
@@ -371,7 +416,7 @@ mod tests {
         let result = provider
             .generate_playback(&ctx, &source_config)
             .await
-            .unwrap();
+            .checked("operation should succeed");
         assert_eq!(
             result.metadata.get("provider").and_then(|v| v.as_str()),
             Some("live_proxy"),
@@ -385,9 +430,10 @@ mod tests {
         use crate::proxy_signature::ProxySigningKey;
         use std::sync::Arc;
 
-        let provider = LiveProxyProvider::new();
+        let provider =
+            LiveProxyProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
         let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .expect("test proxy signing key should derive");
+            .checked("test proxy signing key should derive");
         let ctx = ProviderContext::new("synctv")
             .with_user_id(UserId::expect_positive(1))
             .with_room_id(RoomId::expect_positive(10))
@@ -397,25 +443,26 @@ mod tests {
         let result = provider
             .generate_playback(&ctx, &json!({"url": "rtmp://example.com/live/stream"}))
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         let flv = result
             .playback_infos
             .get("flv")
-            .unwrap()
+            .checked("operation should succeed")
             .urls
             .first()
-            .unwrap();
+            .checked("operation should succeed");
         assert!(
             !result.playback_infos.contains_key("hls"),
             "live_proxy must not advertise HLS until external pullers can lazy-start that path"
         );
         assert!(flv.starts_with("/api/providers/proxy/live_proxy/"));
         assert_eq!(result.default_mode, "flv");
-        let flv_url = url::Url::parse(&format!("http://synctv.local{flv}")).unwrap();
+        let flv_url = url::Url::parse(&format!("http://synctv.local{flv}"))
+            .checked("operation should succeed");
         assert!(flv_url
             .path_segments()
-            .unwrap()
+            .checked("operation should succeed")
             .nth(5)
             .is_some_and(|action| action == "stream" || action.starts_with("stream/")));
         assert!(flv_url.query_pairs().any(|(key, _)| key == "sig"));
@@ -439,8 +486,34 @@ mod tests {
             provider
                 .validate_source_config(&ctx, SourceConfig::media(&config))
                 .await
-                .expect("disabled SSRF policy should allow blocked live source URLs");
+                .checked("disabled SSRF policy should allow blocked live source URLs");
         }
+    }
+
+    #[tokio::test]
+    async fn test_live_proxy_validate_source_config_rejects_allowlisted_rtmp_hostname_resolving_private(
+    ) {
+        let guard = synctv_common::ssrf::SsrfGuard::builder()
+            .extra_allowed_host("localhost".to_string())
+            .build();
+        let provider = LiveProxyProvider::new_with_ssrf_guard(guard);
+        let ctx = ProviderContext::new("test");
+
+        let err = provider
+            .validate_source_config(
+                &ctx,
+                SourceConfig::media(&json!({
+                    "url": "rtmp://localhost/live/stream"
+                })),
+            )
+            .await
+            .failed("RTMP hostnames must resolve to public-safe addresses at config validation");
+
+        assert!(matches!(
+            err,
+            ProviderError::InvalidConfig(ref msg)
+                if msg.contains("resolved to blocked IP")
+        ));
     }
 
     #[tokio::test]
@@ -456,7 +529,7 @@ mod tests {
                 ),
             )
             .await
-            .expect_err("live_proxy source_config must not persist internal identity");
+            .failed("live_proxy source_config must not persist internal identity");
         assert!(matches!(
             err,
             ProviderError::InvalidConfig(ref msg) if msg.contains("runtime context")
@@ -477,7 +550,7 @@ mod tests {
                 })),
             )
             .await
-            .expect_err("live_proxy source_config must not contain provider_instance_name");
+            .failed("live_proxy source_config must not contain provider_instance_name");
         assert!(matches!(
             err,
             ProviderError::InvalidConfig(ref msg)
@@ -493,7 +566,7 @@ mod tests {
         let err = provider
             .generate_playback(&ctx, &json!({"url": "rtmp://example.com/live/stream"}))
             .await
-            .expect_err("live proxy playback must fail closed without room/media binding");
+            .failed("live proxy playback must fail closed without room/media binding");
         assert!(matches!(
             err,
             ProviderError::InvalidConfig(ref msg) if msg.contains("provider context")

@@ -1,79 +1,90 @@
-// Live streaming API abstractions for synctv-api integration
-// This module provides flexible APIs and abstractions for implementing
-// live streaming HTTP endpoints in synctv-api.
-// Architecture:
-// - synctv-stream provides infrastructure + abstractions (this module)
-// - synctv-api implements HTTP endpoints using these abstractions
-// Features:
-// - Lazy-load FLV streaming (create pull streams on demand)
-// - HLS streaming with M3U8 playlist generation
-// - HLS proxy for cluster mode (fetch from publisher node via gRPC)
-// - GOP cache for instant playback
-// - Publisher/Puller architecture
-// - Cross-node gRPC relay
+// Live streaming API helpers used by synctv-api HTTP endpoints.
 
 use crate::{
     error::StreamError,
-    grpc::HlsProxyClient,
+    grpc::{HlsProxyClient, StreamRelayServiceImpl},
     livestream::{
-        external_publish_manager::ExternalPublishManager, pull_manager::PullStreamManager,
-        SegmentManager,
+        external_publish_manager::ExternalPublishManager, managed_stream::ManagedStream,
+        pull_manager::PullStreamManager, SegmentManager,
     },
-    protocols::hls::remuxer::StreamRegistry as HlsStreamRegistry,
-    protocols::httpflv::HttpFlvSession,
-    relay::StreamRegistryTrait,
+    relay::{ActivePublisherEntry, PublisherInfo, StreamRegistryTrait},
 };
 use anyhow::Result;
 use bytes::Bytes;
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use synctv_common::ssrf::SsrfGuard;
 use synctv_core::config::HlsStorageBackend;
+use synctv_xiu::hls::remuxer::StreamRegistry as HlsStreamRegistry;
+use synctv_xiu::httpflv::HttpFlvSession;
 use synctv_xiu::streamhub::define::StreamHubEventSender;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 pub use super::tracker::{StreamSubscriberGuard, StreamTracker};
 
-/// Live streaming infrastructure bundle
-///
-/// Provides all necessary components for implementing live streaming endpoints:
-/// - FLV streaming sessions
-/// - HLS playlist generation (local or proxied from publisher node)
-/// - HLS segment serving (local or proxied from publisher node)
-/// - Publisher discovery
-/// - GOP cache access
 #[derive(Clone)]
 pub struct LiveStreamingInfrastructure {
     /// Registry for finding publishers (Redis)
-    pub registry: Arc<dyn StreamRegistryTrait>,
+    pub(crate) registry: Arc<dyn StreamRegistryTrait>,
     /// `StreamHub` event sender for subscribing to streams
-    pub stream_hub_event_sender: StreamHubEventSender,
+    pub(crate) stream_hub_event_sender: StreamHubEventSender,
     /// Pull stream manager for gRPC relay (cross-node pull)
-    pub pull_manager: Arc<PullStreamManager>,
+    pub(crate) pull_manager: Arc<PullStreamManager>,
     /// External publish manager for pull-to-publish streams (RTMP/HTTP-FLV sources)
-    pub external_publish_manager: Arc<ExternalPublishManager>,
+    pub(crate) external_publish_manager: Arc<ExternalPublishManager>,
     /// Segment manager for HLS storage
-    pub segment_manager: Option<Arc<SegmentManager>>,
+    pub(crate) segment_manager: Option<Arc<SegmentManager>>,
     /// HLS stream registry for M3U8 generation
-    pub hls_stream_registry: Option<HlsStreamRegistry>,
+    pub(crate) hls_stream_registry: Option<HlsStreamRegistry>,
     /// Tracks active RTMP publishers by `user_id` for kick-on-ban
-    pub user_stream_tracker: Arc<StreamTracker>,
+    pub(crate) user_stream_tracker: Arc<StreamTracker>,
     /// Local node ID for comparing with publisher node
-    pub local_node_id: String,
+    pub(crate) local_node_id: String,
     /// HLS segment storage backend.
-    pub hls_storage_backend: HlsStorageBackend,
+    pub(crate) hls_storage_backend: HlsStorageBackend,
     /// HLS proxy client for fetching playlists/segments from remote publisher nodes
-    pub hls_proxy: Option<HlsProxyClient>,
+    pub(crate) hls_proxy: Option<HlsProxyClient>,
 }
 
 impl LiveStreamingInfrastructure {
-    /// Create new live streaming infrastructure
     pub fn new(
+        registry: Arc<dyn StreamRegistryTrait>,
+        stream_hub_event_sender: StreamHubEventSender,
+        user_stream_tracker: Arc<StreamTracker>,
+        local_node_id: String,
+        ssrf_guard: SsrfGuard,
+    ) -> crate::error::StreamResult<Self> {
+        let pull_manager = Arc::new(PullStreamManager::new(
+            registry.clone(),
+            stream_hub_event_sender.clone(),
+        ));
+        let external_publish_manager = Arc::new(ExternalPublishManager::new(
+            registry.clone(),
+            local_node_id.clone(),
+            stream_hub_event_sender.clone(),
+            ssrf_guard,
+        )?);
+
+        Ok(Self::from_parts(
+            registry,
+            stream_hub_event_sender,
+            pull_manager,
+            external_publish_manager,
+            user_stream_tracker,
+            local_node_id,
+        ))
+    }
+
+    /// Create infrastructure from preconfigured internal managers.
+    pub(crate) fn from_parts(
         registry: Arc<dyn StreamRegistryTrait>,
         stream_hub_event_sender: StreamHubEventSender,
         pull_manager: Arc<PullStreamManager>,
         external_publish_manager: Arc<ExternalPublishManager>,
         user_stream_tracker: Arc<StreamTracker>,
+        local_node_id: String,
     ) -> Self {
         Self {
             registry,
@@ -83,53 +94,40 @@ impl LiveStreamingInfrastructure {
             segment_manager: None,
             hls_stream_registry: None,
             user_stream_tracker,
-            local_node_id: String::new(),
+            local_node_id,
             hls_storage_backend: HlsStorageBackend::Memory,
             hls_proxy: None,
         }
     }
 
-    /// Add HLS segment manager
     #[must_use]
-    pub fn with_segment_manager(mut self, segment_manager: Arc<SegmentManager>) -> Self {
+    pub(crate) fn with_segment_manager(mut self, segment_manager: Arc<SegmentManager>) -> Self {
         self.segment_manager = Some(segment_manager);
         self
     }
 
-    /// Add HLS stream registry
     #[must_use]
-    pub fn with_hls_stream_registry(mut self, hls_stream_registry: HlsStreamRegistry) -> Self {
+    pub(crate) fn with_hls_stream_registry(
+        mut self,
+        hls_stream_registry: HlsStreamRegistry,
+    ) -> Self {
         self.hls_stream_registry = Some(hls_stream_registry);
         self
     }
 
-    /// Set the local node ID (used to determine if publisher is local)
     #[must_use]
-    pub fn with_local_node_id(mut self, node_id: String) -> Self {
-        self.local_node_id = node_id;
-        self
-    }
-
-    /// Set the HLS storage backend used by segment serving decisions.
-    #[must_use]
-    pub fn with_hls_storage_backend(mut self, backend: HlsStorageBackend) -> Self {
+    pub(crate) fn with_hls_storage_backend(mut self, backend: HlsStorageBackend) -> Self {
         self.hls_storage_backend = backend;
         self
     }
 
-    /// Set the HLS proxy client for cross-node HLS streaming
     #[must_use]
-    pub fn with_hls_proxy(mut self, hls_proxy: HlsProxyClient) -> Self {
+    pub(crate) fn with_hls_proxy(mut self, hls_proxy: HlsProxyClient) -> Self {
         self.hls_proxy = Some(hls_proxy);
         self
     }
 
-    /// Kick an active RTMP publisher, forcing their session to disconnect.
-    ///
-    /// Sends an `UnPublish` event through `StreamHub` which terminates the transceiver's data pipeline.
-    /// The RTMP session naturally terminates when its `data_sender` channel closes.
-    ///
-    /// Returns Ok(()) if the event was sent. The actual disconnection is asynchronous.
+    /// Enqueue a local `UnPublish` event for an RTMP publisher.
     pub fn kick_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
         use synctv_xiu::streamhub::stream::StreamIdentifier;
 
@@ -168,16 +166,12 @@ impl LiveStreamingInfrastructure {
         }
     }
 
-    /// Return whether the shared publisher registry says this stream is owned by this node.
-    ///
-    /// `Ok(false)` includes both "not found" and "owned by another node"; callers that need
-    /// to distinguish those states should query the registry directly.
-    pub async fn stream_owned_by_local_node(&self, room_id: &str, media_id: &str) -> Result<bool> {
+    pub async fn stream_is_remote(&self, room_id: &str, media_id: &str) -> Result<bool> {
         self.registry
             .get_publisher(room_id, media_id)
             .await
             .map(|publisher| {
-                publisher.is_some_and(|publisher| self.is_local_publisher_node(&publisher.node_id))
+                publisher.is_some_and(|publisher| !self.is_local_publisher_node(&publisher.node_id))
             })
             .map_err(|error| anyhow::anyhow!("Failed to load publisher owner: {error}"))
     }
@@ -266,10 +260,6 @@ impl LiveStreamingInfrastructure {
         }
     }
 
-    /// Kick all active RTMP publishers for a given user.
-    ///
-    /// Looks up all of the user's active streams from the tracker and sends `UnPublish` events.
-    /// Used when banning or deleting a user to terminate all their RTMP publish sessions.
     pub async fn kick_user_publishers(&self, user_id: &str) {
         let mut streams: BTreeSet<_> = self
             .user_stream_tracker
@@ -291,10 +281,6 @@ impl LiveStreamingInfrastructure {
         }
     }
 
-    /// Kick all active RTMP publishers for a given user within a specific room.
-    ///
-    /// This preserves room-scoped moderation semantics: a room ban/kick must not
-    /// terminate the same user's publishers in other rooms.
     pub async fn kick_user_room_publishers(&self, room_id: &str, user_id: &str) {
         let mut streams: BTreeSet<_> = self
             .user_stream_tracker
@@ -326,10 +312,6 @@ impl LiveStreamingInfrastructure {
         }
     }
 
-    /// Kick all active RTMP publishers in a given room.
-    ///
-    /// Uses the room->media index for O(1) lookup instead of scanning all entries.
-    /// Used when banning or deleting a room.
     pub async fn kick_room_publishers(&self, room_id: &str) {
         let mut media_ids: BTreeSet<_> = self
             .user_stream_tracker
@@ -354,10 +336,6 @@ impl LiveStreamingInfrastructure {
         }
     }
 
-    /// Kick a specific stream by `room_id` and `media_id`.
-    ///
-    /// Sends an `UnPublish` event to the local `StreamHub`.
-    ///
     /// Publisher ownership is removed later by the RTMP auth/PublisherManager
     /// unpublish path, which fences cleanup against the publisher epoch. Do not
     /// unregister here: this method only enqueues the control event, and deleting
@@ -383,13 +361,6 @@ impl LiveStreamingInfrastructure {
         Ok(())
     }
 
-    /// Ensure a pull stream exists for the given room/media.
-    ///
-    /// Unified entry point that handles both gRPC relay and external pull:
-    /// 1. If a publisher exists in Redis -> gRPC relay (cross-node)
-    /// 2. If no publisher + `external_source_url` provided -> external pull (lazy start)
-    /// 3. If no publisher + no URL -> error
-    ///
     /// Returns a [`StreamSubscriberGuard`] that decrements the subscriber count
     /// when dropped. For FLV, hold it in the streaming task; for HLS, let it
     /// drop at the end of the request (the `last_active_time` touch keeps the
@@ -408,12 +379,9 @@ impl LiveStreamingInfrastructure {
             .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
 
         if let Some(publisher_info) = publisher {
-            let is_local =
-                !self.local_node_id.is_empty() && publisher_info.node_id == self.local_node_id;
+            let is_local = self.is_local_publisher_node(&publisher_info.node_id);
 
             if is_local {
-                // Even for local publishers, validate epoch to detect stale streams
-                // from crashed and restarted publishers.
                 match self
                     .registry
                     .validate_epoch(room_id, media_id, publisher_info.epoch)
@@ -453,17 +421,17 @@ impl LiveStreamingInfrastructure {
                 }
             }
 
-            // Publisher found in Redis -- create gRPC relay pull stream
             let stream = self
                 .pull_manager
                 .get_or_create_pull_stream(room_id, media_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create pull stream: {e}"))?;
-            let guard = StreamSubscriberGuard::new(move || stream.decrement_subscriber_count());
+            let guard = StreamSubscriberGuard::new(move || {
+                stream.lifecycle().decrement_subscriber_count();
+            });
             return Ok(guard);
         }
 
-        // No publisher in Redis -- try external publish if URL provided
         if let Some(source_url) = external_source_url {
             let stream = self
                 .external_publish_manager
@@ -479,68 +447,145 @@ impl LiveStreamingInfrastructure {
         ))
     }
 
-    /// Get the registry (for admin queries)
+    pub fn local_room_streams(&self, room_id: &str) -> Vec<String> {
+        self.user_stream_tracker.get_room_streams(room_id)
+    }
+
+    pub fn local_user_streams(&self, user_id: &str) -> Vec<(String, String)> {
+        self.user_stream_tracker.get_user_streams(user_id)
+    }
+
+    /// Build the authenticated cross-node relay service for the current infrastructure.
     #[must_use]
-    pub fn registry(&self) -> &Arc<dyn StreamRegistryTrait> {
-        &self.registry
+    pub fn relay_service(
+        &self,
+        node_id: String,
+        cluster_secret: String,
+        cancel_token: CancellationToken,
+    ) -> StreamRelayServiceImpl {
+        let relay_service = StreamRelayServiceImpl::new(
+            self.registry.clone(),
+            node_id,
+            self.stream_hub_event_sender.clone(),
+            cancel_token,
+        )
+        .with_cluster_secret(cluster_secret);
+
+        let relay_service = if let Some(segment_manager) = &self.segment_manager {
+            relay_service.with_segment_manager(segment_manager.clone())
+        } else {
+            relay_service
+        };
+
+        if let Some(hls_stream_registry) = &self.hls_stream_registry {
+            relay_service.with_hls_stream_registry(hls_stream_registry.clone())
+        } else {
+            relay_service
+        }
     }
 
-    /// Check if publisher exists for a room/media
-    pub async fn has_publisher(&self, room_id: &str, media_id: &str) -> Result<bool> {
-        self.registry
-            .get_publisher(room_id, media_id)
-            .await
-            .map(|opt| opt.is_some())
-            .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))
-    }
-
-    /// Get publisher info
-    pub async fn get_publisher(
+    pub async fn find_publisher(
         &self,
         room_id: &str,
         media_id: &str,
-    ) -> Result<crate::relay::PublisherInfo> {
+    ) -> Result<Option<PublisherInfo>> {
         self.registry
             .get_publisher(room_id, media_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("No publisher found for {room_id}/{media_id}"))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get publisher: {e}"))
+    }
+
+    pub async fn is_stream_active(&self, room_id: &str, media_id: &str) -> Result<bool> {
+        self.registry
+            .is_stream_active(room_id, media_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to check active stream: {e}"))
+    }
+
+    pub async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
+        self.registry
+            .list_streams_for_room(room_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list room streams: {e}"))
+    }
+
+    pub async fn list_active_publishers(&self) -> Result<Vec<ActivePublisherEntry>> {
+        self.registry
+            .list_active_publishers()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list active streams: {e}"))
+    }
+
+    pub async fn cleanup_local_publishers(&self, timeout: std::time::Duration) -> bool {
+        if self.local_node_id.is_empty() {
+            self.user_stream_tracker.clear();
+            return true;
+        }
+
+        if timeout.is_zero() {
+            warn!(
+                node_id = %self.local_node_id,
+                "Skipping local publisher cleanup before livestream shutdown because no shutdown budget remains"
+            );
+            self.user_stream_tracker.clear();
+            return false;
+        }
+
+        let cleanup_timeout = timeout.min(std::time::Duration::from_secs(2));
+        let cleanup_result = tokio::time::timeout(
+            cleanup_timeout,
+            self.registry
+                .cleanup_all_publishers_for_node(&self.local_node_id),
+        )
+        .await;
+
+        match cleanup_result {
+            Ok(Ok(())) => {
+                info!(
+                    node_id = %self.local_node_id,
+                    "Cleaned up local publisher registrations before livestream shutdown"
+                );
+                self.user_stream_tracker.clear();
+                true
+            }
+            Ok(Err(error)) => {
+                warn!(
+                    node_id = %self.local_node_id,
+                    error = %error,
+                    "Failed to cleanup local publisher registrations before livestream shutdown"
+                );
+                self.user_stream_tracker.clear();
+                false
+            }
+            Err(_) => {
+                warn!(
+                    node_id = %self.local_node_id,
+                    "Timed out cleaning local publisher registrations before livestream shutdown"
+                );
+                self.user_stream_tracker.clear();
+                false
+            }
+        }
     }
 }
 
-/// FLV streaming API
-///
-/// Provides methods for creating FLV streaming sessions
 pub struct FlvStreamingApi;
 
 impl FlvStreamingApi {
-    /// Create a new FLV streaming session
-    ///
-    /// Returns a channel receiver that streams FLV data.
-    /// The caller is responsible for converting this to an HTTP response.
-    ///
-    /// # Arguments
-    /// * `infrastructure` - Live streaming infrastructure
-    /// * `room_id` - Room identifier
-    /// * `media_id` - Media/stream identifier
-    ///
-    /// # Returns
-    /// A bounded channel receiver that yields FLV data chunks
     async fn create_session(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
     ) -> Result<mpsc::Receiver<Result<Bytes, std::io::Error>>> {
-        // Ensure publisher exists
         infrastructure
-            .has_publisher(room_id, media_id)
+            .find_publisher(room_id, media_id)
             .await?
+            .is_some()
             .then_some(())
             .ok_or_else(|| StreamError::NoPublisher(format!("{room_id}/{media_id}")))?;
 
-        // Create bounded channel for FLV data (backpressure for slow clients)
         let (tx, rx) = mpsc::channel(synctv_xiu::httpflv::FLV_RESPONSE_CHANNEL_CAPACITY);
 
-        // Create FLV session using canonical (room_id, media_id) StreamIdentifier
         let mut flv_session = HttpFlvSession::new(
             room_id.to_string(),
             media_id.to_string(),
@@ -548,7 +593,6 @@ impl FlvStreamingApi {
             tx,
         );
 
-        // Spawn FLV session task
         tokio::spawn(async move {
             if let Err(e) = flv_session.run().await {
                 error!("FLV session error: {}", e);
@@ -558,11 +602,6 @@ impl FlvStreamingApi {
         Ok(rx)
     }
 
-    /// Create FLV streaming session with lazy-load pull
-    ///
-    /// This ensures a pull stream is created if one doesn't exist.
-    /// Supports both cross-node gRPC relay and external source pulling.
-    ///
     /// Returns `(receiver, guard)`. The caller **must** hold the
     /// [`StreamSubscriberGuard`] for the lifetime of the FLV streaming task
     /// so the subscriber count is decremented when the viewer disconnects.
@@ -579,32 +618,25 @@ impl FlvStreamingApi {
         mpsc::Receiver<Result<Bytes, std::io::Error>>,
         StreamSubscriberGuard,
     )> {
-        // Ensure pull stream exists (gRPC relay or external)
         let guard = infrastructure
             .ensure_pull_stream(room_id, media_id, external_source_url)
             .await?;
 
-        // Create FLV session (subscribes to local StreamHub)
         let rx = Self::create_session(infrastructure, room_id, media_id).await?;
         Ok((rx, guard))
     }
 }
 
-/// HLS streaming API
-///
-/// Provides methods for HLS playlist generation and segment serving.
 /// In cluster mode, local-only backends proxy remote publisher reads through
 /// the publisher node. The `shared_file` backend reads segment files from the
 /// current node's shared mount.
 pub struct HlsStreamingApi;
 
 impl HlsStreamingApi {
-    /// Generate HLS M3U8 playlist for a stream.
-    ///
-    /// In cluster mode:
-    /// - If publisher is local: generates from local HLS stream registry
-    /// - If publisher is remote: proxies to publisher node via gRPC
-    ///
+    pub fn validate_segment_name(segment_name: &str) -> Result<()> {
+        crate::util::validate_hls_segment_name(segment_name)
+    }
+
     /// Returns `Ok(Some(playlist))` when a stream is found, `Ok(None)` when
     /// the stream is not yet available (caller should return HTTP 404 or retry),
     /// and `Err` on infrastructure failures.
@@ -619,7 +651,6 @@ impl HlsStreamingApi {
     where
         F: Fn(&str) -> String,
     {
-        // Get publisher info to determine if local or remote
         let publisher_info = infrastructure
             .registry
             .get_publisher(room_id, media_id)
@@ -630,12 +661,9 @@ impl HlsStreamingApi {
             return Ok(None);
         };
 
-        // Check if publisher is local
-        let is_local = !infrastructure.local_node_id.is_empty()
-            && publisher_info.node_id == infrastructure.local_node_id;
+        let is_local = infrastructure.is_local_publisher_node(&publisher_info.node_id);
 
         if is_local {
-            // Local publisher: read from local HLS stream registry
             Ok(Self::generate_playlist_local(
                 infrastructure,
                 room_id,
@@ -643,14 +671,10 @@ impl HlsStreamingApi {
                 url_generator,
             ))
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
-            // Validate API address before attempting remote proxy
             let api_addr = publisher_info
                 .validate_api_address()
                 .map_err(|e| anyhow::anyhow!("Cannot proxy HLS for {room_id}/{media_id}: {e}"))?;
 
-            // Remote publisher: proxy via gRPC. Preserve the caller's full
-            // segment URL template so signed query strings and disguised
-            // extensions survive playlist generation on the publisher node.
             let sample_url = url_generator("__PLACEHOLDER__");
             let (segment_url_base, segment_url_suffix) =
                 sample_url.rsplit_once("__PLACEHOLDER__").map_or_else(
@@ -671,7 +695,6 @@ impl HlsStreamingApi {
 
             Ok(playlist)
         } else {
-            // No proxy configured, try local anyway (single-node mode)
             Ok(Self::generate_playlist_local(
                 infrastructure,
                 room_id,
@@ -681,10 +704,6 @@ impl HlsStreamingApi {
         }
     }
 
-    /// Generate playlist from local HLS stream registry.
-    ///
-    /// Returns `Ok(None)` if the stream is not yet in the HLS registry
-    /// (publisher exists but no segments have been generated yet).
     fn generate_playlist_local<F>(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
@@ -695,29 +714,20 @@ impl HlsStreamingApi {
         F: Fn(&str) -> String,
     {
         if let Some(hls_registry) = &infrastructure.hls_stream_registry {
-            // Registry key format: "room_id/media_id" (matches remuxer's app_name/stream_name)
             let stream_key = format!("{room_id}/{media_id}");
 
             match hls_registry.get(&stream_key) {
                 Some(stream_state) => {
                     let state = stream_state.read();
-                    // Use caller-provided URL generator for maximum flexibility
                     Some(state.generate_m3u8(url_generator))
                 }
-                None => {
-                    // Stream not in registry yet — signal caller to return 404
-                    None
-                }
+                None => None,
             }
         } else {
-            // No HLS registry configured — signal caller to return 404
             None
         }
     }
 
-    /// Generate HLS M3U8 playlist with simple base URL (convenience method).
-    ///
-    /// Returns `Ok(None)` when the stream does not exist (HTTP handler should return 404).
     pub async fn generate_playlist_simple(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
@@ -730,13 +740,6 @@ impl HlsStreamingApi {
         .await
     }
 
-    /// Get HLS segment data.
-    ///
-    /// In cluster mode:
-    /// - If publisher is local: reads from local `SegmentManager`
-    /// - If storage backend is `shared_file`: reads from the current node's shared mount
-    /// - If publisher is remote with local-only storage: proxies to publisher node via gRPC
-    ///
     /// HLS segment requests do NOT trigger gRPC RTMP pull streams.
     pub async fn get_segment(
         infrastructure: &LiveStreamingInfrastructure,
@@ -744,7 +747,6 @@ impl HlsStreamingApi {
         media_id: &str,
         segment_name: &str,
     ) -> Result<Bytes> {
-        // Get publisher info to determine if local or remote
         let publisher_info = infrastructure
             .registry
             .get_publisher(room_id, media_id)
@@ -755,20 +757,15 @@ impl HlsStreamingApi {
             return Err(StreamError::NoPublisher(format!("{room_id}/{media_id}")).into());
         };
 
-        // Check if publisher is local
-        let is_local = !infrastructure.local_node_id.is_empty()
-            && publisher_info.node_id == infrastructure.local_node_id;
+        let is_local = infrastructure.is_local_publisher_node(&publisher_info.node_id);
 
         if is_local || infrastructure.hls_storage_backend == HlsStorageBackend::SharedFile {
-            // Local publisher or shared filesystem: read from storage visible to this node.
             Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
-            // Validate API address before attempting remote proxy
             let api_addr = publisher_info.validate_api_address().map_err(|e| {
                 anyhow::anyhow!("Cannot proxy HLS segment for {room_id}/{media_id}: {e}")
             })?;
 
-            // Remote publisher: proxy via gRPC (with local cache)
             let segment = hls_proxy
                 .get_segment(
                     api_addr,
@@ -786,12 +783,10 @@ impl HlsStreamingApi {
                 .into()
             })
         } else {
-            // No proxy configured, try local anyway (single-node mode)
             Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
         }
     }
 
-    /// Get segment from local storage.
     async fn get_segment_local(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
@@ -824,12 +819,19 @@ mod tests {
     use super::*;
     use crate::relay::{test_registry::TestStreamRegistry, PublisherInfo};
     use chrono::Utc;
+    use synctv_xiu::streamhub::define::StreamHubEvent;
+
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
+    }
 
     fn make_infrastructure_with_publisher(
         local_node_id: &str,
         publisher_node_id: &str,
         api_address: &str,
-    ) -> LiveStreamingInfrastructure {
+    ) -> std::result::Result<LiveStreamingInfrastructure, crate::error::StreamError> {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
@@ -844,44 +846,56 @@ mod tests {
             )]),
         ));
         let (event_sender, _event_receiver) = mpsc::channel(64);
-        let pull_manager = Arc::new(PullStreamManager::new(
-            registry.clone(),
-            event_sender.clone(),
-        ));
-        let external_publish_manager = Arc::new(
-            ExternalPublishManager::new(
-                registry.clone(),
-                local_node_id.to_string(),
-                event_sender.clone(),
-                synctv_common::ssrf::SsrfGuard::disabled(),
-            )
-            .expect("external publish manager should build"),
-        );
-
         LiveStreamingInfrastructure::new(
             registry,
             event_sender,
-            pull_manager,
-            external_publish_manager,
             Arc::new(StreamTracker::new()),
+            local_node_id.to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
         )
-        .with_local_node_id(local_node_id.to_string())
+    }
+
+    async fn recv_unpublish_event(
+        event_receiver: &mut mpsc::Receiver<StreamHubEvent>,
+    ) -> TestResult {
+        let event = event_receiver
+            .recv()
+            .await
+            .ok_or_else(|| test_error("expected UnPublish event"))?;
+        match event {
+            StreamHubEvent::UnPublish { .. } => Ok(()),
+            other => Err(test_error(format!(
+                "expected UnPublish event, got {other:?}"
+            ))),
+        }
     }
 
     #[tokio::test]
-    async fn test_ensure_pull_stream_skips_grpc_relay_for_local_publisher() {
-        let infrastructure = make_infrastructure_with_publisher("node-local", "node-local", "");
+    async fn test_ensure_pull_stream_skips_grpc_relay_for_local_publisher() -> TestResult {
+        let infrastructure = make_infrastructure_with_publisher("node-local", "node-local", "")?;
 
         let guard = infrastructure
             .ensure_pull_stream("room1", "media1", None)
-            .await
-            .expect("local publisher should not require a relay stream");
+            .await?;
 
         drop(guard);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_ensure_pull_stream_validates_epoch_for_local_publisher() {
+    async fn test_empty_local_node_id_treats_registry_publisher_as_local() -> TestResult {
+        let infrastructure = make_infrastructure_with_publisher("", "node-local", "")?;
+
+        let guard = infrastructure
+            .ensure_pull_stream("room1", "media1", None)
+            .await?;
+
+        drop(guard);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_ensure_pull_stream_validates_epoch_for_local_publisher() -> TestResult {
         use std::collections::HashMap;
 
         let registry = Arc::new(TestStreamRegistry::with_publishers(HashMap::from([(
@@ -897,28 +911,13 @@ mod tests {
         )])));
 
         let (event_sender, _event_receiver) = mpsc::channel(1);
-        let pull_manager = Arc::new(PullStreamManager::new(
-            registry.clone(),
-            event_sender.clone(),
-        ));
-        let external_publish_manager = Arc::new(
-            ExternalPublishManager::new(
-                registry.clone(),
-                "node-local".to_string(),
-                event_sender.clone(),
-                synctv_common::ssrf::SsrfGuard::disabled(),
-            )
-            .expect("external publish manager should build"),
-        );
-
         let infrastructure = LiveStreamingInfrastructure::new(
             registry,
             event_sender,
-            pull_manager,
-            external_publish_manager,
             Arc::new(StreamTracker::new()),
-        )
-        .with_local_node_id("node-local".to_string());
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?;
 
         let result = infrastructure
             .ensure_pull_stream("room1", "media1", None)
@@ -928,11 +927,12 @@ mod tests {
             "Local publisher with valid epoch should succeed, got error: {:?}",
             result.err()
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_create_session_with_pull_keeps_local_publishers_local() {
-        let infrastructure = make_infrastructure_with_publisher("node-local", "node-local", "");
+    async fn test_create_session_with_pull_keeps_local_publishers_local() -> TestResult {
+        let infrastructure = make_infrastructure_with_publisher("node-local", "node-local", "")?;
 
         let result =
             FlvStreamingApi::create_session_with_pull(&infrastructure, "room1", "media1", None)
@@ -942,40 +942,37 @@ mod tests {
             result.is_ok(),
             "local publisher should create FLV session without requiring gRPC pull"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_shared_file_segments_are_read_from_current_node_storage() {
+    async fn test_shared_file_segments_are_read_from_current_node_storage() -> TestResult {
         let storage: Arc<dyn synctv_xiu::storage::HlsStorage> =
             Arc::new(synctv_xiu::storage::MemoryStorage::new());
         storage
             .write("room1", "media1", "seg1", Bytes::from_static(b"segment"))
-            .await
-            .expect("test segment should be written");
+            .await?;
 
         let segment_manager = Arc::new(SegmentManager::new(
             storage,
             crate::livestream::CleanupConfig::default(),
         ));
-        let infrastructure = make_infrastructure_with_publisher("node-local", "node-remote", "")
+        let infrastructure = make_infrastructure_with_publisher("node-local", "node-remote", "")?
             .with_segment_manager(segment_manager)
             .with_hls_storage_backend(HlsStorageBackend::SharedFile)
-            .with_hls_proxy(HlsProxyClient::new(
-                std::time::Duration::from_secs(1),
-                1024 * 1024,
-                std::time::Duration::from_secs(1),
-                Some("cluster-secret".to_string()),
-            ));
+            .with_hls_proxy(HlsProxyClient::with_defaults(Some(
+                "cluster-secret".to_string(),
+            )));
 
-        let segment = HlsStreamingApi::get_segment(&infrastructure, "room1", "media1", "seg1")
-            .await
-            .expect("shared_file should read TS data from the current node storage");
+        let segment =
+            HlsStreamingApi::get_segment(&infrastructure, "room1", "media1", "seg1").await?;
 
         assert_eq!(segment, Bytes::from_static(b"segment"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_kick_stream_does_not_delete_tracking_when_unpublish_signal_fails() {
+    async fn test_kick_stream_does_not_delete_tracking_when_unpublish_signal_fails() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
@@ -997,37 +994,20 @@ mod tests {
             "user1".to_string(),
             "room1".to_string(),
             "media1".to_string(),
-            "rtmp-room",
-            "rtmp-stream",
-        );
-
-        let pull_manager = Arc::new(PullStreamManager::new(
-            registry.clone(),
-            event_sender.clone(),
-        ));
-        let external_publish_manager = Arc::new(
-            ExternalPublishManager::new(
-                registry.clone(),
-                "node-local".to_string(),
-                event_sender.clone(),
-                synctv_common::ssrf::SsrfGuard::disabled(),
-            )
-            .expect("external publish manager should build"),
         );
 
         let infrastructure = LiveStreamingInfrastructure::new(
             registry.clone(),
             event_sender.clone(),
-            pull_manager,
-            external_publish_manager,
             tracker.clone(),
-        )
-        .with_local_node_id("node-local".to_string());
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?;
 
-        let err = infrastructure
-            .kick_stream("room1", "media1")
-            .await
-            .expect_err("closed StreamHub channel should fail the kick");
+        let err = match infrastructure.kick_stream("room1", "media1").await {
+            Ok(()) => return Err(test_error("closed StreamHub channel should fail the kick")),
+            Err(err) => err,
+        };
 
         assert!(
             err.to_string().contains("StreamHub not running"),
@@ -1039,17 +1019,15 @@ mod tests {
             "tracker entry must remain until UnPublish is accepted"
         );
         assert!(
-            registry
-                .get_publisher("room1", "media1")
-                .await
-                .expect("registry lookup should succeed")
-                .is_some(),
+            registry.get_publisher("room1", "media1").await?.is_some(),
             "registry entry must remain until UnPublish is accepted"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_kick_stream_keeps_registry_and_tracker_until_unpublish_processing() {
+    async fn test_kick_stream_keeps_registry_and_tracker_until_unpublish_processing() -> TestResult
+    {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
@@ -1070,46 +1048,19 @@ mod tests {
             "user1".to_string(),
             "room1".to_string(),
             "media1".to_string(),
-            "rtmp-room",
-            "rtmp-stream",
-        );
-
-        let pull_manager = Arc::new(PullStreamManager::new(
-            registry.clone(),
-            event_sender.clone(),
-        ));
-        let external_publish_manager = Arc::new(
-            ExternalPublishManager::new(
-                registry.clone(),
-                "node-local".to_string(),
-                event_sender.clone(),
-                synctv_common::ssrf::SsrfGuard::disabled(),
-            )
-            .expect("external publish manager should build"),
         );
 
         let infrastructure = LiveStreamingInfrastructure::new(
             registry.clone(),
             event_sender,
-            pull_manager,
-            external_publish_manager,
             tracker.clone(),
-        )
-        .with_local_node_id("node-local".to_string());
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?;
 
-        infrastructure
-            .kick_stream("room1", "media1")
-            .await
-            .expect("accepted UnPublish should not fail");
+        infrastructure.kick_stream("room1", "media1").await?;
 
-        let event = event_receiver
-            .recv()
-            .await
-            .expect("kick_stream should enqueue an UnPublish event");
-        match event {
-            synctv_xiu::streamhub::define::StreamHubEvent::UnPublish { .. } => {}
-            other => panic!("expected UnPublish event, got {other:?}"),
-        }
+        recv_unpublish_event(&mut event_receiver).await?;
 
         assert_eq!(
             tracker.get_stream_user("room1", "media1").as_deref(),
@@ -1117,17 +1068,15 @@ mod tests {
             "kick_stream must keep tracker entry until StreamHub processes UnPublish"
         );
         assert!(
-            registry
-                .get_publisher("room1", "media1")
-                .await
-                .expect("registry lookup should succeed")
-                .is_some(),
+            registry.get_publisher("room1", "media1").await?.is_some(),
             "kick_stream must keep registry entry until epoch-fenced unpublish cleanup"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_kick_user_publishers_keep_registry_and_tracker_until_unpublish_processing() {
+    async fn test_kick_user_publishers_keep_registry_and_tracker_until_unpublish_processing(
+    ) -> TestResult {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([
                 (
@@ -1161,75 +1110,42 @@ mod tests {
             "user1".to_string(),
             "room1".to_string(),
             "media1".to_string(),
-            "rtmp-room-1",
-            "rtmp-stream-1",
         );
         tracker.insert(
             "user1".to_string(),
             "room2".to_string(),
             "media2".to_string(),
-            "rtmp-room-2",
-            "rtmp-stream-2",
-        );
-
-        let pull_manager = Arc::new(PullStreamManager::new(
-            registry.clone(),
-            event_sender.clone(),
-        ));
-        let external_publish_manager = Arc::new(
-            ExternalPublishManager::new(
-                registry.clone(),
-                "node-local".to_string(),
-                event_sender.clone(),
-                synctv_common::ssrf::SsrfGuard::disabled(),
-            )
-            .expect("external publish manager should build"),
         );
 
         let infrastructure = LiveStreamingInfrastructure::new(
             registry.clone(),
             event_sender,
-            pull_manager,
-            external_publish_manager,
             tracker.clone(),
-        )
-        .with_local_node_id("node-local".to_string());
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?;
 
         infrastructure.kick_user_publishers("user1").await;
 
         for _ in 0..2 {
-            let event = event_receiver
-                .recv()
-                .await
-                .expect("kick_user_publishers should enqueue UnPublish events");
-            match event {
-                synctv_xiu::streamhub::define::StreamHubEvent::UnPublish { .. } => {}
-                other => panic!("expected UnPublish event, got {other:?}"),
-            }
+            recv_unpublish_event(&mut event_receiver).await?;
         }
 
         let remaining_streams = tracker.get_user_streams("user1");
         assert_eq!(remaining_streams.len(), 2);
         assert!(
-            registry
-                .get_publisher("room1", "media1")
-                .await
-                .expect("registry lookup should succeed")
-                .is_some(),
+            registry.get_publisher("room1", "media1").await?.is_some(),
             "kick_user_publishers must keep the first registry entry until unpublish cleanup"
         );
         assert!(
-            registry
-                .get_publisher("room2", "media2")
-                .await
-                .expect("registry lookup should succeed")
-                .is_some(),
+            registry.get_publisher("room2", "media2").await?.is_some(),
             "kick_user_publishers must keep the second registry entry until unpublish cleanup"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_kick_user_room_publishers_only_removes_streams_in_target_room() {
+    async fn test_kick_user_room_publishers_only_removes_streams_in_target_room() -> TestResult {
         let registry = Arc::new(crate::relay::TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([
                 (
@@ -1263,51 +1179,26 @@ mod tests {
             "user1".to_string(),
             "room1".to_string(),
             "media1".to_string(),
-            "rtmp-room-1",
-            "rtmp-stream-1",
         );
         tracker.insert(
             "user1".to_string(),
             "room2".to_string(),
             "media2".to_string(),
-            "rtmp-room-2",
-            "rtmp-stream-2",
-        );
-
-        let pull_manager = Arc::new(PullStreamManager::new(
-            registry.clone(),
-            event_sender.clone(),
-        ));
-        let external_publish_manager = Arc::new(
-            ExternalPublishManager::new(
-                registry.clone(),
-                "node-local".to_string(),
-                event_sender.clone(),
-                synctv_common::ssrf::SsrfGuard::disabled(),
-            )
-            .expect("external publish manager should build"),
         );
 
         let infrastructure = LiveStreamingInfrastructure::new(
             registry.clone(),
             event_sender,
-            pull_manager,
-            external_publish_manager,
             tracker.clone(),
-        );
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?;
 
         infrastructure
             .kick_user_room_publishers("room1", "user1")
             .await;
 
-        let event = event_receiver
-            .recv()
-            .await
-            .expect("kick_user_room_publishers should enqueue one UnPublish event");
-        match event {
-            synctv_xiu::streamhub::define::StreamHubEvent::UnPublish { .. } => {}
-            other => panic!("expected UnPublish event, got {other:?}"),
-        }
+        recv_unpublish_event(&mut event_receiver).await?;
         assert!(
             event_receiver.try_recv().is_err(),
             "room-scoped kick should only enqueue the room-local publisher"
@@ -1323,25 +1214,18 @@ mod tests {
             "publishers in other rooms must remain tracked"
         );
         assert!(
-            registry
-                .get_publisher("room1", "media1")
-                .await
-                .expect("registry lookup should succeed")
-                .is_some(),
+            registry.get_publisher("room1", "media1").await?.is_some(),
             "target room publisher must remain registered until unpublish cleanup"
         );
         assert!(
-            registry
-                .get_publisher("room2", "media2")
-                .await
-                .expect("registry lookup should succeed")
-                .is_some(),
+            registry.get_publisher("room2", "media2").await?.is_some(),
             "publishers in other rooms must remain registered"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_kick_user_publishers_skips_remote_registry_publishers() {
+    async fn test_kick_user_publishers_skips_remote_registry_publishers() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([
                 (
@@ -1370,63 +1254,34 @@ mod tests {
         ));
         let (event_sender, mut event_receiver) = mpsc::channel(2);
         let tracker = Arc::new(StreamTracker::new());
-        let pull_manager = Arc::new(PullStreamManager::new(
-            registry.clone(),
-            event_sender.clone(),
-        ));
-        let external_publish_manager = Arc::new(
-            ExternalPublishManager::new(
-                registry.clone(),
-                "node-local".to_string(),
-                event_sender.clone(),
-                synctv_common::ssrf::SsrfGuard::disabled(),
-            )
-            .expect("external publish manager should build"),
-        );
-
         let infrastructure = LiveStreamingInfrastructure::new(
             registry.clone(),
             event_sender,
-            pull_manager,
-            external_publish_manager,
             tracker,
-        )
-        .with_local_node_id("node-local".to_string());
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?;
 
         infrastructure.kick_user_publishers("user1").await;
 
-        let event = event_receiver
-            .recv()
-            .await
-            .expect("local publisher should enqueue one UnPublish event");
-        match event {
-            synctv_xiu::streamhub::define::StreamHubEvent::UnPublish { .. } => {}
-            other => panic!("expected UnPublish event, got {other:?}"),
-        }
+        recv_unpublish_event(&mut event_receiver).await?;
         assert!(
             event_receiver.try_recv().is_err(),
             "remote publisher must not be kicked by a non-owner replica"
         );
         assert!(
-            registry
-                .get_publisher("room1", "media1")
-                .await
-                .expect("registry lookup should succeed")
-                .is_some(),
+            registry.get_publisher("room1", "media1").await?.is_some(),
             "local publisher must remain registered until its owner processes UnPublish"
         );
         assert!(
-            registry
-                .get_publisher("room2", "media2")
-                .await
-                .expect("registry lookup should succeed")
-                .is_some(),
+            registry.get_publisher("room2", "media2").await?.is_some(),
             "remote publisher must remain registered for its owner node to terminate"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_kick_stream_skips_remote_publisher_registry_entry() {
+    async fn test_kick_stream_skips_remote_publisher_registry_entry() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([(
                 ("room1".to_string(), "media1".to_string()),
@@ -1442,45 +1297,24 @@ mod tests {
         ));
         let (event_sender, mut event_receiver) = mpsc::channel(1);
         let tracker = Arc::new(StreamTracker::new());
-        let pull_manager = Arc::new(PullStreamManager::new(
-            registry.clone(),
-            event_sender.clone(),
-        ));
-        let external_publish_manager = Arc::new(
-            ExternalPublishManager::new(
-                registry.clone(),
-                "node-local".to_string(),
-                event_sender.clone(),
-                synctv_common::ssrf::SsrfGuard::disabled(),
-            )
-            .expect("external publish manager should build"),
-        );
-
         let infrastructure = LiveStreamingInfrastructure::new(
             registry.clone(),
             event_sender,
-            pull_manager,
-            external_publish_manager,
             tracker,
-        )
-        .with_local_node_id("node-local".to_string());
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?;
 
-        infrastructure
-            .kick_stream("room1", "media1")
-            .await
-            .expect("remote publisher kick should no-op on non-owner replica");
+        infrastructure.kick_stream("room1", "media1").await?;
 
         assert!(
             event_receiver.try_recv().is_err(),
             "non-owner replica must not send local UnPublish for remote publisher"
         );
         assert!(
-            registry
-                .get_publisher("room1", "media1")
-                .await
-                .expect("registry lookup should succeed")
-                .is_some(),
+            registry.get_publisher("room1", "media1").await?.is_some(),
             "non-owner replica must not remove remote publisher registry entry"
         );
+        Ok(())
     }
 }

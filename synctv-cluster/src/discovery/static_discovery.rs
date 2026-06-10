@@ -277,7 +277,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_discovered_node_info_uses_peer_reported_node_id() {
+    fn test_discovered_node_info_uses_peer_reported_node_id() -> Result<(), crate::Error> {
         let discovered = ProbedNodeIdentity {
             node_id: "peer-node-1".to_string(),
             api_address: "10.0.0.5:50051".to_string(),
@@ -285,10 +285,13 @@ mod tests {
         };
 
         let info = StaticDiscovery::discovered_node_info(&discovered, "10.0.0.5:50051", 8080)
-            .expect("peer should map to discovered node info");
+            .ok_or_else(|| {
+                crate::Error::Configuration("peer should map to discovered node info".to_string())
+            })?;
 
         assert_eq!(info.node_id, "peer-node-1");
         assert_eq!(info.api_address, "10.0.0.5:8080");
         assert_eq!(info.epoch, 7);
+        Ok(())
     }
 }

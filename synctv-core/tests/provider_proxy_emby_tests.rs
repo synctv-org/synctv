@@ -1,8 +1,6 @@
 //! Emby `ProviderProxy` tests
 //!
 //! Tests for `EmbyProvider::resolve_proxy` sub_path parsing and dispatch.
-//!
-#![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,11 +10,19 @@ use synctv_core::provider::{
     proxy::{ProviderProxy, ProxyAction, ProxyRequestContext},
     sign_playback_urls,
     store::{InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback},
-    EmbyProvider, PlaybackInfo, PlaybackResult, ProviderError, SubtitleTrack,
+    EmbyProvider, PlaybackInfo, PlaybackResult, ProviderClientManager, ProviderError,
+    SubtitleTrack,
 };
+use synctv_core_testing::{create_empty_provider_instance_manager, err, ok, some};
 
 fn provider() -> EmbyProvider {
-    EmbyProvider::new_local_only().expect("proxy-only provider should build")
+    EmbyProvider::with_client_manager(
+        create_empty_provider_instance_manager(),
+        Arc::new(ok(
+            ProviderClientManager::new(),
+            "provider client manager should build",
+        )),
+    )
 }
 
 fn new_store() -> Arc<dyn ProviderStore> {
@@ -56,10 +62,35 @@ fn make_versioned(
 }
 
 async fn store_versioned(store: &Arc<dyn ProviderStore>, vp: &VersionedPlayback) {
-    store
-        .set(&format!("v:{}", vp.version), vp, Duration::from_mins(5))
-        .await
-        .unwrap();
+    ok(
+        store
+            .set(&format!("v:{}", vp.version), vp, Duration::from_mins(5))
+            .await,
+        "versioned playback should be cached",
+    );
+}
+
+fn expect_fetch(action: ProxyAction) -> (String, HashMap<String, String>, Option<String>) {
+    match action {
+        ProxyAction::FetchAndForward {
+            url,
+            headers,
+            range_header,
+        } => (url, headers, range_header),
+        other => std::panic::panic_any(format!("expected FetchAndForward, got {other:?}")),
+    }
+}
+
+fn expect_m3u8(action: ProxyAction) -> (String, HashMap<String, String>, String) {
+    match action {
+        ProxyAction::M3u8Rewrite {
+            url,
+            headers,
+            proxy_base,
+            ..
+        } => (url, headers, proxy_base),
+        other => std::panic::panic_any(format!("expected M3u8Rewrite, got {other:?}")),
+    }
 }
 
 #[tokio::test]
@@ -86,14 +117,18 @@ async fn test_stream_proxy() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let action = p.resolve_proxy(&ctx).await.unwrap();
-    match action {
-        ProxyAction::FetchAndForward { url, headers, .. } => {
-            assert_eq!(url, "https://emby.example.com/Videos/123/stream.mp4");
-            assert_eq!(headers.get("X-Emby-Token").unwrap(), "api-key-123");
-        }
-        other => panic!("Expected FetchAndForward, got {other:?}"),
-    }
+    let (url, headers, _) = expect_fetch(ok(
+        p.resolve_proxy(&ctx).await,
+        "stream proxy should resolve",
+    ));
+    assert_eq!(url, "https://emby.example.com/Videos/123/stream.mp4");
+    assert_eq!(
+        some(
+            headers.get("X-Emby-Token"),
+            "emby token header should exist"
+        ),
+        "api-key-123"
+    );
 }
 
 #[tokio::test]
@@ -120,20 +155,17 @@ async fn test_m3u8_proxy() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let action = p.resolve_proxy(&ctx).await.unwrap();
-    match action {
-        ProxyAction::M3u8Rewrite {
-            url,
-            headers,
-            proxy_base,
-            ..
-        } => {
-            assert_eq!(url, "https://emby.example.com/Videos/123/master.m3u8");
-            assert_eq!(headers.get("X-Emby-Token").unwrap(), "api-key-123");
-            assert_eq!(proxy_base, "/api/providers/proxy/emby/e2");
-        }
-        other => panic!("Expected M3u8Rewrite, got {other:?}"),
-    }
+    let (url, headers, proxy_base) =
+        expect_m3u8(ok(p.resolve_proxy(&ctx).await, "m3u8 proxy should resolve"));
+    assert_eq!(url, "https://emby.example.com/Videos/123/master.m3u8");
+    assert_eq!(
+        some(
+            headers.get("X-Emby-Token"),
+            "emby token header should exist"
+        ),
+        "api-key-123"
+    );
+    assert_eq!(proxy_base, "/api/providers/proxy/emby/e2");
 }
 
 #[tokio::test]
@@ -175,7 +207,10 @@ async fn test_subtitle_path_without_mode_is_rejected() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    let err = err(
+        p.resolve_proxy(&ctx).await,
+        "subtitle path without mode should be rejected",
+    );
     assert!(matches!(err, ProviderError::NotFound));
 }
 
@@ -218,13 +253,11 @@ async fn test_subtitle_by_mode_and_index() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let action = p.resolve_proxy(&ctx).await.unwrap();
-    match action {
-        ProxyAction::FetchAndForward { url, .. } => {
-            assert_eq!(url, "https://emby.example.com/sub1.srt");
-        }
-        other => panic!("Expected FetchAndForward, got {other:?}"),
-    }
+    let (url, _, _) = expect_fetch(ok(
+        p.resolve_proxy(&ctx).await,
+        "subtitle proxy should resolve by mode and index",
+    ));
+    assert_eq!(url, "https://emby.example.com/sub1.srt");
 }
 
 #[tokio::test]
@@ -260,30 +293,30 @@ async fn test_subtitle_proxy_prefers_subtitle_headers_when_present() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let action = p.resolve_proxy(&ctx).await.unwrap();
-    match action {
-        ProxyAction::FetchAndForward { url, headers, .. } => {
-            assert_eq!(url, "https://emby.example.com/subtitle.srt");
-            assert_eq!(
-                headers.get("X-Subtitle-Token").map(String::as_str),
-                Some("subtitle-secret")
-            );
-            assert_eq!(
-                headers.get("X-Emby-Token").map(String::as_str),
-                Some("api-key-123")
-            );
-        }
-        other => panic!("Expected FetchAndForward, got {other:?}"),
-    }
+    let (url, headers, _) = expect_fetch(ok(
+        p.resolve_proxy(&ctx).await,
+        "subtitle proxy should resolve with merged headers",
+    ));
+    assert_eq!(url, "https://emby.example.com/subtitle.srt");
+    assert_eq!(
+        headers.get("X-Subtitle-Token").map(String::as_str),
+        Some("subtitle-secret")
+    );
+    assert_eq!(
+        headers.get("X-Emby-Token").map(String::as_str),
+        Some("api-key-123")
+    );
 }
 
 #[tokio::test]
 async fn test_signed_subtitle_url_round_trips_to_matching_mode() {
     let store = new_store();
-    let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-        b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-    )
-    .expect("test proxy signing key should derive");
+    let signing_key = ok(
+        synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+            b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+        ),
+        "test proxy signing key should derive",
+    );
     let version = "emode";
     let mut result = PlaybackResult {
         playback_infos: HashMap::from([
@@ -343,20 +376,22 @@ async fn test_signed_subtitle_url_round_trips_to_matching_mode() {
     );
 
     let subtitle_url = result.playback_infos["source_b"].subtitles[0].url.clone();
-    let sub_path_with_query = subtitle_url
-        .strip_prefix("/api/providers/proxy/emby/")
-        .expect("signed subtitle url should use emby proxy prefix");
-    let sub_path = urlencoding::decode(
-        sub_path_with_query
-            .split('?')
-            .next()
-            .expect("signed subtitle url should include sub_path"),
-    )
-    .expect("signed subtitle path should be valid percent-encoding");
-    let sub_path = sub_path
-        .split('?')
-        .next()
-        .expect("decoded subtitle path should still be present");
+    let sub_path_with_query = some(
+        subtitle_url.strip_prefix("/api/providers/proxy/emby/"),
+        "signed subtitle url should use emby proxy prefix",
+    );
+    let sub_path = urlencoding::decode(some(
+        sub_path_with_query.split('?').next(),
+        "signed subtitle url should include sub_path",
+    ));
+    let sub_path = ok(
+        sub_path,
+        "signed subtitle path should be valid percent-encoding",
+    );
+    let sub_path = some(
+        sub_path.split('?').next(),
+        "decoded subtitle path should still be present",
+    );
 
     let p = provider();
     let ctx = ProxyRequestContext {
@@ -371,18 +406,18 @@ async fn test_signed_subtitle_url_round_trips_to_matching_mode() {
         request_headers: &http::HeaderMap::new(),
     };
 
-    let action = p
-        .resolve_proxy(&ctx)
-        .await
-        .expect("signed subtitle path should resolve to the same playback mode");
-
-    match action {
-        ProxyAction::FetchAndForward { url, headers, .. } => {
-            assert_eq!(url, "https://emby.example.com/subtitles/b-en.srt");
-            assert_eq!(headers.get("X-Emby-Token").unwrap(), "api-key-123");
-        }
-        other => panic!("Expected FetchAndForward, got {other:?}"),
-    }
+    let (url, headers, _) = expect_fetch(ok(
+        p.resolve_proxy(&ctx).await,
+        "signed subtitle path should resolve to the same playback mode",
+    ));
+    assert_eq!(url, "https://emby.example.com/subtitles/b-en.srt");
+    assert_eq!(
+        some(
+            headers.get("X-Emby-Token"),
+            "emby token header should exist"
+        ),
+        "api-key-123"
+    );
 }
 
 #[tokio::test]
@@ -415,7 +450,10 @@ async fn test_subtitle_index_out_of_range() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    let err = err(
+        p.resolve_proxy(&ctx).await,
+        "out-of-range subtitle index should be rejected",
+    );
     assert!(matches!(
         err,
         synctv_core::provider::ProviderError::NotFound
@@ -446,10 +484,13 @@ async fn test_subtitle_invalid_index() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    let err = err(
+        p.resolve_proxy(&ctx).await,
+        "invalid subtitle index should be rejected",
+    );
     assert!(matches!(
         err,
-        synctv_core::provider::ProviderError::ApiError(_)
+        synctv_core::provider::ProviderError::NotFound
     ));
 }
 
@@ -477,7 +518,10 @@ async fn test_unknown_sub_path() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    let err = err(
+        p.resolve_proxy(&ctx).await,
+        "unknown sub path should be rejected",
+    );
     assert!(matches!(
         err,
         synctv_core::provider::ProviderError::NotFound
@@ -509,7 +553,10 @@ async fn test_expired_version() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    let err = err(
+        p.resolve_proxy(&ctx).await,
+        "expired version should be rejected",
+    );
     assert!(matches!(
         err,
         synctv_core::provider::ProviderError::NotFound
@@ -530,7 +577,10 @@ async fn test_no_store() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    let err = err(
+        p.resolve_proxy(&ctx).await,
+        "missing store should be rejected",
+    );
     assert!(matches!(
         err,
         synctv_core::provider::ProviderError::ApiError(_)
@@ -552,7 +602,10 @@ async fn test_no_slash_in_sub_path() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    let err = err(
+        p.resolve_proxy(&ctx).await,
+        "sub path without slash should be rejected",
+    );
     assert!(matches!(
         err,
         synctv_core::provider::ProviderError::NotFound
@@ -574,7 +627,10 @@ async fn test_version_not_in_store() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    let err = err(
+        p.resolve_proxy(&ctx).await,
+        "missing version should be rejected",
+    );
     assert!(matches!(
         err,
         synctv_core::provider::ProviderError::NotFound
@@ -607,11 +663,9 @@ async fn test_stream_preserves_all_headers() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let action = p.resolve_proxy(&ctx).await.unwrap();
-    match action {
-        ProxyAction::FetchAndForward { headers: h, .. } => {
-            assert_eq!(h, headers);
-        }
-        other => panic!("Expected FetchAndForward, got {other:?}"),
-    }
+    let (_, resolved_headers, _) = expect_fetch(ok(
+        p.resolve_proxy(&ctx).await,
+        "stream proxy should resolve with all headers",
+    ));
+    assert_eq!(resolved_headers, headers);
 }

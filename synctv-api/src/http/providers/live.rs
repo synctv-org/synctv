@@ -19,8 +19,8 @@ use crate::http::{AppError, AppResult, AppState};
 use crate::observability::metrics::LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL;
 use synctv_core::models::{MediaId, RoomId, UserId};
 use synctv_core::provider::proxy::ProxyAction;
-use synctv_livestream::api::{FlvStreamingApi, HlsStreamingApi};
-use synctv_livestream::error::StreamError;
+use synctv_livestream::StreamError;
+use synctv_livestream::{FlvStreamingApi, HlsStreamingApi};
 
 const MAX_CONSECUTIVE_DROPS: u32 = 100;
 
@@ -42,10 +42,6 @@ fn map_livestream_error(context: &str, error: &(dyn std::error::Error + 'static)
 
     tracing::error!(context, error = %error, "Unexpected livestream error");
     AppError::internal_server_error("Live streaming request failed")
-}
-
-fn live_streaming_unavailable_http_error() -> AppError {
-    AppError::service_unavailable()
 }
 
 pub(crate) async fn execute_live_stream_action(
@@ -118,7 +114,7 @@ async fn execute_flv_stream(
         .shared_api_runtime
         .client_api
         .live_infrastructure()
-        .ok_or_else(live_streaming_unavailable_http_error)?;
+        .ok_or_else(AppError::service_unavailable)?;
 
     let source_url = if provider_name == "live_proxy" {
         state
@@ -251,9 +247,9 @@ async fn execute_hls_playlist(
         .shared_api_runtime
         .client_api
         .live_infrastructure()
-        .ok_or_else(live_streaming_unavailable_http_error)?;
+        .ok_or_else(AppError::service_unavailable)?;
 
-    let segment_disguised_as_png = live_segments_disguised_as_png(state);
+    let segment_disguised_as_png = live_segments_disguised_as_png(state)?;
 
     let playlist = HlsStreamingApi::generate_playlist(
         infrastructure,
@@ -285,12 +281,18 @@ async fn execute_hls_playlist(
     }
 }
 
-fn live_segments_disguised_as_png(state: &AppState) -> bool {
-    state
-        .settings_registry
-        .as_ref()
-        .and_then(|registry| registry.ts_disguised_as_png.get().ok())
-        .unwrap_or(false)
+fn live_segments_disguised_as_png(state: &AppState) -> AppResult<bool> {
+    let Some(registry) = state.settings_registry.as_ref() else {
+        return Ok(false);
+    };
+
+    registry.ts_disguised_as_png.get().map_err(|error| {
+        tracing::error!(
+            error = %error,
+            "Failed to read rtmp.ts_disguised_as_png setting"
+        );
+        AppError::internal_server_error("Failed to read live streaming settings")
+    })
 }
 
 fn build_hls_segment_path(
@@ -321,7 +323,7 @@ fn normalize_hls_segment_name(
         .filter(|name| !name.is_empty())
         .ok_or_else(|| AppError::bad_request("Invalid segment name"))?;
 
-    if let Err(error) = synctv_livestream::util::validate_hls_segment_name(normalized) {
+    if let Err(error) = HlsStreamingApi::validate_segment_name(normalized) {
         warn!(segment = %normalized, error = %error, "HLS segment name failed validation");
         return Err(AppError::bad_request("Invalid segment name"));
     }
@@ -344,7 +346,7 @@ async fn execute_hls_segment(
         .shared_api_runtime
         .client_api
         .live_infrastructure()
-        .ok_or_else(live_streaming_unavailable_http_error)?;
+        .ok_or_else(AppError::service_unavailable)?;
 
     let ts_data = HlsStreamingApi::get_segment(infrastructure, &room_id_key, &media_id_key, validated_name)
         .await
@@ -406,19 +408,34 @@ mod tests {
     use axum::http::StatusCode;
     use http_body_util::BodyExt;
 
-    async fn response_bytes(response: Response<Body>) -> Bytes {
-        response
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn route_err<T>(result: Result<T, AppError>) -> TestResult<T> {
+        result.map_err(|error| anyhow::anyhow!("route error: {error:?}"))
+    }
+
+    fn route_error<T>(result: Result<T, AppError>) -> TestResult<AppError> {
+        match result {
+            Ok(_) => Err(anyhow::anyhow!("expected route error")),
+            Err(error) => Ok(error),
+        }
+    }
+
+    async fn response_bytes(response: Response<Body>) -> TestResult<Bytes> {
+        Ok(response
             .into_body()
             .collect()
             .await
-            .expect("test response body should collect")
-            .to_bytes()
+            .map_err(|error| anyhow::anyhow!("test response body should collect: {error}"))?
+            .to_bytes())
     }
 
     #[tokio::test]
-    async fn send_flv_chunk_waits_without_timeout_when_capacity_frees() {
+    async fn send_flv_chunk_waits_without_timeout_when_capacity_frees() -> TestResult {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        tx.send(Ok(Bytes::from_static(b"first"))).await.unwrap();
+        tx.send(Ok(Bytes::from_static(b"first")))
+            .await
+            .map_err(|_| anyhow::anyhow!("receiver should accept initial FLV chunk"))?;
 
         let sender = tx.clone();
         let send_task = tokio::spawn(async move {
@@ -433,10 +450,11 @@ mod tests {
         assert!(
             matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"first"))
         );
-        assert_eq!(send_task.await.unwrap(), FlvChunkSendResult::Delivered);
+        assert_eq!(send_task.await?, FlvChunkSendResult::Delivered);
         assert!(
             matches!(rx.recv().await, Some(Ok(bytes)) if bytes == Bytes::from_static(b"second"))
         );
+        Ok(())
     }
 
     #[tokio::test]
@@ -480,82 +498,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disguised_hls_segment_response_does_not_rewrite_payload() {
+    async fn disguised_hls_segment_response_does_not_rewrite_payload() -> TestResult {
         let ts_data = Bytes::from_static(b"\x47\x40\x00\x10mpeg-ts-payload");
 
-        let response =
-            build_hls_segment_response(ts_data.clone(), true).expect("test response should build");
+        let response = route_err(build_hls_segment_response(ts_data.clone(), true))?;
 
         assert_eq!(
-            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .ok_or_else(|| anyhow::anyhow!("HLS segment response should set content type"))?,
             "image/png"
         );
-        assert_eq!(response_bytes(response).await, ts_data);
+        assert_eq!(response_bytes(response).await?, ts_data);
+        Ok(())
     }
 
     #[test]
-    fn normalize_hls_segment_name_removes_only_one_expected_suffix() {
+    fn normalize_hls_segment_name_removes_only_one_expected_suffix() -> TestResult {
         assert_eq!(
-            normalize_hls_segment_name("seg001.ts", false).unwrap(),
+            route_err(normalize_hls_segment_name("seg001.ts", false))?,
             "seg001"
         );
         assert_eq!(
-            normalize_hls_segment_name("seg001.png", true).unwrap(),
+            route_err(normalize_hls_segment_name("seg001.png", true))?,
             "seg001"
         );
 
         assert_eq!(
-            normalize_hls_segment_name("seg001.tsts", false)
-                .unwrap_err()
-                .status,
+            route_error(normalize_hls_segment_name("seg001.tsts", false))?.status,
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            normalize_hls_segment_name("seg001.pngpng", true)
-                .unwrap_err()
-                .status,
+            route_error(normalize_hls_segment_name("seg001.pngpng", true))?.status,
             StatusCode::BAD_REQUEST
         );
+        Ok(())
     }
 
     #[test]
-    fn normalize_hls_segment_name_rejects_empty_or_traversal_names() {
+    fn normalize_hls_segment_name_rejects_empty_or_traversal_names() -> TestResult {
         assert_eq!(
-            normalize_hls_segment_name(".ts", false).unwrap_err().status,
+            route_error(normalize_hls_segment_name(".ts", false))?.status,
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            normalize_hls_segment_name("../secret.ts", false)
-                .unwrap_err()
-                .status,
+            route_error(normalize_hls_segment_name("../secret.ts", false))?.status,
             StatusCode::BAD_REQUEST
         );
+        Ok(())
     }
 
     #[test]
-    fn normalize_hls_segment_name_uses_livestream_segment_validator() {
+    fn normalize_hls_segment_name_uses_livestream_segment_validator() -> TestResult {
         assert_eq!(
-            normalize_hls_segment_name("seg:001.ts", false)
-                .unwrap_err()
-                .status,
+            route_error(normalize_hls_segment_name("seg:001.ts", false))?.status,
             StatusCode::BAD_REQUEST
         );
 
         let too_long = format!("{}.ts", "a".repeat(257));
         assert_eq!(
-            normalize_hls_segment_name(&too_long, false)
-                .unwrap_err()
-                .status,
+            route_error(normalize_hls_segment_name(&too_long, false))?.status,
             StatusCode::BAD_REQUEST
         );
 
         let control_char = "seg\u{7}.ts";
         assert_eq!(
-            normalize_hls_segment_name(control_char, false)
-                .unwrap_err()
-                .status,
+            route_error(normalize_hls_segment_name(control_char, false))?.status,
             StatusCode::BAD_REQUEST
         );
+        Ok(())
     }
 
     #[test]
@@ -647,11 +659,5 @@ mod tests {
         );
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(err.message, "Live streaming request failed");
-    }
-
-    #[test]
-    fn live_streaming_unavailable_http_error_maps_to_503() {
-        let err = live_streaming_unavailable_http_error();
-        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
     }
 }

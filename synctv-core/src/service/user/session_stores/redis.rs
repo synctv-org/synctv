@@ -85,25 +85,25 @@ where
     }
 }
 
-pub struct RedisOpaqueLoginSessionStore {
+pub(super) struct RedisOpaqueLoginSessionStore {
     store: RedisTypedSessionStore<OpaqueLoginSession>,
 }
 
-pub struct RedisOpaqueRegistrationSessionStore {
+pub(super) struct RedisOpaqueRegistrationSessionStore {
     store: RedisTypedSessionStore<OpaqueRegistrationSession>,
 }
 
-pub struct RedisMfaSessionStore {
+pub(super) struct RedisMfaSessionStore {
     store: RedisTypedSessionStore<MfaSession>,
 }
 
-pub struct RedisSensitiveVerificationSessionStore {
+pub(super) struct RedisSensitiveVerificationSessionStore {
     store: RedisTypedSessionStore<SensitiveVerificationSession>,
 }
 
 impl RedisOpaqueLoginSessionStore {
     #[must_use]
-    pub fn from_runtime(
+    pub(super) fn from_runtime(
         runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {
@@ -126,7 +126,7 @@ impl RedisOpaqueLoginSessionStore {
 
 impl RedisOpaqueRegistrationSessionStore {
     #[must_use]
-    pub fn from_runtime(
+    pub(super) fn from_runtime(
         runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {
@@ -149,7 +149,7 @@ impl RedisOpaqueRegistrationSessionStore {
 
 impl RedisMfaSessionStore {
     #[must_use]
-    pub fn from_runtime(
+    pub(super) fn from_runtime(
         runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {
@@ -172,7 +172,7 @@ impl RedisMfaSessionStore {
 
 impl RedisSensitiveVerificationSessionStore {
     #[must_use]
-    pub fn from_runtime(
+    pub(super) fn from_runtime(
         runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {

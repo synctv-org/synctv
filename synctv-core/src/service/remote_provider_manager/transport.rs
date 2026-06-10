@@ -181,19 +181,7 @@ impl RemoteProviderManager {
     }
 
     /// Create a gRPC channel for the given provider instance.
-    #[cfg_attr(
-        not(any(
-            feature = "tls-aws-lc",
-            feature = "tls-ring",
-            feature = "tls-webpki-roots",
-            feature = "tls-native-roots"
-        )),
-        allow(clippy::unused_async)
-    )]
-    pub(super) async fn create_grpc_channel(
-        &self,
-        config: &ProviderInstance,
-    ) -> crate::Result<Channel> {
+    pub(super) fn create_grpc_channel(&self, config: &ProviderInstance) -> crate::Result<Channel> {
         Self::validate_endpoint_ssrf(&config.endpoint, &self.ssrf_guard)?;
 
         let timeout = config.parse_timeout().map_err(crate::Error::Internal)?;
@@ -227,7 +215,7 @@ impl RemoteProviderManager {
                     feature = "tls-native-roots"
                 )))]
                 {
-                    let _ = endpoint;
+                    drop(endpoint);
                     return Err(crate::Error::InvalidInput(
                         "Remote provider insecure TLS requires a TLS provider feature".to_string(),
                     ));
@@ -240,12 +228,7 @@ impl RemoteProviderManager {
                     feature = "tls-native-roots"
                 ))]
                 {
-                    let channel = self.connect_insecure_tls(endpoint).await.map_err(|error| {
-                        Self::provider_connection_setup_error(
-                            "Remote provider TLS connection setup failed.",
-                            error,
-                        )
-                    })?;
+                    let channel = self.connect_insecure_tls(&endpoint);
 
                     tracing::info!(
                         "Established insecure-TLS gRPC connection to {} (timeout: {:?})",
@@ -316,10 +299,7 @@ impl RemoteProviderManager {
         feature = "tls-webpki-roots",
         feature = "tls-native-roots"
     ))]
-    async fn connect_insecure_tls(
-        &self,
-        endpoint: Endpoint,
-    ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
+    fn connect_insecure_tls(&self, endpoint: &Endpoint) -> Channel {
         crate::install_process_crypto_provider();
 
         let guard = self.ssrf_guard.clone();
@@ -346,7 +326,6 @@ impl RemoteProviderManager {
             }
         });
 
-        let channel = endpoint.connect_with_connector(connector).await?;
-        Ok(channel)
+        endpoint.clone().connect_with_connector_lazy(connector)
     }
 }

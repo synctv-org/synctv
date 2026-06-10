@@ -44,7 +44,7 @@ pub use redis_store::RedisTicketStore;
 pub use store::TicketStore;
 pub use types::{
     CreateGuestTicketRequest, PendingValidatedTicket, UserValidationResult, ValidatedGuestTicket,
-    ValidatedTicket, WsTicketData, WsTicketPrincipal,
+    ValidatedTicket, WsTicketData,
 };
 
 const INVALID_OR_EXPIRED_TICKET_MESSAGE: &str = "Invalid or expired ticket";
@@ -177,20 +177,6 @@ pub trait WebSocketTicketService: Send + Sync {
     ) -> Result<ValidatedTicket>;
 }
 
-/// Build a WebSocket ticket service behind the service abstraction.
-///
-/// Callers should depend on the returned trait object instead of branching on
-/// the concrete local or shared ticket storage implementation.
-pub fn web_socket_ticket_service_from_shared_state_profile(
-    profile: &SharedStateProfile,
-    ticket_ttl_secs: Option<u64>,
-) -> Result<Arc<dyn WebSocketTicketService>> {
-    Ok(Arc::new(WsTicketService::from_shared_state_profile(
-        profile,
-        ticket_ttl_secs,
-    )?))
-}
-
 impl std::fmt::Debug for WsTicketService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WsTicketService")
@@ -260,7 +246,7 @@ impl WsTicketService {
         Self::with_memory(ticket_ttl_secs)
     }
 
-    pub fn from_shared_state_profile(
+    pub(crate) fn from_shared_state_profile(
         profile: &SharedStateProfile,
         ticket_ttl_secs: Option<u64>,
     ) -> Result<Self> {

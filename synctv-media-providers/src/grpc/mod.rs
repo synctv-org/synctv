@@ -25,16 +25,13 @@ pub mod emby {
     ));
 }
 
-// Shared validation
-pub mod validation;
-
 // Shared gRPC error mapping
-pub mod error_mapper;
+mod error_mapper;
 
 // Server implementations
-pub mod alist_server;
-pub mod bilibili_server;
-pub mod emby_server;
+mod alist_server;
+mod bilibili_server;
+mod emby_server;
 
 // Re-export server types for external registration
 pub use alist_server::AlistService;

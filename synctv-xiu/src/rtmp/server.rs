@@ -172,7 +172,14 @@ impl RtmpServer {
         {
             tracing::warn!("RTMP shutdown grace period expired, aborting lingering sessions");
             forced_session_shutdown.cancel();
-            let _ = tokio::time::timeout(Duration::from_secs(1), session_tracker.wait()).await;
+            match tokio::time::timeout(Duration::from_secs(1), session_tracker.wait()).await {
+                Ok(()) => {
+                    tracing::info!("RTMP sessions stopped after forced shutdown");
+                }
+                Err(_) => {
+                    tracing::error!("RTMP sessions did not stop within forced shutdown timeout");
+                }
+            }
         }
 
         tracing::info!("RTMP server shutdown complete");
@@ -183,10 +190,24 @@ impl RtmpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
     use std::io::ErrorKind;
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpStream;
     use tokio::sync::mpsc;
+
+    fn assert_shutdown_read_result(result: Result<usize, io::Error>) {
+        match result {
+            Ok(0) => {}
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    ErrorKind::ConnectionReset | ErrorKind::BrokenPipe | ErrorKind::UnexpectedEof
+                ) => {}
+            Ok(bytes_read) => panic!("client read {bytes_read} byte(s) after shutdown"),
+            Err(err) => panic!("unexpected read error after shutdown: {err}"),
+        }
+    }
 
     #[tokio::test]
     async fn test_shutdown_force_closes_stuck_sessions_after_grace_period() {
@@ -218,14 +239,7 @@ mod tests {
 
         let mut buf = [0_u8; 1];
         match tokio::time::timeout(Duration::from_millis(200), client.read(&mut buf)).await {
-            Ok(Ok(0)) => {}
-            Ok(Err(err))
-                if matches!(
-                    err.kind(),
-                    ErrorKind::ConnectionReset | ErrorKind::BrokenPipe | ErrorKind::UnexpectedEof
-                ) => {}
-            Ok(Ok(_)) => panic!("client connection should be closed after shutdown"),
-            Ok(Err(err)) => panic!("unexpected read error after shutdown: {err}"),
+            Ok(result) => assert_shutdown_read_result(result),
             Err(timeout_err) => {
                 panic!("stuck RTMP session was not force-closed after shutdown: {timeout_err}")
             }

@@ -55,18 +55,19 @@ pub struct RoomSettingsService {
 pub struct RoomSettingsRuntime {
     pub cache_ttl_secs: Option<u64>,
     pub cache_max_capacity: Option<u64>,
-    pub version_fence: Option<Arc<dyn VersionFenceStore>>,
-    pub l2_cache: Option<Arc<dyn crate::cache::CacheL2Backend>>,
+    pub version_fence: Arc<dyn VersionFenceStore>,
+    pub l2_cache: Arc<dyn crate::cache::CacheL2Backend>,
     pub cache_key_prefix: String,
 }
 
-impl Default for RoomSettingsRuntime {
-    fn default() -> Self {
+impl RoomSettingsRuntime {
+    #[must_use]
+    pub fn local_only() -> Self {
         Self {
             cache_ttl_secs: None,
             cache_max_capacity: None,
-            version_fence: None,
-            l2_cache: None,
+            version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
+            l2_cache: Arc::new(NoopCacheL2),
             cache_key_prefix: String::from("room_settings:"),
         }
     }
@@ -107,13 +108,6 @@ impl RoomSettingsService {
     const CACHE_TTL_SECS: u64 = 300; // 5 minutes
     const CACHE_MAX_CAPACITY: u64 = 10_000;
 
-    fn version_fence_from_runtime(runtime: &mut RoomSettingsRuntime) -> Arc<dyn VersionFenceStore> {
-        runtime
-            .version_fence
-            .take()
-            .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore))
-    }
-
     /// Create a new room settings service
     ///
     /// Uses `CacheInvalidationService` (Redis Streams) for reliable cross-replica
@@ -134,7 +128,7 @@ impl RoomSettingsService {
             RoomSettingsRuntime {
                 cache_ttl_secs,
                 cache_max_capacity,
-                ..RoomSettingsRuntime::default()
+                ..RoomSettingsRuntime::local_only()
             },
         )
     }
@@ -144,16 +138,14 @@ impl RoomSettingsService {
         repo: RoomSettingsRepository,
         invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
         notification_service: Arc<NotificationService>,
-        mut runtime: RoomSettingsRuntime,
+        runtime: RoomSettingsRuntime,
     ) -> Self {
         let ttl = normalize_cache_ttl(runtime.cache_ttl_secs.unwrap_or(Self::CACHE_TTL_SECS));
         let capacity = runtime
             .cache_max_capacity
             .unwrap_or(Self::CACHE_MAX_CAPACITY);
-        let version_fence = Self::version_fence_from_runtime(&mut runtime);
-
         let cache = RoomSettingsCache::new(
-            runtime.l2_cache.unwrap_or_else(|| Arc::new(NoopCacheL2)),
+            runtime.l2_cache,
             normalize_cache_capacity(capacity),
             ttl,
             ttl,
@@ -164,8 +156,8 @@ impl RoomSettingsService {
             repo,
             cache,
             invalidation_service,
-            version_fence: version_fence.clone(),
-            consistency: ConsistencyCoordinator::new(version_fence),
+            version_fence: runtime.version_fence.clone(),
+            consistency: ConsistencyCoordinator::new(runtime.version_fence),
             invalidation_runtime: Arc::new(RoomSettingsInvalidationRuntime::new()),
             notification_service,
             single_flight: SingleFlight::new(),

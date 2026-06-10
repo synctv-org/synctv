@@ -311,7 +311,7 @@ mod cluster_cleanup_tests {
     use std::sync::Arc;
     use std::time::Duration;
     use std::time::Instant;
-    use synctv::app::Application;
+    use synctv::Application;
     use synctv_cluster::discovery::NodeRegistry;
     use synctv_core_testing::{create_test_database_url_with_label, start_redis_url_with_label};
     use tokio::net::TcpListener;
@@ -336,8 +336,7 @@ mod cluster_cleanup_tests {
     #[tokio::test]
     async fn test_cancel_token_stops_heartbeat_loop() {
         use synctv_cluster::discovery::{NodeInfo, NodeRegistry};
-        use synctv_realtime::sync::RealtimeManager;
-        use synctv_realtime::sync::{realtime_manager::RealtimeConfig, RoomMessageHub};
+        use synctv_realtime::sync::{RealtimeConfig, RealtimeManager, RoomMessageHub};
 
         let config = RealtimeConfig {
             distributed_transport_factory: None,

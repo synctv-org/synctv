@@ -65,11 +65,6 @@ impl UserService {
         }
     }
 
-    pub(crate) async fn cache_oauth2_username_best_effort(&self, user_id: &UserId, username: &str) {
-        self.cache_username_best_effort(user_id, username, "create_or_load_by_oauth2")
-            .await;
-    }
-
     pub(crate) async fn invalidate_username_cache_best_effort(
         &self,
         user_id: &UserId,

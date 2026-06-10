@@ -117,7 +117,6 @@ struct SharedObservationEvaluationKey {
 
 #[derive(Clone)]
 enum SharedResourceServiceWeak {
-    AlwaysAlive,
     RoomService(Weak<RoomService>),
     Playback(Weak<dyn PlaybackService>),
     RoomSettings(Weak<dyn RoomSettingsSnapshotService>),
@@ -128,7 +127,6 @@ enum SharedResourceServiceWeak {
 impl SharedResourceServiceWeak {
     fn is_alive(&self) -> bool {
         match self {
-            Self::AlwaysAlive => true,
             Self::RoomService(service) => service.upgrade().is_some(),
             Self::Playback(service) => service.upgrade().is_some(),
             Self::RoomSettings(service) => service.upgrade().is_some(),
@@ -286,6 +284,15 @@ impl SharedResourceEvaluationEntry {
             now.duration_since(*completed_at) <= RESOURCE_EVALUATION_REUSE_WINDOW
         })
     }
+
+    fn mark_completed(&self, completed_at: tokio::time::Instant) {
+        if self.completed_at.set(completed_at).is_err() {
+            tracing::debug!(
+                resource_generation = self.resource_generation,
+                "shared resource evaluation completion timestamp was already recorded"
+            );
+        }
+    }
 }
 
 fn schedule_resource_evaluation_singleflight_cleanup(
@@ -388,12 +395,12 @@ pub(super) struct ResourceObserver {
     actor: RoomActor,
     connection_id: String,
     room_service: Arc<RoomService>,
-    public_id_codec: Arc<crate::PublicIdCodec>,
+    public_id_codec: Arc<synctv_core::PublicIdCodec>,
     sender: Arc<dyn MessageSender>,
     pub(super) room_hub: Arc<MediaResourceHub>,
-    playback_service: Option<Arc<dyn PlaybackService>>,
-    playlist_items_snapshot_service: Option<Arc<dyn PlaylistItemsSnapshotService>>,
-    room_members_snapshot_service: Option<Arc<dyn RoomMembersSnapshotService>>,
+    playback_service: Arc<dyn PlaybackService>,
+    playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
+    room_members_snapshot_service: Arc<dyn RoomMembersSnapshotService>,
     room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
     room_settings_snapshot_service_id: usize,
     state: tokio::sync::Mutex<ResourceObserverState>,
@@ -405,11 +412,11 @@ pub(super) struct ResourceObserverParams {
     pub(super) actor: RoomActor,
     pub(super) connection_id: String,
     pub(super) room_service: Arc<RoomService>,
-    pub(super) public_id_codec: Arc<crate::PublicIdCodec>,
+    pub(super) public_id_codec: Arc<synctv_core::PublicIdCodec>,
     pub(super) sender: Arc<dyn MessageSender>,
-    pub(super) playback_service: Option<Arc<dyn PlaybackService>>,
-    pub(super) playlist_items_snapshot_service: Option<Arc<dyn PlaylistItemsSnapshotService>>,
-    pub(super) room_members_snapshot_service: Option<Arc<dyn RoomMembersSnapshotService>>,
+    pub(super) playback_service: Arc<dyn PlaybackService>,
+    pub(super) playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
+    pub(super) room_members_snapshot_service: Arc<dyn RoomMembersSnapshotService>,
     pub(super) room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
 }
 
@@ -619,7 +626,7 @@ impl ResourceObserver {
         observation: &ResourceObservation,
         request: &synctv_proto::client::ObserveResource,
     ) -> i64 {
-        let requested_sequence = Self::requested_replay_sequence(request).unwrap_or(0).max(0);
+        let requested_sequence = Self::validated_requested_replay_sequence(request).unwrap_or(0);
         if observation.exposes_client_event_cursor() {
             requested_sequence
         } else {
@@ -658,6 +665,17 @@ impl ResourceObserver {
             return Err("after_event_sequence must be non-negative".to_string());
         }
         Ok(())
+    }
+
+    fn validated_requested_replay_sequence(
+        request: &synctv_proto::client::ObserveResource,
+    ) -> Option<i64> {
+        Self::requested_replay_sequence(request).inspect(|sequence| {
+            debug_assert!(
+                *sequence >= 0,
+                "requested replay sequence must be validated before use"
+            );
+        })
     }
 
     fn apply_event_cursor_to_observation(
@@ -1565,7 +1583,6 @@ impl ResourceObserver {
         } else {
             match observation.room_resource_cursor_types() {
                 Some(resource_types) if !resource_types.is_empty() => {
-                    let _ = resource_types;
                     Some(synctv_proto::client::EventCursor {
                         event_id: None,
                         sequence: start_sequence,
@@ -1636,15 +1653,13 @@ impl ResourceObserver {
         chat_service: &ChatService,
         request: &synctv_proto::client::ObserveResource,
     ) -> Result<(), String> {
-        let Some(synctv_proto::client::observe_resource::Resource::ChatEvents(chat_events)) =
+        let Some(synctv_proto::client::observe_resource::Resource::ChatEvents(_)) =
             request.resource.as_ref()
         else {
             return Ok(());
         };
         let observe_id = request.observe_id.trim();
-        let Some(mut after_event_sequence) = chat_events
-            .after_event_sequence
-            .map(|sequence| sequence.max(0))
+        let Some(mut after_event_sequence) = Self::validated_requested_replay_sequence(request)
         else {
             return Ok(());
         };
@@ -1729,8 +1744,7 @@ impl ResourceObserver {
         }
 
         let observe_id = request.observe_id.trim();
-        let Some(mut after_event_sequence) =
-            Self::requested_replay_sequence(request).map(|sequence| sequence.max(0))
+        let Some(mut after_event_sequence) = Self::validated_requested_replay_sequence(request)
         else {
             return Ok(());
         };
@@ -1898,17 +1912,13 @@ impl ResourceObserver {
         provider: &str,
         server_id: &str,
     ) -> Result<bool, String> {
-        let service = self.playback_service.clone();
-        let Some(service) = service else {
-            return Ok(false);
-        };
-
         let state = self
             .room_service
             .get_playback_state(&self.room_id)
             .await
             .map_err(|error| error.to_string())?;
-        let dependencies = service
+        let dependencies = self
+            .playback_service
             .playback_credential_dependencies(&self.user_id, &self.room_id, &state)
             .await
             .map_err(|error| error.to_string())?;
@@ -2106,7 +2116,7 @@ impl ResourceObserver {
             })
             .await
             .clone();
-        let _ = entry.completed_at.set(tokio::time::Instant::now());
+        entry.mark_completed(tokio::time::Instant::now());
 
         schedule_resource_evaluation_singleflight_cleanup(shared_key, Arc::clone(&entry));
 
@@ -2136,16 +2146,10 @@ impl ResourceObserver {
                     )),
                 }
             }
-            ObservedResource::Playback { .. } => self.playback_service.as_ref().map_or(
-                SharedResourceServiceIdentity {
-                    id: 0,
-                    weak: SharedResourceServiceWeak::AlwaysAlive,
-                },
-                |service| SharedResourceServiceIdentity {
-                    id: Arc::as_ptr(service).cast::<()>() as usize,
-                    weak: SharedResourceServiceWeak::Playback(Arc::downgrade(service)),
-                },
-            ),
+            ObservedResource::Playback { .. } => SharedResourceServiceIdentity {
+                id: Arc::as_ptr(&self.playback_service).cast::<()>() as usize,
+                weak: SharedResourceServiceWeak::Playback(Arc::downgrade(&self.playback_service)),
+            },
             ObservedResource::RoomSettings => {
                 let id = self.room_settings_snapshot_service_id;
                 SharedResourceServiceIdentity {
@@ -2155,30 +2159,18 @@ impl ResourceObserver {
                     )),
                 }
             }
-            ObservedResource::PlaylistItems { .. } => {
-                self.playlist_items_snapshot_service.as_ref().map_or(
-                    SharedResourceServiceIdentity {
-                        id: 0,
-                        weak: SharedResourceServiceWeak::AlwaysAlive,
-                    },
-                    |service| SharedResourceServiceIdentity {
-                        id: Arc::as_ptr(service).cast::<()>() as usize,
-                        weak: SharedResourceServiceWeak::PlaylistItems(Arc::downgrade(service)),
-                    },
-                )
-            }
-            ObservedResource::RoomMembers { .. } => {
-                self.room_members_snapshot_service.as_ref().map_or(
-                    SharedResourceServiceIdentity {
-                        id: 0,
-                        weak: SharedResourceServiceWeak::AlwaysAlive,
-                    },
-                    |service| SharedResourceServiceIdentity {
-                        id: Arc::as_ptr(service).cast::<()>() as usize,
-                        weak: SharedResourceServiceWeak::RoomMembers(Arc::downgrade(service)),
-                    },
-                )
-            }
+            ObservedResource::PlaylistItems { .. } => SharedResourceServiceIdentity {
+                id: Arc::as_ptr(&self.playlist_items_snapshot_service).cast::<()>() as usize,
+                weak: SharedResourceServiceWeak::PlaylistItems(Arc::downgrade(
+                    &self.playlist_items_snapshot_service,
+                )),
+            },
+            ObservedResource::RoomMembers { .. } => SharedResourceServiceIdentity {
+                id: Arc::as_ptr(&self.room_members_snapshot_service).cast::<()>() as usize,
+                weak: SharedResourceServiceWeak::RoomMembers(Arc::downgrade(
+                    &self.room_members_snapshot_service,
+                )),
+            },
         }
     }
 
@@ -2213,10 +2205,7 @@ impl ResourceObserver {
             ObservedResource::Playback {
                 playback_client_profile,
             } => {
-                let service = self
-                    .playback_service
-                    .clone()
-                    .ok_or_else(|| "Playback service is not available".to_string())?;
+                let service = Arc::clone(&self.playback_service);
                 let state = self
                     .room_service
                     .get_playback_state(&self.room_id)
@@ -2264,12 +2253,7 @@ impl ResourceObserver {
                 (version, None, payload)
             }
             ObservedResource::PlaylistItems { request } => {
-                let service = self
-                    .playlist_items_snapshot_service
-                    .clone()
-                    .ok_or_else(|| {
-                        "Playlist items snapshot service is not available".to_string()
-                    })?;
+                let service = Arc::clone(&self.playlist_items_snapshot_service);
                 let actor = self.resource_actor().await?;
                 let snapshot = service
                     .get_playlist_items_snapshot(&actor, request)
@@ -2286,10 +2270,7 @@ impl ResourceObserver {
                 (snapshot.version.clone(), None, payload)
             }
             ObservedResource::RoomMembers { request } => {
-                let service = self
-                    .room_members_snapshot_service
-                    .clone()
-                    .ok_or_else(|| "Room members snapshot service is not available".to_string())?;
+                let service = Arc::clone(&self.room_members_snapshot_service);
                 let actor = self.resource_actor().await?;
                 let snapshot = service
                     .get_room_members_snapshot(&actor, request)
@@ -2369,6 +2350,17 @@ mod tests {
             resource: ObservedResource::Playback {
                 playback_client_profile: None,
             },
+            expires_at: None,
+            last_sent_event_sequence: 0,
+        }
+    }
+
+    fn playback_state_observation() -> ResourceObservation {
+        ResourceObservation {
+            observe_id: "playback-state".to_string(),
+            last_fingerprint: String::new(),
+            delivery_mode: ResourceDeliveryMode::PushSnapshot,
+            resource: ObservedResource::PlaybackState,
             expires_at: None,
             last_sent_event_sequence: 0,
         }
@@ -2476,6 +2468,27 @@ mod tests {
     }
 
     #[test]
+    fn observation_start_sequence_uses_validated_room_resource_cursor() {
+        let observation = playback_state_observation();
+        let request = synctv_proto::client::ObserveResource {
+            observe_id: "playback-state".to_string(),
+            delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
+            resource: Some(
+                synctv_proto::client::observe_resource::Resource::PlaybackState(
+                    synctv_proto::client::ObservePlaybackState {
+                        after_event_sequence: Some(42),
+                    },
+                ),
+            ),
+        };
+
+        assert_eq!(
+            ResourceObserver::observation_start_sequence(&observation, &request),
+            42
+        );
+    }
+
+    #[test]
     fn normalize_delivery_mode_rejects_unknown_values() {
         assert!(matches!(
             ResourceObserver::normalize_delivery_mode(99),
@@ -2484,11 +2497,12 @@ mod tests {
     }
 
     #[test]
-    fn normalize_delivery_mode_defaults_unspecified_to_push_snapshot() {
+    fn normalize_delivery_mode_defaults_unspecified_to_push_snapshot() -> anyhow::Result<()> {
         assert_eq!(
             ResourceObserver::normalize_delivery_mode(ResourceDeliveryMode::Unspecified as i32)
-                .expect("unspecified delivery mode should be accepted"),
+                .map_err(anyhow::Error::msg)?,
             ResourceDeliveryMode::PushSnapshot
         );
+        Ok(())
     }
 }

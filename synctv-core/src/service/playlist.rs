@@ -272,6 +272,23 @@ impl std::fmt::Debug for PlaylistService {
 }
 
 impl PlaylistService {
+    async fn insert_playlist_outbox_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        playlist: &Playlist,
+        outbox_event_factory: Option<&RealtimeOutboxPlaylistEventFactory>,
+    ) -> Result<()> {
+        if let Some(event) = outbox_event_factory
+            .map(|factory| factory(playlist))
+            .transpose()?
+        {
+            if let Some(outbox) = &self.realtime_outbox {
+                outbox.insert_with_executor(&event, &mut **tx).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Create a new playlist service
     #[must_use]
     pub fn new(
@@ -502,15 +519,8 @@ impl PlaylistService {
             .playlist_repo
             .create_with_executor(&playlist, &mut *tx)
             .await?;
-        if let Some(event) = outbox_event_factory
-            .as_ref()
-            .map(|factory| factory(&created_playlist))
-            .transpose()?
-        {
-            if let Some(outbox) = &self.realtime_outbox {
-                outbox.insert_with_executor(&event, &mut *tx).await?;
-            }
-        }
+        self.insert_playlist_outbox_tx(&mut tx, &created_playlist, outbox_event_factory.as_ref())
+            .await?;
         tx.commit().await?;
 
         tracing::info!(
@@ -722,15 +732,12 @@ impl PlaylistService {
                     .await
                 {
                     Ok(updated_playlist) => {
-                        if let Some(event) = outbox_event_factory
-                            .as_ref()
-                            .map(|factory| factory(&updated_playlist))
-                            .transpose()?
-                        {
-                            if let Some(outbox) = &self.realtime_outbox {
-                                outbox.insert_with_executor(&event, &mut *tx).await?;
-                            }
-                        }
+                        self.insert_playlist_outbox_tx(
+                            &mut tx,
+                            &updated_playlist,
+                            outbox_event_factory.as_ref(),
+                        )
+                        .await?;
                         tx.commit().await?;
                         Ok(updated_playlist)
                     }
@@ -1034,15 +1041,8 @@ impl PlaylistService {
             )
             .await?;
 
-        if let Some(event) = outbox_event_factory
-            .as_ref()
-            .map(|factory| factory(&moved))
-            .transpose()?
-        {
-            if let Some(outbox) = &self.realtime_outbox {
-                outbox.insert_with_executor(&event, &mut *tx).await?;
-            }
-        }
+        self.insert_playlist_outbox_tx(&mut tx, &moved, outbox_event_factory.as_ref())
+            .await?;
         tx.commit().await?;
         Ok(moved)
     }

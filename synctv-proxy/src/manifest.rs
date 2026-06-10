@@ -19,26 +19,7 @@ pub fn rewrite_m3u8(
     rewrite_m3u8_with_limit_and_mapper(m3u8, source_url, proxy_base, None, default_proxy_url)
 }
 
-/// Rewrite URLs inside an M3U8 playlist with a custom URL limit.
-///
-/// # Arguments
-/// * `m3u8` - The M3U8 playlist content
-/// * `source_url` - The original URL of the playlist (for resolving relative URLs)
-/// * `proxy_base` - The base URL for proxying
-/// * `max_urls` - Optional maximum number of URLs to rewrite (defaults to MAX_M3U8_URLS)
-///
-/// # Security
-/// - Returns an error if proxy_base contains line breaks (prevents response injection)
-pub fn rewrite_m3u8_with_limit(
-    m3u8: &str,
-    source_url: &str,
-    proxy_base: &str,
-    max_urls: Option<usize>,
-) -> Result<String, anyhow::Error> {
-    rewrite_m3u8_with_limit_and_mapper(m3u8, source_url, proxy_base, max_urls, default_proxy_url)
-}
-
-pub fn rewrite_m3u8_with_url_mapper<F>(
+pub(crate) fn rewrite_m3u8_with_url_mapper<F>(
     m3u8: &str,
     source_url: &str,
     proxy_base: &str,
@@ -50,7 +31,7 @@ where
     rewrite_m3u8_with_limit_and_mapper(m3u8, source_url, proxy_base, None, proxy_url_for_target)
 }
 
-pub fn rewrite_m3u8_with_limit_and_mapper<F>(
+fn rewrite_m3u8_with_limit_and_mapper<F>(
     m3u8: &str,
     source_url: &str,
     proxy_base: &str,
@@ -67,7 +48,17 @@ where
     }
 
     let max_urls = max_urls.unwrap_or(MAX_M3U8_URLS);
-    let base = url::Url::parse(source_url).ok();
+    let base = match url::Url::parse(source_url) {
+        Ok(base) => Some(base),
+        Err(error) => {
+            tracing::debug!(
+                source_url,
+                %error,
+                "M3U8 source URL is not absolute; relative entries will stay relative"
+            );
+            None
+        }
+    };
     let mut output = String::with_capacity(m3u8.len());
     let mut url_count = 0usize;
 
@@ -122,7 +113,7 @@ where
 }
 
 #[must_use]
-pub fn default_proxy_url(proxy_base: &str, target_url: &str) -> String {
+pub(crate) fn default_proxy_url(proxy_base: &str, target_url: &str) -> String {
     let separator = if proxy_base.contains('?') { '&' } else { '?' };
     format!(
         "{}{separator}url={}",
@@ -133,7 +124,7 @@ pub fn default_proxy_url(proxy_base: &str, target_url: &str) -> String {
 
 /// Resolve a possibly-relative URL to absolute using the given base URL.
 #[must_use]
-pub fn make_absolute(raw: &str, base: Option<&url::Url>) -> String {
+pub(crate) fn make_absolute(raw: &str, base: Option<&url::Url>) -> String {
     if raw.starts_with("http://") || raw.starts_with("https://") {
         return raw.to_string();
     }
@@ -148,7 +139,8 @@ pub fn make_absolute(raw: &str, base: Option<&url::Url>) -> String {
 /// Rewrite any `URI="..."` values found in an M3U8 tag line.
 /// Returns the rewritten line and the count of URLs rewritten.
 #[must_use]
-pub fn rewrite_uri_attribute_with_count(
+#[cfg(test)]
+pub(crate) fn rewrite_uri_attribute_with_count(
     line: &str,
     base: Option<&url::Url>,
     proxy_base: &str,
@@ -156,7 +148,7 @@ pub fn rewrite_uri_attribute_with_count(
     rewrite_uri_attribute_with_mapper(line, base, proxy_base, default_proxy_url)
 }
 
-pub fn rewrite_uri_attribute_with_mapper<F>(
+fn rewrite_uri_attribute_with_mapper<F>(
     line: &str,
     base: Option<&url::Url>,
     proxy_base: &str,

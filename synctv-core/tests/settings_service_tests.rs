@@ -2,9 +2,9 @@
 //!
 //! Tests settings cache behavior, default values, and model operations.
 //!
-#![allow(clippy::unwrap_used)]
 
 use synctv_core::models::settings::{get_default_settings, SettingsGroup};
+use synctv_core_testing::ok;
 
 #[test]
 fn test_unknown_group_returns_none() {
@@ -20,7 +20,7 @@ fn test_settings_group_parse_json() {
         "test".to_string(),
         serde_json::json!({"key": "value", "count": 42}).to_string(),
     );
-    let parsed = group.parse_json().unwrap();
+    let parsed = ok(group.parse_json(), "settings group JSON should parse");
     assert_eq!(parsed["key"], "value");
     assert_eq!(parsed["count"], 42);
 }
@@ -37,7 +37,7 @@ fn test_settings_group_as_object() {
         "test".to_string(),
         serde_json::json!({"a": 1, "b": "two"}).to_string(),
     );
-    let obj = group.as_object().unwrap();
+    let obj = ok(group.as_object(), "settings group should parse as object");
     assert_eq!(obj.len(), 2);
     assert!(obj.contains_key("a"));
     assert!(obj.contains_key("b"));

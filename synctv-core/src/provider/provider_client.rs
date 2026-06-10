@@ -323,7 +323,10 @@ fn map_grpc_status(context: &str, status: &Status) -> synctv_media_providers::Pr
         Code::InvalidArgument => {
             synctv_media_providers::ProviderClientError::InvalidConfig(message)
         }
-        Code::Unimplemented => synctv_media_providers::ProviderClientError::NotImplemented(message),
+        Code::Unimplemented => synctv_media_providers::ProviderClientError::Api {
+            code: 501,
+            message: format!("gRPC {context}: {message}"),
+        },
         Code::DeadlineExceeded | Code::Unavailable | Code::Cancelled => {
             synctv_media_providers::ProviderClientError::Network(format!(
                 "gRPC {} for {}: {}",
@@ -787,9 +790,6 @@ impl From<synctv_media_providers::ProviderClientError> for ProviderError {
             }
             ProviderClientError::Auth(msg) => Self::Authentication(msg),
             ProviderClientError::InvalidConfig(msg) => Self::InvalidConfig(msg),
-            ProviderClientError::NotImplemented(msg) => {
-                Self::ApiError(format!("Not implemented: {msg}"))
-            }
             ProviderClientError::Http { status, url, .. } => Self::UpstreamHttp {
                 status: status.as_u16(),
                 url,

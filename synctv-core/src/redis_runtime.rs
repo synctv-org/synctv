@@ -373,6 +373,20 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::RwLock;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
+        match result {
+            Ok(_) => std::panic::panic_any(context.to_string()),
+            Err(error) => error,
+        }
+    }
+
     #[test]
     fn test_shared_runtime_from_conn_preserves_none() {
         assert!(shared_runtime_from_conn(None).is_none());
@@ -412,9 +426,10 @@ mod tests {
     #[ignore = "requires Docker"]
     async fn test_managed_runtime_preserves_configured_operation_timeout() {
         let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
-        let conn = redis::aio::ConnectionManager::new(client.clone())
-            .await
-            .expect("redis connection manager");
+        let conn = ok(
+            redis::aio::ConnectionManager::new(client.clone()).await,
+            "redis connection manager",
+        );
         let runtime = ManagedRedisRuntime::new_with_operation_timeout(
             client,
             Arc::new(RwLock::new(conn)),
@@ -432,7 +447,7 @@ mod tests {
         impl RedisConnectionRuntime for HangingRedisRuntime {
             async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
                 tokio::time::sleep(Duration::from_mins(1)).await;
-                panic!("snapshot timeout should cancel this future")
+                std::panic::panic_any("snapshot timeout should cancel this future")
             }
 
             fn operation_timeout(&self) -> Duration {
@@ -440,9 +455,10 @@ mod tests {
             }
         }
 
-        let error = redis_runtime_snapshot(&HangingRedisRuntime, "test snapshot")
-            .await
-            .expect_err("hanging snapshot should time out");
+        let error = err(
+            redis_runtime_snapshot(&HangingRedisRuntime, "test snapshot").await,
+            "hanging snapshot should time out",
+        );
 
         assert!(
             matches!(error, crate::Error::Timeout(ref msg) if msg == "Redis timeout: test snapshot"),
@@ -454,21 +470,23 @@ mod tests {
     #[ignore = "requires Docker"]
     async fn test_shared_runtime_reads_hot_swapped_connection() {
         let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
-        let first = redis::aio::ConnectionManager::new(client.clone())
-            .await
-            .expect("first connection manager should initialize");
+        let first = ok(
+            redis::aio::ConnectionManager::new(client.clone()).await,
+            "first connection manager should initialize",
+        );
         let shared_conn = Arc::new(RwLock::new(first));
         let runtime = shared_runtime(shared_conn.clone());
 
-        let replacement = redis::aio::ConnectionManager::new(client)
-            .await
-            .expect("replacement connection manager should initialize");
+        let replacement = ok(
+            redis::aio::ConnectionManager::new(client).await,
+            "replacement connection manager should initialize",
+        );
         *shared_conn.write().await = replacement.clone();
 
-        let snapshot = runtime
-            .snapshot()
-            .await
-            .expect("snapshot should return a Redis connection");
+        let snapshot = ok(
+            runtime.snapshot().await,
+            "snapshot should return a Redis connection",
+        );
 
         let _: redis::aio::ConnectionManager = snapshot;
         let _: redis::aio::ConnectionManager = replacement;

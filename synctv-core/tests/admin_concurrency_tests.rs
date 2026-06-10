@@ -7,7 +7,6 @@
 //! - Optimistic lock conflict retry scenarios
 //!
 //! Docker tests: cargo test -p synctv-core --test `admin_concurrency_tests` -- --ignored --nocapture
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -22,7 +21,7 @@ use synctv_core::{
     service::{member::MemberService, permission::PermissionService, NotificationService},
     Error,
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, ok, some};
 use tokio::sync::Barrier;
 // Test Infrastructure
 
@@ -71,25 +70,40 @@ async fn setup_test_room(pool: &PgPool, room_name: &str) -> (User, Room) {
 
     // Use a unique owner name derived from the room name to avoid duplicate username conflicts
     let owner_name = format!("owner_{}", room_name.replace(' ', "_").to_lowercase());
-    let owner = user_repo
-        .create(&make_user_with_role(&owner_name, UserRole::User))
-        .await
-        .expect("Failed to create owner");
+    let owner = ok(
+        user_repo
+            .create(&make_user_with_role(&owner_name, UserRole::User))
+            .await,
+        "room owner should be created",
+    );
 
-    let room = room_repo
-        .create(&make_room(room_name, "Test room", &owner.id))
-        .await
-        .expect("Failed to create room");
+    let room = ok(
+        room_repo
+            .create(&make_room(room_name, "Test room", &owner.id))
+            .await,
+        "room should be created",
+    );
 
     // Add owner as member
     let member_repo = RoomMemberRepository::new(pool.clone());
     let owner_member = synctv_core::models::RoomMember::new(room.id, owner.id, RoomRole::Creator);
-    member_repo
-        .add(&owner_member)
-        .await
-        .expect("Failed to add owner as member");
+    ok(
+        member_repo.add(&owner_member).await,
+        "room owner member should be added",
+    );
 
     (owner, room)
+}
+
+async fn load_user(repo: &UserRepository, user_id: &UserId) -> User {
+    some(
+        ok(repo.get_by_id(user_id).await, "user should be fetched"),
+        "user should exist",
+    )
+}
+
+async fn is_banned(repo: &UserRepository, user_id: &UserId) -> bool {
+    ok(repo.is_banned(user_id).await, "ban state should be fetched")
 }
 
 #[tokio::test]
@@ -100,13 +114,15 @@ async fn test_concurrent_user_ban_operations() {
 
     let mut users = Vec::with_capacity(10);
     for i in 0..10 {
-        let user = user_repo
-            .create(&make_user_with_role(
-                &format!("concurrent_ban_{i}"),
-                UserRole::User,
-            ))
-            .await
-            .expect("Failed to create user");
+        let user = ok(
+            user_repo
+                .create(&make_user_with_role(
+                    &format!("concurrent_ban_{i}"),
+                    UserRole::User,
+                ))
+                .await,
+            "test user should be created",
+        );
         users.push(user);
     }
 
@@ -130,13 +146,13 @@ async fn test_concurrent_user_ban_operations() {
     // All bans should succeed
     let mut success_count = 0;
     for handle in handles {
-        match handle.await.expect("Task panicked") {
+        match ok(handle.await, "ban task should complete") {
             Ok(updated) => {
                 assert_eq!(updated.status, UserStatus::Banned);
-                assert!(user_repo.is_banned(&updated.id).await.unwrap());
+                assert!(is_banned(&user_repo, &updated.id).await);
                 success_count += 1;
             }
-            Err(e) => panic!("Ban operation should succeed: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("ban operation should succeed: {e:?}")),
         }
     }
 
@@ -149,10 +165,12 @@ async fn test_concurrent_ban_unban_same_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = Arc::new(UserRepository::new(pool.clone()));
 
-    let user = user_repo
-        .create(&make_user_with_role("ban_unban_user", UserRole::User))
-        .await
-        .expect("Failed to create user");
+    let user = ok(
+        user_repo
+            .create(&make_user_with_role("ban_unban_user", UserRole::User))
+            .await,
+        "test user should be created",
+    );
 
     // 5 tasks try to ban, 5 try to revoke the active ban concurrently.
     let barrier = Arc::new(Barrier::new(10));
@@ -190,10 +208,12 @@ async fn test_concurrent_ban_unban_same_user() {
 
     let mut success_count = 0;
     for handle in handles {
-        match handle.await.expect("Task panicked") {
+        match ok(handle.await, "ban/unban task should complete") {
             Ok(_) => success_count += 1,
             Err(Error::AlreadyExists(_) | Error::NotFound(_)) => {}
-            Err(e) => panic!("Ban operation should not fail unexpectedly: {e:?}"),
+            Err(e) => {
+                std::panic::panic_any(format!("ban operation failed unexpectedly: {e:?}"));
+            }
         }
     }
 
@@ -202,14 +222,10 @@ async fn test_concurrent_ban_unban_same_user() {
         "At least one ban/unban operation should succeed"
     );
 
-    let final_user = user_repo
-        .get_by_id(&user_id)
-        .await
-        .expect("Query failed")
-        .expect("User exists");
+    let final_user = load_user(&user_repo, &user_id).await;
     assert_eq!(
         final_user.status == UserStatus::Banned,
-        user_repo.is_banned(&user_id).await.unwrap(),
+        is_banned(&user_repo, &user_id).await,
         "derived user status must stay consistent with active user_bans"
     );
 }
@@ -244,12 +260,12 @@ async fn test_concurrent_room_ban_operations() {
     // All bans should succeed
     let mut success_count = 0;
     for handle in handles {
-        match handle.await.expect("Task panicked") {
+        match ok(handle.await, "room ban task should complete") {
             Ok(updated) => {
                 assert!(updated.is_banned);
                 success_count += 1;
             }
-            Err(e) => panic!("Room ban should succeed: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("room ban should succeed: {e:?}")),
         }
     }
 
@@ -296,9 +312,9 @@ async fn test_concurrent_room_status_changes() {
     // All operations should succeed
     let mut success_count = 0;
     for handle in handles {
-        match handle.await.expect("Task panicked") {
+        match ok(handle.await, "room status task should complete") {
             Ok(_) => success_count += 1,
-            Err(e) => panic!("Status change should succeed: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("status change should succeed: {e:?}")),
         }
     }
 
@@ -311,10 +327,12 @@ async fn test_concurrent_global_settings_update_optimistic_lock() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let user = user_repo
-        .create(&make_user_with_role("settings_user", UserRole::User))
-        .await
-        .expect("Failed to create user");
+    let user = ok(
+        user_repo
+            .create(&make_user_with_role("settings_user", UserRole::User))
+            .await,
+        "settings test user should be created",
+    );
 
     let barrier = Arc::new(Barrier::new(5));
     let user_id = user.id;
@@ -333,11 +351,7 @@ async fn test_concurrent_global_settings_update_optimistic_lock() {
             let mut retries = 0;
             let max_retries = 3;
             loop {
-                let current = repo_clone
-                    .get_by_id(&uid)
-                    .await
-                    .expect("Query failed")
-                    .expect("User exists");
+                let current = load_user(&repo_clone, &uid).await;
                 let mut updated = current.clone();
                 updated.username = format!("updated_user_{i}");
 
@@ -361,10 +375,10 @@ async fn test_concurrent_global_settings_update_optimistic_lock() {
     let mut conflict_count = 0;
 
     for handle in handles {
-        match handle.await.expect("Task panicked") {
+        match ok(handle.await, "user update task should complete") {
             Ok(_) => success_count += 1,
             Err(Error::OptimisticLockConflict) => conflict_count += 1,
-            Err(e) => panic!("Unexpected error: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("unexpected error: {e:?}")),
         }
     }
 
@@ -387,14 +401,16 @@ async fn test_optimistic_lock_conflict_detected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let user = user_repo
-        .create(&make_user_with_role("lock_conflict", UserRole::User))
-        .await
-        .expect("Failed to create user");
+    let user = ok(
+        user_repo
+            .create(&make_user_with_role("lock_conflict", UserRole::User))
+            .await,
+        "lock conflict user should be created",
+    );
 
     // Read same user twice
-    let read1 = user_repo.get_by_id(&user.id).await.unwrap().unwrap();
-    let read2 = user_repo.get_by_id(&user.id).await.unwrap().unwrap();
+    let read1 = load_user(&user_repo, &user.id).await;
+    let read2 = load_user(&user_repo, &user.id).await;
 
     // First update succeeds
     let mut update1 = read1.clone();
@@ -419,10 +435,12 @@ async fn test_optimistic_lock_retry_succeeds() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = Arc::new(UserRepository::new(pool.clone()));
 
-    let user = user_repo
-        .create(&make_user_with_role("retry_success", UserRole::User))
-        .await
-        .expect("Failed to create user");
+    let user = ok(
+        user_repo
+            .create(&make_user_with_role("retry_success", UserRole::User))
+            .await,
+        "retry test user should be created",
+    );
 
     let barrier = Arc::new(Barrier::new(2));
     let user_id = user.id;
@@ -434,7 +452,7 @@ async fn test_optimistic_lock_retry_succeeds() {
 
     let handle1 = tokio::spawn(async move {
         barrier1.wait().await;
-        let current = repo1.get_by_id(&uid1).await.unwrap().unwrap();
+        let current = load_user(&repo1, &uid1).await;
         let mut updated = current.clone();
         updated.role = UserRole::Admin;
         repo1.update(&updated, current.version).await
@@ -452,7 +470,7 @@ async fn test_optimistic_lock_retry_succeeds() {
         let mut retries = 0;
         let max_retries = 5;
         loop {
-            let current = repo2.get_by_id(&uid2).await.unwrap().unwrap();
+            let current = load_user(&repo2, &uid2).await;
             let mut updated = current.clone();
             updated.username = "retried_user".to_string();
 
@@ -470,8 +488,8 @@ async fn test_optimistic_lock_retry_succeeds() {
         }
     });
 
-    let result1 = handle1.await.expect("Task 1 panicked");
-    let result2 = handle2.await.expect("Task 2 panicked");
+    let result1 = ok(handle1.await, "first retry task should complete");
+    let result2 = ok(handle2.await, "second retry task should complete");
 
     // Task 2 (with retry) should always succeed regardless of race order
     assert!(
@@ -494,10 +512,12 @@ async fn test_high_concurrency_status_updates() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = Arc::new(UserRepository::new(pool.clone()));
 
-    let user = user_repo
-        .create(&make_user_with_role("stress_user", UserRole::User))
-        .await
-        .expect("Failed to create user");
+    let user = ok(
+        user_repo
+            .create(&make_user_with_role("stress_user", UserRole::User))
+            .await,
+        "stress test user should be created",
+    );
 
     let barrier = Arc::new(Barrier::new(50));
     let user_id = user.id;
@@ -524,7 +544,7 @@ async fn test_high_concurrency_status_updates() {
 
     let mut success_count = 0;
     for handle in handles {
-        match handle.await.expect("Task panicked") {
+        match ok(handle.await, "status stress task should complete") {
             Ok(_) => success_count += 1,
             Err(Error::NotFound(_)) => {}
             Err(e) => tracing::warn!("Operation failed: {:?}", e),
@@ -535,14 +555,10 @@ async fn test_high_concurrency_status_updates() {
         success_count > 0,
         "At least one ban-state operation should succeed"
     );
-    let final_user = user_repo
-        .get_by_id(&user_id)
-        .await
-        .expect("Query failed")
-        .expect("User exists");
+    let final_user = load_user(&user_repo, &user_id).await;
     assert_eq!(
         final_user.status == UserStatus::Banned,
-        user_repo.is_banned(&user_id).await.unwrap(),
+        is_banned(&user_repo, &user_id).await,
         "derived user status must stay consistent with active user_bans"
     );
 }
@@ -558,13 +574,15 @@ async fn test_concurrent_room_ban_with_members_joining() {
 
     let mut users = Vec::with_capacity(10);
     for i in 0..10 {
-        let user = user_repo
-            .create(&make_user_with_role(
-                &format!("join_ban_{i}"),
-                UserRole::User,
-            ))
-            .await
-            .expect("Failed to create user");
+        let user = ok(
+            user_repo
+                .create(&make_user_with_role(
+                    &format!("join_ban_{i}"),
+                    UserRole::User,
+                ))
+                .await,
+            "join/ban test user should be created",
+        );
         users.push(user);
     }
 
@@ -574,14 +592,16 @@ async fn test_concurrent_room_ban_with_members_joining() {
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo_for_service = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
-    let permission_service = PermissionService::new(
-        member_repo.clone(),
-        room_repo_for_service.clone(),
-        None,
-        1000,
-        300,
-    )
-    .expect("permission service should build");
+    let permission_service = ok(
+        PermissionService::new(
+            member_repo.clone(),
+            room_repo_for_service.clone(),
+            None,
+            1000,
+            300,
+        ),
+        "permission service should build",
+    );
     let member_service = MemberService::new_with_runtime(
         member_repo.clone(),
         room_repo_for_service.clone(),
@@ -625,14 +645,14 @@ async fn test_concurrent_room_ban_with_members_joining() {
     let mut join_failed = 0;
 
     for handle in join_handles {
-        match handle.await.expect("Task panicked") {
+        match ok(handle.await, "join task should complete") {
             Ok(_) => join_success += 1,
             Err(_) => join_failed += 1,
         }
     }
 
     // Collect result for ban handle
-    let ban_success = ban_handle.await.expect("Task panicked").is_ok();
+    let ban_success = ok(ban_handle.await, "room ban task should complete").is_ok();
 
     // Ban should succeed
     assert!(ban_success, "Room ban should succeed");
@@ -655,10 +675,12 @@ async fn test_concurrent_room_settings_update() {
 
     // Initialize room settings
     let room_settings_repo = Arc::new(RoomSettingsRepository::new(pool.clone()));
-    room_settings_repo
-        .set_settings(&room.id, &RoomSettings::default())
-        .await
-        .expect("Failed to create settings");
+    ok(
+        room_settings_repo
+            .set_settings(&room.id, &RoomSettings::default())
+            .await,
+        "room settings should be created",
+    );
 
     let barrier = Arc::new(Barrier::new(10));
     let room_id = room.id;
@@ -677,10 +699,10 @@ async fn test_concurrent_room_settings_update() {
             let mut retries = 0u32;
             let max_retries = 10;
             loop {
-                let (settings, version) = repo
-                    .get_with_version(&rid)
-                    .await
-                    .expect("Failed to get settings");
+                let (settings, version) = ok(
+                    repo.get_with_version(&rid).await,
+                    "room settings should be fetched",
+                );
                 let mut updated = settings.clone();
                 updated.max_members = synctv_core::models::room_settings::MaxMembers(
                     50 + u64::try_from(i).unwrap_or_default(),
@@ -714,10 +736,10 @@ async fn test_concurrent_room_settings_update() {
     let mut conflict_count = 0;
 
     for handle in handles {
-        match handle.await.expect("Task panicked") {
+        match ok(handle.await, "room settings update task should complete") {
             Ok(()) => success_count += 1,
             Err(Error::OptimisticLockConflict) => conflict_count += 1,
-            Err(e) => panic!("Unexpected error: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("unexpected error: {e:?}")),
         }
     }
 
@@ -740,10 +762,12 @@ async fn test_concurrent_role_updates_same_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = Arc::new(UserRepository::new(pool.clone()));
 
-    let user = user_repo
-        .create(&make_user_with_role("role_update_target", UserRole::User))
-        .await
-        .expect("Failed to create user");
+    let user = ok(
+        user_repo
+            .create(&make_user_with_role("role_update_target", UserRole::User))
+            .await,
+        "role update test user should be created",
+    );
 
     let barrier = Arc::new(Barrier::new(5));
     let user_id = user.id;
@@ -762,7 +786,7 @@ async fn test_concurrent_role_updates_same_user() {
             let mut retries = 0;
             let max_retries = 3;
             loop {
-                let current = repo.get_by_id(&uid).await.unwrap().unwrap();
+                let current = load_user(&repo, &uid).await;
                 let mut updated = current.clone();
 
                 // Toggle between User and Admin
@@ -791,10 +815,10 @@ async fn test_concurrent_role_updates_same_user() {
     let mut success_count = 0;
 
     for handle in handles {
-        match handle.await.expect("Task panicked") {
+        match ok(handle.await, "role update task should complete") {
             Ok(_) => success_count += 1,
             Err(Error::OptimisticLockConflict) => {}
-            Err(e) => panic!("Unexpected error: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("unexpected error: {e:?}")),
         }
     }
 
@@ -802,7 +826,7 @@ async fn test_concurrent_role_updates_same_user() {
     assert!(success_count >= 3, "At least 3 role updates should succeed");
 
     // Verify final state is valid
-    let final_user = user_repo.get_by_id(&user_id).await.unwrap().unwrap();
+    let final_user = load_user(&user_repo, &user_id).await;
     assert!(
         final_user.role == UserRole::User || final_user.role == UserRole::Admin,
         "Final role should be valid"

@@ -32,9 +32,8 @@ impl RoomService {
             room_id, true, &mut tx,
         )
         .await?;
-        if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-            outbox.insert_with_executor(event, &mut *tx).await?;
-        }
+        self.insert_realtime_outbox_tx(&mut tx, outbox_event.as_ref())
+            .await?;
         tx.commit().await?;
         self.notify_room_invalidation(room_id).await;
 

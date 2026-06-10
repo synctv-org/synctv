@@ -6,102 +6,207 @@
       {
         "ordinal": 0,
         "name": "id: RoomId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "name",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "name"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "description",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "description"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "cover_file_reference_id",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "cover_file_reference_id"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "created_by: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "created_by"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "closed_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "closed_at"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "created_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "created_at"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "updated_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "updated_at"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "deleted_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "deleted_at"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "version",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "version"
+          }
+        }
       },
       {
         "ordinal": 10,
         "name": "last_activity_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "last_activity_at"
+          }
+        }
       },
       {
         "ordinal": 11,
         "name": "is_banned!",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": "Expression"
       },
       {
         "ordinal": 12,
         "name": "is_in_kick_cooldown!",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": "Expression"
       },
       {
         "ordinal": 13,
         "name": "settings_json?: String",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_settings",
+            "name": "value"
+          }
+        }
       },
       {
         "ordinal": 14,
         "name": "opaque_record",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "opaque_record"
+          }
+        }
       },
       {
         "ordinal": 15,
         "name": "opaque_credential_identifier",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "opaque_credential_identifier"
+          }
+        }
       },
       {
         "ordinal": 16,
         "name": "opaque_ciphersuite",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "opaque_ciphersuite"
+          }
+        }
       },
       {
         "ordinal": 17,
         "name": "opaque_server_setup_version",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "opaque_server_setup_version"
+          }
+        }
       },
       {
         "ordinal": 18,
         "name": "password_enabled!",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": "Expression"
       },
       {
         "ordinal": 19,
         "name": "password_version?",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "version"
+          }
+        }
       }
     ],
     "parameters": {
@@ -124,13 +229,13 @@
       false,
       null,
       null,
-      false,
+      true,
       true,
       true,
       true,
       true,
       null,
-      false
+      true
     ]
   },
   "hash": "ba4dff82abe02e88f9ee21e5047c42dd62ee39c4a54e2fb5af9b3a43b367431c"

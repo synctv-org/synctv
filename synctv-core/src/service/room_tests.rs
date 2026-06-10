@@ -9,7 +9,20 @@ use crate::test_helpers::RoomFixture;
 use crate::Error;
 use async_trait::async_trait;
 
-/// Replicates the room name validation from `do_create_room`.
+fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
+fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
+    match result {
+        Ok(_) => std::panic::panic_any(context.to_string()),
+        Err(error) => error,
+    }
+}
+
 fn validate_room_name(name: &str) -> crate::Result<()> {
     crate::validation::RoomNameValidator::new()
         .validate(name)
@@ -20,34 +33,32 @@ fn validate_room_name(name: &str) -> crate::Result<()> {
 fn test_empty_room_name_returns_error() {
     let result = validate_room_name("");
     assert!(result.is_err());
-    match result.unwrap_err() {
+    match err(result, "empty room name should fail") {
         Error::InvalidInput(msg) => assert!(
             msg.contains("at least 1") || msg.contains("cannot be empty"),
             "got: {msg}"
         ),
-        other => panic!("Expected InvalidInput, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected InvalidInput, got: {other:?}")),
     }
 }
 
 #[test]
 fn test_room_name_at_max_length_is_ok() {
-    // Use ROOM_NAME_MAX from validation module (100 characters)
     let name = "a".repeat(crate::validation::ROOM_NAME_MAX);
     assert!(validate_room_name(&name).is_ok());
 }
 
 #[test]
 fn test_room_name_exceeding_max_length_returns_error() {
-    // One over ROOM_NAME_MAX (101 characters)
     let name = "a".repeat(crate::validation::ROOM_NAME_MAX + 1);
     let result = validate_room_name(&name);
     assert!(result.is_err());
-    match result.unwrap_err() {
+    match err(result, "too-long room name should fail") {
         Error::InvalidInput(msg) => assert!(
             msg.contains("characters") || msg.contains("long"),
             "got: {msg}"
         ),
-        other => panic!("Expected InvalidInput, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected InvalidInput, got: {other:?}")),
     }
 }
 
@@ -89,8 +100,6 @@ fn test_transaction_permission_helper_uses_runtime_member_default() {
 
 #[test]
 fn test_room_name_counts_unicode_characters_not_bytes() {
-    // Each CJK character is 3 bytes in UTF-8 but 1 character.
-    // ROOM_NAME_MAX (100) CJK chars = 300 bytes, should be valid.
     let max_len = crate::validation::ROOM_NAME_MAX;
     let name: String = std::iter::repeat_n('\u{4e00}', max_len).collect();
     assert_eq!(name.chars().count(), max_len);
@@ -99,7 +108,6 @@ fn test_room_name_counts_unicode_characters_not_bytes() {
         "Room name with {max_len} CJK characters should be valid"
     );
 
-    // (ROOM_NAME_MAX + 1) CJK characters should be rejected
     let name_too_long: String = std::iter::repeat_n('\u{4e00}', max_len + 1).collect();
     assert!(
         validate_room_name(&name_too_long).is_err(),
@@ -174,8 +182,11 @@ fn test_unknown_setting_key_returns_error_via_registry() {
 #[test]
 fn test_set_by_key_applies_value() {
     let mut settings = RoomSettings::default();
-    assert!(settings.chat_enabled.0); // default is true
-    settings.set_by_key("chat_enabled", "false").unwrap();
+    assert!(settings.chat_enabled.0);
+    ok(
+        settings.set_by_key("chat_enabled", "false"),
+        "chat_enabled setting should update",
+    );
     assert!(!settings.chat_enabled.0);
 }
 
@@ -196,7 +207,10 @@ fn test_set_by_key_unknown_key_returns_error() {
 #[test]
 fn test_set_by_key_max_members() {
     let mut settings = RoomSettings::default();
-    settings.set_by_key("max_members", "42").unwrap();
+    ok(
+        settings.set_by_key("max_members", "42"),
+        "max_members setting should update",
+    );
     assert_eq!(settings.max_members.0, 42);
 }
 
@@ -215,11 +229,11 @@ fn test_settings_validate_permissions_guest_escalation_is_rejected() {
     };
     let result = settings.validate_permissions();
     assert!(result.is_err());
-    match result.unwrap_err() {
+    match err(result, "guest permission escalation should fail") {
         Error::InvalidInput(msg) => {
             assert!(msg.contains("guest"), "got: {msg}");
         }
-        other => panic!("Expected InvalidInput, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected InvalidInput, got: {other:?}")),
     }
 }
 
@@ -231,14 +245,14 @@ fn test_settings_validate_permissions_member_escalation_is_rejected() {
     };
     let result = settings.validate_permissions();
     assert!(result.is_err());
-    match result.unwrap_err() {
+    match err(result, "member permission escalation should fail") {
         Error::InvalidInput(msg) => {
             assert!(
                 msg.contains("lifecycle") || msg.contains("member"),
                 "got: {msg}"
             );
         }
-        other => panic!("Expected InvalidInput, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected InvalidInput, got: {other:?}")),
     }
 }
 
@@ -250,25 +264,27 @@ fn test_validate_override_bits_for_guest_rejects_member_bitspace() {
         0,
     );
     assert!(result.is_err());
-    match result.unwrap_err() {
+    match err(result, "guest role should reject member bitspace") {
         Error::InvalidInput(message) => {
             assert!(
                 message.contains("target role permission bitspace"),
                 "got: {message}"
             );
         }
-        other => panic!("Expected InvalidInput, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected InvalidInput, got: {other:?}")),
     }
 }
 
 #[test]
 fn test_validate_override_bits_for_guest_accepts_guest_bitspace() {
-    RoomService::validate_override_bits_for_role(
-        RoomRole::Guest,
-        RoomGuestPermissionBits::VIEW_CHAT_HISTORY,
-        RoomGuestPermissionBits::USE_WEBRTC,
-    )
-    .expect("guest override bits should validate in the guest bitspace");
+    ok(
+        RoomService::validate_override_bits_for_role(
+            RoomRole::Guest,
+            RoomGuestPermissionBits::VIEW_CHAT_HISTORY,
+            RoomGuestPermissionBits::USE_WEBRTC,
+        ),
+        "guest override bits should validate in the guest bitspace",
+    );
 }
 
 #[test]
@@ -419,11 +435,11 @@ fn test_room_creation_blocked_when_disable_create_room_is_true() {
         result.is_err(),
         "Should reject when disable_create_room=true"
     );
-    match result.unwrap_err() {
+    match err(result, "disabled room creation should fail") {
         Error::Authorization(msg) => {
             assert!(msg.contains("disabled"), "got: {msg}");
         }
-        other => panic!("Expected Authorization, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected Authorization, got: {other:?}")),
     }
 }
 
@@ -434,17 +450,16 @@ fn test_room_creation_blocked_when_allow_room_creation_is_false() {
         result.is_err(),
         "Should reject when allow_room_creation=false"
     );
-    match result.unwrap_err() {
+    match err(result, "disallowed room creation should fail") {
         Error::Authorization(msg) => {
             assert!(msg.contains("disabled"), "got: {msg}");
         }
-        other => panic!("Expected Authorization, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected Authorization, got: {other:?}")),
     }
 }
 
 #[test]
 fn test_disable_create_room_takes_precedence_over_allow() {
-    // Even if allow_room_creation=true, disable_create_room=true should block
     let result = check_room_creation_allowed(true, true);
     assert!(
         result.is_err(),

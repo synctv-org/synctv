@@ -3,6 +3,20 @@ use crate::cache::CacheInvalidationService;
 use crate::models::ProviderInstance;
 use chrono::Utc;
 
+fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
+fn some<T>(value: Option<T>, context: &str) -> T {
+    match value {
+        Some(value) => value,
+        None => std::panic::panic_any(context.to_string()),
+    }
+}
+
 fn remote_instance(endpoint: &str) -> ProviderInstance {
     ProviderInstance {
         name: "remote".to_string(),
@@ -30,10 +44,10 @@ async fn start_invalidation_listener_does_not_wait_for_synthetic_readiness() {
         RemoteProviderManager::new_with_store(empty_provider_instance_store(), Some(invalidation));
 
     let start = tokio::time::Instant::now();
-    manager
-        .start_invalidation_listener()
-        .await
-        .expect("listener should start");
+    ok(
+        manager.start_invalidation_listener().await,
+        "listener should start",
+    );
 
     assert_eq!(
         tokio::time::Instant::now().duration_since(start),
@@ -48,7 +62,10 @@ async fn start_invalidation_listener_does_not_wait_for_synthetic_readiness() {
 fn validate_config_accepts_http_endpoint_scheme() {
     let config = remote_instance("http://provider.example.com:50051");
 
-    RemoteProviderManager::validate_config(&config).expect("http:// endpoint should remain valid");
+    ok(
+        RemoteProviderManager::validate_config(&config),
+        "http:// endpoint should remain valid",
+    );
 }
 
 #[test]
@@ -143,16 +160,20 @@ fn validate_config_accepts_https_endpoint_with_tls() {
     let mut config = remote_instance("https://provider.example.com:50051");
     config.tls = true;
 
-    RemoteProviderManager::validate_config(&config)
-        .expect("https endpoint with tls=true should pass validation");
+    ok(
+        RemoteProviderManager::validate_config(&config),
+        "https endpoint with tls=true should pass validation",
+    );
 }
 
 #[test]
 fn normalized_transport_endpoint_preserves_http() {
     let config = remote_instance("http://provider.example.com:50051");
 
-    let normalized = RemoteProviderManager::normalized_transport_endpoint(&config)
-        .expect("http:// endpoint should normalize to a tonic transport URL");
+    let normalized = ok(
+        RemoteProviderManager::normalized_transport_endpoint(&config),
+        "http:// endpoint should normalize to a tonic transport URL",
+    );
 
     assert_eq!(normalized, "http://provider.example.com:50051");
 }
@@ -232,9 +253,10 @@ fn probe_execution_control_preserves_tighter_parent_deadline_and_cancellation() 
 fn probe_execution_control_applies_probe_timeout_without_parent_control() {
     let probe = RemoteProviderManager::probe_execution_control(None, Duration::from_secs(5));
 
-    let remaining = probe
-        .remaining_timeout()
-        .expect("probe without parent control should still have a deadline");
+    let remaining = some(
+        probe.remaining_timeout(),
+        "probe without parent control should still have a deadline",
+    );
     assert!(remaining <= Duration::from_secs(5));
     assert!(remaining > Duration::ZERO);
 }

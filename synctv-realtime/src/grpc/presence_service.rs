@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use subtle::ConstantTimeEq;
 use synctv_core::models::{RoomId, UserId};
@@ -15,6 +16,16 @@ const MAX_USER_IDS: usize = 1000;
 
 fn u64_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn unix_timestamp_secs() -> u64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs(),
+        Err(error) => {
+            tracing::warn!(%error, "system clock is before Unix epoch");
+            0
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -120,10 +131,7 @@ impl realtime_presence_service_server::RealtimePresenceService for RealtimePrese
 
         let room_id = RoomId::try_from(req.room_id)
             .map_err(|error| Status::invalid_argument(format!("invalid room_id: {error}")))?;
-        let now_unix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now_unix = unix_timestamp_secs();
         let now_unix = u64_to_i64(now_unix);
 
         let connections = self
@@ -156,16 +164,20 @@ mod tests {
     use super::*;
     use crate::sync::{ConnectionLimits, ConnectionManager};
 
-    fn request_with_secret<T>(value: T) -> Request<T> {
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn request_with_secret<T>(
+        value: T,
+    ) -> Result<Request<T>, tonic::metadata::errors::InvalidMetadataValue> {
         let mut request = Request::new(value);
         request
             .metadata_mut()
-            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
-        request
+            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse()?);
+        Ok(request)
     }
 
     #[tokio::test]
-    async fn presence_requests_require_cluster_secret() {
+    async fn presence_requests_require_cluster_secret() -> TestResult {
         let service = RealtimePresenceServiceImpl::new(
             Arc::new(ConnectionManager::new(ConnectionLimits::default())),
             "node-a".to_string(),
@@ -180,25 +192,24 @@ mod tests {
             .expect_err("missing secret must be rejected");
 
         assert_eq!(error.code(), tonic::Code::Unauthenticated);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn user_online_status_reads_local_connection_runtime() {
+    async fn user_online_status_reads_local_connection_runtime() -> TestResult {
         let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         let user_id = UserId::expect_positive(42);
         connection_manager
             .register("conn-1".to_string(), user_id)
-            .await
-            .expect("connection should register");
+            .await?;
 
         let service = RealtimePresenceServiceImpl::new(connection_manager, "node-a".to_string())
             .with_cluster_secret("cluster-secret".to_string());
         let response = service
             .get_user_online_status(request_with_secret(GetUserOnlineStatusRequest {
                 user_ids: vec![user_id.as_i64(), 43],
-            }))
-            .await
-            .expect("authorized request should succeed")
+            })?)
+            .await?
             .into_inner();
 
         assert_eq!(response.statuses.len(), 2);
@@ -206,8 +217,9 @@ mod tests {
             .statuses
             .iter()
             .find(|status| status.user_id == user_id.as_i64())
-            .expect("registered user should be returned");
+            .ok_or("registered user should be returned")?;
         assert!(online.is_online);
         assert_eq!(online.node_id, "node-a");
+        Ok(())
     }
 }

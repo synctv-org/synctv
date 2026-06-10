@@ -153,7 +153,9 @@ impl OAuth2Service {
                     )));
                 }
 
-                let host = parsed_url.host_str().unwrap_or("");
+                let host = parsed_url.host_str().ok_or_else(|| {
+                    Error::InvalidInput("Redirect URL must include a host".to_string())
+                })?;
                 if Self::is_loopback_host(host) {
                     return Ok(());
                 }
@@ -176,9 +178,9 @@ impl OAuth2Service {
 
                 Ok(())
             }
-            Err(_) => Err(Error::InvalidInput(format!(
-                "Invalid redirect URL format: {url}"
-            ))),
+            Err(_) => Err(Error::InvalidInput(
+                "Redirect URL must be an absolute http(s) URL with a host".to_string(),
+            )),
         }
     }
 

@@ -13,7 +13,6 @@
 //! # Requirements
 //!
 //! - Docker for testcontainers (`PostgreSQL` + Redis)
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -29,9 +28,7 @@ use synctv_core::{
         InMemoryTokenBlacklistStore, PublishKeyService, RoomService, UserService,
     },
 };
-use synctv_core_testing::{create_test_pool, start_redis, RedisContainer, TestContainer};
-
-// Test Infrastructure
+use synctv_core_testing::{create_test_pool, ok, some, start_redis, RedisContainer, TestContainer};
 
 async fn create_test_infra() -> (
     TestContainer,
@@ -46,8 +43,10 @@ async fn create_test_infra() -> (
 }
 
 fn create_jwt_service() -> JwtService {
-    JwtService::new("test-secret-key-for-rtmp-auth-tests-minimum-length-32-chars")
-        .expect("Failed to create JWT service")
+    ok(
+        JwtService::new("test-secret-key-for-rtmp-auth-tests-minimum-length-32-chars"),
+        "test JWT service should initialize",
+    )
 }
 
 fn create_user_service(pool: &sqlx::PgPool) -> UserService {
@@ -70,12 +69,18 @@ fn create_user_service(pool: &sqlx::PgPool) -> UserService {
 fn create_room_service(pool: sqlx::PgPool) -> RoomService {
     let user_service = create_user_service(&pool);
 
-    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+    ok(
+        RoomService::new_for_tests(pool, user_service),
+        "room service should build",
+    )
 }
 
 fn create_publish_key_service() -> PublishKeyService {
     let jwt_service = create_jwt_service();
-    PublishKeyService::new(jwt_service, 24).expect("publish key service should build")
+    ok(
+        PublishKeyService::new(jwt_service, 24),
+        "publish key service should build",
+    )
 }
 
 async fn create_test_user(pool: &sqlx::PgPool, username: &str, role: UserRole) -> User {
@@ -96,10 +101,10 @@ async fn create_test_user(pool: &sqlx::PgPool, username: &str, role: UserRole) -
         banned_by: None,
         banned_reason: None,
     };
-    user_repo
-        .create(&user)
-        .await
-        .expect("Failed to create test user")
+    ok(
+        user_repo.create(&user).await,
+        "RTMP auth test user should be created",
+    )
 }
 
 async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -> Room {
@@ -119,17 +124,19 @@ async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -
         version: 0,
         last_activity_at: chrono::Utc::now(),
     };
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create test room");
+    let room = ok(
+        room_repo.create(&room).await,
+        "RTMP auth test room should be created",
+    );
 
     let settings_repo = RoomSettingsRepository::new(pool.clone());
     let settings = RoomSettings::default();
-    settings_repo
-        .set_settings_with_version(&room.id, &settings, 0)
-        .await
-        .expect("Failed to create room settings");
+    ok(
+        settings_repo
+            .set_settings_with_version(&room.id, &settings, 0)
+            .await,
+        "RTMP auth room settings should be created",
+    );
 
     // Add creator as room member
     let member_repo = RoomMemberRepository::new(pool.clone());
@@ -145,15 +152,13 @@ async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -
         joined_at: chrono::Utc::now(),
         version: 0,
     };
-    member_repo
-        .add(&member)
-        .await
-        .expect("Failed to add room creator as member");
+    ok(
+        member_repo.add(&member).await,
+        "RTMP auth room creator membership should be created",
+    );
 
     room
 }
-
-// Test 3: Banned users cannot use publish keys
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -166,35 +171,39 @@ async fn rtmp_auth_test_banned_user_validation() {
 
     // Generate publish key before banning
     let publish_key_service = create_publish_key_service();
-    let key = publish_key_service
-        .generate_publish_key(&room.id, &media_id, &user.id)
-        .expect("Failed to generate publish key");
+    let key = ok(
+        publish_key_service.generate_publish_key(&room.id, &media_id, &user.id),
+        "publish key should be generated",
+    );
 
     // Ban the user
     let user_repo = UserRepository::new(pool.clone());
-    user_repo
-        .ban(&user.id, None, Some("rtmp auth test".to_string()))
-        .await
-        .expect("Failed to ban user");
+    ok(
+        user_repo
+            .ban(&user.id, None, Some("rtmp auth test".to_string()))
+            .await,
+        "RTMP auth user should be banned",
+    );
 
     // Token should still be valid at the JWT level (user status is checked separately)
-    let _claims = publish_key_service
-        .validate_publish_key(&key.token)
-        .await
-        .expect("Token validation should succeed (user status check is separate)");
+    let _claims = ok(
+        publish_key_service.validate_publish_key(&key.token).await,
+        "publish key token should validate before user status check",
+    );
 
     // But RTMP auth should reject based on user status
     let user_service = Arc::new(create_user_service(&pool));
-    let updated_user = user_service
-        .get_user(&user.id)
-        .await
-        .expect("Failed to load user");
+    let updated_user = ok(
+        user_service.get_user(&user.id).await,
+        "banned user should be loaded",
+    );
 
     assert_eq!(updated_user.status, UserStatus::Banned);
-    assert!(user_repo.is_banned(&user.id).await.unwrap());
+    assert!(ok(
+        user_repo.is_banned(&user.id).await,
+        "banned user status lookup should succeed"
+    ));
 }
-
-// Test 4: Deleted users validation
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -207,23 +216,24 @@ async fn rtmp_auth_test_deleted_user_validation() {
 
     // Generate publish key before deletion
     let publish_key_service = create_publish_key_service();
-    let key = publish_key_service
-        .generate_publish_key(&room.id, &media_id, &user.id)
-        .expect("Failed to generate publish key");
+    let key = ok(
+        publish_key_service.generate_publish_key(&room.id, &media_id, &user.id),
+        "publish key should be generated",
+    );
 
     // Soft-delete the user via the repository's delete method
     let user_repo = UserRepository::new(pool.clone());
-    let deleted = user_repo
-        .delete(&user.id)
-        .await
-        .expect("Failed to delete user");
+    let deleted = ok(
+        user_repo.delete(&user.id).await,
+        "RTMP auth user should be soft-deleted",
+    );
     assert!(deleted, "delete should have affected one row");
 
     // Token should still be valid at the JWT level
-    let _claims = publish_key_service
-        .validate_publish_key(&key.token)
-        .await
-        .expect("Token validation should succeed (user status check is separate)");
+    let _claims = ok(
+        publish_key_service.validate_publish_key(&key.token).await,
+        "publish key token should validate before deleted-user check",
+    );
 
     // But RTMP auth should reject based on deleted_at:
     // get_user filters out soft-deleted users (WHERE deleted_at IS NULL),
@@ -236,8 +246,6 @@ async fn rtmp_auth_test_deleted_user_validation() {
     );
 }
 
-// Test 5: Banned room affects operations
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn rtmp_auth_test_banned_room_rejects_operations() {
@@ -248,34 +256,34 @@ async fn rtmp_auth_test_banned_room_rejects_operations() {
 
     // Ban the room
     let room_repo = RoomRepository::new(pool.clone());
-    room_repo
-        .update_ban_status(&room.id, true)
-        .await
-        .expect("Failed to ban room");
+    ok(
+        room_repo.update_ban_status(&room.id, true).await,
+        "RTMP auth room should be banned",
+    );
 
     // Reload and verify
-    let reloaded_room = room_repo
-        .get_by_id(&room.id)
-        .await
-        .expect("Failed to load room")
-        .expect("Room should exist");
+    let reloaded_room = some(
+        ok(
+            room_repo.get_by_id(&room.id).await,
+            "banned room should be loaded",
+        ),
+        "banned room should exist",
+    );
 
     assert!(reloaded_room.is_banned, "Room should be banned");
 
     // Room service should return banned status
     let room_service = create_room_service(pool.clone());
-    let loaded_room = room_service
-        .get_room(&room.id)
-        .await
-        .expect("Failed to load room via service");
+    let loaded_room = ok(
+        room_service.get_room(&room.id).await,
+        "banned room should load via service",
+    );
 
     assert!(
         loaded_room.is_banned,
         "Room loaded via service should be banned"
     );
 }
-
-// Test 6: Closed room lifecycle is persisted
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -287,17 +295,19 @@ async fn rtmp_auth_test_closed_room_lifecycle_is_persisted() {
 
     room.close();
     let room_repo = RoomRepository::new(pool.clone());
-    room_repo
-        .update(&room, room.version)
-        .await
-        .expect("Failed to close room");
+    ok(
+        room_repo.update(&room, room.version).await,
+        "RTMP auth room should be closed",
+    );
 
     // Reload and verify
-    let reloaded_room = room_repo
-        .get_by_id(&room.id)
-        .await
-        .expect("Failed to load room")
-        .expect("Room should exist");
+    let reloaded_room = some(
+        ok(
+            room_repo.get_by_id(&room.id).await,
+            "closed room should be loaded",
+        ),
+        "closed room should exist",
+    );
 
     assert_eq!(
         reloaded_room.status,
@@ -307,15 +317,13 @@ async fn rtmp_auth_test_closed_room_lifecycle_is_persisted() {
 
     // Room service should return closed lifecycle status
     let room_service = create_room_service(pool.clone());
-    let loaded_room = room_service
-        .get_room(&room.id)
-        .await
-        .expect("Failed to load room via service");
+    let loaded_room = ok(
+        room_service.get_room(&room.id).await,
+        "closed room should load via service",
+    );
 
     assert_eq!(loaded_room.status, RoomStatus::Closed);
 }
-
-// Test 7: Cross-replica user→stream mapping (per-user Redis key)
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -331,41 +339,45 @@ async fn rtmp_auth_test_cross_replica_user_stream_mapping() {
     let redis_key = format!("synctv:rtmp:user_stream:{user_id}");
 
     let mut conn = redis_conn.clone();
-    let _: () = redis::cmd("SET")
-        .arg(&redis_key)
-        .arg(&stream_value)
-        .query_async(&mut conn)
-        .await
-        .expect("Failed to write user stream mapping");
+    let _: () = ok(
+        redis::cmd("SET")
+            .arg(&redis_key)
+            .arg(&stream_value)
+            .query_async(&mut conn)
+            .await,
+        "user stream mapping should be written to Redis",
+    );
 
     // Simulate reading user stream mapping from Redis
-    let result: Option<String> = redis::cmd("GET")
-        .arg(&redis_key)
-        .query_async(&mut conn)
-        .await
-        .expect("Failed to read user stream mapping");
+    let result: Option<String> = ok(
+        redis::cmd("GET")
+            .arg(&redis_key)
+            .query_async(&mut conn)
+            .await,
+        "user stream mapping should be read from Redis",
+    );
 
     assert!(result.is_some(), "Should find user stream mapping");
 
-    let found_stream_value = result.unwrap();
+    let found_stream_value = some(result, "user stream mapping should exist");
     assert_eq!(found_stream_value, stream_value);
 
     // Verify we can parse it back using | separator
     let (parsed_room_id, parsed_media_id) = found_stream_value
         .split_once('|')
-        .expect("Should split on | separator");
+        .unwrap_or_else(|| std::panic::panic_any("user stream mapping should contain separator"));
     assert_eq!(parsed_room_id, room_id.to_string());
     assert_eq!(parsed_media_id, media_id.to_string());
 
     // Cleanup
-    let _: () = redis::cmd("DEL")
-        .arg(&redis_key)
-        .query_async(&mut conn)
-        .await
-        .expect("Failed to delete user stream mapping");
+    let _: () = ok(
+        redis::cmd("DEL")
+            .arg(&redis_key)
+            .query_async(&mut conn)
+            .await,
+        "user stream mapping should be deleted from Redis",
+    );
 }
-
-// Test 8: Non-room-member cannot publish
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -382,9 +394,10 @@ async fn rtmp_auth_test_non_room_member_rejected() {
 
     // Generate publish key for non-member
     let media_id = MediaId::new();
-    let _key = publish_key_service
-        .generate_publish_key(&room.id, &media_id, &non_member.id)
-        .expect("Failed to generate publish key");
+    let _key = ok(
+        publish_key_service.generate_publish_key(&room.id, &media_id, &non_member.id),
+        "publish key should be generated",
+    );
 
     // Verify non-member is not in the room
     let member_result = room_service
@@ -393,7 +406,7 @@ async fn rtmp_auth_test_non_room_member_rejected() {
         .await;
 
     assert!(
-        member_result.is_err() || member_result.unwrap().is_none(),
+        member_result.map_or(true, |member| member.is_none()),
         "Non-member should not be found in room membership"
     );
 }

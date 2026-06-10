@@ -6,12 +6,19 @@
       {
         "ordinal": 0,
         "name": "room_id: RoomId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "room_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "member_count!",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": "Expression"
       }
     ],
     "parameters": {

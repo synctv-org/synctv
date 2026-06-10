@@ -24,7 +24,7 @@ use synctv_proto::providers::bilibili::{
 use synctv_proto::providers::common::ProviderInstanceQuery;
 
 /// Bilibili endpoints that authenticate, issue challenges, or mutate stored credentials.
-pub fn bilibili_auth_routes() -> Router<AppState> {
+pub(crate) fn bilibili_auth_routes() -> Router<AppState> {
     Router::new()
         .route("/login/qr/generate", post(login_qr))
         .route("/login/qr/check", post(qr_check))
@@ -35,7 +35,7 @@ pub fn bilibili_auth_routes() -> Router<AppState> {
 }
 
 /// Bilibili read/query endpoints.
-pub fn bilibili_read_routes() -> Router<AppState> {
+pub(crate) fn bilibili_read_routes() -> Router<AppState> {
     Router::new()
         .route("/parse", post(parse))
         .route("/me", post(user_info))

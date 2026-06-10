@@ -305,35 +305,38 @@ pub async fn set_member_permissions(
 
 #[cfg(test)]
 mod tests {
+    type TestResult<T = ()> = anyhow::Result<T>;
+
     #[test]
-    fn test_room_member_target_path_request_deserializes_proto_field_names() {
+    fn test_room_member_target_path_request_deserializes_proto_field_names() -> TestResult {
         let req: synctv_proto::client::RoomMemberTargetPathRequest =
-            serde_json::from_str(r#"{"room_id":"room_1","user_id":"usr_1"}"#)
-                .expect("deserialize path request");
+            serde_json::from_str(r#"{"room_id":"room_1","user_id":"usr_1"}"#)?;
 
         assert_eq!(req.room_id, "room_1");
         assert_eq!(req.user_id, "usr_1");
+        Ok(())
     }
 
     #[test]
-    fn test_reject_room_join_review_body_deserializes_proto_request_without_path_field() {
+    fn test_reject_room_join_review_body_deserializes_proto_request_without_path_field(
+    ) -> TestResult {
         let req: synctv_proto::client::RejectRoomJoinReviewRequest =
-            serde_json::from_str(r#"{"reason":"denied"}"#)
-                .expect("deserialize reject room join review body");
+            serde_json::from_str(r#"{"reason":"denied"}"#)?;
 
         assert!(req.request_id.is_empty());
         assert_eq!(req.reason, "denied");
+        Ok(())
     }
 
     #[test]
-    fn test_update_member_permissions_body_deserializes_without_path_field() {
+    fn test_update_member_permissions_body_deserializes_without_path_field() -> TestResult {
         let req: synctv_proto::client::UpdateMemberPermissionsRequest =
-            serde_json::from_str(r#"{"role":2,"added_permissions":1}"#)
-                .expect("deserialize member permissions body");
+            serde_json::from_str(r#"{"role":2,"added_permissions":1}"#)?;
 
         assert!(req.user_id.is_empty());
         assert_eq!(req.role, 2);
         assert_eq!(req.added_permissions, 1);
+        Ok(())
     }
 
     #[test]

@@ -4,11 +4,11 @@
 //! When the blacklist store fails, logout should return an error so the caller
 //! knows that token revocation may not have succeeded.
 //!
-#![allow(clippy::unwrap_used)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use synctv_core::service::{InMemoryTokenBlacklistStore, TokenBlacklistStore};
+use synctv_core_testing::{err, ok};
 
 /// Mock store that always fails blacklist operations.
 /// Simulates Redis being unavailable.
@@ -142,10 +142,10 @@ async fn test_blacklist_success_returns_ok() {
     );
 
     // Verify token is blacklisted
-    assert!(store
-        .is_blacklisted_checked("jti:test_token")
-        .await
-        .unwrap());
+    assert!(ok(
+        store.is_blacklisted_checked("jti:test_token").await,
+        "blacklist lookup should succeed"
+    ));
 }
 
 // Test 2: Blacklist failure should return error (fail-closed)
@@ -161,7 +161,7 @@ async fn test_blacklist_failure_returns_error() {
         "Blacklist with failing store should return error (fail-closed behavior)"
     );
 
-    let err = result.unwrap_err();
+    let err = err(result, "blacklist with failing store should fail");
     assert!(
         err.to_string().contains("unavailable") || err.to_string().contains("Blacklist"),
         "Error message should indicate the blacklist store issue"
@@ -259,7 +259,10 @@ async fn test_blacklist_ttl_passed_correctly() {
     };
 
     let short_ttl = 1u64;
-    store.blacklist("jti:short_ttl", short_ttl).await.unwrap();
+    ok(
+        store.blacklist("jti:short_ttl", short_ttl).await,
+        "blacklist should accept short TTL",
+    );
 
     assert_eq!(
         store.ttl_secs.load(Ordering::SeqCst),
@@ -279,7 +282,10 @@ async fn test_blacklist_empty_jti() {
     assert!(result.is_ok());
 
     // Empty key should be blacklisted
-    assert!(store.is_blacklisted_checked("").await.unwrap());
+    assert!(ok(
+        store.is_blacklisted_checked("").await,
+        "empty key blacklist lookup should succeed"
+    ));
 }
 
 // Test 8: Blacklist with zero TTL

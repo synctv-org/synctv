@@ -46,16 +46,19 @@ pub(crate) async fn resolve_credential_provider_instance_binding(
                 dependency.user_id
             ))
         })?;
-        let Some(credential) = credential_repo
+        let credential = credential_repo
             .get_by_provider_and_server(
                 credential_user_id,
                 &dependency.provider,
                 &dependency.server_id,
             )
             .await?
-        else {
-            continue;
-        };
+            .ok_or_else(|| {
+                Error::InvalidInput(format!(
+                    "source_config depends on missing credential for provider '{}' server '{}'",
+                    dependency.provider, dependency.server_id
+                ))
+            })?;
 
         let record_binding = resolve_provider_instance_binding(
             None,

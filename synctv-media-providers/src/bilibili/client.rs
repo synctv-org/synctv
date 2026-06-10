@@ -1,11 +1,10 @@
 //! Bilibili HTTP Client
 
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use md5::{Digest, Md5};
@@ -13,6 +12,7 @@ use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
 use synctv_common::ssrf::SsrfGuard;
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 use tokio::net::TcpStream;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
@@ -36,7 +36,7 @@ static RE_SSID: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| Regex::
 static RE_LIVE_ROOM: LazyLock<Result<Regex, regex::Error>> =
     LazyLock::new(|| Regex::new(r"(?:/live)?/(\d+)(?:[/?#]|$)"));
 
-use crate::error::PROVIDER_USER_AGENT as USER_AGENT;
+use crate::PROVIDER_USER_AGENT as USER_AGENT;
 const REFERER: &str = "https://www.bilibili.com";
 const BILIBILI_SHORT_LINK_MAX_REDIRECTS: usize = 5;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
@@ -49,6 +49,36 @@ fn shared_client() -> Result<Client, BilibiliError> {
         .user_agent(USER_AGENT)
         .build()
         .map_err(|err| BilibiliError::Network(err.to_string()))
+}
+
+fn required_payload<T>(payload: Option<T>, endpoint: &'static str) -> Result<T, BilibiliError> {
+    payload.ok_or_else(|| BilibiliError::Parse(format!("{endpoint} response missing payload")))
+}
+
+fn required_first_segment_url(
+    segments: &[VideoSegment],
+    endpoint: &'static str,
+) -> Result<String, BilibiliError> {
+    segments
+        .first()
+        .map(|segment| segment.url.clone())
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| BilibiliError::Parse(format!("{endpoint} response missing media URL")))
+}
+
+fn quality_to_u32(quality: u64, endpoint: &'static str) -> Result<u32, BilibiliError> {
+    u32::try_from(quality)
+        .map_err(|_| BilibiliError::Parse(format!("{endpoint} quality {quality} exceeds u32")))
+}
+
+fn unix_timestamp_secs() -> u64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs(),
+        Err(err) => {
+            tracing::warn!(%err, "system clock is before Unix epoch");
+            0
+        }
+    }
 }
 
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
@@ -72,20 +102,6 @@ async fn connect_live_danmaku_websocket(
         .map_err(|e| BilibiliError::Network(format!("Failed to connect to danmaku WebSocket: {e}")))
 }
 
-#[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
-#[allow(clippy::unused_async)]
-async fn connect_live_danmaku_websocket(
-    _ws_url: &str,
-    _socket: TcpStream,
-) -> Result<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
-    BilibiliError,
-> {
-    Err(BilibiliError::InvalidConfig(
-        "Bilibili live danmaku requires a TLS root feature".to_string(),
-    ))
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BilibiliEndpoints {
     pub web_base: String,
@@ -106,17 +122,6 @@ impl Default for BilibiliEndpoints {
 }
 
 impl BilibiliEndpoints {
-    #[must_use]
-    pub fn for_test(base_url: impl AsRef<str>) -> Self {
-        let base = base_url.as_ref().trim_end_matches('/').to_string();
-        Self {
-            web_base: base.clone(),
-            api_base: base.clone(),
-            passport_base: base.clone(),
-            live_api_base: base,
-        }
-    }
-
     fn join(base: &str, path: &str) -> String {
         format!(
             "{}/{}",
@@ -301,11 +306,7 @@ fn extract_key_from_url(url: &str) -> Option<String> {
 /// 6. Compute MD5 hash → `w_rid`.
 /// 7. Return the signed query string with `w_rid` and `wts` appended.
 fn wbi_sign(params: &[(&str, String)], mixin_key: &str) -> Vec<(String, String)> {
-    let wts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .to_string();
+    let wts = unix_timestamp_secs().to_string();
 
     // Collect all params plus wts
     let mut all_params: Vec<(String, String)> = params
@@ -358,6 +359,7 @@ pub struct BilibiliClient {
     cookies: Option<HashMap<String, String>>,
     wbi_state: Arc<WbiState>,
     endpoints: BilibiliEndpoints,
+    #[allow(dead_code)]
     ssrf_guard: SsrfGuard,
 }
 
@@ -1203,8 +1205,12 @@ impl BilibiliClient {
                     });
                 }
 
-                let data = json.data.unwrap_or_default();
-                let cid = data.pages.first().map_or(0, |p| p.cid);
+                let data = required_payload(json.data, "video info")?;
+                let cid = data
+                    .pages
+                    .first()
+                    .ok_or_else(|| BilibiliError::Parse("video info has no pages".to_string()))?
+                    .cid;
                 Ok(VideoInfo {
                     bvid: data.bvid,
                     aid: data.aid,
@@ -1255,7 +1261,7 @@ impl BilibiliClient {
                     });
                 }
 
-                let data = json.data.unwrap_or_default();
+                let data = required_payload(json.data, "play URL")?;
                 let durl = data
                     .durl
                     .into_iter()
@@ -1298,7 +1304,7 @@ impl BilibiliClient {
                     });
                 }
 
-                let result = json.result.unwrap_or_default();
+                let result = required_payload(json.result, "anime info")?;
                 let first_episode = result.episodes.first().ok_or_else(|| {
                     BilibiliError::Parse("No episodes found in anime info".to_string())
                 })?;
@@ -1438,10 +1444,10 @@ impl BilibiliClient {
                 let accept_quality: Vec<u32> = data
                     .accept_quality
                     .iter()
-                    .map(|&q| u32::try_from(q).unwrap_or(0))
-                    .collect();
+                    .map(|&q| quality_to_u32(q, "video URL"))
+                    .collect::<Result<_, _>>()?;
                 let accept_description = data.accept_description;
-                let current_quality = u32::try_from(data.quality).unwrap_or(0);
+                let current_quality = quality_to_u32(data.quality, "video URL")?;
                 let segments: Vec<VideoSegment> = data
                     .durl
                     .iter()
@@ -1450,7 +1456,7 @@ impl BilibiliClient {
                         size: d.size,
                     })
                     .collect();
-                let url = segments.first().map(|s| s.url.clone()).unwrap_or_default();
+                let url = required_first_segment_url(&segments, "video URL")?;
 
                 Ok(VideoUrlInfo {
                     accept_quality,
@@ -1749,10 +1755,10 @@ impl BilibiliClient {
                 let accept_quality: Vec<u32> = result
                     .accept_quality
                     .iter()
-                    .map(|&q| u32::try_from(q).unwrap_or(0))
-                    .collect();
+                    .map(|&q| quality_to_u32(q, "PGC URL"))
+                    .collect::<Result<_, _>>()?;
                 let accept_description = result.accept_description;
-                let current_quality = u32::try_from(result.quality).unwrap_or(0);
+                let current_quality = quality_to_u32(result.quality, "PGC URL")?;
                 let segments: Vec<VideoSegment> = result
                     .durl
                     .iter()
@@ -1761,7 +1767,7 @@ impl BilibiliClient {
                         size: d.size,
                     })
                     .collect();
-                let url = segments.first().map(|s| s.url.clone()).unwrap_or_default();
+                let url = required_first_segment_url(&segments, "PGC URL")?;
 
                 Ok(VideoUrlInfo {
                     accept_quality,
@@ -2000,7 +2006,7 @@ impl BilibiliClient {
                     }
                     for format in &stream.format {
                         for codec in &format.codec {
-                            let quality = u32::try_from(codec.current_qn);
+                            let quality = quality_to_u32(codec.current_qn, "live stream URL")?;
                             let desc = codec
                                 .accept_qn
                                 .first()
@@ -2017,7 +2023,7 @@ impl BilibiliClient {
 
                             if !urls.is_empty() {
                                 streams.push(LiveStream {
-                                    quality: quality.unwrap_or(0),
+                                    quality,
                                     urls,
                                     desc,
                                 });
@@ -2086,49 +2092,61 @@ impl BilibiliClient {
         &self,
         room_id: u64,
     ) -> Result<LiveDanmakuConnection, BilibiliError> {
-        // Get danmaku server info
-        let danmu_info = self.get_live_danmu_info(room_id).await?;
+        #[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
+        {
+            let _ = room_id;
+            return Err(BilibiliError::InvalidConfig(
+                "Bilibili live danmaku requires a TLS root feature".to_string(),
+            ));
+        }
 
-        // Select first available host with wss_port
-        let host = danmu_info
-            .host_list
-            .first()
-            .ok_or_else(|| BilibiliError::Parse("No danmaku host available".to_string()))?;
+        #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
+        {
+            // Get danmaku server info
+            let danmu_info = self.get_live_danmu_info(room_id).await?;
 
-        // Build WebSocket URL (use wss:// for secure connection)
-        let ws_url = format!("wss://{}:{}/sub", host.host, host.wss_port);
-        let validated_addr =
-            resolve_validated_danmaku_addr(&host.host, host.wss_port, &self.ssrf_guard).await?;
+            // Select first available host with wss_port
+            let host = danmu_info
+                .host_list
+                .first()
+                .ok_or_else(|| BilibiliError::Parse("No danmaku host available".to_string()))?;
 
-        // Connect to WebSocket with timeout
-        let ws_connect_timeout = Duration::from_secs(10);
-        let ws_stream = tokio::time::timeout(ws_connect_timeout, async {
-            let socket = TcpStream::connect(validated_addr).await.map_err(|e| {
-                BilibiliError::Network(format!(
-                    "Failed to connect to danmaku WebSocket socket {validated_addr}: {e}"
-                ))
-            })?;
-            connect_live_danmaku_websocket(ws_url.as_str(), socket).await
-        })
-        .await
-        .map_err(|_| BilibiliError::Network("WebSocket connection timeout".to_string()))??;
+            // Build WebSocket URL (use wss:// for secure connection)
+            let ws_url = format!("wss://{}:{}/sub", host.host, host.wss_port);
+            let validated_addr =
+                resolve_validated_danmaku_addr(&host.host, host.wss_port, &self.ssrf_guard).await?;
 
-        let (mut write, read) = ws_stream.split();
+            let ws_stream = {
+                let ws_connect_timeout = Duration::from_secs(10);
+                tokio::time::timeout(ws_connect_timeout, async {
+                    let socket = TcpStream::connect(validated_addr).await.map_err(|e| {
+                        BilibiliError::Network(format!(
+                            "Failed to connect to danmaku WebSocket socket {validated_addr}: {e}"
+                        ))
+                    })?;
+                    connect_live_danmaku_websocket(ws_url.as_str(), socket).await
+                })
+                .await
+                .map_err(|_| BilibiliError::Network("WebSocket connection timeout".to_string()))??
+            };
 
-        // Send authentication packet
-        let auth_packet = build_auth_packet(room_id, &danmu_info.token);
-        write
-            .send(Message::Binary(auth_packet.into()))
-            .await
-            .map_err(|e| BilibiliError::Network(format!("Failed to send auth packet: {e}")))?;
+            let (mut write, read) = ws_stream.split();
 
-        Ok(LiveDanmakuConnection {
-            write: AsyncMutex::new(write),
-            read: AsyncMutex::new(read),
-            room_id,
-            heartbeat_handle: AsyncMutex::new(None),
-            heartbeat_stop: Arc::new(AtomicBool::new(false)),
-        })
+            // Send authentication packet
+            let auth_packet = build_auth_packet(room_id, &danmu_info.token)?;
+            write
+                .send(Message::Binary(auth_packet.into()))
+                .await
+                .map_err(|e| BilibiliError::Network(format!("Failed to send auth packet: {e}")))?;
+
+            Ok(LiveDanmakuConnection {
+                write: AsyncMutex::new(write),
+                read: AsyncMutex::new(read),
+                room_id,
+                heartbeat_handle: AsyncMutex::new(None),
+                heartbeat_stop: Arc::new(AtomicBool::new(false)),
+            })
+        }
     }
 
     /// Connect to live danmaku WebSocket with automatic reconnection support
@@ -2140,52 +2158,6 @@ impl BilibiliClient {
     /// * `room_id` - The live room ID to connect to
     /// * `config` - Reconnection configuration (max retries, delays, etc.)
     ///
-    /// # Example
-    /// ```no_run
-    /// use std::sync::Arc;
-    /// use std::time::Duration;
-    /// use synctv_media_providers::BilibiliError;
-    /// use synctv_media_providers::bilibili::{
-    ///     BilibiliClient, ReconnectConfig, ReconnectResult,
-    /// };
-    ///
-    /// # async fn demo() -> Result<(), BilibiliError> {
-    /// let room_id = 123_u64;
-    /// let client = Arc::new(BilibiliClient::new()?);
-    /// let config = ReconnectConfig {
-    ///     max_retries: 5,
-    ///     initial_delay: Duration::from_secs(1),
-    ///     max_delay: Duration::from_secs(30),
-    ///     backoff_multiplier: 2.0,
-    /// };
-    ///
-    /// let mut conn = client
-    ///     .connect_live_danmaku_with_reconnect(room_id, config)
-    ///     .await?;
-    ///
-    /// loop {
-    ///     match conn.recv().await {
-    ///         Ok(ReconnectResult::Messages(msgs)) => {
-    ///             for msg in msgs {
-    ///                 println!("{:?}", msg);
-    ///             }
-    ///         }
-    ///         Ok(ReconnectResult::Reconnected { attempts }) => {
-    ///             println!("Reconnected after {} attempts", attempts);
-    ///         }
-    ///         Ok(ReconnectResult::Failed { attempts, error }) => {
-    ///             eprintln!("Failed after {} attempts: {}", attempts, error);
-    ///             break;
-    ///         }
-    ///         Err(error) => {
-    ///             eprintln!("Error: {}", error);
-    ///             break;
-    ///         }
-    ///     }
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
     pub async fn connect_live_danmaku_with_reconnect(
         self: &Arc<Self>,
         room_id: u64,
@@ -2272,10 +2244,8 @@ impl ReconnectConfig {
     /// assert_eq!(config.delay_for_retry(2), Duration::from_secs(4));
     /// ```
     pub fn delay_for_retry(&self, retry_count: u32) -> Duration {
-        let delay_secs = self.initial_delay.as_secs_f64()
-            * self
-                .backoff_multiplier
-                .powi(i32::try_from(retry_count).unwrap_or(0));
+        let exponent = i32::try_from(retry_count).unwrap_or(i32::MAX);
+        let delay_secs = self.initial_delay.as_secs_f64() * self.backoff_multiplier.powi(exponent);
         let capped_secs = delay_secs.min(self.max_delay.as_secs_f64());
         Duration::from_secs_f64(capped_secs)
     }
@@ -2400,8 +2370,8 @@ impl LiveDanmakuConnection {
     /// conn.start_heartbeat_loop_arc(Arc::clone(&conn), config).await;
     ///
     /// while let Ok(messages) = conn.recv().await {
-    ///     for msg in messages {
-    ///         let _ = msg;
+    ///     for message in messages {
+    ///         tracing::debug!(?message, "received danmaku message");
     ///     }
     /// }
     ///
@@ -2506,26 +2476,13 @@ pub enum ReconnectResult {
 ///     .connect_live_danmaku_with_reconnect(room_id, reconnect_config)
 ///     .await?;
 ///
-/// loop {
-///     match conn.recv().await {
-///         Ok(ReconnectResult::Messages(msgs)) => {
-///             for msg in msgs {
-///                 println!("{:?}", msg);
-///             }
-///         }
-///         Ok(ReconnectResult::Reconnected { attempts }) => {
-///             println!("Reconnected after {} attempts", attempts);
-///         }
-///         Ok(ReconnectResult::Failed { attempts, error }) => {
-///             eprintln!("Failed to reconnect after {} attempts: {}", attempts, error);
-///             break;
-///         }
-///         Err(error) => {
-///             eprintln!("Error: {}", error);
-///             break;
-///         }
-///     }
-/// }
+/// let event = conn.recv().await?;
+/// assert!(matches!(
+///     event,
+///     ReconnectResult::Messages(_)
+///         | ReconnectResult::Reconnected { .. }
+///         | ReconnectResult::Failed { .. }
+/// ));
 /// # Ok(())
 /// # }
 /// ```
@@ -2744,7 +2701,8 @@ pub enum DanmakuMessage {
 }
 
 /// Build authentication packet for danmaku WebSocket
-pub fn build_auth_packet(room_id: u64, token: &str) -> Vec<u8> {
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
+fn build_auth_packet(room_id: u64, token: &str) -> Result<Vec<u8>, BilibiliError> {
     // Bilibili danmaku protocol format:
     // Header (16 bytes):
     // - packet_length: u32 (big-endian)
@@ -2762,17 +2720,18 @@ pub fn build_auth_packet(room_id: u64, token: &str) -> Vec<u8> {
         "platform": "web",
         "type": 2
     });
-    let body = serde_json::to_vec(&auth_json).unwrap_or_default();
+    let body = serde_json::to_vec(&auth_json)
+        .map_err(|err| BilibiliError::Parse(format!("failed to serialize auth packet: {err}")))?;
 
-    let packet_length = 16 + body.len();
+    let packet_length = 16usize
+        .checked_add(body.len())
+        .ok_or_else(|| BilibiliError::Parse("auth packet length overflow".to_string()))?;
+    let packet_length_u32 = u32::try_from(packet_length)
+        .map_err(|_| BilibiliError::Parse("auth packet length exceeds u32".to_string()))?;
     let mut packet = Vec::with_capacity(packet_length);
 
     // Header
-    packet.extend_from_slice(
-        &u32::try_from(packet_length)
-            .unwrap_or(u32::MAX)
-            .to_be_bytes(),
-    );
+    packet.extend_from_slice(&packet_length_u32.to_be_bytes());
     packet.extend_from_slice(&16u16.to_be_bytes()); // header length
     packet.extend_from_slice(&1u16.to_be_bytes()); // protocol version
     packet.extend_from_slice(&7u32.to_be_bytes()); // operation = auth
@@ -2781,11 +2740,11 @@ pub fn build_auth_packet(room_id: u64, token: &str) -> Vec<u8> {
     // Body
     packet.extend_from_slice(&body);
 
-    packet
+    Ok(packet)
 }
 
 /// Build heartbeat packet for danmaku WebSocket
-pub fn build_heartbeat_packet() -> Vec<u8> {
+fn build_heartbeat_packet() -> Vec<u8> {
     // Heartbeat packet: operation = 2, empty body
     let mut packet = Vec::with_capacity(16);
 
@@ -2959,10 +2918,7 @@ fn parse_danmaku_cmd(cmd: &str, json: &serde_json::Value) -> DanmakuMessage {
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown")
                     .to_string();
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
+                let timestamp = unix_timestamp_secs();
 
                 return DanmakuMessage::Chat {
                     user,
@@ -3080,6 +3036,7 @@ pub struct LiveDanmuInfo {
     pub host_list: Vec<DanmuHost>,
 }
 
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 async fn resolve_validated_danmaku_addr(
     hostname: &str,
     port: u32,
@@ -3337,165 +3294,6 @@ fn parse_dash_info(
     };
 
     (regular_dash, hevc_dash)
-}
-
-/// Generate DASH MPD XML from structured data
-#[must_use]
-pub fn generate_mpd_xml(dash_data: &DashData) -> String {
-    let mut mpd = String::new();
-
-    // MPD header
-    mpd.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
-    mpd.push('\n');
-    mpd.push_str(r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" "#);
-    mpd.push_str(r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" "#);
-    mpd.push_str(r#"xsi:schemaLocation="urn:mpeg:dash:schema:mpd:2011 DASH-MPD.xsd" "#);
-    let _ = write!(
-        mpd,
-        r#"minBufferTime="PT{:.1}S" "#,
-        dash_data.min_buffer_time
-    );
-    mpd.push_str(r#"type="static" "#);
-    let _ = write!(
-        mpd,
-        r#"mediaPresentationDuration="PT{:.1}S" "#,
-        dash_data.duration
-    );
-    mpd.push_str(r#"profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">"#);
-    mpd.push('\n');
-
-    // Period
-    mpd.push_str(r"  <Period>");
-    mpd.push('\n');
-
-    // Video AdaptationSet
-    if !dash_data.video_streams.is_empty() {
-        mpd.push_str(r#"    <AdaptationSet mimeType="video/mp4" contentType="video" "#);
-        mpd.push_str(r#"startWithSAP="1" segmentAlignment="true">"#);
-        mpd.push('\n');
-
-        for video in &dash_data.video_streams {
-            let _ = write!(mpd, r#"      <Representation id="{}" "#, video.id);
-            let _ = write!(mpd, r#"codecs="{}" "#, video.codecs);
-            let _ = write!(mpd, r#"width="{}" "#, video.width);
-            let _ = write!(mpd, r#"height="{}" "#, video.height);
-            let _ = write!(mpd, r#"frameRate="{}" "#, video.frame_rate);
-            let _ = write!(mpd, r#"sar="{}" "#, video.sar);
-            let _ = write!(mpd, r#"bandwidth="{}">"#, video.bandwidth);
-            mpd.push('\n');
-
-            // BaseURL
-            let _ = write!(
-                mpd,
-                r"        <BaseURL>{}</BaseURL>",
-                escape_xml(&video.base_url)
-            );
-            mpd.push('\n');
-
-            // Backup URLs
-            for backup_url in &video.backup_urls {
-                let _ = write!(
-                    mpd,
-                    r"        <BaseURL>{}</BaseURL>",
-                    escape_xml(backup_url)
-                );
-                mpd.push('\n');
-            }
-
-            // SegmentBase
-            let _ = write!(
-                mpd,
-                r#"        <SegmentBase indexRange="{}">"#,
-                video.segment_base.index_range
-            );
-            mpd.push('\n');
-            let _ = write!(
-                mpd,
-                r#"          <Initialization range="{}"/>"#,
-                video.segment_base.initialization_range
-            );
-            mpd.push('\n');
-            mpd.push_str(r"        </SegmentBase>");
-            mpd.push('\n');
-
-            mpd.push_str(r"      </Representation>");
-            mpd.push('\n');
-        }
-
-        mpd.push_str(r"    </AdaptationSet>");
-        mpd.push('\n');
-    }
-
-    // Audio AdaptationSet
-    if !dash_data.audio_streams.is_empty() {
-        mpd.push_str(r#"    <AdaptationSet mimeType="audio/mp4" contentType="audio" "#);
-        mpd.push_str(r#"startWithSAP="1" segmentAlignment="true">"#);
-        mpd.push('\n');
-
-        for audio in &dash_data.audio_streams {
-            let _ = write!(mpd, r#"      <Representation id="{}" "#, audio.id);
-            let _ = write!(mpd, r#"codecs="{}" "#, audio.codecs);
-            let _ = write!(mpd, r#"audioSamplingRate="{}" "#, audio.audio_sampling_rate);
-            let _ = write!(mpd, r#"bandwidth="{}">"#, audio.bandwidth);
-            mpd.push('\n');
-
-            // BaseURL
-            let _ = write!(
-                mpd,
-                r"        <BaseURL>{}</BaseURL>",
-                escape_xml(&audio.base_url)
-            );
-            mpd.push('\n');
-
-            // Backup URLs
-            for backup_url in &audio.backup_urls {
-                let _ = write!(
-                    mpd,
-                    r"        <BaseURL>{}</BaseURL>",
-                    escape_xml(backup_url)
-                );
-                mpd.push('\n');
-            }
-
-            // SegmentBase
-            let _ = write!(
-                mpd,
-                r#"        <SegmentBase indexRange="{}">"#,
-                audio.segment_base.index_range
-            );
-            mpd.push('\n');
-            let _ = write!(
-                mpd,
-                r#"          <Initialization range="{}"/>"#,
-                audio.segment_base.initialization_range
-            );
-            mpd.push('\n');
-            mpd.push_str(r"        </SegmentBase>");
-            mpd.push('\n');
-
-            mpd.push_str(r"      </Representation>");
-            mpd.push('\n');
-        }
-
-        mpd.push_str(r"    </AdaptationSet>");
-        mpd.push('\n');
-    }
-
-    // Close Period and MPD
-    mpd.push_str(r"  </Period>");
-    mpd.push('\n');
-    mpd.push_str(r"</MPD>");
-
-    mpd
-}
-
-/// Escape XML special characters
-fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
 }
 
 #[cfg(test)]

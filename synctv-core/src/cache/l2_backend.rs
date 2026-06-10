@@ -7,12 +7,13 @@
 //! - `RedisCacheL2`: Redis-backed L2 with TTL, retry logic, and atomic set-if-newer.
 //! - `NoopCacheL2`: No-op backend (L1-only mode). All reads return None, all writes are no-ops.
 
-use crate::{Error, RedisConnectionRuntime, Result, SharedStateProfile};
+use crate::{Error, RedisConnectionRuntime, Result};
 use async_trait::async_trait;
 use std::future::Future;
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[derive(Debug)]
 enum L2RedisAttemptError {
     Redis(redis::RedisError),
     Timeout,
@@ -245,9 +246,9 @@ fn json_with_cache_version(json: &str, version: i64) -> Result<String> {
 }
 
 fn json_with_inferred_updated_at_ms(json: &str) -> Result<String> {
-    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(json) else {
-        return Ok(json.to_string());
-    };
+    let mut value = serde_json::from_str::<serde_json::Value>(json).map_err(|error| {
+        Error::Internal(format!("Failed to parse L2 cache JSON payload: {error}"))
+    })?;
 
     let Some(object) = value.as_object_mut() else {
         return Ok(json.to_string());
@@ -352,18 +353,15 @@ pub trait CacheL2Backend: Send + Sync {
         self.delete(key).await
     }
 
-    /// Delete a key with retry logic and exponential backoff.
-    async fn delete_with_retry(&self, key: &str, max_retries: u32, cache_type: &str) -> Result<()>;
-
     /// Delete a key with retry logic within a logical namespace.
     async fn delete_with_retry_scoped(
         &self,
-        _prefix: &str,
+        prefix: &str,
         key: &str,
-        max_retries: u32,
-        cache_type: &str,
+        _max_retries: u32,
+        _cache_type: &str,
     ) -> Result<()> {
-        self.delete_with_retry(key, max_retries, cache_type).await
+        self.delete_scoped(prefix, key).await
     }
 
     /// Get multiple values by key. Returns a `Vec` of the same length as `keys`.
@@ -536,13 +534,6 @@ pub fn local_l2_cache_backend() -> std::sync::Arc<dyn CacheL2Backend> {
     std::sync::Arc::new(NoopCacheL2)
 }
 
-#[must_use]
-pub fn build_l2_cache_backend_from_profile(
-    profile: &SharedStateProfile,
-) -> std::sync::Arc<dyn CacheL2Backend> {
-    build_l2_cache_backend(profile.shared_runtime())
-}
-
 #[async_trait]
 impl CacheL2Backend for RedisCacheL2 {
     async fn get(&self, key: &str) -> Result<Option<String>> {
@@ -673,75 +664,6 @@ impl CacheL2Backend for RedisCacheL2 {
             pipe.query_async::<()>(&mut conn),
         )
         .await?;
-        Ok(())
-    }
-
-    async fn delete_with_retry(&self, key: &str, max_retries: u32, cache_type: &str) -> Result<()> {
-        use redis::AsyncCommands;
-        for attempt in 0..max_retries {
-            let mut conn = self
-                .conn("get L2 cache connection for retry delete")
-                .await?;
-            match run_l2_redis_attempt(self.operation_timeout(), conn.del::<_, ()>(key)).await {
-                Ok(()) => return Ok(()),
-                Err(L2RedisAttemptError::Redis(e)) => {
-                    let is_last_attempt = attempt == max_retries - 1;
-                    if is_last_attempt {
-                        crate::metrics::cache::CACHE_ERRORS
-                            .with_label_values(&[cache_type, "l2_delete"])
-                            .inc();
-                        tracing::error!(
-                            key = %key,
-                            error = %e,
-                            attempts = max_retries,
-                            cache_type = %cache_type,
-                            "Failed to delete from Redis L2 cache after retries"
-                        );
-                        return Err(Error::Internal(format!(
-                            "Failed to delete from Redis cache: {e}"
-                        )));
-                    }
-                    let backoff_ms = 10 * u64::pow(5, attempt);
-                    tracing::warn!(
-                        key = %key,
-                        error = %e,
-                        attempt = attempt + 1,
-                        max_retries = max_retries,
-                        backoff_ms = backoff_ms,
-                        cache_type = %cache_type,
-                        "Redis L2 cache delete failed, retrying"
-                    );
-                    tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
-                }
-                Err(L2RedisAttemptError::Timeout) => {
-                    let is_last_attempt = attempt == max_retries - 1;
-                    if is_last_attempt {
-                        crate::metrics::cache::CACHE_ERRORS
-                            .with_label_values(&[cache_type, "l2_delete"])
-                            .inc();
-                        tracing::error!(
-                            key = %key,
-                            attempts = max_retries,
-                            cache_type = %cache_type,
-                            "Redis L2 cache delete timed out after retries"
-                        );
-                        return Err(Error::Timeout(
-                            "L2 cache timeout: delete from Redis cache".to_string(),
-                        ));
-                    }
-                    let backoff_ms = 10 * u64::pow(5, attempt);
-                    tracing::warn!(
-                        key = %key,
-                        attempt = attempt + 1,
-                        max_retries = max_retries,
-                        backoff_ms = backoff_ms,
-                        cache_type = %cache_type,
-                        "Redis L2 cache delete timed out, retrying"
-                    );
-                    tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
-                }
-            }
-        }
         Ok(())
     }
 
@@ -1153,15 +1075,6 @@ impl CacheL2Backend for NoopCacheL2 {
         Ok(())
     }
 
-    async fn delete_with_retry(
-        &self,
-        _key: &str,
-        _max_retries: u32,
-        _cache_type: &str,
-    ) -> Result<()> {
-        Ok(())
-    }
-
     async fn get_batch(&self, keys: &[String]) -> Result<Vec<Option<String>>> {
         Ok(vec![None; keys.len()])
     }
@@ -1199,7 +1112,7 @@ impl CacheL2Backend for NoopCacheL2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::failing_redis_runtime;
+    use crate::test_helpers::{failing_redis_runtime, TestResultExt};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -1251,15 +1164,6 @@ mod tests {
             self.delete_count.fetch_add(1, Ordering::SeqCst);
             tokio::time::sleep(self.delay).await;
             Ok(())
-        }
-
-        async fn delete_with_retry(
-            &self,
-            key: &str,
-            _max_retries: u32,
-            _cache_type: &str,
-        ) -> Result<()> {
-            self.delete(key).await
         }
 
         async fn get_batch(&self, keys: &[String]) -> Result<Vec<Option<String>>> {
@@ -1316,7 +1220,7 @@ mod tests {
         tokio::task::yield_now().await;
         tokio::time::advance(TEST_TIMEOUT).await;
 
-        let err = timeout_future.await.expect_err("operation should time out");
+        let err = timeout_future.await.failed("operation should time out");
         assert!(matches!(
             err,
             Error::Timeout(ref msg) if msg == "L2 cache timeout: get from L2 cache"
@@ -1335,8 +1239,43 @@ mod tests {
 
         let err = timeout_future
             .await
-            .expect_err("retryable redis operation should time out");
+            .failed("retryable redis operation should time out");
         assert!(matches!(err, L2RedisAttemptError::Timeout));
+    }
+
+    #[test]
+    fn json_with_inferred_updated_at_ms_adds_epoch_millis() {
+        let json = r#"{"updated_at":"2024-01-01T00:00:00Z","name":"alice"}"#;
+        let value: serde_json::Value = serde_json::from_str(
+            &json_with_inferred_updated_at_ms(json).checked("operation should succeed"),
+        )
+        .checked("operation should succeed");
+
+        assert_eq!(value["updated_at_ms"], 1_704_067_200_000_i64);
+        assert_eq!(value["name"], "alice");
+    }
+
+    #[test]
+    fn json_with_inferred_updated_at_ms_preserves_existing_epoch_millis() {
+        let json = r#"{"updated_at":"2024-01-01T00:00:00Z","updated_at_ms":123}"#;
+        let value: serde_json::Value = serde_json::from_str(
+            &json_with_inferred_updated_at_ms(json).checked("operation should succeed"),
+        )
+        .checked("operation should succeed");
+
+        assert_eq!(value["updated_at_ms"], 123);
+    }
+
+    #[test]
+    fn json_with_inferred_updated_at_ms_rejects_corrupt_json() {
+        let err = json_with_inferred_updated_at_ms("{bad json")
+            .failed("corrupt cache JSON should be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("Failed to parse L2 cache JSON payload"),
+            "unexpected error: {err}"
+        );
     }
 
     /// Test that get() times out when operation takes too long
@@ -1454,14 +1393,14 @@ mod tests {
         // All these should complete quickly
         let get_result = tokio::time::timeout(TEST_TIMEOUT, backend.get("key")).await;
         assert!(get_result.is_ok());
-        assert!(get_result.unwrap().is_ok());
+        assert!(get_result.checked("operation should succeed").is_ok());
 
         let set_result = tokio::time::timeout(TEST_TIMEOUT, backend.set("key", "{}", 60)).await;
         assert!(set_result.is_ok());
-        assert!(set_result.unwrap().is_ok());
+        assert!(set_result.checked("operation should succeed").is_ok());
 
         let delete_result = tokio::time::timeout(TEST_TIMEOUT, backend.delete("key")).await;
         assert!(delete_result.is_ok());
-        assert!(delete_result.unwrap().is_ok());
+        assert!(delete_result.checked("operation should succeed").is_ok());
     }
 }

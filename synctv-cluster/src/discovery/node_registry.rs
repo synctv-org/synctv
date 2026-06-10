@@ -2019,14 +2019,23 @@ mod tests {
     use super::*;
     use chrono::Duration;
 
+    fn make_registry(node_id: &str) -> Result<NodeRegistry> {
+        let client = redis::Client::open("redis://127.0.0.1:1")
+            .map_err(|error| crate::Error::Redis(error.to_string()))?;
+        NodeRegistry::new(
+            synctv_core::coordination_runtime_from_client(client),
+            node_id.to_string(),
+            30,
+            "synctv:",
+        )
+    }
+
     #[test]
     fn test_node_info_stale() {
         let mut node = NodeInfo::new("test".to_string(), "localhost:8080".to_string());
 
-        // Fresh node should not be stale
         assert!(!node.is_stale(30));
 
-        // Simulate old heartbeat
         node.last_heartbeat = Utc::now() - Duration::seconds(60);
         assert!(node.is_stale(30));
     }
@@ -2081,63 +2090,48 @@ mod tests {
     }
 
     #[test]
-    fn test_node_registry_creation_and_fencing_token() {
-        // redis::Client::open succeeds even without a running Redis server
-        let registry = NodeRegistry::new(
-            synctv_core::coordination_runtime_from_client(
-                redis::Client::open("redis://127.0.0.1:1").unwrap(),
-            ),
-            "test_node".to_string(),
-            30,
-            "synctv:",
-        )
-        .unwrap();
+    fn test_node_registry_creation_and_fencing_token() -> Result<()> {
+        let registry = make_registry("test_node")?;
 
-        // Get fencing token
         let token = registry.current_fencing_token();
         assert_eq!(token.node_id, "test_node");
         assert_eq!(token.epoch, 1);
+        Ok(())
     }
 
     #[test]
-    fn test_fencing_token_serialization() {
+    fn test_fencing_token_serialization() -> Result<()> {
         let token = FencingToken::new("node1".to_string(), 42);
 
-        // Serialize to JSON
-        let json = serde_json::to_string(&token).unwrap();
+        let json = serde_json::to_string(&token)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
         assert!(json.contains("node1"));
         assert!(json.contains("42"));
 
-        // Deserialize back
-        let deserialized: FencingToken = serde_json::from_str(&json).unwrap();
+        let deserialized: FencingToken =
+            serde_json::from_str(&json).map_err(|error| Error::Serialization(error.to_string()))?;
         assert_eq!(deserialized.node_id, "node1");
         assert_eq!(deserialized.epoch, 42);
+        Ok(())
     }
 
     #[test]
-    fn test_node_info_serialization_with_epoch() {
+    fn test_node_info_serialization_with_epoch() -> Result<()> {
         let node = NodeInfo::new("test".to_string(), "localhost:8080".to_string()).with_epoch(7);
 
-        // Serialize to JSON
-        let json = serde_json::to_string(&node).unwrap();
+        let json = serde_json::to_string(&node)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
         assert!(json.contains("\"epoch\":7"));
 
-        // Deserialize back
-        let deserialized: NodeInfo = serde_json::from_str(&json).unwrap();
+        let deserialized: NodeInfo =
+            serde_json::from_str(&json).map_err(|error| Error::Serialization(error.to_string()))?;
         assert_eq!(deserialized.epoch, 7);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_merge_dns_peers_inserts_new() {
-        let registry = NodeRegistry::new(
-            synctv_core::coordination_runtime_from_client(
-                redis::Client::open("redis://127.0.0.1:1").unwrap(),
-            ),
-            "self".to_string(),
-            30,
-            "synctv:",
-        )
-        .unwrap();
+    async fn test_merge_dns_peers_inserts_new() -> Result<()> {
+        let registry = make_registry("self")?;
 
         let peer = NodeInfo::new("dns-peer-1".to_string(), "10.0.0.2:8080".to_string());
 
@@ -2146,41 +2140,35 @@ mod tests {
         let nodes = registry.local_nodes.read().await;
         assert!(nodes.contains_key("dns-peer-1"));
         assert_eq!(nodes["dns-peer-1"].api_address, "10.0.0.2:8080");
+        Ok(())
     }
 
     #[test]
-    fn test_redis_operation_timeout_uses_runtime_budget() {
+    fn test_redis_operation_timeout_uses_runtime_budget() -> Result<()> {
+        let client = redis::Client::open("redis://127.0.0.1:1")
+            .map_err(|error| crate::Error::Redis(error.to_string()))?;
         let registry = NodeRegistry::new(
             synctv_core::coordination_runtime_from_client_with_config_and_operation_timeout(
-                redis::Client::open("redis://127.0.0.1:1").unwrap(),
+                client,
                 redis::aio::ConnectionManagerConfig::new(),
                 std::time::Duration::from_secs(17),
             ),
             "self".to_string(),
             30,
             "synctv:",
-        )
-        .unwrap();
+        )?;
 
         assert_eq!(
             registry.redis_operation_timeout(),
             std::time::Duration::from_secs(17)
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_merge_dns_peers_does_not_overwrite_existing() {
-        let registry = NodeRegistry::new(
-            synctv_core::coordination_runtime_from_client(
-                redis::Client::open("redis://127.0.0.1:1").unwrap(),
-            ),
-            "self".to_string(),
-            30,
-            "synctv:",
-        )
-        .unwrap();
+    async fn test_merge_dns_peers_does_not_overwrite_existing() -> Result<()> {
+        let registry = make_registry("self")?;
 
-        // Pre-populate local cache directly (simulating a prior registration)
         {
             let mut nodes = registry.local_nodes.write().await;
             nodes.insert(
@@ -2189,20 +2177,19 @@ mod tests {
             );
         }
 
-        // Try to merge a DNS peer with the same node_id ("self")
         let dns_peer = NodeInfo::new("self".to_string(), "10.0.0.99:8080".to_string());
 
         registry.merge_dns_peers(vec![dns_peer]).await;
 
-        // Original registration should be preserved (not overwritten)
         let nodes = registry.local_nodes.read().await;
         assert_eq!(nodes["self"].api_address, "10.0.0.1:8080");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_merge_verified_discovery_nodes_includes_k8s_dns_peers_missing_from_redis() {
-        let registry = NodeRegistry::new_local_only("self".to_string(), 30, "synctv:")
-            .expect("local-only registry");
+    async fn test_merge_verified_discovery_nodes_includes_k8s_dns_peers_missing_from_redis(
+    ) -> Result<()> {
+        let registry = NodeRegistry::new_local_only("self".to_string(), 30, "synctv:")?;
 
         let redis_nodes = vec![NodeInfo::new(
             "redis-peer-1".to_string(),
@@ -2232,19 +2219,12 @@ mod tests {
             nodes.iter().all(|node| node.node_id != "other-discovery"),
             "only verified k8s DNS peers should supplement the Redis-backed node view"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_get_routable_nodes_excludes_k8s_dns_only_candidates() {
-        let registry = NodeRegistry::new(
-            synctv_core::coordination_runtime_from_client(
-                redis::Client::open("redis://127.0.0.1:1").unwrap(),
-            ),
-            "self".to_string(),
-            30,
-            "synctv:",
-        )
-        .expect("clustered registry");
+    async fn test_get_routable_nodes_excludes_k8s_dns_only_candidates() -> Result<()> {
+        let registry = make_registry("self")?;
 
         let redis_peer = NodeInfo::new("redis-peer-1".to_string(), "10.0.0.10:8080".to_string());
         let mut dns_peer = NodeInfo::new("dns-peer-1".to_string(), "10.0.0.2:8080".to_string());
@@ -2255,10 +2235,7 @@ mod tests {
             .insert((), vec![redis_peer.clone(), dns_peer])
             .await;
 
-        let (nodes, mode) = registry
-            .get_routable_nodes()
-            .await
-            .expect("routable nodes should be returned from cached fresh view");
+        let (nodes, mode) = registry.get_routable_nodes().await?;
 
         assert_eq!(mode, NodeViewMode::Fresh);
         assert_eq!(
@@ -2267,6 +2244,7 @@ mod tests {
             "transient DNS-only peers must not be treated as routable members"
         );
         assert_eq!(nodes[0].node_id, redis_peer.node_id);
+        Ok(())
     }
 
     #[test]
@@ -2279,12 +2257,7 @@ mod tests {
 
         assert!(matches!(ok, HeartbeatResult::Ok));
         assert!(matches!(need_rereg, HeartbeatResult::NeedReregistration));
-        match epoch_mismatch {
-            HeartbeatResult::EpochMismatch(epoch) => assert_eq!(epoch, 42),
-            HeartbeatResult::Ok
-            | HeartbeatResult::NeedReregistration
-            | HeartbeatResult::EmptyAddress => panic!("wrong variant"),
-        }
+        assert!(matches!(epoch_mismatch, HeartbeatResult::EpochMismatch(42)));
         assert!(matches!(empty_addr, HeartbeatResult::EmptyAddress));
     }
 
@@ -2298,20 +2271,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_local_cache_empty_address_scenario() {
-        // Test that when local cache has empty addresses, we can detect it
-        let registry = NodeRegistry::new(
-            synctv_core::coordination_runtime_from_client(
-                redis::Client::open("redis://127.0.0.1:1").unwrap(),
-            ),
-            "test_node".to_string(),
-            30,
-            "synctv:",
-        )
-        .unwrap();
+    async fn test_local_cache_empty_address_scenario() -> Result<()> {
+        let registry = make_registry("test_node")?;
 
-        // Simulate a scenario where local cache has empty addresses
-        // (e.g., node was registered with empty addresses due to a bug)
         {
             let mut nodes = registry.local_nodes.write().await;
             nodes.insert(
@@ -2320,57 +2282,50 @@ mod tests {
             );
         }
 
-        // Verify we can read back and detect the empty addresses
         {
             let nodes = registry.local_nodes.read().await;
-            let info = nodes.get("test_node").unwrap();
+            let info = nodes
+                .get("test_node")
+                .ok_or_else(|| Error::NotFound("test_node".to_string()))?;
             assert!(info.api_address.is_empty());
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_local_cache_missing_scenario() {
-        // Test that when local cache is missing, we can detect it
-        let registry = NodeRegistry::new(
-            synctv_core::coordination_runtime_from_client(
-                redis::Client::open("redis://127.0.0.1:1").unwrap(),
-            ),
-            "test_node".to_string(),
-            30,
-            "synctv:",
-        )
-        .unwrap();
+    async fn test_local_cache_missing_scenario() -> Result<()> {
+        let registry = make_registry("test_node")?;
 
-        // Don't insert anything into local cache, simulating a missing entry
         {
             let nodes = registry.local_nodes.read().await;
             assert!(!nodes.contains_key("test_node"));
         }
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker (testcontainers)"]
-    async fn test_unregister_remote_without_expected_epoch_does_not_remove_newer_registration() {
+    async fn test_unregister_remote_without_expected_epoch_does_not_remove_newer_registration(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let (redis_container, redis_url) =
             synctv_core_testing::start_redis_url_with_label("node-registry-unregister-remote")
                 .await;
-        let redis_client = redis::Client::open(redis_url.as_str()).unwrap();
+        let redis_client = redis::Client::open(redis_url.as_str())?;
 
         let registry = NodeRegistry::new(
             synctv_core::coordination_runtime_from_client(redis_client.clone()),
             "self-node".to_string(),
             30,
             "cl-unregister:",
-        )
-        .unwrap();
+        )?;
 
         let original =
             NodeInfo::new("peer-node".to_string(), "10.0.0.1:8080".to_string()).with_epoch(3);
-        registry.register_remote(original.clone()).await.unwrap();
+        registry.register_remote(original.clone()).await?;
 
         let newer =
             NodeInfo::new("peer-node".to_string(), "10.0.0.2:8080".to_string()).with_epoch(9);
-        registry.register_remote(newer.clone()).await.unwrap();
+        registry.register_remote(newer.clone()).await?;
 
         let err = registry
             .unregister_remote("peer-node", None)
@@ -2381,14 +2336,15 @@ mod tests {
             "unexpected error: {err}"
         );
 
-        let nodes = registry.get_all_nodes_uncached().await.unwrap();
+        let nodes = registry.get_all_nodes_uncached().await?;
         let persisted = nodes
             .into_iter()
             .find(|node| node.node_id == "peer-node")
-            .expect("newer remote registration must remain present");
+            .ok_or("newer remote registration must remain present")?;
         assert_eq!(persisted.epoch, 9);
         assert_eq!(persisted.api_address, "10.0.0.2:8080");
 
         drop(redis_container);
+        Ok(())
     }
 }

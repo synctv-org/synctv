@@ -661,8 +661,10 @@ pub struct UrlInfoEntry {
 mod tests {
     use super::*;
 
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
     #[test]
-    fn dash_video_response_accepts_missing_start_with_sap() {
+    fn dash_video_response_accepts_missing_start_with_sap() -> TestResult {
         let response: DashVideoResp = serde_json::from_value(serde_json::json!({
             "code": 0,
             "message": "0",
@@ -698,10 +700,10 @@ mod tests {
                     }]
                 }
             }
-        }))
-        .expect("Bilibili DASH responses may omit startWithSap for PGC playback");
+        }))?;
 
         assert_eq!(response.data.dash.video[0].start_with_sap, 0);
         assert_eq!(response.data.dash.audio[0].start_with_sap, 0);
+        Ok(())
     }
 }

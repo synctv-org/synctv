@@ -6,7 +6,13 @@
       {
         "ordinal": 0,
         "name": "username",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
       }
     ],
     "parameters": {

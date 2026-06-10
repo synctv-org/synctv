@@ -19,8 +19,8 @@ pub enum BytesReadErrorValue {
         additional: usize,
         max: usize,
     },
-    #[error("read timeout: {0}")]
-    TimeoutError(#[source] tokio::time::error::Elapsed),
+    #[error("read timeout")]
+    Timeout,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,9 +52,9 @@ impl From<BytesIOError> for BytesReadError {
 }
 
 impl From<tokio::time::error::Elapsed> for BytesReadError {
-    fn from(error: tokio::time::error::Elapsed) -> Self {
+    fn from(_error: tokio::time::error::Elapsed) -> Self {
         Self {
-            value: BytesReadErrorValue::TimeoutError(error),
+            value: BytesReadErrorValue::Timeout,
         }
     }
 }

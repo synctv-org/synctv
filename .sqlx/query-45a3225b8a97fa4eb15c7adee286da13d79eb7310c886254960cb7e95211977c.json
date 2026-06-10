@@ -6,22 +6,46 @@
       {
         "ordinal": 0,
         "name": "opaque_record!",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "opaque_record"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "opaque_credential_identifier!",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "opaque_credential_identifier"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "opaque_ciphersuite!",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "opaque_ciphersuite"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "opaque_server_setup_version!",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "opaque_server_setup_version"
+          }
+        }
       }
     ],
     "parameters": {

@@ -63,7 +63,7 @@ impl RealtimePrincipal {
 
     pub(super) fn public_actor_id(
         &self,
-        public_id_codec: &crate::PublicIdCodec,
+        public_id_codec: &synctv_core::PublicIdCodec,
     ) -> Result<String, String> {
         match self {
             Self::User { user_id, .. } => public_id_codec

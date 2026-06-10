@@ -8,7 +8,6 @@ use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 use crate::realtime_fanout::{
     publish_best_effort, PreparedOutboxFanout, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
 };
-use crate::runtime::RealtimeDeliveryRequirement;
 
 type MediaBatchEventsBuilder = Arc<dyn Fn(&[Media]) -> Vec<RealtimeEvent> + Send + Sync>;
 
@@ -41,8 +40,7 @@ pub struct PreparedMediaOutboxFanout {
 impl PreparedMediaOutboxFanout {
     #[must_use]
     pub fn outbox_factory(&self) -> RealtimeOutboxMediaEventFactory {
-        let factory = self.prepared.outbox_factory();
-        Arc::new(move |media| factory(media))
+        self.prepared.outbox_factory()
     }
 
     pub fn publish_after_outbox_commit(&self) {
@@ -294,12 +292,8 @@ impl MediaFanoutService for DefaultMediaFanoutService {
     ) -> synctv_core::Result<PreparedMediaRemovedFanout> {
         let event = media_removed_event(room_id, user_id, username, media_id);
         Ok(PreparedMediaRemovedFanout {
-            plan: PreparedRealtimeFanoutPlan::new(
-                self.realtime_fanout.clone(),
-                event,
-                RealtimeDeliveryRequirement::DistributedIfAvailable,
-            )
-            .map_err(synctv_core::Error::Internal)?,
+            plan: PreparedRealtimeFanoutPlan::new(self.realtime_fanout.clone(), event)
+                .map_err(synctv_core::Error::Internal)?,
         })
     }
 
@@ -498,6 +492,34 @@ mod tests {
     use synctv_core::models::{Media, MediaId, RoomId, UserId};
     use synctv_realtime::sync::RealtimeEvent;
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn core_ok<T>(result: synctv_core::Result<T>) -> TestResult<T> {
+        result.map_err(|error| test_error(error.to_string()))
+    }
+
+    async fn recv_request(
+        rx: &mut tokio::sync::mpsc::Receiver<synctv_realtime::sync::PublishRequest>,
+    ) -> TestResult<synctv_realtime::sync::PublishRequest> {
+        rx.recv()
+            .await
+            .ok_or_else(|| test_error("publish request should be queued"))
+    }
+
+    fn recorded_room_events(
+        service: &RecordingRealtimeEventService,
+    ) -> TestResult<Vec<(String, RealtimeEvent)>> {
+        service
+            .room_events
+            .lock()
+            .map(|events| events.clone())
+            .map_err(|_| test_error("recorded room events mutex was poisoned"))
+    }
+
     fn room_id() -> RoomId {
         RoomId::expect_positive(106_001)
     }
@@ -530,12 +552,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_media_fanout_publishes_media_added_event() {
+    async fn test_media_fanout_publishes_media_added_event() -> TestResult {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let service = default_media_fanout_service(channel_realtime_fanout_service(tx));
         service.publish_added(&room_id(), &user_id(), "tester", &media_id(), "demo");
 
-        let request = rx.recv().await.expect("publish request should be queued");
+        let request = recv_request(&mut rx).await?;
         match request.event {
             RealtimeEvent::MediaAdded {
                 room_id,
@@ -551,12 +573,14 @@ mod tests {
                 assert_eq!(media_id, MediaId::expect_positive(106_003));
                 assert_eq!(media_title, "demo");
             }
-            other => panic!("expected MediaAdded, got {other:?}"),
+            other => return Err(test_error(format!("expected MediaAdded, got {other:?}"))),
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_cluster_media_fanout_does_not_broadcast_locally_and_publishes_once() {
+    async fn test_cluster_media_fanout_does_not_broadcast_locally_and_publishes_once() -> TestResult
+    {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service = default_media_fanout_service(channel_realtime_fanout_service(tx));
@@ -565,16 +589,17 @@ mod tests {
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(event_service.room_calls.load(Ordering::SeqCst), 0);
 
-        let request = rx.recv().await.expect("publish request should be queued");
+        let request = recv_request(&mut rx).await?;
         assert!(matches!(request.event, RealtimeEvent::MediaAdded { .. }));
         assert!(
             rx.try_recv().is_err(),
             "cluster media add should publish exactly one Redis event"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_standalone_media_fanout_broadcasts_locally() {
+    async fn test_standalone_media_fanout_broadcasts_locally() -> TestResult {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service =
             default_media_fanout_service(local_realtime_fanout_service(event_service.clone()));
@@ -586,15 +611,16 @@ mod tests {
             }
         })
         .await
-        .expect("standalone media fanout should broadcast locally");
+        .map_err(|_| test_error("standalone media fanout should broadcast locally"))?;
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(event_service.room_calls.load(Ordering::SeqCst), 1);
         assert_eq!(event_service.room_event_count(), 1);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_cluster_media_fanout_publishes_playlist_reordered_event() {
+    async fn test_cluster_media_fanout_publishes_playlist_reordered_event() -> TestResult {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service = default_media_fanout_service(channel_realtime_fanout_service(tx));
@@ -603,34 +629,34 @@ mod tests {
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(event_service.room_calls.load(Ordering::SeqCst), 0);
 
-        let request = rx.recv().await.expect("publish request should be queued");
+        let request = recv_request(&mut rx).await?;
         assert!(matches!(
             request.event,
             RealtimeEvent::PlaylistReordered { .. }
         ));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_prepared_media_added_fanout_publishes_committed_event() {
+    async fn test_prepared_media_added_fanout_publishes_committed_event() -> TestResult {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let service = default_media_fanout_service(channel_realtime_fanout_service(tx));
         let prepared =
             service.prepare_added_outbox_fanout(room_id(), user_id(), "tester".to_string());
         let factory = prepared.outbox_factory();
 
-        let event = factory(&media()).expect("fanout should prepare a durable resource event");
+        let event = core_ok(factory(&media()))?;
         assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
 
-        let request = rx
-            .recv()
-            .await
-            .expect("committed media add event should be published");
+        let request = recv_request(&mut rx).await?;
         assert!(matches!(request.event, RealtimeEvent::MediaAdded { .. }));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_standalone_prepared_media_added_fanout_broadcasts_committed_event() {
+    async fn test_standalone_prepared_media_added_fanout_broadcasts_committed_event() -> TestResult
+    {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service =
             default_media_fanout_service(local_realtime_fanout_service(event_service.clone()));
@@ -638,17 +664,14 @@ mod tests {
             service.prepare_added_outbox_fanout(room_id(), user_id(), "tester".to_string());
         let factory = prepared.outbox_factory();
 
-        let event =
-            factory(&media()).expect("local fanout should prepare a durable resource event");
+        let event = core_ok(factory(&media()))?;
         assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(event_service.room_calls.load(Ordering::SeqCst), 1);
-        let events = event_service
-            .room_events
-            .lock()
-            .expect("recorded room events mutex should not be poisoned");
+        let events = recorded_room_events(&event_service)?;
         assert!(matches!(events[0].1, RealtimeEvent::MediaAdded { .. }));
+        Ok(())
     }
 }

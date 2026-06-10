@@ -6,17 +6,35 @@
       {
         "ordinal": 0,
         "name": "operation_kind",
-        "type_info": "Int2"
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "chat_message_operation_idempotency",
+            "name": "operation_kind"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "request_hash",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_operation_idempotency",
+            "name": "request_hash"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "event_id?: String",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_operation_idempotency",
+            "name": "event_id"
+          }
+        }
       }
     ],
     "parameters": {

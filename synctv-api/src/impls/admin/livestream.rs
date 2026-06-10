@@ -20,10 +20,12 @@ impl AdminApiImpl {
             .as_ref()
             .ok_or_else(live_streaming_unavailable_error)?;
 
-        let registry = infrastructure.registry();
-        let active_publishers = registry.list_active_publishers().await.map_err(|error| {
-            ApiError::Internal(format!("Failed to list active streams: {error}"))
-        })?;
+        let active_publishers = infrastructure
+            .list_active_publishers()
+            .await
+            .map_err(|error| {
+                ApiError::Internal(format!("Failed to list active streams: {error}"))
+            })?;
         let room_id = normalize_non_empty_filter(&req.room_id)
             .map(|room_id| {
                 self.public_id_codec
@@ -165,12 +167,9 @@ impl AdminApiImpl {
         );
 
         if !infrastructure
-            .registry()
             .is_stream_active(&room_id_key, &media_id_key)
             .await
-            .map_err(|error| {
-                ApiError::Internal(format!("Failed to check active stream: {error}"))
-            })?
+            .map_err(|error| ApiError::Internal(error.to_string()))?
         {
             return Err(ApiError::NotFound("Active stream not found".to_string()));
         }

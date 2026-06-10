@@ -270,38 +270,57 @@ mod tests {
     use super::*;
     use crate::config::PublicIdsSqidsConfig;
 
+    fn ok<T, E: fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn default_codec_uses_prefixed_decimal_ids() {
         let codec = PublicIdCodec::default_for_tests();
 
         assert_eq!(
-            codec.encode_user_id(UserId::expect_positive(1)).unwrap(),
+            ok(
+                codec.encode_user_id(UserId::expect_positive(1)),
+                "user ID should encode",
+            ),
             "usr_1"
         );
         assert_eq!(
-            codec.encode_room_id(RoomId::expect_positive(1)).unwrap(),
+            ok(
+                codec.encode_room_id(RoomId::expect_positive(1)),
+                "room ID should encode",
+            ),
             "room_1"
         );
         assert_eq!(
-            codec.encode_media_id(MediaId::expect_positive(1)).unwrap(),
+            ok(
+                codec.encode_media_id(MediaId::expect_positive(1)),
+                "media ID should encode",
+            ),
             "med_1"
         );
         assert_eq!(
-            codec
-                .encode_playlist_id(PlaylistId::expect_positive(1))
-                .unwrap(),
+            ok(
+                codec.encode_playlist_id(PlaylistId::expect_positive(1)),
+                "playlist ID should encode",
+            ),
             "pl_1"
         );
         assert_eq!(
-            codec
-                .encode_review_request_id(ReviewRequestId::expect_positive(1))
-                .unwrap(),
+            ok(
+                codec.encode_review_request_id(ReviewRequestId::expect_positive(1)),
+                "review request ID should encode",
+            ),
             "rev_1"
         );
         assert_eq!(
-            codec
-                .encode_ban_record_id(BanRecordId::expect_positive(1))
-                .unwrap(),
+            ok(
+                codec.encode_ban_record_id(BanRecordId::expect_positive(1)),
+                "ban record ID should encode",
+            ),
             "ban_1"
         );
     }
@@ -311,7 +330,7 @@ mod tests {
         let codec = PublicIdCodec::default_for_tests();
 
         assert_eq!(
-            codec.decode_user_id("usr_1").unwrap(),
+            ok(codec.decode_user_id("usr_1"), "user ID should decode"),
             UserId::expect_positive(1)
         );
         assert!(codec.decode_room_id("usr_1").is_err());
@@ -334,14 +353,18 @@ mod tests {
         let codec = PublicIdCodec::from_config(&PublicIdsConfig {
             sqids: Some(PublicIdsSqidsConfig::default()),
         })
-        .unwrap();
+        .map_err(|error| error.clone());
+        let codec = ok(codec, "sqids codec should build");
 
-        let user = codec.encode_user_id(UserId::expect_positive(1)).unwrap();
+        let user = ok(
+            codec.encode_user_id(UserId::expect_positive(1)),
+            "user ID should encode",
+        );
 
         assert!(user.starts_with("usr_"));
         assert_ne!(user, "usr_1");
         assert_eq!(
-            codec.decode_user_id(&user).unwrap(),
+            ok(codec.decode_user_id(&user), "user ID should decode"),
             UserId::expect_positive(1)
         );
         assert!(codec.decode_room_id(&user).is_err());
@@ -350,18 +373,23 @@ mod tests {
     #[test]
     fn generic_public_ids_are_domain_separated_by_prefix() {
         let codec = PublicIdCodec::default_for_tests();
-        let review = codec
-            .encode_review_request_id(ReviewRequestId::expect_positive(1))
-            .unwrap();
-        let ban = codec
-            .encode_ban_record_id(BanRecordId::expect_positive(1))
-            .unwrap();
+        let review = ok(
+            codec.encode_review_request_id(ReviewRequestId::expect_positive(1)),
+            "review request ID should encode",
+        );
+        let ban = ok(
+            codec.encode_ban_record_id(BanRecordId::expect_positive(1)),
+            "ban record ID should encode",
+        );
 
         assert_eq!(review, "rev_1");
         assert_eq!(ban, "ban_1");
         assert_ne!(review, ban);
         assert_eq!(
-            codec.decode_review_request_id(&review).unwrap(),
+            ok(
+                codec.decode_review_request_id(&review),
+                "review request ID should decode",
+            ),
             ReviewRequestId::expect_positive(1)
         );
         assert!(codec.decode::<BanRecordId>(&review).is_err());

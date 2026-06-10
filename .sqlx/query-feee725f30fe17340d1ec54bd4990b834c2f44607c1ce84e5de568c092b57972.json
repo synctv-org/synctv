@@ -6,92 +6,195 @@
       {
         "ordinal": 0,
         "name": "id: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "username",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "username"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "email!",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": "Expression"
       },
       {
         "ordinal": 3,
         "name": "signup_method: SignupMethod",
-        "type_info": "Int2"
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "signup_method"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "status: ReviewStatus",
-        "type_info": "Int2"
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "status"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "requested_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "requested_at"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "reviewed_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "reviewed_at"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "reviewed_by: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "reviewed_by"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "rejection_reason",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "rejection_reason"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "oauth2_provider_type",
-        "type_info": "Int2"
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_provider_type"
+          }
+        }
       },
       {
         "ordinal": 10,
         "name": "oauth2_provider_instance_name",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_provider_instance_name"
+          }
+        }
       },
       {
         "ordinal": 11,
         "name": "oauth2_provider_issuer",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_provider_issuer"
+          }
+        }
       },
       {
         "ordinal": 12,
         "name": "oauth2_provider_user_id",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_provider_user_id"
+          }
+        }
       },
       {
         "ordinal": 13,
         "name": "oauth2_provider_username",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_provider_username"
+          }
+        }
       },
       {
         "ordinal": 14,
         "name": "oauth2_avatar_url",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_avatar_url"
+          }
+        }
       },
       {
         "ordinal": 15,
         "name": "oauth2_email_trusted",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_email_trusted"
+          }
+        }
       },
       {
         "ordinal": 16,
         "name": "webauthn_credential_id",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "webauthn_credential_id"
+          }
+        }
       },
       {
         "ordinal": 17,
         "name": "webauthn_credential_name",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "webauthn_credential_name"
+          }
+        }
       }
     ],
     "parameters": {

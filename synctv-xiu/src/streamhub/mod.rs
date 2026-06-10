@@ -11,6 +11,8 @@ pub use reliability::{
     send_event_with_backpressure_timeout, spawn_event_delivery_with_backpressure_timeout,
     subscribe_with_rollback_on_timeout, SubscribeWithRollbackError,
 };
+#[cfg(test)]
+use transceiver::ReceiveEventLoopContext;
 use transceiver::StreamDataTransceiver;
 use {
     channels::{build_publisher_data_channel, build_subscriber_data_channel},
@@ -20,11 +22,25 @@ use {
         TStreamHandler, TransceiverEvent, TransceiverEventSender,
     },
     errors::{StreamHubError, StreamHubErrorValue},
+    std::any::Any,
     std::collections::HashMap,
     std::sync::Arc,
     stream::StreamIdentifier,
     tokio::sync::{broadcast, mpsc},
 };
+
+fn panic_payload_to_string(panic_payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = panic_payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic_payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        format!(
+            "non-string panic payload of type {}",
+            std::any::type_name_of_val(panic_payload)
+        )
+    }
+}
 
 pub struct StreamsHub {
     //stream identifier to transceiver event sender
@@ -69,16 +85,7 @@ impl StreamsHub {
                 Ok(())
             }
             Err(panic_payload) => {
-                let msg = panic_payload.downcast_ref::<&str>().map_or_else(
-                    || {
-                        if let Some(s) = panic_payload.downcast_ref::<String>() {
-                            s.clone()
-                        } else {
-                            "unknown panic".to_string()
-                        }
-                    },
-                    |s| (*s).to_string(),
-                );
+                let msg = panic_payload_to_string(panic_payload.as_ref());
                 tracing::error!(
                     "StreamHub event_loop panicked: {}. \
                      The streaming infrastructure is no longer functional.",
@@ -186,21 +193,20 @@ impl StreamsHub {
         }
     }
 
-    //player subscribe a stream
     pub async fn subscribe(
         &mut self,
-        identifer: &StreamIdentifier,
+        identifier: &StreamIdentifier,
         sub_info: SubscriberInfo,
         sender: DataSender,
     ) -> Result<StatisticDataSender, StreamHubError> {
-        if let Some(event_sender) = self.streams.get_mut(identifer) {
+        if let Some(event_sender) = self.streams.get_mut(identifier) {
             let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
             let event = TransceiverEvent::Subscribe {
                 sender,
                 info: sub_info,
                 result_sender,
             };
-            tracing::info!("subscribe:  stream identifier: {identifer}");
+            tracing::info!("subscribe stream: {identifier}");
             event_sender.send(event).map_err(|_| StreamHubError {
                 value: StreamHubErrorValue::SendError,
             })?;
@@ -215,17 +221,17 @@ impl StreamsHub {
 
     pub fn unsubscribe(
         &mut self,
-        identifer: &StreamIdentifier,
+        identifier: &StreamIdentifier,
         sub_info: SubscriberInfo,
     ) -> Result<(), StreamHubError> {
-        if let Some(producer) = self.streams.get_mut(identifer) {
-            tracing::info!("unsubscribe....:{identifer}");
+        if let Some(producer) = self.streams.get_mut(identifier) {
+            tracing::info!("unsubscribe stream: {identifier}");
             let event = TransceiverEvent::UnSubscribe { info: sub_info };
             producer.send(event).map_err(|_| StreamHubError {
                 value: StreamHubErrorValue::SendError,
             })?;
         } else {
-            tracing::debug!("unsubscribe ignored for missing stream: {identifer}");
+            tracing::debug!("unsubscribe ignored for missing stream: {identifier}");
             return Err(StreamHubError {
                 value: StreamHubErrorValue::NoAppName,
             });
@@ -242,7 +248,7 @@ impl StreamsHub {
         receiver: DataReceiver,
         handler: Arc<dyn TStreamHandler>,
     ) -> Result<StatisticDataSender, StreamHubError> {
-        // Use entry API for atomic check-and-insert
+        // Reserve the stream slot before spawning the transceiver.
         let entry = match self.streams.entry(identifier.clone()) {
             std::collections::hash_map::Entry::Occupied(_) => {
                 return Err(StreamHubError {
@@ -276,12 +282,12 @@ impl StreamsHub {
 
                 let needs_cleanup = match result {
                     Ok(Ok(())) => {
-                        tracing::info!("transceiver run success, idetifier: {identifier_clone}");
+                        tracing::info!("transceiver run success, identifier: {identifier_clone}");
                         false
                     }
                     Ok(Err(err)) => {
                         tracing::error!(
-                            "transceiver run error, idetifier: {identifier_clone}, error: {err}",
+                            "transceiver run error, identifier: {identifier_clone}, error: {err}",
                         );
                         true
                     }
@@ -440,6 +446,32 @@ mod tests {
     }
 
     #[test]
+    fn test_panic_payload_to_string_handles_string_payloads() {
+        let str_payload: Box<dyn std::any::Any + Send> = Box::new("streamhub panic");
+        assert_eq!(
+            panic_payload_to_string(str_payload.as_ref()),
+            "streamhub panic"
+        );
+
+        let string_payload: Box<dyn std::any::Any + Send> = Box::new("owned panic".to_string());
+        assert_eq!(
+            panic_payload_to_string(string_payload.as_ref()),
+            "owned panic"
+        );
+    }
+
+    #[test]
+    fn test_panic_payload_to_string_handles_non_string_payloads() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(42_u8);
+        let message = panic_payload_to_string(payload.as_ref());
+
+        assert!(
+            message.contains("non-string panic payload"),
+            "unexpected panic payload message: {message}"
+        );
+    }
+
+    #[test]
     fn test_build_subscriber_data_channel_keeps_rtmp_pull_bounded() {
         let (sender, receiver) =
             build_subscriber_data_channel(&test_subscriber_with_type(SubscribeType::RtmpPull));
@@ -490,17 +522,17 @@ mod tests {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (stat_tx, _stat_rx) = mpsc::unbounded_channel();
 
-        let handle = StreamDataTransceiver::receive_event_loop(
-            Arc::new(NoopHandler),
-            exit_tx,
-            event_rx,
-            Arc::new(Mutex::new(HashMap::new())),
-            Arc::new(Mutex::new(HashMap::new())),
-            Arc::new(AtomicU64::new(0)),
-            Arc::new(AtomicU64::new(0)),
-            stat_tx,
-            Arc::new(Mutex::new(StatisticsStream::new(test_identifier()))),
-        );
+        let handle = StreamDataTransceiver::receive_event_loop(ReceiveEventLoopContext {
+            stream_handler: Arc::new(NoopHandler),
+            exit: exit_tx,
+            receiver: event_rx,
+            packet_senders: Arc::new(Mutex::new(HashMap::new())),
+            frame_senders: Arc::new(Mutex::new(HashMap::new())),
+            frame_generation: Arc::new(AtomicU64::new(0)),
+            packet_generation: Arc::new(AtomicU64::new(0)),
+            statistic_sender: stat_tx,
+            statistics_data: Arc::new(Mutex::new(StatisticsStream::new(test_identifier()))),
+        });
 
         drop(event_tx);
 
@@ -652,7 +684,37 @@ mod tests {
         .await
         .expect_err("closed channel should surface send error");
 
-        assert!(matches!(err.value, StreamHubErrorValue::SendError));
+        assert!(matches!(err.value, StreamHubErrorValue::EventChannelClosed));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_send_event_with_backpressure_timeout_errors_when_full_until_timeout() {
+        let (sender, _receiver) = mpsc::channel(1);
+        sender
+            .try_send(StreamHubEvent::UnPublish {
+                identifier: test_identifier(),
+            })
+            .expect("prefill event channel");
+
+        let send_task = tokio::spawn(async move {
+            send_event_with_backpressure_timeout(
+                &sender,
+                StreamHubEvent::UnSubscribe {
+                    identifier: test_identifier(),
+                    info: test_subscriber(),
+                },
+            )
+            .await
+        });
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+
+        let err = send_task
+            .await
+            .expect("send task should join")
+            .expect_err("full channel should time out");
+        assert!(matches!(err.value, StreamHubErrorValue::EventSendTimeout));
     }
 
     #[tokio::test]
@@ -692,7 +754,10 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         event_loop.abort();
-        let _ = event_loop.await;
+        let err = event_loop
+            .await
+            .expect_err("event loop task should be cancelled after abort");
+        assert!(err.is_cancelled(), "unexpected join error: {err}");
     }
 
     #[tokio::test]
@@ -753,7 +818,10 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         event_loop.abort();
-        let _ = event_loop.await;
+        let err = event_loop
+            .await
+            .expect_err("event loop task should be cancelled after abort");
+        assert!(err.is_cancelled(), "unexpected join error: {err}");
     }
 
     #[tokio::test]

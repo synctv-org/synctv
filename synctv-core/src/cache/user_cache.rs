@@ -250,6 +250,7 @@ impl std::fmt::Debug for UserCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
 
     fn create_test_user_id(id: i64) -> UserId {
         UserId::expect_positive(id)
@@ -282,16 +283,34 @@ mod tests {
         let user = create_test_user(user_id, "alice");
 
         // Cache miss
-        assert!(cache.get(&user_id).await.unwrap().is_none());
+        assert!(cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
 
         // Set and get
-        cache.set(&user_id, user.clone()).await.unwrap();
-        let retrieved = cache.get(&user_id).await.unwrap().unwrap();
+        cache
+            .set(&user_id, user.clone())
+            .await
+            .checked("operation should succeed");
+        let retrieved = cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(retrieved.username, "alice");
 
         // Invalidate
-        cache.invalidate(&user_id).await.unwrap();
-        assert!(cache.get(&user_id).await.unwrap().is_none());
+        cache
+            .invalidate(&user_id)
+            .await
+            .checked("operation should succeed");
+        assert!(cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[tokio::test]
@@ -327,14 +346,17 @@ mod tests {
         cache
             .set(&user1, create_test_user(user1, "alice"))
             .await
-            .unwrap();
+            .checked("operation should succeed");
         cache
             .set(&user3, create_test_user(user3, "charlie"))
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         // Batch lookup
-        let result = cache.get_batch(&[user1, user2, user3]).await.unwrap();
+        let result = cache
+            .get_batch(&[user1, user2, user3])
+            .await
+            .checked("operation should succeed");
 
         assert_eq!(result.len(), 2);
         assert_eq!(

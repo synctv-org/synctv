@@ -987,32 +987,34 @@ pub async fn logout(
 mod tests {
     use super::*;
 
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
     #[test]
-    fn test_passkey_http_response_serializes_proto_options_as_json_object() {
+    fn test_passkey_http_response_serializes_proto_options_as_json_object() -> TestResult {
         let response = StartPasskeyLoginResponse {
             session_id: "session".to_string(),
             options: br#"{"challenge":"abc","rpId":"app.example.com","allowCredentials":[]}"#
                 .to_vec(),
         };
 
-        let value = serde_json::to_value(response).expect("serialize passkey response");
+        let value = serde_json::to_value(response)?;
         assert_eq!(value["session_id"], "session");
         assert!(value["options"].is_object());
         assert_eq!(value["options"]["challenge"], "abc");
         assert_eq!(value["options"]["rpId"], "app.example.com");
+        Ok(())
     }
 
     #[test]
-    fn test_passkey_http_finish_request_deserializes_credential_json_object() {
+    fn test_passkey_http_finish_request_deserializes_credential_json_object() -> TestResult {
         let request: FinishPasskeyLoginRequest = serde_json::from_str(
             r#"{"session_id":"session","credential":{"id":"cred","type":"public-key"}}"#,
-        )
-        .expect("deserialize passkey credential object");
+        )?;
 
         assert_eq!(request.session_id, "session");
-        let credential: serde_json::Value =
-            serde_json::from_slice(&request.credential).expect("credential json");
+        let credential: serde_json::Value = serde_json::from_slice(&request.credential)?;
         assert_eq!(credential["id"], "cred");
         assert_eq!(credential["type"], "public-key");
+        Ok(())
     }
 }

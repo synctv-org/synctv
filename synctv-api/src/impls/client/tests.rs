@@ -1,5 +1,4 @@
 //! Tests for client API implementation
-#![allow(clippy::unwrap_used)]
 
 use super::convert::*;
 use crate::impls::ApiError;
@@ -11,8 +10,33 @@ use synctv_core::models::{
 };
 use synctv_core::provider::{ProviderStore, ProviderStoreResolver, StoreError, StoreLockGuard};
 
-fn test_public_id_codec() -> crate::PublicIdCodec {
-    crate::PublicIdCodec::plain()
+fn test_public_id_codec() -> synctv_core::PublicIdCodec {
+    synctv_core::PublicIdCodec::plain()
+}
+
+type TestResult<T = ()> = anyhow::Result<T>;
+
+fn test_error(message: impl Into<String>) -> anyhow::Error {
+    anyhow::anyhow!(message.into())
+}
+
+fn api_ok<T>(result: Result<T, ApiError>) -> TestResult<T> {
+    result.map_err(|error| test_error(format!("{error:?}")))
+}
+
+fn api_err<T>(result: Result<T, ApiError>) -> TestResult<ApiError> {
+    match result {
+        Ok(_) => Err(test_error("expected API error")),
+        Err(error) => Ok(error),
+    }
+}
+
+fn codec_ok<T>(result: Result<T, String>) -> TestResult<T> {
+    result.map_err(test_error)
+}
+
+fn unused_store_error() -> StoreError {
+    StoreError::Backend("constructor-only test store access".to_string())
 }
 
 fn guest_access(permissions: RoomPermissionSet) -> super::GuestRoomAccess {
@@ -106,12 +130,12 @@ fn test_room_actor_executor_rejects_malformed_authorization_header() {
     );
 }
 
-#[test]
-fn test_client_api_runtime_accepts_trait_object_redis_runtime() {
+#[tokio::test]
+async fn test_client_api_runtime_accepts_trait_object_redis_runtime() {
     let runtime = synctv_core_testing::failing_redis_runtime();
     let runtime_config = crate::impls::ClientApiRuntime {
         redis_runtime: Some(runtime.clone()),
-        ..crate::impls::ClientApiRuntime::test_disabled()
+        ..crate::test_support::client_api_runtime()
     };
 
     assert!(
@@ -131,7 +155,7 @@ fn test_client_api_config_accepts_trait_object_provider_store_resolver() {
     #[async_trait]
     impl ProviderStore for TestProviderStore {
         async fn get_raw(&self, _key: &str) -> Result<Option<Vec<u8>>, StoreError> {
-            panic!("store access should not be called in constructor-only test");
+            Err(unused_store_error())
         }
 
         async fn set_raw(
@@ -140,11 +164,11 @@ fn test_client_api_config_accepts_trait_object_provider_store_resolver() {
             _value: &[u8],
             _ttl: std::time::Duration,
         ) -> Result<(), StoreError> {
-            panic!("store access should not be called in constructor-only test");
+            Err(unused_store_error())
         }
 
         async fn delete(&self, _key: &str) -> Result<(), StoreError> {
-            panic!("store access should not be called in constructor-only test");
+            Err(unused_store_error())
         }
 
         async fn lock(
@@ -152,7 +176,7 @@ fn test_client_api_config_accepts_trait_object_provider_store_resolver() {
             _key: &str,
             _ttl: std::time::Duration,
         ) -> Result<StoreLockGuard, StoreError> {
-            panic!("store access should not be called in constructor-only test");
+            Err(unused_store_error())
         }
     }
 
@@ -269,9 +293,8 @@ fn test_room_list_backend_outage_maps_to_service_unavailable() {
 
 #[test]
 fn test_livestream_backend_error_service_unavailable_stays_service_unavailable() {
-    let stream_error = synctv_livestream::error::StreamError::RegistryError(
-        "redis temporarily unavailable".to_string(),
-    );
+    let stream_error =
+        synctv_livestream::StreamError::RegistryError("redis temporarily unavailable".to_string());
     let mapped = super::ClientApiImpl::map_livestream_backend_error(&stream_error);
 
     assert!(
@@ -282,7 +305,7 @@ fn test_livestream_backend_error_service_unavailable_stays_service_unavailable()
 
 #[test]
 fn test_livestream_backend_error_finds_nested_stream_error() {
-    let err = anyhow::Error::new(synctv_livestream::error::StreamError::ResourceExhausted(
+    let err = anyhow::Error::new(synctv_livestream::StreamError::ResourceExhausted(
         "max concurrent streams reached (limit: 100)".to_string(),
     ))
     .context("wrapped by anyhow");
@@ -296,81 +319,104 @@ fn test_livestream_backend_error_finds_nested_stream_error() {
 }
 
 #[test]
-fn test_proto_role_to_room_role_all_variants() {
+fn test_proto_role_to_room_role_all_variants() -> TestResult {
     assert_eq!(
-        proto_role_to_room_role(synctv_proto::common::RoomMemberRole::Creator as i32).unwrap(),
+        api_ok(proto_role_to_room_role(
+            synctv_proto::common::RoomMemberRole::Creator as i32
+        ))?,
         RoomRole::Creator
     );
     assert_eq!(
-        proto_role_to_room_role(synctv_proto::common::RoomMemberRole::Admin as i32).unwrap(),
+        api_ok(proto_role_to_room_role(
+            synctv_proto::common::RoomMemberRole::Admin as i32
+        ))?,
         RoomRole::Admin
     );
     assert_eq!(
-        proto_role_to_room_role(synctv_proto::common::RoomMemberRole::Member as i32).unwrap(),
+        api_ok(proto_role_to_room_role(
+            synctv_proto::common::RoomMemberRole::Member as i32
+        ))?,
         RoomRole::Member
     );
     assert_eq!(
-        proto_role_to_room_role(synctv_proto::common::RoomMemberRole::Guest as i32).unwrap(),
+        api_ok(proto_role_to_room_role(
+            synctv_proto::common::RoomMemberRole::Guest as i32
+        ))?,
         RoomRole::Guest
     );
+    Ok(())
 }
 
 #[test]
-fn test_proto_role_to_room_role_invalid() {
-    let err = proto_role_to_room_role(999).unwrap_err();
+fn test_proto_role_to_room_role_invalid() -> TestResult {
+    let err = api_err(proto_role_to_room_role(999))?;
     assert!(err.to_string().contains("Unknown room member role"));
+    Ok(())
 }
 
 #[test]
-fn test_proto_role_to_assignable_room_role_rejects_creator() {
-    let err =
-        proto_role_to_assignable_room_role(synctv_proto::common::RoomMemberRole::Creator as i32)
-            .unwrap_err();
+fn test_proto_role_to_assignable_room_role_rejects_creator() -> TestResult {
+    let err = api_err(proto_role_to_assignable_room_role(
+        synctv_proto::common::RoomMemberRole::Creator as i32,
+    ))?;
     assert!(
         err.to_string().contains("Creator role is bound"),
         "creator assignment must be rejected: {err}"
     );
+    Ok(())
 }
 
 #[test]
-fn test_proto_role_to_assignable_room_role_allows_admin_member_guest() {
+fn test_proto_role_to_assignable_room_role_allows_admin_member_guest() -> TestResult {
     assert_eq!(
-        proto_role_to_assignable_room_role(synctv_proto::common::RoomMemberRole::Admin as i32)
-            .unwrap(),
+        api_ok(proto_role_to_assignable_room_role(
+            synctv_proto::common::RoomMemberRole::Admin as i32
+        ))?,
         RoomRole::Admin
     );
     assert_eq!(
-        proto_role_to_assignable_room_role(synctv_proto::common::RoomMemberRole::Member as i32)
-            .unwrap(),
+        api_ok(proto_role_to_assignable_room_role(
+            synctv_proto::common::RoomMemberRole::Member as i32
+        ))?,
         RoomRole::Member
     );
     assert_eq!(
-        proto_role_to_assignable_room_role(synctv_proto::common::RoomMemberRole::Guest as i32)
-            .unwrap(),
+        api_ok(proto_role_to_assignable_room_role(
+            synctv_proto::common::RoomMemberRole::Guest as i32
+        ))?,
         RoomRole::Guest
     );
+    Ok(())
 }
 
 #[test]
-fn test_proto_role_to_user_role_all_variants() {
+fn test_proto_role_to_user_role_all_variants() -> TestResult {
     assert_eq!(
-        proto_role_to_user_role(synctv_proto::common::UserRole::Root as i32).unwrap(),
+        api_ok(proto_role_to_user_role(
+            synctv_proto::common::UserRole::Root as i32
+        ))?,
         UserRole::Root
     );
     assert_eq!(
-        proto_role_to_user_role(synctv_proto::common::UserRole::Admin as i32).unwrap(),
+        api_ok(proto_role_to_user_role(
+            synctv_proto::common::UserRole::Admin as i32
+        ))?,
         UserRole::Admin
     );
     assert_eq!(
-        proto_role_to_user_role(synctv_proto::common::UserRole::User as i32).unwrap(),
+        api_ok(proto_role_to_user_role(
+            synctv_proto::common::UserRole::User as i32
+        ))?,
         UserRole::User
     );
+    Ok(())
 }
 
 #[test]
-fn test_proto_role_to_user_role_invalid() {
-    let err = proto_role_to_user_role(999).unwrap_err();
+fn test_proto_role_to_user_role_invalid() -> TestResult {
+    let err = api_err(proto_role_to_user_role(999))?;
     assert!(err.to_string().contains("Unknown user role"));
+    Ok(())
 }
 
 fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::User {
@@ -393,13 +439,16 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
 }
 
 #[test]
-fn test_user_to_proto_basic() {
+fn test_user_to_proto_basic() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::User, UserStatus::Active);
-    let proto = try_user_to_proto(&user, Some("test@example.com"), &public_id_codec)
-        .expect("user proto should encode");
+    let proto = api_ok(try_user_to_proto(
+        &user,
+        Some("test@example.com"),
+        &public_id_codec,
+    ))?;
 
-    assert_eq!(proto.id, public_id_codec.encode_user_id(user.id).unwrap());
+    assert_eq!(proto.id, codec_ok(public_id_codec.encode_user_id(user.id))?);
     assert_eq!(proto.username, "testuser");
     assert_eq!(proto.email, "test@example.com");
     assert_eq!(proto.role, synctv_proto::common::UserRole::User as i32);
@@ -408,6 +457,7 @@ fn test_user_to_proto_basic() {
         synctv_proto::common::UserStatus::Active as i32
     );
     assert!(!proto.is_banned);
+    Ok(())
 }
 
 #[test]
@@ -433,7 +483,7 @@ fn test_provider_error_invalid_config_preserves_invalid_input_semantics() {
 }
 
 #[test]
-fn test_provider_error_upstream_http_is_sanitized() {
+fn test_provider_error_upstream_http_is_sanitized() -> TestResult {
     let err = ApiError::from(synctv_core::provider::ProviderError::UpstreamHttp {
         status: 502,
         url: "https://provider.example/playback".to_string(),
@@ -446,12 +496,17 @@ fn test_provider_error_upstream_http_is_sanitized() {
                 "Upstream provider service is temporarily unavailable."
             );
         }
-        other => panic!("expected upstream unavailability, got {other:?}"),
+        other => {
+            return Err(test_error(format!(
+                "expected upstream unavailability, got {other:?}"
+            )))
+        }
     }
+    Ok(())
 }
 
 #[test]
-fn test_provider_error_upstream_http_404_maps_to_not_found() {
+fn test_provider_error_upstream_http_404_maps_to_not_found() -> TestResult {
     let err = ApiError::from(synctv_core::provider::ProviderError::UpstreamHttp {
         status: 404,
         url: "https://provider.example/playback".to_string(),
@@ -461,12 +516,17 @@ fn test_provider_error_upstream_http_404_maps_to_not_found() {
         ApiError::NotFound(message) => {
             assert_eq!(message, "Provider resource not found");
         }
-        other => panic!("expected provider resource not found, got {other:?}"),
+        other => {
+            return Err(test_error(format!(
+                "expected provider resource not found, got {other:?}"
+            )));
+        }
     }
+    Ok(())
 }
 
 #[test]
-fn test_provider_error_upstream_http_400_maps_to_invalid_input() {
+fn test_provider_error_upstream_http_400_maps_to_invalid_input() -> TestResult {
     let err = ApiError::from(synctv_core::provider::ProviderError::UpstreamHttp {
         status: 400,
         url: "https://provider.example/playback".to_string(),
@@ -476,46 +536,64 @@ fn test_provider_error_upstream_http_400_maps_to_invalid_input() {
         ApiError::InvalidInput(message) => {
             assert_eq!(message, "Upstream provider rejected the request.");
         }
-        other => panic!("expected upstream provider invalid input, got {other:?}"),
+        other => {
+            return Err(test_error(format!(
+                "expected upstream provider invalid input, got {other:?}"
+            )));
+        }
     }
+    Ok(())
 }
 
 #[test]
-fn test_user_to_proto_admin_role() {
+fn test_user_to_proto_admin_role() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::Admin, UserStatus::Active);
-    let proto = try_user_to_proto(&user, Some("test@example.com"), &public_id_codec)
-        .expect("user proto should encode");
+    let proto = api_ok(try_user_to_proto(
+        &user,
+        Some("test@example.com"),
+        &public_id_codec,
+    ))?;
     assert_eq!(proto.role, synctv_proto::common::UserRole::Admin as i32);
+    Ok(())
 }
 
 #[test]
-fn test_user_to_proto_root_role() {
+fn test_user_to_proto_root_role() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::Root, UserStatus::Active);
-    let proto = try_user_to_proto(&user, Some("test@example.com"), &public_id_codec)
-        .expect("user proto should encode");
+    let proto = api_ok(try_user_to_proto(
+        &user,
+        Some("test@example.com"),
+        &public_id_codec,
+    ))?;
     assert_eq!(proto.role, synctv_proto::common::UserRole::Root as i32);
+    Ok(())
 }
 
 #[test]
-fn test_user_to_proto_banned_status() {
+fn test_user_to_proto_banned_status() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::User, UserStatus::Banned);
-    let proto = try_user_to_proto(&user, Some("test@example.com"), &public_id_codec)
-        .expect("user proto should encode");
+    let proto = api_ok(try_user_to_proto(
+        &user,
+        Some("test@example.com"),
+        &public_id_codec,
+    ))?;
     assert_eq!(
         proto.status,
         synctv_proto::common::UserStatus::Banned as i32
     );
+    Ok(())
 }
 
 #[test]
-fn test_user_to_proto_no_email() {
+fn test_user_to_proto_no_email() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::User, UserStatus::Active);
-    let proto = try_user_to_proto(&user, None, &public_id_codec).expect("user proto should encode");
-    assert_eq!(proto.email, ""); // None -> empty string
+    let proto = api_ok(try_user_to_proto(&user, None, &public_id_codec))?;
+    assert_eq!(proto.email, "");
+    Ok(())
 }
 
 fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
@@ -537,18 +615,23 @@ fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
 }
 
 #[test]
-fn test_try_room_to_proto_basic() {
+fn test_try_room_to_proto_basic() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let room = make_test_room(RoomStatus::Active);
-    let proto = try_room_to_proto_basic(&room, None, Some(5), &public_id_codec)
-        .expect("room proto should encode");
+    let settings = synctv_core::models::RoomSettings::default();
+    let proto = api_ok(try_room_to_proto_basic(
+        &room,
+        Some(&settings),
+        Some(5),
+        &public_id_codec,
+    ))?;
 
-    assert_eq!(proto.id, public_id_codec.encode_room_id(room.id).unwrap());
+    assert_eq!(proto.id, codec_ok(public_id_codec.encode_room_id(room.id))?);
     assert_eq!(proto.name, "Test Room");
     assert_eq!(proto.description, "A test room");
     assert_eq!(
         proto.created_by,
-        public_id_codec.encode_user_id(room.created_by).unwrap()
+        codec_ok(public_id_codec.encode_user_id(room.created_by))?
     );
     assert_eq!(proto.member_count, 5);
     assert_eq!(
@@ -556,53 +639,100 @@ fn test_try_room_to_proto_basic() {
         synctv_proto::client::ResourceAvailability::Available as i32
     );
     assert!(!proto.is_banned);
+    Ok(())
 }
 
 #[test]
-fn test_room_to_proto_no_member_count() {
+fn test_room_to_proto_requires_member_count() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let room = make_test_room(RoomStatus::Active);
-    let proto = try_room_to_proto_basic(&room, None, None, &public_id_codec)
-        .expect("room proto should encode");
-    assert_eq!(proto.member_count, 0); // None -> 0
+    let settings = synctv_core::models::RoomSettings::default();
+    let error = api_err(try_room_to_proto_basic(
+        &room,
+        Some(&settings),
+        None,
+        &public_id_codec,
+    ))?;
+
+    assert!(matches!(
+        error,
+        crate::impls::ApiError::Internal(message)
+            if message.contains("Missing member count for client room")
+    ));
+    Ok(())
 }
 
 #[test]
-fn test_room_to_proto_banned() {
+fn test_room_to_proto_requires_settings() -> TestResult {
+    let public_id_codec = test_public_id_codec();
+    let room = make_test_room(RoomStatus::Active);
+    let error = api_err(try_room_to_proto_basic(
+        &room,
+        None,
+        Some(0),
+        &public_id_codec,
+    ))?;
+
+    assert!(matches!(
+        error,
+        crate::impls::ApiError::Internal(message)
+            if message.contains("Missing room settings for client room")
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_room_to_proto_banned() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let mut room = make_test_room(RoomStatus::Active);
+    let settings = synctv_core::models::RoomSettings::default();
     room.is_banned = true;
-    let proto = try_room_to_proto_basic(&room, None, None, &public_id_codec)
-        .expect("room proto should encode");
+    let proto = api_ok(try_room_to_proto_basic(
+        &room,
+        Some(&settings),
+        Some(0),
+        &public_id_codec,
+    ))?;
     assert!(proto.is_banned);
     assert_eq!(
         proto.availability,
         synctv_proto::client::ResourceAvailability::Available as i32
     );
+    Ok(())
 }
 
 #[test]
-fn test_hot_room_embedded_room_member_count_uses_total_member_count() {
+fn test_hot_room_embedded_room_member_count_uses_total_member_count() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let room = make_test_room(RoomStatus::Active);
+    let settings = synctv_core::models::RoomSettings::default();
     let online_count = 3;
     let total_members = 17;
 
-    let proto = hot_room_to_proto(&room, None, online_count, total_members, &public_id_codec)
-        .expect("hot room proto should encode");
+    let proto = api_ok(hot_room_to_proto(
+        &room,
+        Some(&settings),
+        online_count,
+        total_members,
+        &public_id_codec,
+    ))?;
+    let embedded_room = proto
+        .room
+        .as_ref()
+        .ok_or_else(|| test_error("hot room should include embedded room"))?;
 
     assert_eq!(
-        proto.room.as_ref().unwrap().member_count,
-        total_members,
+        embedded_room.member_count, total_members,
         "embedded Room.member_count should reflect total active members"
     );
     assert_eq!(proto.online_count, online_count);
     assert_eq!(proto.total_members, total_members);
-    assert_ne!(proto.room.as_ref().unwrap().member_count, online_count);
+    assert_ne!(embedded_room.member_count, online_count);
+    Ok(())
 }
 
 #[test]
-fn test_playback_state_to_proto() {
+fn test_playback_state_to_proto() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let state = synctv_core::models::RoomPlaybackState {
         room_id: RoomId::expect_positive(301),
@@ -617,18 +747,18 @@ fn test_playback_state_to_proto() {
         version: 42,
     };
 
-    let proto = try_playback_state_to_proto(&state, &public_id_codec)
-        .expect("playback state proto should encode");
+    let proto = api_ok(try_playback_state_to_proto(&state, &public_id_codec))?;
+    let playing_media_id = state
+        .playing_media_id
+        .ok_or_else(|| test_error("playback state should include media id"))?;
 
     assert_eq!(
         proto.room_id,
-        public_id_codec.encode_room_id(state.room_id).unwrap()
+        codec_ok(public_id_codec.encode_room_id(state.room_id))?
     );
     assert_eq!(
         proto.playing_media_id,
-        public_id_codec
-            .encode_media_id(state.playing_media_id.unwrap())
-            .unwrap()
+        codec_ok(public_id_codec.encode_media_id(playing_media_id))?
     );
     assert_eq!(proto.playing_playlist_id, "");
     assert!(proto.target.is_empty());
@@ -636,10 +766,11 @@ fn test_playback_state_to_proto() {
     assert!((proto.speed - 1.5).abs() < f64::EPSILON);
     assert!(!proto.is_playing);
     assert_eq!(proto.version, 42);
+    Ok(())
 }
 
 #[test]
-fn test_playback_state_to_proto_computes_elapsed_time_while_playing() {
+fn test_playback_state_to_proto_computes_elapsed_time_while_playing() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let state = synctv_core::models::RoomPlaybackState {
         room_id: RoomId::expect_positive(301),
@@ -654,15 +785,15 @@ fn test_playback_state_to_proto_computes_elapsed_time_while_playing() {
         version: 42,
     };
 
-    let proto = try_playback_state_to_proto(&state, &public_id_codec)
-        .expect("playback state proto should encode");
+    let proto = api_ok(try_playback_state_to_proto(&state, &public_id_codec))?;
 
     assert!(proto.position >= 123.5);
     assert!(proto.position < 124.5);
+    Ok(())
 }
 
 #[test]
-fn test_playback_state_to_proto_dynamic_playlist_target() {
+fn test_playback_state_to_proto_dynamic_playlist_target() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let state = synctv_core::models::RoomPlaybackState {
         room_id: RoomId::expect_positive(301),
@@ -677,30 +808,31 @@ fn test_playback_state_to_proto_dynamic_playlist_target() {
         version: 42,
     };
 
-    let proto = try_playback_state_to_proto(&state, &public_id_codec)
-        .expect("playback state proto should encode");
+    let proto = api_ok(try_playback_state_to_proto(&state, &public_id_codec))?;
+    let playing_playlist_id = state
+        .playing_playlist_id
+        .ok_or_else(|| test_error("playback state should include playlist id"))?;
 
     assert_eq!(proto.playing_media_id, "");
     assert_eq!(
         proto.playing_playlist_id,
-        public_id_codec
-            .encode_playlist_id(state.playing_playlist_id.unwrap())
-            .unwrap()
+        codec_ok(public_id_codec.encode_playlist_id(playing_playlist_id))?
     );
-    let target: serde_json::Value = serde_json::from_slice(&proto.target).unwrap();
+    let target: serde_json::Value = serde_json::from_slice(&proto.target)?;
     assert_eq!(target, serde_json::json!({"item_id":"provider-item-9"}));
+    Ok(())
 }
 
 #[test]
-fn test_playback_state_to_proto_no_media() {
+fn test_playback_state_to_proto_no_media() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let state = synctv_core::models::RoomPlaybackState::new(RoomId::expect_positive(301));
-    let proto = try_playback_state_to_proto(&state, &public_id_codec)
-        .expect("playback state proto should encode");
+    let proto = api_ok(try_playback_state_to_proto(&state, &public_id_codec))?;
 
-    assert_eq!(proto.playing_media_id, ""); // None -> empty string
+    assert_eq!(proto.playing_media_id, "");
     assert_eq!(proto.playing_playlist_id, "");
     assert!(!proto.is_playing);
+    Ok(())
 }
 
 fn make_test_media() -> synctv_core::models::Media {
@@ -724,15 +856,21 @@ fn make_test_media() -> synctv_core::models::Media {
 }
 
 #[test]
-fn test_media_to_proto_basic() {
+fn test_media_to_proto_basic() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let media = make_test_media();
-    let proto = try_media_to_proto(&media, &public_id_codec).expect("media proto should encode");
+    let proto = api_ok(try_media_to_proto(&media, &public_id_codec))?;
+    let creator_id = media
+        .creator_id
+        .ok_or_else(|| test_error("media should include creator id"))?;
 
-    assert_eq!(proto.id, public_id_codec.encode_media_id(media.id).unwrap());
+    assert_eq!(
+        proto.id,
+        codec_ok(public_id_codec.encode_media_id(media.id))?
+    );
     assert_eq!(
         proto.room_id,
-        public_id_codec.encode_room_id(media.room_id).unwrap()
+        codec_ok(public_id_codec.encode_room_id(media.room_id))?
     );
     assert_eq!(proto.source_provider, "bilibili");
     assert_eq!(proto.name, "Test Video");
@@ -740,15 +878,14 @@ fn test_media_to_proto_basic() {
     assert_eq!(proto.position.to_bits(), 3.0f64.to_bits());
     assert_eq!(
         proto.creator_id,
-        public_id_codec
-            .encode_user_id(media.creator_id.unwrap())
-            .unwrap()
+        codec_ok(public_id_codec.encode_user_id(creator_id))?
     );
     assert_eq!(proto.provider_instance_name, "bili_main");
+    Ok(())
 }
 
 #[test]
-fn test_media_to_proto_direct_media_omits_default_instance_binding() {
+fn test_media_to_proto_direct_media_omits_default_instance_binding() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let media = synctv_core::models::Media::from_direct_single_mode(
         Some(PlaylistId::expect_positive(305)),
@@ -762,10 +899,11 @@ fn test_media_to_proto_direct_media_omits_default_instance_binding() {
         ),
         1.0,
     )
-    .expect("direct media should build");
-    let proto = try_media_to_proto(&media, &public_id_codec).expect("media proto should encode");
+    .map_err(|error| test_error(error.to_string()))?;
+    let proto = api_ok(try_media_to_proto(&media, &public_id_codec))?;
     assert_eq!(proto.source_provider, "direct_url");
     assert!(proto.provider_instance_name.is_empty());
+    Ok(())
 }
 
 fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
@@ -786,24 +924,23 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
 }
 
 #[test]
-fn test_room_member_to_proto() {
+fn test_room_member_to_proto() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let member = make_test_member(RoomRole::Member);
     let role_default = RoomRole::Member.permissions();
-    let proto = try_room_member_to_proto_with_permissions(
+    let proto = api_ok(try_room_member_to_proto_with_permissions(
         &member,
         member.effective_permissions(role_default),
         &public_id_codec,
-    )
-    .expect("room member proto should encode");
+    ))?;
 
     assert_eq!(
         proto.room_id,
-        public_id_codec.encode_room_id(member.room_id).unwrap()
+        codec_ok(public_id_codec.encode_room_id(member.room_id))?
     );
     assert_eq!(
         proto.user_id,
-        public_id_codec.encode_user_id(member.user_id).unwrap()
+        codec_ok(public_id_codec.encode_user_id(member.user_id))?
     );
     assert_eq!(proto.username, "alice");
     assert_eq!(
@@ -811,44 +948,45 @@ fn test_room_member_to_proto() {
         synctv_proto::common::RoomMemberRole::Member as i32
     );
     assert!(proto.is_online);
+    Ok(())
 }
 
 #[test]
-fn test_room_member_to_proto_creator() {
+fn test_room_member_to_proto_creator() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let member = make_test_member(RoomRole::Creator);
     let role_default = RoomRole::Creator.permissions();
-    let proto = try_room_member_to_proto_with_permissions(
+    let proto = api_ok(try_room_member_to_proto_with_permissions(
         &member,
         member.effective_permissions(role_default),
         &public_id_codec,
-    )
-    .expect("room member proto should encode");
+    ))?;
     assert_eq!(
         proto.role,
         synctv_proto::common::RoomMemberRole::Creator as i32
     );
+    Ok(())
 }
 
 #[test]
-fn test_room_member_to_proto_custom_permissions() {
+fn test_room_member_to_proto_custom_permissions() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let mut member = make_test_member(RoomRole::Member);
     member.added_permissions = 0xFF;
     member.removed_permissions = 0x0F;
     let role_default = RoomRole::Member.permissions();
-    let proto = try_room_member_to_proto_with_permissions(
+    let proto = api_ok(try_room_member_to_proto_with_permissions(
         &member,
         member.effective_permissions(role_default),
         &public_id_codec,
-    )
-    .expect("room member proto should encode");
+    ))?;
     assert_eq!(proto.added_permissions, 0xFF);
     assert_eq!(proto.removed_permissions, 0x0F);
+    Ok(())
 }
 
 #[test]
-fn test_playlist_to_proto() {
+fn test_playlist_to_proto() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let playlist = synctv_core::models::Playlist {
         id: PlaylistId::expect_positive(303),
@@ -867,25 +1005,25 @@ fn test_playlist_to_proto() {
         version: 0,
     };
 
-    let proto = try_playlist_to_proto(&playlist, 10, &public_id_codec)
-        .expect("playlist proto should encode");
+    let proto = api_ok(try_playlist_to_proto(&playlist, 10, &public_id_codec))?;
 
     assert_eq!(
         proto.id,
-        public_id_codec.encode_playlist_id(playlist.id).unwrap()
+        codec_ok(public_id_codec.encode_playlist_id(playlist.id))?
     );
     assert_eq!(
         proto.room_id,
-        public_id_codec.encode_room_id(playlist.room_id).unwrap()
+        codec_ok(public_id_codec.encode_room_id(playlist.room_id))?
     );
     assert_eq!(proto.name, "My Playlist");
     assert_eq!(proto.parent_id, "");
     assert_eq!(proto.item_count, 10);
     assert!(!proto.is_dynamic);
+    Ok(())
 }
 
 #[test]
-fn test_playlist_to_proto_dynamic() {
+fn test_playlist_to_proto_dynamic() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let playlist = synctv_core::models::Playlist {
         id: PlaylistId::expect_positive(306),
@@ -904,22 +1042,81 @@ fn test_playlist_to_proto_dynamic() {
         version: 0,
     };
 
-    let proto = try_playlist_to_proto(&playlist, 5, &public_id_codec)
-        .expect("playlist proto should encode");
+    let proto = api_ok(try_playlist_to_proto(&playlist, 5, &public_id_codec))?;
+    let parent_id = playlist
+        .parent_id
+        .ok_or_else(|| test_error("dynamic playlist should include parent id"))?;
 
     assert_eq!(
         proto.parent_id,
-        public_id_codec
-            .encode_playlist_id(playlist.parent_id.unwrap())
-            .unwrap()
+        codec_ok(public_id_codec.encode_playlist_id(parent_id))?
     );
     assert!(proto.is_dynamic);
     assert_eq!(proto.source_provider, "bilibili");
     assert_eq!(proto.provider_instance_name, "");
+    Ok(())
 }
 
 #[test]
-fn test_members_to_proto_pattern_multiple_roles() {
+fn test_playlist_to_proto_dynamic_requires_source_config() -> TestResult {
+    let public_id_codec = test_public_id_codec();
+    let playlist = synctv_core::models::Playlist {
+        id: PlaylistId::expect_positive(307),
+        room_id: RoomId::expect_positive(301),
+        creator_id: Some(UserId::expect_positive(304)),
+        name: "Broken Dynamic Folder".to_string(),
+        description: String::new(),
+        cover_file_reference_id: None,
+        parent_id: None,
+        position: 1.0,
+        source_provider: Some("bilibili".to_string()),
+        source_config: None,
+        provider_instance_name: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        version: 0,
+    };
+
+    assert!(matches!(
+        try_playlist_to_proto(&playlist, 5, &public_id_codec),
+        Err(ApiError::Internal(message))
+            if message.contains("Dynamic playlist")
+                && message.contains("source_config")
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_playlist_to_proto_dynamic_rejects_empty_source_provider() -> TestResult {
+    let public_id_codec = test_public_id_codec();
+    let playlist = synctv_core::models::Playlist {
+        id: PlaylistId::expect_positive(308),
+        room_id: RoomId::expect_positive(301),
+        creator_id: Some(UserId::expect_positive(304)),
+        name: "Broken Dynamic Folder".to_string(),
+        description: String::new(),
+        cover_file_reference_id: None,
+        parent_id: None,
+        position: 1.0,
+        source_provider: Some("   ".to_string()),
+        source_config: Some(serde_json::json!({})),
+        provider_instance_name: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        version: 0,
+    };
+
+    assert!(matches!(
+        try_playlist_to_proto(&playlist, 5, &public_id_codec),
+        Err(ApiError::Internal(message))
+            if message.contains("Dynamic playlist")
+                && message.contains("source_provider")
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_members_to_proto_pattern_multiple_roles() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let creator = {
         let mut m = make_test_member(RoomRole::Creator);
@@ -957,7 +1154,7 @@ fn test_members_to_proto_pattern_multiple_roles() {
             )
         })
         .collect::<Result<Vec<_>, _>>()
-        .expect("room member protos should encode");
+        .map_err(|error| test_error(format!("{error:?}")))?;
 
     assert_eq!(result.len(), 4);
     assert_eq!(result[0].username, "owner");
@@ -981,28 +1178,28 @@ fn test_members_to_proto_pattern_multiple_roles() {
         synctv_proto::common::RoomMemberRole::Guest as i32
     );
 
-    // Creator should have more permissions than guest
     assert!(
         result[0].permissions > result[3].permissions,
         "Creator should have more permissions than guest"
     );
+    Ok(())
 }
 
 #[test]
-fn test_members_to_proto_pattern_preserves_custom_permissions() {
+fn test_members_to_proto_pattern_preserves_custom_permissions() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let mut member = make_test_member(RoomRole::Member);
     member.added_permissions = 0xFF;
     member.removed_permissions = 0x0F;
     let role_default = member.role.permissions();
-    let result = try_room_member_to_proto_with_permissions(
+    let result = api_ok(try_room_member_to_proto_with_permissions(
         &member,
         member.effective_permissions(role_default),
         &public_id_codec,
-    )
-    .expect("room member proto should encode");
+    ))?;
     assert_eq!(result.added_permissions, 0xFF);
     assert_eq!(result.removed_permissions, 0x0F);
+    Ok(())
 }
 
 const _: () = assert!(
@@ -1067,15 +1264,8 @@ fn test_effective_permissions_applies_member_overrides() {
 
 #[test]
 fn test_add_media_batch_uses_provider_instance_name() {
-    // add_media_batch correctly uses provider_instance_name from request items.
-    // This test documents that the batch path uses item.provider_instance_name
-    // directly (not the provider type name), serving as a regression guard.
-    // Single-item add_media is stricter now: non-direct providers must send an
-    // explicit provider_instance_name instead of falling back to req.source_provider.
-    // The batch path already used item.provider_instance_name directly.
     let instance_name = "bilibili_main";
     let type_name = "bilibili";
-    // Instance name and type name should be distinct
     assert_ne!(
         instance_name, type_name,
         "Instance name and type name must be different to catch the bug"
@@ -1083,9 +1273,8 @@ fn test_add_media_batch_uses_provider_instance_name() {
 }
 
 #[test]
-fn test_playback_state_version_no_truncation() {
+fn test_playback_state_version_no_truncation() -> TestResult {
     let public_id_codec = test_public_id_codec();
-    // Version values above i32::MAX should not be truncated
     let large_version: i64 = i64::from(i32::MAX) + 1;
     let state = synctv_core::models::RoomPlaybackState {
         room_id: RoomId::expect_positive(401),
@@ -1100,18 +1289,17 @@ fn test_playback_state_version_no_truncation() {
         version: large_version,
     };
 
-    let proto = try_playback_state_to_proto(&state, &public_id_codec)
-        .expect("playback state proto should encode");
+    let proto = api_ok(try_playback_state_to_proto(&state, &public_id_codec))?;
     assert_eq!(
         proto.version, large_version,
         "Version should not be truncated from i64 to i32"
     );
+    Ok(())
 }
 
 #[test]
-fn test_playback_state_version_i32_range_still_works() {
+fn test_playback_state_version_i32_range_still_works() -> TestResult {
     let public_id_codec = test_public_id_codec();
-    // Normal i32-range versions should continue to work correctly
     let state = synctv_core::models::RoomPlaybackState {
         room_id: RoomId::expect_positive(402),
         playing_media_id: None,
@@ -1125,7 +1313,7 @@ fn test_playback_state_version_i32_range_still_works() {
         version: 42,
     };
 
-    let proto = try_playback_state_to_proto(&state, &public_id_codec)
-        .expect("playback state proto should encode");
+    let proto = api_ok(try_playback_state_to_proto(&state, &public_id_codec))?;
     assert_eq!(proto.version, 42);
+    Ok(())
 }

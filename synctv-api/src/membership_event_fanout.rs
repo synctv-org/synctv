@@ -225,8 +225,14 @@ mod tests {
         }
     }
 
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
+    }
+
     #[tokio::test]
-    async fn test_permission_changed_self_event_broadcasts_locally_after_commit() {
+    async fn test_permission_changed_self_event_broadcasts_locally_after_commit() -> TestResult {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service = super::DefaultMembershipEventFanoutService::new(
             disabled_realtime_fanout_service(),
@@ -236,16 +242,16 @@ mod tests {
         let prepared = service.prepare_permission_changed_outbox_fanout(user, user);
         let factory = prepared.outbox_factory();
 
-        let event = factory(&permission_snapshot(user, user))
-            .expect("permission change should prepare a durable resource event");
+        let event = factory(&permission_snapshot(user, user))?;
         assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
 
         assert_eq!(event_service.room_calls.load(Ordering::SeqCst), 1);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_permission_changed_publishes_same_prepared_event_after_commit() {
+    async fn test_permission_changed_publishes_same_prepared_event_after_commit() -> TestResult {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let prepared = PreparedPermissionChangedFanout::new(
             channel_realtime_fanout_service(tx),
@@ -254,19 +260,22 @@ mod tests {
             user_id("actor"),
         );
         let factory = prepared.outbox_factory();
-        let event = factory(&permission_snapshot(user_id("target"), user_id("actor")))
-            .expect("permission change should prepare a durable resource event");
+        let event = factory(&permission_snapshot(user_id("target"), user_id("actor")))?;
         assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
-        let event = rx.recv().await.expect("prepared event should publish");
+        let event = rx
+            .recv()
+            .await
+            .ok_or_else(|| test_error("prepared event should publish"))?;
         assert!(matches!(
             event.event,
             RealtimeEvent::PermissionChanged { .. }
         ));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_user_left_publishes_same_prepared_event_after_commit() {
+    async fn test_user_left_publishes_same_prepared_event_after_commit() -> TestResult {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let prepared = PreparedUserLeftFanout::new(channel_realtime_fanout_service(tx));
         let factory = prepared.outbox_factory();
@@ -274,11 +283,14 @@ mod tests {
             room_id: room_id(),
             user_id: user_id("target"),
             username: "target-user".to_string(),
-        })
-        .expect("user left should prepare a durable resource event");
+        })?;
         assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
-        let event = rx.recv().await.expect("prepared event should publish");
+        let event = rx
+            .recv()
+            .await
+            .ok_or_else(|| test_error("prepared event should publish"))?;
         assert!(matches!(event.event, RealtimeEvent::UserLeft { .. }));
+        Ok(())
     }
 }

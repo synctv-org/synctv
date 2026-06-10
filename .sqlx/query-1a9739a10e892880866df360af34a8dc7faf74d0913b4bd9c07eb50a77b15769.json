@@ -6,17 +6,35 @@
       {
         "ordinal": 0,
         "name": "user_id!: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "user_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "changed_at!",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "changed_at"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "version!",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "auth_password_credentials",
+            "name": "version"
+          }
+        }
       }
     ],
     "parameters": {

@@ -1,5 +1,11 @@
 use super::*;
 
+type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+fn missing(message: &'static str) -> Box<dyn std::error::Error + Send + Sync> {
+    anyhow::anyhow!(message).into()
+}
+
 #[test]
 fn test_validate_path_normal() {
     assert!(validate_path("/movies/video.mp4").is_ok());
@@ -19,7 +25,6 @@ fn test_validate_path_traversal_rejected() {
 
 #[test]
 fn test_validate_path_dot_allowed() {
-    // Single dot and dotfiles should be allowed
     assert!(validate_path("/movies/.hidden").is_ok());
     assert!(validate_path("/.config/app").is_ok());
 }
@@ -28,30 +33,24 @@ fn test_validate_path_dot_allowed() {
 fn test_validate_path_double_encoded_traversal() {
     // %252e%252e -> first decode -> %2e%2e -> second decode -> ..
     assert!(validate_path("/movies/%252e%252e/etc/passwd").is_err());
-    // Triple encoding
     assert!(validate_path("/movies/%25252e%25252e/secret").is_err());
 }
 
 #[test]
 fn test_validate_path_backslash_traversal() {
-    // Backslash used as path separator
     assert!(validate_path("/movies/..\\..\\etc\\passwd").is_err());
-    // URL-encoded backslash (%5c / %5C)
     assert!(validate_path("/movies/..%5c..%5cetc%5cpasswd").is_err());
     assert!(validate_path("/movies/..%5C..%5Cetc").is_err());
 }
 
 #[test]
 fn test_validate_path_null_bytes() {
-    // Literal null byte
     assert!(validate_path("/movies/video\0.mp4").is_err());
-    // URL-encoded null byte
     assert!(validate_path("/movies/video%00.mp4").is_err());
 }
 
 #[test]
 fn test_validate_path_encoded_traversal_single_layer() {
-    // Single-layer URL-encoded .. (%2e%2e / %2f)
     assert!(validate_path("/movies/%2e%2e%2fetc%2fpasswd").is_err());
     assert!(validate_path("/movies/%2E%2E%2Fetc").is_err());
 }
@@ -67,50 +66,54 @@ fn test_validate_path_valid_paths_still_pass() {
 }
 
 #[test]
-fn test_client_creation() {
-    let client = AlistClient::new("https://alist.example.com").unwrap();
+fn test_client_creation() -> TestResult {
+    let client = AlistClient::new("https://alist.example.com")?;
     assert_eq!(client.host(), "https://alist.example.com");
     assert!(!client.has_token());
 
-    let client_with_token =
-        AlistClient::with_token("https://alist.example.com", "test_token").unwrap();
+    let client_with_token = AlistClient::with_token("https://alist.example.com", "test_token")?;
     assert!(client_with_token.has_token());
+    Ok(())
 }
 
 #[test]
-fn test_set_token() {
-    let mut client = AlistClient::new("https://alist.example.com").unwrap();
+fn test_set_token() -> TestResult {
+    let mut client = AlistClient::new("https://alist.example.com")?;
     assert!(!client.has_token());
 
     client.set_token("new_token");
     assert!(client.has_token());
+    Ok(())
 }
 
 #[test]
-fn test_client_host_preserved() {
-    let client = AlistClient::new("https://my-server.com:5244").unwrap();
+fn test_client_host_preserved() -> TestResult {
+    let client = AlistClient::new("https://my-server.com:5244")?;
     assert_eq!(client.host(), "https://my-server.com:5244");
+    Ok(())
 }
 
 #[test]
-fn test_client_with_token_host() {
-    let client = AlistClient::with_token("https://alist.example.com", "token123").unwrap();
+fn test_client_with_token_host() -> TestResult {
+    let client = AlistClient::with_token("https://alist.example.com", "token123")?;
     assert_eq!(client.host(), "https://alist.example.com");
     assert!(client.has_token());
+    Ok(())
 }
 
 #[test]
-fn test_set_token_overwrite() {
-    let mut client = AlistClient::with_token("https://alist.example.com", "old_token").unwrap();
+fn test_set_token_overwrite() -> TestResult {
+    let mut client = AlistClient::with_token("https://alist.example.com", "old_token")?;
     assert!(client.has_token());
     client.set_token("new_token");
     assert!(client.has_token());
+    Ok(())
 }
 
 #[test]
-fn test_build_headers_uses_origin_without_path_or_query() {
-    let client = AlistClient::new("https://alist.example.com/base?token=secret#frag").unwrap();
-    let headers = client.build_headers(&HashMap::new()).unwrap();
+fn test_build_headers_uses_origin_without_path_or_query() -> TestResult {
+    let client = AlistClient::new("https://alist.example.com/base?token=secret#frag")?;
+    let headers = client.build_headers(&HashMap::new())?;
 
     assert_eq!(
         headers.get(ORIGIN).and_then(|v| v.to_str().ok()),
@@ -120,11 +123,12 @@ fn test_build_headers_uses_origin_without_path_or_query() {
         headers.get(REFERER).and_then(|v| v.to_str().ok()),
         Some("https://alist.example.com/base")
     );
+    Ok(())
 }
 
 #[test]
-fn test_build_headers_rejects_userinfo_in_host() {
-    let client = AlistClient::new("https://user:pass@alist.example.com").unwrap();
+fn test_build_headers_rejects_userinfo_in_host() -> TestResult {
+    let client = AlistClient::new("https://user:pass@alist.example.com")?;
     let err = client
         .build_headers(&HashMap::new())
         .expect_err("userinfo must not be accepted in provider host");
@@ -134,29 +138,37 @@ fn test_build_headers_rejects_userinfo_in_host() {
             || err.to_string().contains("Invalid host URL"),
         "unexpected error: {err}"
     );
+    Ok(())
 }
 
 #[test]
-fn test_alist_resp_deserialize_success() {
+fn test_alist_resp_deserialize_success() -> TestResult {
     let json = r#"{"code": 200, "message": "success", "data": {"token": "abc123"}}"#;
     let resp: crate::alist::types::AlistResp<crate::alist::types::LoginData> =
-        serde_json::from_str(json).unwrap();
+        serde_json::from_str(json)?;
     assert_eq!(resp.code, 200);
     assert_eq!(resp.message, "success");
-    assert_eq!(resp.data.unwrap().token, "abc123");
+    assert_eq!(
+        resp.data
+            .ok_or_else(|| missing("login response data should deserialize"))?
+            .token,
+        "abc123"
+    );
+    Ok(())
 }
 
 #[test]
-fn test_alist_resp_deserialize_no_data() {
+fn test_alist_resp_deserialize_no_data() -> TestResult {
     let json = r#"{"code": 401, "message": "unauthorized", "data": null}"#;
     let resp: crate::alist::types::AlistResp<crate::alist::types::LoginData> =
-        serde_json::from_str(json).unwrap();
+        serde_json::from_str(json)?;
     assert_eq!(resp.code, 401);
     assert!(resp.data.is_none());
+    Ok(())
 }
 
 #[test]
-fn test_fs_list_resp_deserialize() {
+fn test_fs_list_resp_deserialize() -> TestResult {
     let json = r#"{
         "content": [
             {"name": "movie.mkv", "size": 1000000, "is_dir": false, "modified": 1234567890, "sign": "", "thumb": "", "type": 2}
@@ -166,15 +178,16 @@ fn test_fs_list_resp_deserialize() {
         "write": false,
         "provider": "local"
     }"#;
-    let resp: crate::alist::types::HttpFsListResp = serde_json::from_str(json).unwrap();
+    let resp: crate::alist::types::HttpFsListResp = serde_json::from_str(json)?;
     assert_eq!(resp.total, 1);
     assert_eq!(resp.content.len(), 1);
     assert_eq!(resp.content[0].name, "movie.mkv");
     assert!(!resp.content[0].is_dir);
+    Ok(())
 }
 
 #[test]
-fn test_fs_get_resp_deserialize() {
+fn test_fs_get_resp_deserialize() -> TestResult {
     let json = r#"{
         "name": "video.mp4",
         "size": 5000000,
@@ -184,28 +197,29 @@ fn test_fs_get_resp_deserialize() {
         "raw_url": "https://cdn.example.com/video.mp4",
         "provider": "s3"
     }"#;
-    let resp: crate::alist::types::HttpFsGetResp = serde_json::from_str(json).unwrap();
+    let resp: crate::alist::types::HttpFsGetResp = serde_json::from_str(json)?;
     assert_eq!(resp.name, "video.mp4");
     assert_eq!(resp.size, 5_000_000);
     assert!(!resp.is_dir);
     assert_eq!(resp.raw_url, "https://cdn.example.com/video.mp4");
     assert_eq!(resp.provider, "s3");
+    Ok(())
 }
 
 #[test]
-fn test_fs_get_resp_with_defaults() {
-    // Minimal JSON with only required fields, defaults for the rest
+fn test_fs_get_resp_with_defaults() -> TestResult {
     let json = r#"{"name": "test", "size": 0, "is_dir": true}"#;
-    let resp: crate::alist::types::HttpFsGetResp = serde_json::from_str(json).unwrap();
+    let resp: crate::alist::types::HttpFsGetResp = serde_json::from_str(json)?;
     assert_eq!(resp.name, "test");
     assert!(resp.is_dir);
     assert_eq!(resp.modified, 0);
     assert_eq!(resp.raw_url, "");
     assert!(resp.related.is_empty());
+    Ok(())
 }
 
 #[test]
-fn test_me_resp_deserialize() {
+fn test_me_resp_deserialize() -> TestResult {
     let json = r#"{
         "id": 1,
         "username": "admin",
@@ -216,11 +230,12 @@ fn test_me_resp_deserialize() {
         "sso_id": "",
         "otp": false
     }"#;
-    let resp: crate::alist::types::HttpMeResp = serde_json::from_str(json).unwrap();
+    let resp: crate::alist::types::HttpMeResp = serde_json::from_str(json)?;
     assert_eq!(resp.id, 1);
     assert_eq!(resp.username, "admin");
     assert_eq!(resp.role, 0);
     assert!(!resp.disabled);
+    Ok(())
 }
 
 #[test]

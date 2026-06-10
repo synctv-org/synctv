@@ -11,7 +11,7 @@ use {
     },
     crate::bytesio::{
         bytes_writer::AsyncBytesWriter,
-        bytesio::{TNetIO, TcpIO},
+        net_io::{TNetIO, TcpIO},
     },
     crate::flv::amf0::Amf0ValueType,
     crate::rtmp::{
@@ -22,7 +22,7 @@ use {
         config, handshake,
         handshake::{define::ServerHandshakeState, handshake_server::HandshakeServer},
         messages::{define::RtmpMessageData, parser::MessageParser},
-        netconnection::writer::{ConnectProperties, NetConnection},
+        netconnection::writer::{ConnectProperties, ConnectResponse, NetConnection},
         netstream::writer::NetStreamWriter,
         protocol_control_messages::writer::ProtocolControlMessagesWriter,
         user_control_messages::writer::EventMessagesWriter,
@@ -52,6 +52,39 @@ enum ServerSessionState {
 /// within this duration, the session is terminated (prevents slow-rate `DoS`).
 const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+fn remove_first_string(values: &mut Vec<Amf0ValueType>) -> Option<String> {
+    if values.is_empty() {
+        return None;
+    }
+
+    match values.remove(0) {
+        Amf0ValueType::UTF8String(value) => Some(value),
+        _ => None,
+    }
+}
+
+fn remove_first_number(values: &mut Vec<Amf0ValueType>) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+
+    match values.remove(0) {
+        Amf0ValueType::Number(value) => Some(value),
+        _ => None,
+    }
+}
+
+fn remove_first_bool(values: &mut Vec<Amf0ValueType>) -> Option<bool> {
+    if values.is_empty() {
+        return None;
+    }
+
+    match values.remove(0) {
+        Amf0ValueType::Boolean(value) => Some(value),
+        _ => None,
+    }
+}
+
 pub struct ServerSession {
     pub app_name: String,
     pub stream_name: String,
@@ -64,7 +97,7 @@ pub struct ServerSession {
     has_remaing_data: bool,
     connect_properties: ConnectProperties,
     pub common: Common,
-    /*configure how many gops will be cached.*/
+    /// Maximum number of GOPs cached for publisher prior data.
     gop_num: usize,
     auth: Option<Arc<dyn AuthCallback>>,
     /// Whether this session has successfully published (vs playing)
@@ -86,10 +119,16 @@ impl ServerSession {
         per_stream_max_bytes: Option<usize>,
         callbacks: Arc<StreamEventCallbacks>,
     ) -> Self {
-        let remote_addr = stream.peer_addr().map_or(None, |addr| {
-            tracing::info!("server session: {addr}");
-            Some(addr)
-        });
+        let remote_addr = match stream.peer_addr() {
+            Ok(addr) => {
+                tracing::info!("server session peer: {addr}");
+                Some(addr)
+            }
+            Err(err) => {
+                tracing::warn!("failed to read RTMP server session peer address: {err}");
+                None
+            }
+        };
 
         let tcp_io: Box<dyn TNetIO + Send + Sync> = Box::new(TcpIO::new(stream));
         let net_io = Arc::new(Mutex::new(tcp_io));
@@ -351,18 +390,13 @@ impl ServerSession {
         timestamp: &u32,
     ) -> Result<(), SessionError> {
         match rtmp_msg {
-            RtmpMessageData::Amf0Command {
-                command_name,
-                transaction_id,
-                command_object,
-                others,
-            } => {
+            RtmpMessageData::Amf0Command(command) => {
                 self.on_amf0_command_message(
                     msg_stream_id,
-                    command_name,
-                    transaction_id,
-                    command_object,
-                    others,
+                    &command.command_name,
+                    &command.transaction_id,
+                    &command.command_object,
+                    &mut command.others,
                 )
                 .await?;
             }
@@ -384,7 +418,7 @@ impl ServerSession {
         Ok(())
     }
 
-    pub async fn on_amf0_command_message(
+    async fn on_amf0_command_message(
         &mut self,
         stream_id: &u32,
         command_name: &Amf0ValueType,
@@ -573,9 +607,8 @@ impl ServerSession {
                         value: SessionErrorValue::NoAppName,
                     });
                 }
-                // the value can weirdly have the query params, lets just remove it
-                // example: live/stream?token=123
-                app.split(&['?', '/']).next().unwrap_or(app).to_string()
+                app.split_once(['?', '/'])
+                    .map_or_else(|| app.clone(), |(app, _)| app.to_string())
             }
             _ => {
                 return Err(SessionError {
@@ -587,21 +620,21 @@ impl ServerSession {
         let mut netconnection = NetConnection::new(Arc::clone(&self.io));
         tracing::info!("[ S->C ] [set connect_response]",);
         netconnection
-            .write_connect_response(
-                transaction_id,
-                define::FMSVER,
-                &define::CAPABILITIES,
-                &String::from("NetConnection.Connect.Success"),
-                define::LEVEL,
-                &String::from("Connection Succeeded."),
-                encoding,
-            )
+            .write_connect_response(ConnectResponse {
+                transaction_id: *transaction_id,
+                fmsver: define::FMSVER,
+                capabilities: define::CAPABILITIES,
+                code: "NetConnection.Connect.Success",
+                level: define::LEVEL,
+                description: "Connection Succeeded.",
+                encoding: *encoding,
+            })
             .await?;
 
         Ok(())
     }
 
-    pub async fn on_create_stream(&mut self, transaction_id: &f64) -> Result<(), SessionError> {
+    async fn on_create_stream(&mut self, transaction_id: &f64) -> Result<(), SessionError> {
         let mut netconnection = NetConnection::new(Arc::clone(&self.io));
         netconnection
             .write_create_stream_response(transaction_id, &define::STREAM_ID)
@@ -615,7 +648,7 @@ impl ServerSession {
         Ok(())
     }
 
-    pub async fn on_delete_stream(
+    async fn on_delete_stream(
         &mut self,
         transaction_id: &f64,
         stream_id: &f64,
@@ -651,62 +684,58 @@ impl ServerSession {
         }
     }
 
-    #[allow(clippy::never_loop)]
-    pub async fn on_play(
+    async fn on_play(
         &mut self,
         transaction_id: &f64,
         stream_id: &u32,
         other_values: &mut Vec<Amf0ValueType>,
     ) -> Result<(), SessionError> {
-        let length = u8::try_from(other_values.len()).map_err(|_| SessionError {
-            value: SessionErrorValue::Amf0ValueCountNotCorrect,
-        })?;
-        let mut index: u8 = 0;
-
-        let mut stream_name: Option<String> = None;
-        let mut start: Option<f64> = None;
-        let mut duration: Option<f64> = None;
-        let mut reset: Option<bool> = None;
-
-        loop {
-            if index >= length {
-                break;
-            }
-            index += 1;
-            stream_name = match other_values.remove(0) {
-                Amf0ValueType::UTF8String(val) => Some(val),
-                _ => None,
-            };
-
-            if index >= length {
-                break;
-            }
-            index += 1;
-            start = match other_values.remove(0) {
-                Amf0ValueType::Number(val) => Some(val),
-                _ => None,
-            };
-
-            if index >= length {
-                break;
-            }
-            index += 1;
-            duration = match other_values.remove(0) {
-                Amf0ValueType::Number(val) => Some(val),
-                _ => None,
-            };
-
-            if index >= length {
-                break;
-            }
-            //index = index + 1;
-            reset = match other_values.remove(0) {
-                Amf0ValueType::Boolean(val) => Some(val),
-                _ => None,
-            };
-            break;
+        if other_values.len() > 4 {
+            return Err(SessionError {
+                value: SessionErrorValue::InvalidAmf0ValueCount,
+            });
         }
 
+        let stream_name = remove_first_string(other_values);
+        let start = remove_first_number(other_values);
+        let duration = remove_first_number(other_values);
+        let reset = remove_first_bool(other_values);
+
+        if !other_values.is_empty() {
+            return Err(SessionError {
+                value: SessionErrorValue::InvalidAmf0ValueCount,
+            });
+        }
+
+        let stream_name = stream_name.ok_or(SessionError {
+            value: SessionErrorValue::NoStreamName,
+        })?;
+        if stream_name.len() > MAX_RTMP_STREAM_NAME_WITH_QUERY_LEN {
+            return Err(SessionError {
+                value: SessionErrorValue::NoStreamName,
+            });
+        }
+
+        self.begin_play_stream(
+            transaction_id,
+            stream_id,
+            stream_name,
+            start,
+            duration,
+            reset,
+        )
+        .await
+    }
+
+    async fn begin_play_stream(
+        &mut self,
+        transaction_id: &f64,
+        stream_id: &u32,
+        raw_stream_name: String,
+        start: Option<f64>,
+        duration: Option<f64>,
+        reset: Option<bool>,
+    ) -> Result<(), SessionError> {
         let mut event_messages = EventMessagesWriter::new(AsyncBytesWriter::new(self.io.clone()));
         event_messages.write_stream_begin(*stream_id).await?;
         tracing::info!(
@@ -755,16 +784,6 @@ impl ServerSession {
 
         event_messages.write_stream_is_record(*stream_id).await?;
 
-        let raw_stream_name = stream_name.ok_or(SessionError {
-            value: SessionErrorValue::NoStreamName,
-        })?;
-
-        if raw_stream_name.len() > MAX_RTMP_STREAM_NAME_WITH_QUERY_LEN {
-            return Err(SessionError {
-                value: SessionErrorValue::NoStreamName,
-            });
-        }
-
         (self.stream_name, self.query) =
             RtmpUrlParser::parse_stream_name_with_query(&raw_stream_name);
         if let Some(auth) = &self.auth {
@@ -787,7 +806,7 @@ impl ServerSession {
             query
         );
 
-        /*Now it can update the request url*/
+        // Publish/play command data is now available, so the session request URL can be finalized.
         self.common.request_url = self.get_request_url(&raw_stream_name);
         self.common
             .subscribe_from_stream_hub(self.app_name.clone(), self.stream_name.clone())
@@ -803,7 +822,7 @@ impl ServerSession {
         Ok(())
     }
 
-    pub async fn on_publish(
+    async fn on_publish(
         &mut self,
         transaction_id: &f64,
         stream_id: &u32,
@@ -813,7 +832,7 @@ impl ServerSession {
 
         if length < 2 {
             return Err(SessionError {
-                value: SessionErrorValue::Amf0ValueCountNotCorrect,
+                value: SessionErrorValue::InvalidAmf0ValueCount,
             });
         }
 
@@ -821,34 +840,36 @@ impl ServerSession {
             Amf0ValueType::UTF8String(val) => {
                 if val.len() > MAX_RTMP_STREAM_NAME_WITH_QUERY_LEN {
                     return Err(SessionError {
-                        value: SessionErrorValue::Amf0ValueCountNotCorrect,
+                        value: SessionErrorValue::InvalidAmf0ValueCount,
                     });
                 }
                 val
             }
             _ => {
                 return Err(SessionError {
-                    value: SessionErrorValue::Amf0ValueCountNotCorrect,
+                    value: SessionErrorValue::InvalidAmf0ValueCount,
                 });
             }
         };
 
         if stream_name_with_query.is_empty() {
-            tracing::warn!(
-                "stream_name_with_query is empty, extracing info from swf_url instead..."
-            );
-            let mut url =
-                RtmpUrlParser::new(self.connect_properties.swf_url.clone().unwrap_or_default());
+            let Some(swf_url) = self.connect_properties.swf_url.as_ref() else {
+                return Err(SessionError {
+                    value: SessionErrorValue::NoStreamName,
+                });
+            };
 
-            match url.parse_url() {
-                Ok(()) => {
-                    self.stream_name = url.stream_name;
-                    self.query = url.query;
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to parse swf_url: {e}");
-                }
+            let mut url = RtmpUrlParser::new(swf_url.clone());
+            url.parse_url().map_err(|e| SessionError {
+                value: SessionErrorValue::AuthFailed(format!("invalid swf_url: {e}")),
+            })?;
+            if url.stream_name.is_empty() {
+                return Err(SessionError {
+                    value: SessionErrorValue::NoStreamName,
+                });
             }
+            self.stream_name = url.stream_name;
+            self.query = url.query;
         } else {
             (self.stream_name, self.query) =
                 RtmpUrlParser::parse_stream_name_with_query(&stream_name_with_query);
@@ -876,12 +897,12 @@ impl ServerSession {
             }
         }
 
-        /*Now it can update the request url*/
+        // Publish/play command data is now available, so the session request URL can be finalized.
         self.common.request_url = self.get_request_url(&stream_name_with_query);
 
         let Amf0ValueType::UTF8String(_) = other_values.remove(0) else {
             return Err(SessionError {
-                value: SessionErrorValue::Amf0ValueCountNotCorrect,
+                value: SessionErrorValue::InvalidAmf0ValueCount,
             });
         };
 
@@ -986,8 +1007,8 @@ mod tests {
     };
     use tokio::time::timeout;
 
-    use crate::bytesio::bytesio::{NetType, TNetIO};
-    use crate::bytesio::bytesio_errors::BytesIOError;
+    use crate::bytesio::bytesio_errors::{BytesIOError, BytesIOErrorValue};
+    use crate::bytesio::net_io::{NetType, TNetIO};
     use crate::streamhub::define::STREAM_HUB_EVENT_CHANNEL_CAPACITY;
 
     struct ChunkedNetIo {
@@ -1011,7 +1032,9 @@ mod tests {
         }
 
         async fn read(&mut self) -> Result<BytesMut, BytesIOError> {
-            Ok(self.reads.pop_front().unwrap_or_default())
+            self.reads.pop_front().ok_or(BytesIOError {
+                value: BytesIOErrorValue::ConnectionClosed,
+            })
         }
 
         async fn read_timeout(&mut self, _duration: Duration) -> Result<BytesMut, BytesIOError> {
@@ -1098,9 +1121,7 @@ mod tests {
 
     fn build_c0c1() -> Vec<u8> {
         let mut data = Vec::with_capacity(1 + handshake::define::RTMP_HANDSHAKE_SIZE);
-        data.push(
-            u8::try_from(handshake::define::RTMP_VERSION).expect("RTMP version must fit in u8"),
-        );
+        data.push(handshake::define::RTMP_VERSION);
         data.extend_from_slice(&12345_u32.to_be_bytes());
         data.extend_from_slice(&[0u8; 4]);
         data.extend(

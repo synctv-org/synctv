@@ -1,11 +1,9 @@
 //! Playback state machine transition tests.
 
-#![allow(clippy::unwrap_used)]
-
 use std::sync::Arc;
 
 use synctv_core::repository::UserRepository;
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, TestResultExt};
 
 mod playback_state_machine_support;
 
@@ -18,7 +16,10 @@ async fn test_initial_state_is_stopped() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("sm_initial")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("sm_initial"))
+        .await
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -29,10 +30,13 @@ async fn test_initial_state_is_stopped() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let playback_service = room_service.playback_service();
-    let state = playback_service.get_state(&room.id).await.unwrap();
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("operation should succeed");
 
     assert!(!state.is_playing);
     assert!((state.position - 0.0).abs() < f64::EPSILON);
@@ -47,7 +51,10 @@ async fn test_stopped_to_playing_transition() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("sm_play")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("sm_play"))
+        .await
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -58,13 +65,13 @@ async fn test_stopped_to_playing_transition() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let state = room_service
         .playback_service()
         .set_playing(room.id, owner.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     assert!(state.is_playing);
 }
@@ -76,7 +83,10 @@ async fn test_playing_to_paused_transition() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("sm_pause")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("sm_pause"))
+        .await
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -87,18 +97,18 @@ async fn test_playing_to_paused_transition() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let playback_service = room_service.playback_service();
     playback_service
         .set_playing(room.id, owner.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let state = playback_service
         .set_playing(room.id, owner.id, false)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     assert!(!state.is_playing);
 }
@@ -110,7 +120,10 @@ async fn test_paused_to_playing_transition() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("sm_resume")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("sm_resume"))
+        .await
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -121,22 +134,22 @@ async fn test_paused_to_playing_transition() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let playback_service = room_service.playback_service();
     playback_service
         .set_playing(room.id, owner.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     playback_service
         .set_playing(room.id, owner.id, false)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let state = playback_service
         .set_playing(room.id, owner.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     assert!(state.is_playing);
 }
@@ -148,7 +161,10 @@ async fn test_state_transition_matrix_all_valid() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("sm_matrix")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("sm_matrix"))
+        .await
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -159,44 +175,44 @@ async fn test_state_transition_matrix_all_valid() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let playback_service = room_service.playback_service();
 
     let state = playback_service
         .set_playing(room.id, owner.id, false)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert!(!state.is_playing);
 
     let state = playback_service
         .set_playing(room.id, owner.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert!(state.is_playing);
 
     let state = playback_service
         .set_playing(room.id, owner.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert!(state.is_playing);
 
     let state = playback_service
         .set_playing(room.id, owner.id, false)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert!(!state.is_playing);
 
     let state = playback_service
         .set_playing(room.id, owner.id, false)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert!(!state.is_playing);
 
     let state = playback_service
         .set_playing(room.id, owner.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert!(state.is_playing);
 }
 
@@ -207,7 +223,10 @@ async fn test_rapid_state_transitions() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("sm_toggle")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("sm_toggle"))
+        .await
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -218,7 +237,7 @@ async fn test_rapid_state_transitions() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let playback_service = room_service.playback_service();
 
@@ -227,11 +246,14 @@ async fn test_rapid_state_transitions() {
         let state = playback_service
             .set_playing(room.id, owner.id, playing)
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         assert_eq!(state.is_playing, playing);
     }
 
-    let final_state = playback_service.get_state(&room.id).await.unwrap();
+    let final_state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("operation should succeed");
     assert!(!final_state.is_playing);
 }

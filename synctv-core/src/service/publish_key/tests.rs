@@ -4,8 +4,32 @@ use crate::test_helpers::failing_redis_runtime;
 use async_trait::async_trait;
 use std::time::Duration;
 
+fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
+fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
+    match result {
+        Ok(_) => std::panic::panic_any(context.to_string()),
+        Err(error) => error,
+    }
+}
+
+fn joined<T>(result: std::result::Result<T, tokio::task::JoinError>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
 fn create_jwt_service() -> JwtService {
-    JwtService::new("test-secret-key-for-publish-key-tests-long-enough-1234567890").unwrap()
+    ok(
+        JwtService::new("test-secret-key-for-publish-key-tests-long-enough-1234567890"),
+        "JWT service should build",
+    )
 }
 
 #[tokio::test]
@@ -28,7 +52,7 @@ async fn test_redis_jti_store_snapshot_timeout_fails_closed() {
     impl RedisConnectionRuntime for HangingRedisRuntime {
         async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
             tokio::time::sleep(Duration::from_mins(1)).await;
-            panic!("snapshot timeout should cancel this future")
+            std::panic::panic_any("snapshot timeout should cancel this future")
         }
 
         fn operation_timeout(&self) -> Duration {
@@ -42,10 +66,10 @@ async fn test_redis_jti_store_snapshot_timeout_fails_closed() {
         3600,
     );
 
-    let error = store
-        .try_claim("jti-timeout", 60)
-        .await
-        .expect_err("fail-closed publish-key JTI store should reject Redis timeouts");
+    let error = err(
+        store.try_claim("jti-timeout", 60).await,
+        "fail-closed publish-key JTI store should reject Redis timeouts",
+    );
 
     assert!(
         matches!(error, Error::Timeout(ref msg) if msg == "Redis timeout: claim publish-key JTI"),
@@ -55,20 +79,24 @@ async fn test_redis_jti_store_snapshot_timeout_fails_closed() {
 
 #[tokio::test]
 async fn test_publish_key_service_supports_service_trait_object() {
-    let service: Arc<dyn StreamingPublishKeyService> = Arc::new(
-        PublishKeyService::new(create_jwt_service(), 24).expect("publish key service should build"),
-    );
+    let service: Arc<dyn StreamingPublishKeyService> = Arc::new(ok(
+        PublishKeyService::new(create_jwt_service(), 24),
+        "publish key service should build",
+    ));
     let room_id = RoomId::expect_positive(40_001);
     let media_id = MediaId::expect_positive(40_002);
     let user_id = UserId::expect_positive(40_003);
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .expect("trait-object publish key service should generate key");
-    let claims = service
-        .validate_publish_key_for_stream_claims(&key.token, &room_id, &media_id)
-        .await
-        .expect("trait-object publish key service should validate key");
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "trait-object publish key service should generate key",
+    );
+    let claims = ok(
+        service
+            .validate_publish_key_for_stream_claims(&key.token, &room_id, &media_id)
+            .await,
+        "trait-object publish key service should validate key",
+    );
 
     assert_eq!(claims.room_id, room_id.to_string());
     assert_eq!(claims.media_id, media_id.to_string());
@@ -76,22 +104,27 @@ async fn test_publish_key_service_supports_service_trait_object() {
 }
 
 #[tokio::test]
-async fn test_streaming_publish_key_service_from_shared_state_profile_returns_live_trait_object() {
+async fn test_publish_key_shared_state_builder_returns_live_service() {
     let jwt = create_jwt_service();
-    let profile = SharedStateProfile::from_runtime(None, "trait-test:", false);
-    let service = streaming_publish_key_service_from_shared_state_profile(jwt, 12, &profile)
-        .expect("standalone mode should allow local publish-key service");
+    let profile = SharedStateProfile::for_cluster_runtime(None, "trait-test:", false);
+    let service = ok(
+        PublishKeyService::from_shared_state_profile(jwt, 12, &profile),
+        "standalone mode should allow local publish-key service",
+    );
     let room_id = RoomId::expect_positive(40_004);
     let media_id = MediaId::expect_positive(40_005);
     let user_id = UserId::expect_positive(40_006);
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .expect("builder should return a live publish-key service");
-    let claims = service
-        .validate_publish_key_for_stream_claims(&key.token, &room_id, &media_id)
-        .await
-        .expect("generated key should validate through the trait object");
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "shared-state builder should return a live publish-key service",
+    );
+    let claims = ok(
+        service
+            .validate_publish_key_for_stream_claims(&key.token, &room_id, &media_id)
+            .await,
+        "generated key should validate through the built service",
+    );
 
     assert_eq!(claims.room_id, room_id.to_string());
     assert_eq!(claims.media_id, media_id.to_string());
@@ -99,13 +132,11 @@ async fn test_streaming_publish_key_service_from_shared_state_profile_returns_li
 }
 
 #[test]
-fn test_streaming_publish_key_service_from_shared_state_profile_requires_shared_runtime_in_cluster_mode(
-) {
+fn test_publish_key_shared_state_builder_requires_shared_runtime_in_cluster_mode() {
     let jwt = create_jwt_service();
-    let profile = SharedStateProfile::from_runtime(None, "trait-test:", true);
-    let Err(error) = streaming_publish_key_service_from_shared_state_profile(jwt, 12, &profile)
-    else {
-        panic!("cluster runtime must reject local publish-key deduplication");
+    let profile = SharedStateProfile::for_cluster_runtime(None, "trait-test:", true);
+    let Err(error) = PublishKeyService::from_shared_state_profile(jwt, 12, &profile) else {
+        std::panic::panic_any("cluster runtime must reject local publish-key deduplication");
     };
 
     assert!(
@@ -118,12 +149,18 @@ fn test_streaming_publish_key_service_from_shared_state_profile_requires_shared_
 
 fn create_publish_key_service() -> PublishKeyService {
     let jwt = create_jwt_service();
-    PublishKeyService::new(jwt, 24).expect("publish key service should build")
+    ok(
+        PublishKeyService::new(jwt, 24),
+        "publish key service should build",
+    )
 }
 
 fn create_publish_key_service_with_ttl(ttl_hours: i64) -> PublishKeyService {
     let jwt = create_jwt_service();
-    PublishKeyService::new(jwt, ttl_hours).expect("publish key service should build")
+    ok(
+        PublishKeyService::new(jwt, ttl_hours),
+        "publish key service should build",
+    )
 }
 
 #[tokio::test]
@@ -133,9 +170,10 @@ async fn test_generate_publish_key_returns_valid_token() {
     let media_id = MediaId::new();
     let user_id = UserId::new();
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
 
     assert!(!key.token.is_empty());
     assert_eq!(key.room_id, room_id.to_string());
@@ -151,11 +189,12 @@ async fn test_generate_publish_key_expiration_matches_ttl() {
     let media_id = MediaId::new();
     let user_id = UserId::new();
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
 
-    let now = unix_timestamp_now().unwrap();
+    let now = ok(unix_timestamp_now(), "current timestamp should load");
 
     let expected_exp = now + (2 * 3600);
     let diff = (key.expires_at - expected_exp).abs();
@@ -172,11 +211,15 @@ async fn test_validate_publish_key_valid_token() {
     let media_id = MediaId::new();
     let user_id = UserId::new();
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
 
-    let claims = service.validate_publish_key(&key.token).await.unwrap();
+    let claims = ok(
+        service.validate_publish_key(&key.token).await,
+        "publish key should validate",
+    );
 
     assert_eq!(claims.room_id, room_id.to_string());
     assert_eq!(claims.media_id, media_id.to_string());
@@ -194,12 +237,14 @@ async fn test_validate_publish_key_invalid_token() {
 #[tokio::test]
 async fn test_validate_publish_key_rejects_expired_token() {
     let jwt_service = create_jwt_service();
-    let service =
-        PublishKeyService::new(jwt_service.clone(), 24).expect("publish key service should build");
-    let now = unix_timestamp_now().unwrap();
+    let service = ok(
+        PublishKeyService::new(jwt_service.clone(), 24),
+        "publish key service should build",
+    );
+    let now = ok(unix_timestamp_now(), "current timestamp should load");
 
-    let token = jwt_service
-        .sign_custom(&serde_json::json!({
+    let token = ok(
+        jwt_service.sign_custom(&serde_json::json!({
             "room_id": RoomId::new().to_string(),
             "media_id": MediaId::new().to_string(),
             "user_id": UserId::new().to_string(),
@@ -207,8 +252,9 @@ async fn test_validate_publish_key_rejects_expired_token() {
             "iat": now - 7200,
             "exp": now - 3600,
             "jti": "expired_publish_key_test",
-        }))
-        .unwrap();
+        })),
+        "expired token should sign",
+    );
 
     let result = service.validate_publish_key(&token).await;
 
@@ -221,19 +267,25 @@ async fn test_validate_publish_key_rejects_expired_token() {
 #[tokio::test]
 async fn test_validate_publish_key_wrong_secret() {
     let service1 = create_publish_key_service();
-    let service2 = PublishKeyService::new(
-        JwtService::new("different-secret-key-for-tests-abcdef-long-enough-1234567890").unwrap(),
-        24,
-    )
-    .expect("publish key service should build");
+    let service2 = ok(
+        PublishKeyService::new(
+            ok(
+                JwtService::new("different-secret-key-for-tests-abcdef-long-enough-1234567890"),
+                "different JWT service should build",
+            ),
+            24,
+        ),
+        "publish key service should build",
+    );
 
     let room_id = RoomId::new();
     let media_id = MediaId::new();
     let user_id = UserId::new();
 
-    let key = service1
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key = ok(
+        service1.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
 
     let result = service2.validate_publish_key(&key.token).await;
     assert!(result.is_err());
@@ -246,14 +298,17 @@ async fn test_verify_publish_key_for_stream_matching() {
     let media_id = MediaId::new();
     let user_id = UserId::new();
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
 
-    let returned_user_id = service
-        .verify_publish_key_for_stream(&key.token, &room_id, &media_id)
-        .await
-        .unwrap();
+    let returned_user_id = ok(
+        service
+            .verify_publish_key_for_stream(&key.token, &room_id, &media_id)
+            .await,
+        "publish key should verify for matching stream",
+    );
 
     assert_eq!(returned_user_id, user_id);
 }
@@ -266,9 +321,10 @@ async fn test_verify_publish_key_for_stream_wrong_room() {
     let user_id = UserId::new();
     let wrong_room_id = RoomId::new();
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
 
     let result = service
         .verify_publish_key_for_stream(&key.token, &wrong_room_id, &media_id)
@@ -277,7 +333,7 @@ async fn test_verify_publish_key_for_stream_wrong_room() {
     if let Err(Error::Authorization(msg)) = result {
         assert!(msg.contains("room mismatch"));
     } else {
-        panic!("Expected Authorization error with room mismatch");
+        std::panic::panic_any("Expected Authorization error with room mismatch");
     }
 }
 
@@ -289,9 +345,10 @@ async fn test_verify_publish_key_for_stream_wrong_media() {
     let user_id = UserId::new();
     let wrong_media_id = MediaId::new();
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
 
     let result = service
         .verify_publish_key_for_stream(&key.token, &room_id, &wrong_media_id)
@@ -300,7 +357,7 @@ async fn test_verify_publish_key_for_stream_wrong_media() {
     if let Err(Error::Authorization(msg)) = result {
         assert!(msg.contains("media mismatch"));
     } else {
-        panic!("Expected Authorization error with media mismatch");
+        std::panic::panic_any("Expected Authorization error with media mismatch");
     }
 }
 
@@ -312,9 +369,10 @@ async fn test_verify_publish_key_room_mismatch_does_not_consume_token() {
     let user_id = UserId::new();
     let wrong_room_id = RoomId::new();
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
 
     let first_attempt = service
         .verify_publish_key_for_stream(&key.token, &wrong_room_id, &media_id)
@@ -331,7 +389,13 @@ async fn test_verify_publish_key_room_mismatch_does_not_consume_token() {
         second_attempt.is_ok(),
         "room mismatch must not consume an otherwise valid publish key"
     );
-    assert_eq!(second_attempt.unwrap(), user_id);
+    assert_eq!(
+        ok(
+            second_attempt,
+            "second attempt should verify after room mismatch"
+        ),
+        user_id
+    );
 }
 
 #[tokio::test]
@@ -342,9 +406,10 @@ async fn test_verify_publish_key_media_mismatch_does_not_consume_token() {
     let user_id = UserId::new();
     let wrong_media_id = MediaId::new();
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
 
     let first_attempt = service
         .verify_publish_key_for_stream(&key.token, &room_id, &wrong_media_id)
@@ -361,7 +426,13 @@ async fn test_verify_publish_key_media_mismatch_does_not_consume_token() {
         second_attempt.is_ok(),
         "media mismatch must not consume an otherwise valid publish key"
     );
-    assert_eq!(second_attempt.unwrap(), user_id);
+    assert_eq!(
+        ok(
+            second_attempt,
+            "second attempt should verify after media mismatch"
+        ),
+        user_id
+    );
 }
 
 #[test]
@@ -376,8 +447,10 @@ fn test_publish_claims_require_live_control_claim_name() {
         "jti": "unique-id",
     });
 
-    let error = serde_json::from_value::<PublishClaims>(old_claim)
-        .expect_err("perm_start_live is not a supported publish claim");
+    let error = err(
+        serde_json::from_value::<PublishClaims>(old_claim),
+        "perm_start_live is not a supported publish claim",
+    );
     assert!(
         error.to_string().contains("perm_live_control"),
         "unexpected error: {error}"
@@ -391,9 +464,10 @@ async fn test_validate_publish_key_single_use() {
     let media_id = MediaId::new();
     let user_id = UserId::new();
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
 
     let result = service.validate_publish_key(&key.token).await;
     assert!(result.is_ok());
@@ -406,7 +480,7 @@ async fn test_validate_publish_key_single_use() {
             "Expected single-use error, got: {msg}"
         );
     } else {
-        panic!("Expected Authentication error for replay");
+        std::panic::panic_any("Expected Authentication error for replay");
     }
 }
 
@@ -417,12 +491,14 @@ async fn test_generate_publish_key_unique_jti() {
     let media_id = MediaId::new();
     let user_id = UserId::new();
 
-    let key1 = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
-    let key2 = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key1 = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "first publish key should be generated",
+    );
+    let key2 = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "second publish key should be generated",
+    );
 
     assert_ne!(key1.token, key2.token);
 }
@@ -436,8 +512,10 @@ async fn test_in_memory_jti_store_is_local_only() {
 
 #[test]
 fn test_publish_key_service_debug_reports_capabilities_not_backend_names() {
-    let service =
-        PublishKeyService::new(create_jwt_service(), 24).expect("publish key service should build");
+    let service = ok(
+        PublishKeyService::new(create_jwt_service(), 24),
+        "publish key service should build",
+    );
     let debug = format!("{service:?}");
 
     assert!(debug.contains("cross_node_single_use: false"));
@@ -451,9 +529,18 @@ fn test_publish_key_service_debug_reports_capabilities_not_backend_names() {
 async fn test_in_memory_jti_store_claim_and_reject() {
     let store = InMemoryJtiStore::new(3600);
 
-    assert!(store.try_claim("jti-1", 3600).await.unwrap());
-    assert!(!store.try_claim("jti-1", 3600).await.unwrap());
-    assert!(store.try_claim("jti-2", 3600).await.unwrap());
+    assert!(ok(
+        store.try_claim("jti-1", 3600).await,
+        "first JTI should claim"
+    ));
+    assert!(!ok(
+        store.try_claim("jti-1", 3600).await,
+        "duplicate JTI claim should complete"
+    ));
+    assert!(ok(
+        store.try_claim("jti-2", 3600).await,
+        "second JTI should claim"
+    ));
 
     assert!(store.is_claimed("jti-1").await);
     assert!(store.is_claimed("jti-2").await);
@@ -484,13 +571,16 @@ async fn test_in_memory_jti_store_concurrent_try_claim_only_one_succeeds() {
         let store = store.clone();
         let jti = jti.to_string();
         handles.push(tokio::spawn(async move {
-            store.try_claim(&jti, 3600).await.unwrap()
+            ok(
+                store.try_claim(&jti, 3600).await,
+                "JTI claim should complete",
+            )
         }));
     }
 
     let mut success_count = 0u32;
     for handle in handles {
-        if handle.await.unwrap() {
+        if joined(handle.await, "JTI claim task should join") {
             success_count += 1;
         }
     }
@@ -508,9 +598,10 @@ async fn test_validate_publish_key_rejects_banned_user() {
     let media_id = MediaId::new();
     let user_id = UserId::new();
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
 
     let result = service
         .verify_publish_key_for_stream_checked(&key.token, &room_id, &media_id, |_uid| {
@@ -525,7 +616,7 @@ async fn test_validate_publish_key_rejects_banned_user() {
             "Error should mention ban; got: {msg}"
         );
     } else {
-        panic!("Expected Authorization error, got: {result:?}");
+        std::panic::panic_any(format!("Expected Authorization error, got: {result:?}"));
     }
 }
 
@@ -536,9 +627,10 @@ async fn test_validate_publish_key_user_validator_failure_does_not_consume_token
     let media_id = MediaId::new();
     let user_id = UserId::new();
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
 
     let first_attempt = service
         .verify_publish_key_for_stream_checked(&key.token, &room_id, &media_id, |_uid| {
@@ -557,7 +649,13 @@ async fn test_validate_publish_key_user_validator_failure_does_not_consume_token
         second_attempt.is_ok(),
         "validator failure should leave the token reusable"
     );
-    assert_eq!(second_attempt.unwrap(), user_id);
+    assert_eq!(
+        ok(
+            second_attempt,
+            "second attempt should verify after validator failure"
+        ),
+        user_id
+    );
 }
 
 #[tokio::test]
@@ -567,16 +665,17 @@ async fn test_validate_publish_key_accepts_active_user() {
     let media_id = MediaId::new();
     let user_id = UserId::new();
 
-    let key = service
-        .generate_publish_key(&room_id, &media_id, &user_id)
-        .unwrap();
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
 
     let result = service
         .verify_publish_key_for_stream_checked(&key.token, &room_id, &media_id, |_uid| Ok(()))
         .await;
 
     assert!(result.is_ok(), "Should accept active user");
-    assert_eq!(result.unwrap(), user_id);
+    assert_eq!(ok(result, "active user should verify"), user_id);
 }
 
 #[tokio::test]

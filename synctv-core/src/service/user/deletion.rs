@@ -91,6 +91,11 @@ impl UserService {
         user_id: &UserId,
         deleted_room_outbox_events: HashMap<RoomId, NewRealtimeOutboxEvent>,
     ) -> Result<UserDeletionSummary> {
+        Self::validate_deleted_room_outbox_config(
+            self.realtime_outbox.is_some(),
+            &deleted_room_outbox_events,
+        )?;
+
         // 1. Transactional DB cleanup + soft-delete
         let pool = self.repository.pool();
         let mut tx = pool.begin().await?;
@@ -222,6 +227,19 @@ impl UserService {
 
     pub async fn delete_user(&self, user_id: &UserId) -> Result<()> {
         self.delete_user_with_summary(user_id).await.map(|_| ())
+    }
+
+    fn validate_deleted_room_outbox_config(
+        realtime_outbox_configured: bool,
+        deleted_room_outbox_events: &HashMap<RoomId, NewRealtimeOutboxEvent>,
+    ) -> Result<()> {
+        if !deleted_room_outbox_events.is_empty() && !realtime_outbox_configured {
+            return Err(Error::Internal(
+                "deleted room outbox events were provided but realtime outbox is not configured"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     pub async fn is_user_banned(&self, user_id: &UserId) -> Result<bool> {
@@ -366,6 +384,26 @@ impl UserService {
 mod tests {
     use super::*;
 
+    fn test_outbox_event(room_id: RoomId) -> NewRealtimeOutboxEvent {
+        NewRealtimeOutboxEvent {
+            id: format!("event-{room_id}"),
+            enqueue_outbox: true,
+            aggregate_type: "room".to_string(),
+            aggregate_id: room_id.to_string(),
+            event_type: "room_deleted".to_string(),
+            event_version: 1,
+            aggregate_version: None,
+            payload: serde_json::json!({ "room_id": room_id.to_string() }),
+        }
+    }
+
+    fn test_index_to_user_id(index: usize) -> UserId {
+        match i64::try_from(index + 1) {
+            Ok(value) => UserId::expect_positive(value),
+            Err(error) => std::panic::panic_any(format!("test id fits i64: {error}")),
+        }
+    }
+
     #[test]
     fn batch_delete_users_rejects_empty_input() {
         let err = UserService::validate_batch_delete_users(&[])
@@ -377,12 +415,38 @@ mod tests {
     #[test]
     fn batch_delete_users_rejects_oversized_input() {
         let user_ids: Vec<UserId> = (0..=UserService::BATCH_SIZE_LIMIT)
-            .map(|i| UserId::expect_positive(i64::try_from(i + 1).expect("test id fits i64")))
+            .map(test_index_to_user_id)
             .collect();
 
         let err = UserService::validate_batch_delete_users(&user_ids)
             .expect_err("oversized batch should be rejected");
 
         assert!(matches!(err, Error::InvalidInput(message) if message.contains("exceeds limit")));
+    }
+
+    #[test]
+    fn deleted_room_outbox_config_allows_empty_events_without_outbox() {
+        UserService::validate_deleted_room_outbox_config(false, &HashMap::new())
+            .expect("empty outbox event set should not require realtime outbox");
+    }
+
+    #[test]
+    fn deleted_room_outbox_config_allows_events_with_outbox() {
+        let room_id = RoomId::expect_positive(1);
+        let events = HashMap::from([(room_id, test_outbox_event(room_id))]);
+
+        UserService::validate_deleted_room_outbox_config(true, &events)
+            .expect("configured realtime outbox should accept prepared events");
+    }
+
+    #[test]
+    fn deleted_room_outbox_config_rejects_events_without_outbox() {
+        let room_id = RoomId::expect_positive(1);
+        let events = HashMap::from([(room_id, test_outbox_event(room_id))]);
+
+        let err = UserService::validate_deleted_room_outbox_config(false, &events)
+            .expect_err("prepared events require realtime outbox persistence");
+
+        assert!(matches!(err, Error::Internal(message) if message.contains("realtime outbox")));
     }
 }

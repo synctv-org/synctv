@@ -61,7 +61,7 @@ async fn send_frame_with_backpressure(
 }
 /// gRPC Stream Puller
 /// Pulls RTMP stream from remote Publisher node via gRPC and publishes to local `StreamHub`
-pub struct GrpcStreamPuller {
+pub(crate) struct GrpcStreamPuller {
     room_id: String,
     media_id: String,
     publisher_node_addr: String,
@@ -80,12 +80,10 @@ pub struct GrpcStreamPuller {
 impl GrpcStreamPuller {
     /// Create a new puller with a shared connection pool.
     ///
-    /// A shared pool MUST be provided to reuse HTTP/2 connections to publisher
-    /// nodes across retry attempts and across different pull streams targeting
-    /// the same node. Creating a pool per-instance wastes resources and defeats
-    /// connection pooling.
+    /// A shared pool reuses HTTP/2 connections across pull streams targeting
+    /// the same node.
     #[must_use]
-    pub const fn new(
+    pub(crate) const fn new(
         room_id: String,
         media_id: String,
         publisher_node_addr: String,
@@ -108,21 +106,24 @@ impl GrpcStreamPuller {
 
     /// Set the cluster authentication secret for inter-node gRPC requests.
     #[must_use]
-    pub fn with_cluster_secret(mut self, secret: Option<String>) -> Self {
+    pub(crate) fn with_cluster_secret(mut self, secret: Option<String>) -> Self {
         self.cluster_secret = secret;
         self
     }
 
     /// Set the maximum gRPC message size for relay stream messages.
     #[must_use]
-    pub const fn with_grpc_max_message_size(mut self, max_message_size_bytes: usize) -> Self {
+    pub(crate) const fn with_grpc_max_message_size(
+        mut self,
+        max_message_size_bytes: usize,
+    ) -> Self {
         self.grpc_max_message_size_bytes = max_message_size_bytes;
         self
     }
 
     /// Enable or disable gzip compression negotiation for relay stream calls.
     #[must_use]
-    pub const fn with_grpc_compression(mut self, enabled: bool) -> Self {
+    pub(crate) const fn with_grpc_compression(mut self, enabled: bool) -> Self {
         self.grpc_compression_enabled = enabled;
         self
     }
@@ -138,28 +139,9 @@ impl GrpcStreamPuller {
             .map_err(|_| anyhow::anyhow!("Invalid cluster secret format"))
     }
 
-    /// Run the puller: connect to remote, pull stream, publish to local `StreamHub`.
-    ///
-    /// Adds exponential-backoff retry logic so a transient network hiccup
-    /// does not permanently disconnect the stream.
-    ///
-    /// Retry policy:
-    /// - Initial delay: 1 second; doubles on each failure up to `MAX_RETRY_DELAY_SECS`.
-    /// - Maximum attempts: `MAX_RETRY_ATTEMPTS` (configurable default: 10).
-    /// - Before each retry, the publisher epoch is re-validated. If the epoch has
-    ///   changed (publisher restarted on a different node) retrying is pointless and
-    ///   the puller stops immediately.
-    ///
-    /// After exhausting all retries the final error is returned so the caller
-    /// (`PullStreamManager`) can clean up state.
-    pub async fn run(mut self) -> anyhow::Result<()> {
-        /// Initial retry backoff delay in seconds.
-        const INITIAL_RETRY_DELAY_SECS: u64 = 1;
-        /// Maximum retry backoff delay in seconds.
-        const MAX_RETRY_DELAY_SECS: u64 = 30;
-        /// Maximum number of connection attempts (first attempt + retries).
-        const MAX_RETRY_ATTEMPTS: u32 = 10;
-
+    /// Run one pull session: publish locally, connect to the remote publisher,
+    /// forward frames, then unpublish from the local `StreamHub`.
+    pub(crate) async fn run(mut self) -> anyhow::Result<()> {
         info!(
             room_id = %self.room_id,
             media_id = %self.media_id,
@@ -170,8 +152,7 @@ impl GrpcStreamPuller {
 
         self.cluster_secret_metadata()?;
 
-        // Publish to local StreamHub to get a frame data sender.
-        // This is done once — we keep the same local publication across retries.
+        // Publish to local StreamHub to get a frame data sender for this pull session.
         let data_sender = match self.publish_to_local_stream_hub().await {
             Ok(sender) => sender,
             Err(e) => {
@@ -183,54 +164,7 @@ impl GrpcStreamPuller {
             }
         };
 
-        let mut attempt: u32 = 0;
-        let mut delay_secs = INITIAL_RETRY_DELAY_SECS;
-
-        let result = loop {
-            if attempt > 0 {
-                // Exponential backoff before retry.
-                // NOTE: Publisher epoch re-validation on retry is handled by the outer
-                // PullStream rebuild loop (in pull_stream.rs), which has registry access.
-                // GrpcStreamPuller intentionally does not carry a registry reference to
-                // keep responsibilities separated.
-                warn!(
-                    room_id = %self.room_id,
-                    media_id = %self.media_id,
-                    "Retrying gRPC stream pull after {}s backoff (attempt {}/{})",
-                    delay_secs, attempt, MAX_RETRY_ATTEMPTS
-                );
-                tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
-                // Exponential backoff: double delay up to max
-                delay_secs = (delay_secs * 2).min(MAX_RETRY_DELAY_SECS);
-            }
-
-            let is_reconnect = attempt > 0;
-            attempt += 1;
-
-            match self.connect_and_stream(&data_sender, is_reconnect).await {
-                Ok(()) => {
-                    // Stream ended normally
-                    break Ok(());
-                }
-                Err(e) => {
-                    if attempt >= MAX_RETRY_ATTEMPTS {
-                        error!(
-                            room_id = %self.room_id,
-                            media_id = %self.media_id,
-                            "gRPC stream puller exhausted all {} retry attempts: {}",
-                            MAX_RETRY_ATTEMPTS, e
-                        );
-                        break Err(e);
-                    }
-                    warn!(
-                        room_id = %self.room_id,
-                        media_id = %self.media_id,
-                        "gRPC connection attempt {} failed: {}. Will retry ({} attempts remaining).",
-                        attempt, e, MAX_RETRY_ATTEMPTS - attempt
-                    );
-                }
-            }
-        };
+        let result = self.connect_and_stream(&data_sender).await;
 
         // Always clean up local StreamHub publication before returning
         if let Err(e) = self.unpublish_from_local_stream_hub().await {
@@ -250,7 +184,7 @@ impl GrpcStreamPuller {
                 warn!(
                     room_id = %self.room_id,
                     media_id = %self.media_id,
-                    "Stream pull ended with error after retries: {e}"
+                    "Stream pull ended with error: {e}"
                 );
                 Err(e)
             }
@@ -261,14 +195,10 @@ impl GrpcStreamPuller {
     /// Returns `Ok(())` when the stream ends normally, `Err` on connection or protocol failure.
     ///
     /// Uses the shared [`GrpcConnectionPool`] to reuse HTTP/2 connections across
-    /// retry attempts and across different pull streams targeting the same node.
+    /// pull streams targeting the same node.
     /// On connection failure, the pooled entry is invalidated so the next attempt
     /// creates a fresh connection.
-    async fn connect_and_stream(
-        &self,
-        data_sender: &FrameDataSender,
-        is_reconnect: bool,
-    ) -> anyhow::Result<()> {
+    async fn connect_and_stream(&self, data_sender: &FrameDataSender) -> anyhow::Result<()> {
         let cluster_secret = self.cluster_secret_metadata()?;
 
         let channel = self
@@ -276,8 +206,6 @@ impl GrpcStreamPuller {
             .get_channel(&self.publisher_node_addr)
             .await
             .map_err(|e| {
-                self.connection_pool
-                    .record_connection_error(&self.publisher_node_addr);
                 self.connection_pool.invalidate(&self.publisher_node_addr);
                 anyhow::anyhow!("Failed to connect to publisher: {e}")
             })?;
@@ -296,7 +224,7 @@ impl GrpcStreamPuller {
         let mut request = Request::new(PullRtmpStreamRequest {
             room_id: self.room_id.clone(),
             media_id: self.media_id.clone(),
-            is_reconnect,
+            is_reconnect: false,
             expected_epoch: self.expected_epoch,
         });
 
@@ -308,8 +236,7 @@ impl GrpcStreamPuller {
         let mut stream = match stream_result {
             Ok(response) => response.into_inner(),
             Err(e) => {
-                self.connection_pool
-                    .record_connection_error(&self.publisher_node_addr);
+                self.connection_pool.invalidate(&self.publisher_node_addr);
                 return Err(anyhow::anyhow!("Failed to pull stream: {e}"));
             }
         };
@@ -355,8 +282,7 @@ impl GrpcStreamPuller {
                 }
                 Ok(None) => break, // Stream ended normally
                 Err(e) => {
-                    self.connection_pool
-                        .record_connection_error(&self.publisher_node_addr);
+                    self.connection_pool.invalidate(&self.publisher_node_addr);
                     if dropped_frames >= drop_log_interval {
                         warn!(
                             room_id = %self.room_id,
@@ -460,6 +386,12 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::mpsc;
 
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
+    }
+
     const TEST_STREAM_MESSAGE_TIMEOUT: Duration = Duration::from_millis(50);
     #[tokio::test]
     async fn test_puller_creation() {
@@ -550,174 +482,6 @@ mod tests {
         );
     }
 
-    /// Test that connection pool health tracking works correctly.
-    /// This test verifies that the pool's `get_error_count` method returns
-    /// the correct error count after calling `record_connection_error`.
-    #[tokio::test]
-    async fn test_connection_pool_health_tracking() {
-        let pool = GrpcConnectionPool::with_defaults();
-        let addr = "127.0.0.1:65535"; // Non-existent server
-
-        // Attempt to get a channel (will fail)
-        let result = pool.get_channel(addr).await;
-        assert!(result.is_err());
-
-        // After connection failure, the pool should not have an entry
-        // (connection was never successfully established)
-        assert_eq!(pool.get_error_count(addr), None);
-
-        // Create an entry by manually inserting into the pool's internal cache
-        // This simulates a scenario where a connection was established but later failed
-        pool.record_connection_error(addr);
-
-        // Since there's no entry in the pool, this should be a no-op
-        assert_eq!(pool.get_error_count(addr), None);
-    }
-
-    /// Test that `record_connection_error` increments error count for existing connections.
-    /// This simulates the scenario where a previously healthy connection starts failing.
-    #[tokio::test]
-    async fn test_connection_pool_error_count_increments() {
-        let pool = GrpcConnectionPool::with_defaults();
-
-        // Use a mock server address that we can connect to
-        // For this test, we'll use the pool's internal methods directly
-        // to verify error counting behavior
-
-        // First, let's verify the initial state
-        assert!(pool.is_empty());
-
-        // Record an error for a non-existent connection - should be a no-op
-        pool.record_connection_error("nonexistent:50051");
-        assert!(pool.is_empty());
-
-        // The key insight is that record_connection_error only increments
-        // the counter for connections that exist in the pool.
-        // In production, the flow is:
-        // 1. get_channel succeeds (connection added to pool)
-        // 2. Later, gRPC call fails
-        // 3. record_connection_error is called (increments counter for existing entry)
-        // 4. If errors reach threshold, next get_channel evicts the entry
-    }
-
-    /// Test that unhealthy connections are evicted from the pool.
-    #[tokio::test]
-    async fn test_unhealthy_connection_eviction() {
-        let pool = GrpcConnectionPool::with_defaults();
-
-        // Attempt multiple connections to build up circuit breaker state
-        // but not add entries to the connection pool (since connections fail)
-        for _ in 0..3 {
-            let _ = pool.get_channel("127.0.0.1:65535").await;
-        }
-
-        // The pool should still be empty (no successful connections)
-        assert!(pool.is_empty());
-
-        // evict_stale should work without errors
-        pool.evict_stale();
-        assert!(pool.is_empty());
-    }
-
-    /// Test that `record_connection_error` is called when `get_channel` fails.
-    /// This verifies the first error path in `connect_and_stream()`.
-    ///
-    /// When `get_channel()` fails (connection cannot be established):
-    /// - `record_connection_error` should be called (no-op since no entry exists)
-    /// - invalidate should be called (no-op since no entry exists)
-    /// - The pool should remain empty
-    #[tokio::test]
-    async fn test_health_tracking_on_get_channel_failure() {
-        let pool = GrpcConnectionPool::with_defaults();
-        let addr = "127.0.0.1:65535"; // Non-existent server
-
-        // Attempt to get a channel - this will fail
-        let result = pool.get_channel(addr).await;
-        assert!(result.is_err());
-
-        // The pool should be empty (no successful connection was made)
-        assert!(pool.is_empty());
-
-        // get_error_count should return None (no entry in pool)
-        assert_eq!(pool.get_error_count(addr), None);
-
-        // Calling record_connection_error on non-existent entry is a no-op
-        pool.record_connection_error(addr);
-        assert_eq!(pool.get_error_count(addr), None);
-
-        // Calling invalidate on non-existent entry is a no-op
-        pool.invalidate(addr);
-        assert!(pool.is_empty());
-    }
-
-    /// Test that `record_connection_error` is properly tracked for streaming errors.
-    ///
-    /// This test simulates the scenario where:
-    /// 1. A connection is successfully established (entry added to pool)
-    /// 2. A streaming error occurs (`record_connection_error` is called)
-    /// 3. The error count should be incremented
-    ///
-    /// In production, this corresponds to:
-    /// - `get_channel` succeeds (entry added to pool)
-    /// - `pull_rtmp_stream` fails OR `stream.message()` fails
-    /// - `record_connection_error` is called (increments counter)
-    #[tokio::test]
-    async fn test_health_tracking_on_streaming_error() {
-        let pool = GrpcConnectionPool::with_defaults();
-        let addr = "127.0.0.1:65535"; // Non-existent server
-
-        // Since we can't establish a real connection, we can't directly test
-        // the streaming error path. Instead, we test the connection pool's
-        // behavior when record_connection_error is called on an existing entry.
-        // In the real scenario:
-        // 1. get_channel succeeds -> entry added to pool
-        // 2. pull_rtmp_stream fails -> record_connection_error called
-        // 3. Error count should be 1
-        // For testing purposes, we verify:
-        // - record_connection_error on non-existent entry is a no-op
-        // - Multiple calls don't cause issues
-
-        // Record multiple errors - should all be no-ops
-        for _ in 0..3 {
-            pool.record_connection_error(addr);
-        }
-
-        // Pool should still be empty
-        assert!(pool.is_empty());
-        assert_eq!(pool.get_error_count(addr), None);
-    }
-
-    /// Test that the connection pool properly handles the error threshold.
-    ///
-    /// When consecutive errors reach `CONNECTION_ERROR_EVICTION_THRESHOLD` (3),
-    /// the connection should be marked as unhealthy.
-    ///
-    /// This test verifies the error counting mechanism that `GrpcStreamPuller`
-    /// relies on for health tracking.
-    #[tokio::test]
-    async fn test_connection_pool_error_threshold() {
-        let pool = GrpcConnectionPool::with_defaults();
-
-        // Since we can't establish real connections in tests,
-        // we verify that the pool handles errors gracefully
-
-        // Attempt multiple connections (all will fail)
-        for i in 0..5 {
-            let addr = format!("127.0.0.1:{}", 65530 + i);
-            let _ = pool.get_channel(&addr).await;
-
-            // After failed connection, no entry should exist
-            assert_eq!(pool.get_error_count(&addr), None);
-
-            // Calling record_connection_error should be a no-op
-            pool.record_connection_error(&addr);
-            assert_eq!(pool.get_error_count(&addr), None);
-        }
-
-        // Pool should still be empty
-        assert!(pool.is_empty());
-    }
-
     /// Test that `GrpcStreamPuller` uses the connection pool correctly.
     ///
     /// This test verifies that:
@@ -756,34 +520,9 @@ mod tests {
         assert_eq!(puller2.connection_pool.len(), pool.len());
     }
 
-    /// Test that `record_connection_error` and invalidate work together.
-    ///
-    /// In `GrpcStreamPuller::connect_and_stream()`, when `get_channel` fails,
-    /// both `record_connection_error` and invalidate are called.
-    /// This test verifies that calling both is safe.
     #[tokio::test]
-    async fn test_record_error_and_invalidate_together() {
-        let pool = GrpcConnectionPool::with_defaults();
-        let addr = "127.0.0.1:65535";
-
-        // Attempt connection (will fail)
-        let _ = pool.get_channel(addr).await;
-
-        // Call both record_connection_error and invalidate (as in the puller)
-        pool.record_connection_error(addr);
-        pool.invalidate(addr);
-
-        // Should not panic, pool should be empty
-        assert!(pool.is_empty());
-
-        // Calling again should also be safe
-        pool.record_connection_error(addr);
-        pool.invalidate(addr);
-        assert!(pool.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_send_frame_with_backpressure_times_out_instead_of_dropping_silently() {
+    async fn test_send_frame_with_backpressure_times_out_instead_of_dropping_silently() -> TestResult
+    {
         let (data_sender, mut data_receiver) = mpsc::channel(1);
         let data_sender = FrameDataSender::bounded(data_sender);
         data_sender
@@ -792,7 +531,7 @@ mod tests {
                 data: bytes::Bytes::from_static(b"first"),
             })
             .await
-            .unwrap_or_else(|_| panic!("initial send should fill channel"));
+            .map_err(|_| test_error("initial send should fill channel"))?;
 
         let send_future = send_frame_with_backpressure(
             &data_sender,
@@ -803,8 +542,7 @@ mod tests {
         );
 
         let err = tokio::time::timeout(FRAME_SEND_TIMEOUT + Duration::from_secs(1), send_future)
-            .await
-            .expect("send should resolve with timeout error")
+            .await?
             .expect_err("second send must fail once backpressure exceeds timeout");
         assert!(
             err.to_string().contains("backpressure"),
@@ -814,17 +552,18 @@ mod tests {
         let first = data_receiver
             .recv()
             .await
-            .expect("first frame remains queued");
+            .ok_or_else(|| test_error("first frame remains queued"))?;
         assert!(matches!(first, FrameData::MetaData { .. }));
         assert!(
             data_receiver.try_recv().is_err(),
             "timed out send must not enqueue an extra frame"
         );
+        Ok(())
     }
 
     #[tokio::test]
     async fn test_publish_to_local_stream_hub_waits_for_backpressure_instead_of_failing_immediately(
-    ) {
+    ) -> TestResult {
         let (stream_hub_event_sender, mut stream_hub_event_receiver) = mpsc::channel(1);
         stream_hub_event_sender
             .send(StreamHubEvent::UnPublish {
@@ -833,26 +572,30 @@ mod tests {
                     stream_name: "occupied".to_string(),
                 },
             })
-            .await
-            .expect("fill stream hub event queue");
+            .await?;
 
         let release_handle = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(50)).await;
             stream_hub_event_receiver
                 .recv()
                 .await
-                .expect("occupied event should be drained");
+                .ok_or_else(|| test_error("occupied event should be drained"))?;
             if let Some(StreamHubEvent::Publish { result_sender, .. }) =
                 stream_hub_event_receiver.recv().await
             {
                 let (data_sender, _) = mpsc::channel(4);
-                let _ = result_sender.send(Ok((
-                    Some(FrameDataSender::bounded(data_sender)),
-                    None,
-                    None,
-                )));
+                result_sender
+                    .send(Ok((
+                        Some(FrameDataSender::bounded(data_sender)),
+                        None,
+                        None,
+                    )))
+                    .map_err(|_| test_error("publish result receiver should be alive"))?;
+                Ok(())
             } else {
-                panic!("expected publish event after backpressure cleared");
+                Err(test_error(
+                    "expected publish event after backpressure cleared",
+                ))
             }
         });
 
@@ -869,18 +612,18 @@ mod tests {
             STREAM_HUB_EVENT_SEND_TIMEOUT,
             puller.publish_to_local_stream_hub(),
         )
-        .await
-        .expect("publish should complete once backpressure clears");
+        .await?;
 
         assert!(
             result.is_ok(),
             "publish should succeed after brief backpressure"
         );
-        release_handle.await.expect("release task should complete");
+        release_handle.await??;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_next_packet_with_timeout_fails_when_stream_stalls() {
+    async fn test_next_packet_with_timeout_fails_when_stream_stalls() -> TestResult {
         let err = tokio::time::timeout(
             TEST_STREAM_MESSAGE_TIMEOUT + Duration::from_secs(1),
             timeout_stream_message(TEST_STREAM_MESSAGE_TIMEOUT, async {
@@ -888,12 +631,12 @@ mod tests {
                 Ok::<Option<super::super::proto::RtmpPacket>, tonic::Status>(None)
             }),
         )
-        .await
-        .expect("helper should return timeout error")
+        .await?
         .expect_err("stalled stream must be reported as dead");
         assert!(
             err.to_string().contains("stream appears dead"),
             "unexpected error: {err}"
         );
+        Ok(())
     }
 }

@@ -2,7 +2,6 @@
 //!
 //! Used by both HTTP and gRPC handlers to avoid duplicating notification logic.
 
-use crate::PublicIdCodec;
 use std::sync::Arc;
 use synctv_core::models::id::UserId;
 use synctv_core::models::notification::{
@@ -12,6 +11,7 @@ use synctv_core::models::notification::{
 use synctv_core::models::PageParams;
 use synctv_core::models::SortDirection as CoreSortDirection;
 use synctv_core::service::UserNotificationService;
+use synctv_core::PublicIdCodec;
 
 use crate::impls::ApiError;
 use synctv_proto::client::SortDirection as ProtoSortDirection;
@@ -268,11 +268,6 @@ impl NotificationApiImpl {
         }
     }
 
-    #[must_use]
-    pub fn public_id_codec(&self) -> &PublicIdCodec {
-        &self.public_id_codec
-    }
-
     /// List notifications for a user with pagination and filters.
     pub async fn list_notifications(
         &self,
@@ -432,18 +427,45 @@ pub fn proto_sort_direction_to_core(sort_direction: i32) -> Result<CoreSortDirec
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_normalize_notification_pagination_defaults_negative_inputs() {
-        let pagination =
-            normalize_notification_pagination(Some(-5), Some(-100)).expect("pagination");
-        assert_eq!(pagination.page, 1);
-        assert_eq!(pagination.page_size, synctv_core::models::DEFAULT_PAGE_SIZE);
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn api_ok<T>(result: Result<T, ApiError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("{error:?}")))
+    }
+
+    fn api_err<T>(result: Result<T, ApiError>) -> TestResult<ApiError> {
+        match result {
+            Ok(_) => Err(test_error("expected API error result")),
+            Err(error) => Ok(error),
+        }
+    }
+
+    fn invalid_notification_type_err(
+        result: Result<CoreNotificationType, NotificationTypeParseError>,
+    ) -> TestResult<NotificationTypeParseError> {
+        match result {
+            Ok(_) => Err(test_error("expected invalid notification type")),
+            Err(error) => Ok(error),
+        }
     }
 
     #[test]
-    fn test_normalize_notification_pagination_rejects_excessive_offset() {
-        let err = normalize_notification_pagination(Some(1002), Some(100)).unwrap_err();
+    fn test_normalize_notification_pagination_defaults_negative_inputs() -> TestResult {
+        let pagination = api_ok(normalize_notification_pagination(Some(-5), Some(-100)))?;
+        assert_eq!(pagination.page, 1);
+        assert_eq!(pagination.page_size, synctv_core::models::DEFAULT_PAGE_SIZE);
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_notification_pagination_rejects_excessive_offset() -> TestResult {
+        let err = api_err(normalize_notification_pagination(Some(1002), Some(100)))?;
         assert!(matches!(err, ApiError::InvalidInput(_)));
+        Ok(())
     }
 
     #[test]
@@ -471,30 +493,32 @@ mod tests {
     }
 
     #[test]
-    fn test_proto_notification_type_to_core_unspecified_rejected() {
+    fn test_proto_notification_type_to_core_unspecified_rejected() -> TestResult {
         let result = proto_notification_type_to_core(0);
         assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = invalid_notification_type_err(result)?;
         assert_eq!(err.invalid_value, 0);
         assert!(err.to_string().contains("Invalid notification type"));
         assert!(err.to_string().contains("must be 1-5"));
+        Ok(())
     }
 
     #[test]
-    fn test_proto_notification_type_to_core_unknown_type_rejected() {
+    fn test_proto_notification_type_to_core_unknown_type_rejected() -> TestResult {
         let result = proto_notification_type_to_core(-1);
         assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = invalid_notification_type_err(result)?;
         assert_eq!(err.invalid_value, -1);
 
         let result = proto_notification_type_to_core(999);
         assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = invalid_notification_type_err(result)?;
         assert_eq!(err.invalid_value, 999);
+        Ok(())
     }
 
     #[test]
-    fn test_notification_type_roundtrip() {
+    fn test_notification_type_roundtrip() -> TestResult {
         let types = [
             CoreNotificationType::RoomInvitation,
             CoreNotificationType::SystemAnnouncement,
@@ -511,21 +535,28 @@ mod tests {
                 CoreNotificationType::PasswordReset => 4,
                 CoreNotificationType::EmailBind => 5,
             };
-            let converted_back = proto_notification_type_to_core(proto_value).unwrap();
+            let converted_back = proto_notification_type_to_core(proto_value).map_err(|error| {
+                test_error(format!(
+                    "valid notification type failed conversion: {error}"
+                ))
+            })?;
             assert_eq!(converted_back, core_type);
         }
+        Ok(())
     }
 
     #[test]
-    fn notification_query_enum_mappers_reject_unknown_values_and_preserve_defaults() {
+    fn notification_query_enum_mappers_reject_unknown_values_and_preserve_defaults() -> TestResult {
         assert_eq!(
-            proto_notification_sort_by_to_core(ProtoNotificationListSortBy::Unspecified as i32)
-                .expect("unspecified notification sort should be accepted"),
+            api_ok(proto_notification_sort_by_to_core(
+                ProtoNotificationListSortBy::Unspecified as i32
+            ))?,
             NotificationListSortBy::CreatedAt
         );
         assert_eq!(
-            proto_sort_direction_to_core(ProtoSortDirection::Unspecified as i32)
-                .expect("unspecified sort direction should be accepted"),
+            api_ok(proto_sort_direction_to_core(
+                ProtoSortDirection::Unspecified as i32
+            ))?,
             CoreSortDirection::Desc
         );
 
@@ -537,6 +568,7 @@ mod tests {
             proto_sort_direction_to_core(99),
             Err(ApiError::InvalidInput(message)) if message.contains("sort direction")
         ));
+        Ok(())
     }
 
     #[test]
@@ -574,8 +606,8 @@ mod tests {
     }
 
     #[test]
-    fn test_build_notification_list_query_normalizes_defaults() {
-        let query = build_notification_list_query(&ListNotificationsRequest {
+    fn test_build_notification_list_query_normalizes_defaults() -> TestResult {
+        let query = api_ok(build_notification_list_query(&ListNotificationsRequest {
             page: 0,
             page_size: 0,
             is_read: Some(true),
@@ -583,8 +615,7 @@ mod tests {
             search: "  alert  ".to_string(),
             sort_by: ProtoNotificationListSortBy::Unspecified as i32,
             sort_direction: ProtoSortDirection::Unspecified as i32,
-        })
-        .unwrap();
+        }))?;
 
         assert_eq!(query.pagination.page, 1);
         assert_eq!(
@@ -599,11 +630,12 @@ mod tests {
         assert_eq!(query.search.as_deref(), Some("alert"));
         assert_eq!(query.sort_by, NotificationListSortBy::CreatedAt);
         assert_eq!(query.sort_direction, CoreSortDirection::Desc);
+        Ok(())
     }
 
     #[test]
-    fn test_build_notification_list_query_rejects_invalid_proto_request() {
-        let error = build_notification_list_query(&ListNotificationsRequest {
+    fn test_build_notification_list_query_rejects_invalid_proto_request() -> TestResult {
+        let error = api_err(build_notification_list_query(&ListNotificationsRequest {
             page: -1,
             page_size: 101,
             is_read: None,
@@ -611,8 +643,7 @@ mod tests {
             search: "a".repeat(101),
             sort_by: 99,
             sort_direction: 99,
-        })
-        .unwrap_err();
+        }))?;
 
         match error {
             ApiError::InvalidInput(message) => {
@@ -623,64 +654,70 @@ mod tests {
                 assert!(message.contains("sort_by"), "{message}");
                 assert!(message.contains("sort_direction"), "{message}");
             }
-            other => panic!("expected invalid input, got {other:?}"),
+            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
         }
+        Ok(())
     }
 
     #[test]
-    fn test_build_get_notification_request_accepts_numeric_id() {
-        let notification_id = build_get_notification_request(&GetNotificationRequest {
+    fn test_build_get_notification_request_accepts_numeric_id() -> TestResult {
+        let notification_id = api_ok(build_get_notification_request(&GetNotificationRequest {
             notification_id: 42,
-        })
-        .expect("numeric notification ID should be accepted");
+        }))?;
 
         assert_eq!(notification_id, 42);
+        Ok(())
     }
 
     #[test]
-    fn test_build_get_notification_request_rejects_invalid_numeric_id() {
-        let error = build_get_notification_request(&GetNotificationRequest { notification_id: 0 })
-            .unwrap_err();
+    fn test_build_get_notification_request_rejects_invalid_numeric_id() -> TestResult {
+        let error = api_err(build_get_notification_request(&GetNotificationRequest {
+            notification_id: 0,
+        }))?;
 
         assert!(matches!(error, ApiError::InvalidInput(_)));
+        Ok(())
     }
 
     #[test]
-    fn test_build_mark_as_read_request_accepts_numeric_ids() {
-        let notification_ids = build_mark_as_read_request(&ProtoMarkAsReadRequest {
+    fn test_build_mark_as_read_request_accepts_numeric_ids() -> TestResult {
+        let notification_ids = api_ok(build_mark_as_read_request(&ProtoMarkAsReadRequest {
             notification_ids: vec![42, 43],
-        })
-        .expect("numeric notification IDs should be accepted");
+        }))?;
 
         assert_eq!(notification_ids, vec![42, 43]);
+        Ok(())
     }
 
     #[test]
-    fn test_build_mark_as_read_request_rejects_invalid_numeric_id() {
-        let error = build_mark_as_read_request(&ProtoMarkAsReadRequest {
+    fn test_build_mark_as_read_request_rejects_invalid_numeric_id() -> TestResult {
+        let error = api_err(build_mark_as_read_request(&ProtoMarkAsReadRequest {
             notification_ids: vec![0],
-        })
-        .unwrap_err();
+        }))?;
 
         assert!(matches!(error, ApiError::InvalidInput(_)));
+        Ok(())
     }
 
     #[test]
-    fn test_build_delete_notification_request_accepts_numeric_id() {
-        let notification_id = build_delete_notification_request(&DeleteNotificationRequest {
-            notification_id: 42,
-        })
-        .expect("numeric notification ID should be accepted");
+    fn test_build_delete_notification_request_accepts_numeric_id() -> TestResult {
+        let notification_id = api_ok(build_delete_notification_request(
+            &DeleteNotificationRequest {
+                notification_id: 42,
+            },
+        ))?;
 
         assert_eq!(notification_id, 42);
+        Ok(())
     }
 
     #[test]
-    fn test_build_delete_notification_request_rejects_invalid_numeric_id() {
-        let error =
-            build_delete_notification_request(&DeleteNotificationRequest { notification_id: 0 })
-                .unwrap_err();
+    fn test_build_delete_notification_request_rejects_invalid_numeric_id() -> TestResult {
+        let error = api_err(build_delete_notification_request(
+            &DeleteNotificationRequest { notification_id: 0 },
+        ))?;
 
         assert!(matches!(error, ApiError::InvalidInput(_)));
+        Ok(())
     }
 }

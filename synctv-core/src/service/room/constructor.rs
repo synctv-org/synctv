@@ -15,10 +15,7 @@ use crate::{
         permission::{PermissionService, PermissionServiceRuntime},
         playback::PlaybackService,
         playlist::PlaylistService,
-        room::{
-            local_room_opaque_password_login_session_store,
-            local_room_opaque_password_registration_session_store, RoomService, RoomServiceOptions,
-        },
+        room::{RoomService, RoomServiceOptions},
         room_settings::{RoomSettingsRuntime, RoomSettingsService},
         user::UserService,
         ProvidersManager,
@@ -27,8 +24,13 @@ use crate::{
 };
 
 impl RoomService {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new_for_tests(pool: PgPool, user_service: UserService) -> Result<Self> {
-        Self::new_with_options(pool, user_service, RoomServiceOptions::test_defaults())
+        Self::new_with_options(
+            pool.clone(),
+            user_service,
+            RoomServiceOptions::test_defaults_with_settings(pool),
+        )
     }
 
     pub fn new_with_options(
@@ -46,16 +48,17 @@ impl RoomService {
         Self::new_with_providers_and_options(pool, user_service, providers_manager, options)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_providers_for_tests(
         pool: PgPool,
         user_service: UserService,
         providers_manager: Arc<ProvidersManager>,
     ) -> Result<Self> {
         Self::new_with_providers_and_options(
-            pool,
+            pool.clone(),
             user_service,
             providers_manager,
-            RoomServiceOptions::test_defaults(),
+            RoomServiceOptions::test_defaults_with_settings(pool),
         )
     }
 
@@ -76,11 +79,8 @@ impl RoomService {
                 member_permission_l2_cache: options.room_settings_l2_cache.clone(),
                 member_permission_cache_key_prefix: "member_permission:".to_string(),
                 room_settings_l2_cache: options.room_settings_l2_cache.clone(),
-                room_settings_cache_key_prefix: options
-                    .room_settings_cache_key_prefix
-                    .clone()
-                    .unwrap_or_else(|| "room_settings:".to_string()),
-                ..PermissionServiceRuntime::default()
+                room_settings_cache_key_prefix: options.room_settings_cache_key_prefix.clone(),
+                ..PermissionServiceRuntime::local_only()
             },
         )?;
         Ok(Self::new_with_providers_permission_service_and_options(
@@ -92,23 +92,24 @@ impl RoomService {
         ))
     }
 
-    pub fn new_with_providers_and_permission_service_for_tests(
+    #[must_use]
+    pub fn new_with_providers_permission_service_and_options(
         pool: PgPool,
         user_service: UserService,
         providers_manager: Arc<ProvidersManager>,
         permission_service: PermissionService,
+        options: RoomServiceOptions,
     ) -> Self {
-        Self::new_with_providers_permission_service_and_options(
+        Self::build_with_providers_permission_service_and_options(
             pool,
             user_service,
             providers_manager,
             permission_service,
-            RoomServiceOptions::test_defaults(),
+            options,
         )
     }
 
-    #[must_use]
-    pub fn new_with_providers_permission_service_and_options(
+    fn build_with_providers_permission_service_and_options(
         pool: PgPool,
         user_service: UserService,
         providers_manager: Arc<ProvidersManager>,
@@ -151,20 +152,25 @@ impl RoomService {
             permission_service.clone(),
             providers_manager,
             notification_service.clone(),
-            options.credential_encryption.clone(),
-            options.credential_repo.clone(),
-            options.realtime_outbox.clone(),
-            options.media_file_storage_service.clone(),
+            crate::service::media::MediaServiceRuntime {
+                credential_encryption: options.credential_encryption.clone(),
+                credential_repo: options.credential_repo.clone(),
+                provider_access_service: options.provider_access_service.clone(),
+                realtime_outbox: options.realtime_outbox.clone(),
+                file_storage_service: options.media_file_storage_service.clone(),
+            },
         );
         let playback_service = PlaybackService::new_with_runtime(
             playback_repo.clone(),
             permission_service.clone(),
             media_service.clone(),
             user_service.clone(),
-            options.cache_invalidation.clone(),
-            options.playback_l2_cache.clone(),
-            options.version_fence.clone(),
-            options.realtime_outbox.clone(),
+            crate::service::playback::PlaybackServiceRuntime {
+                invalidation_service: options.cache_invalidation.clone(),
+                l2_cache: Some(options.playback_l2_cache.clone()),
+                version_fence: options.version_fence.clone(),
+                realtime_outbox: options.realtime_outbox.clone(),
+            },
         );
         let room_settings_service = RoomSettingsService::new_with_version_fence(
             room_settings_repo.clone(),
@@ -173,16 +179,13 @@ impl RoomService {
             RoomSettingsRuntime {
                 version_fence: options.version_fence.clone(),
                 l2_cache: options.room_settings_l2_cache.clone(),
-                cache_key_prefix: options
-                    .room_settings_cache_key_prefix
-                    .unwrap_or_else(|| "room_settings:".to_string()),
-                ..RoomSettingsRuntime::default()
+                cache_key_prefix: options.room_settings_cache_key_prefix.clone(),
+                cache_ttl_secs: None,
+                cache_max_capacity: None,
             },
         );
 
-        let version_fence = options
-            .version_fence
-            .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
+        let version_fence = options.version_fence;
 
         Self {
             pool,
@@ -210,11 +213,8 @@ impl RoomService {
             user_notification_service: options.user_notification_service,
             opaque_password_service: options.opaque_password_service,
             opaque_password_registration_session_store: options
-                .opaque_password_registration_session_store
-                .unwrap_or_else(local_room_opaque_password_registration_session_store),
-            opaque_password_login_session_store: options
-                .opaque_password_login_session_store
-                .unwrap_or_else(local_room_opaque_password_login_session_store),
+                .opaque_password_registration_session_store,
+            opaque_password_login_session_store: options.opaque_password_login_session_store,
             realtime_outbox: options.realtime_outbox,
             media_file_storage_service: options.media_file_storage_service,
             room_file_storage_service: options.room_file_storage_service,

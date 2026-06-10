@@ -4,8 +4,6 @@
 //! atomic permission grants/revokes, permission reset, batch counts, pagination,
 //! and `diagnose_add_conflict` error branches.
 //!
-#![allow(clippy::unwrap_used)]
-
 use chrono::Utc;
 use synctv_core::{
     models::{
@@ -18,7 +16,7 @@ use synctv_core::{
     },
     Error,
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};
 
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -83,7 +81,7 @@ async fn add_kick_cooldown(
             member_repo.pool(),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 }
 
 #[tokio::test]
@@ -94,12 +92,18 @@ async fn test_add_with_options_full_flow() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_awo")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_awo"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room AWO", &owner.id))
         .await
-        .unwrap();
-    let joiner = user_repo.create(&make_user("joiner_awo")).await.unwrap();
+        .checked("test operation should succeed");
+    let joiner = user_repo
+        .create(&make_user("joiner_awo"))
+        .await
+        .checked("test operation should succeed");
 
     let member = make_member(room.id, joiner.id, RoomRole::Member);
     let options = AddMemberOptions::new();
@@ -107,7 +111,7 @@ async fn test_add_with_options_full_flow() {
     let result = member_repo
         .add_with_options(&member, &options)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(result.user_id, joiner.id);
     assert_eq!(result.role, RoomRole::Member);
     assert_eq!(result.status, MemberStatus::Active);
@@ -121,29 +125,38 @@ async fn test_add_with_options_capacity_at_max_members() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_cap")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_cap"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Cap", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add one member to fill the room (max_members=1)
-    let user1 = user_repo.create(&make_user("user1_cap")).await.unwrap();
+    let user1 = user_repo
+        .create(&make_user("user1_cap"))
+        .await
+        .checked("test operation should succeed");
     let m1 = make_member(room.id, user1.id, RoomRole::Member);
     let options_fill = AddMemberOptions::new().with_max_members(1);
     member_repo
         .add_with_options(&m1, &options_fill)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Second member should be rejected
-    let user2 = user_repo.create(&make_user("user2_cap")).await.unwrap();
+    let user2 = user_repo
+        .create(&make_user("user2_cap"))
+        .await
+        .checked("test operation should succeed");
     let m2 = make_member(room.id, user2.id, RoomRole::Member);
     let options_reject = AddMemberOptions::new().with_max_members(1);
     let err = member_repo
         .add_with_options(&m2, &options_reject)
         .await
-        .unwrap_err();
+        .failed("operation should fail");
     assert!(matches!(err, Error::InvalidInput(_)));
 }
 
@@ -158,36 +171,36 @@ async fn test_add_with_options_removed_members_do_not_consume_capacity() {
     let owner = user_repo
         .create(&make_user("owner_pending_capacity"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Pending Capacity", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let removed_user = user_repo
         .create(&make_user("user_removed_capacity"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let departed_member = make_member(room.id, removed_user.id, RoomRole::Member);
     member_repo
         .add_with_options(&departed_member, &AddMemberOptions::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     member_repo
         .remove(&room.id, &removed_user.id)
         .await
-        .expect("fixture member should be removed");
+        .checked("fixture member should be removed");
 
     let active_user = user_repo
         .create(&make_user("user_active_capacity"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let active_member = make_member(room.id, active_user.id, RoomRole::Member);
 
     member_repo
         .add_with_options(&active_member, &AddMemberOptions::new().with_max_members(1))
         .await
-        .expect("pending members must not count against max_members");
+        .checked("pending members must not count against max_members");
 }
 
 #[tokio::test]
@@ -201,29 +214,29 @@ async fn test_add_with_options_inactive_room_rejection() {
     let owner = user_repo
         .create(&make_user("owner_inactive"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Inactive", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Close the room
     room_repo
         .update_status(&room.id, RoomStatus::Closed)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let joiner = user_repo
         .create(&make_user("joiner_inactive"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = make_member(room.id, joiner.id, RoomRole::Member);
     let options = AddMemberOptions::new();
 
     let err = member_repo
         .add_with_options(&member, &options)
         .await
-        .unwrap_err();
+        .failed("operation should fail");
     assert!(matches!(err, Error::InvalidInput(_)));
 }
 
@@ -235,12 +248,18 @@ async fn test_add_with_options_duplicate_membership_check() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_dup")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_dup"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Dup", &owner.id))
         .await
-        .unwrap();
-    let joiner = user_repo.create(&make_user("joiner_dup")).await.unwrap();
+        .checked("test operation should succeed");
+    let joiner = user_repo
+        .create(&make_user("joiner_dup"))
+        .await
+        .checked("test operation should succeed");
 
     let member = make_member(room.id, joiner.id, RoomRole::Member);
     let options = AddMemberOptions::new();
@@ -249,14 +268,14 @@ async fn test_add_with_options_duplicate_membership_check() {
     member_repo
         .add_with_options(&member, &options)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Second join with duplicate check fails
     let member2 = make_member(room.id, joiner.id, RoomRole::Member);
     let err = member_repo
         .add_with_options(&member2, &options)
         .await
-        .unwrap_err();
+        .failed("operation should fail");
     assert!(matches!(err, Error::AlreadyExists(_)));
 }
 
@@ -268,11 +287,14 @@ async fn test_add_with_options_max_members_zero_bypass() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_zero")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_zero"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Zero", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // max_members=0 means unlimited - even with check enabled, it bypasses
     let mut options = AddMemberOptions::new();
@@ -284,15 +306,18 @@ async fn test_add_with_options_max_members_zero_bypass() {
         let user = user_repo
             .create(&make_user(&format!("user_zero_{i}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         let member = make_member(room.id, user.id, RoomRole::Member);
         member_repo
             .add_with_options(&member, &options)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     }
 
-    let count = member_repo.count_by_room(&room.id).await.unwrap();
+    let count = member_repo
+        .count_by_room(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 5);
 }
 
@@ -307,35 +332,35 @@ async fn test_kick_with_role_check_member_cannot_kick_admin() {
     let owner = user_repo
         .create(&make_user("owner_kick_role"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room KickRole", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let admin_user = user_repo
         .create(&make_user("admin_kick_role"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member_user = user_repo
         .create(&make_user("member_kick_role"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, admin_user.id, RoomRole::Admin))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     member_repo
         .add(&make_member(room.id, member_user.id, RoomRole::Member))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Member (role=3) trying to kick Admin (role=2) => should fail
     let result = member_repo
         .kick_with_role_check(&room.id, &member_user.id, &admin_user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(!result);
 }
 
@@ -350,38 +375,38 @@ async fn test_kick_with_role_check_creator_can_kick_admin() {
     let creator = user_repo
         .create(&make_user("creator_kick_admin"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room CreatorKickAdmin", &creator.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add creator as Creator role in room_members
     member_repo
         .add(&make_member(room.id, creator.id, RoomRole::Creator))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let admin_user = user_repo
         .create(&make_user("admin_kick_by_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     member_repo
         .add(&make_member(room.id, admin_user.id, RoomRole::Admin))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Creator (role=1) kicking Admin (role=2) => should succeed
     let kicked = member_repo
         .kick_with_role_check(&room.id, &creator.id, &admin_user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(kicked);
     assert!(member_repo
         .get_any(&room.id, &admin_user.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_none());
 }
 
@@ -393,29 +418,38 @@ async fn test_kick_with_role_check_equal_rank_rejected() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_eqrank")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_eqrank"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room EqRank", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let admin1 = user_repo.create(&make_user("admin1_eqrank")).await.unwrap();
-    let admin2 = user_repo.create(&make_user("admin2_eqrank")).await.unwrap();
+    let admin1 = user_repo
+        .create(&make_user("admin1_eqrank"))
+        .await
+        .checked("test operation should succeed");
+    let admin2 = user_repo
+        .create(&make_user("admin2_eqrank"))
+        .await
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, admin1.id, RoomRole::Admin))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     member_repo
         .add(&make_member(room.id, admin2.id, RoomRole::Admin))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Admin (role=2) trying to kick another Admin (role=2) => equal rank, should fail
     let result = member_repo
         .kick_with_role_check(&room.id, &admin1.id, &admin2.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(!result);
 }
 
@@ -430,26 +464,26 @@ async fn test_kick_with_role_check_self_kick_fails() {
     let owner = user_repo
         .create(&make_user("owner_selfkick"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room SelfKick", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let admin_user = user_repo
         .create(&make_user("admin_selfkick"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     member_repo
         .add(&make_member(room.id, admin_user.id, RoomRole::Admin))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Self-kick: actor.role == target.role (not strictly less), should fail
     let result = member_repo
         .kick_with_role_check(&room.id, &admin_user.id, &admin_user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(!result);
 }
 
@@ -461,32 +495,41 @@ async fn test_kick_with_role_check_creator_kicks_admin() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let creator = user_repo.create(&make_user("creator_kick")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("creator_kick"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room CreatorKick", &creator.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, creator.id, RoomRole::Creator))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let admin_user = user_repo.create(&make_user("admin_kick")).await.unwrap();
+    let admin_user = user_repo
+        .create(&make_user("admin_kick"))
+        .await
+        .checked("test operation should succeed");
     member_repo
         .add(&make_member(room.id, admin_user.id, RoomRole::Admin))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Creator (role=1) kicking Admin (role=2) => should succeed
     let result = member_repo
         .kick_with_role_check(&room.id, &creator.id, &admin_user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(result);
 
     // Verify admin is now gone
-    let member = member_repo.get(&room.id, &admin_user.id).await.unwrap();
+    let member = member_repo
+        .get(&room.id, &admin_user.id)
+        .await
+        .checked("test operation should succeed");
     assert!(member.is_none());
 }
 
@@ -498,30 +541,36 @@ async fn test_grant_permission_atomic_bitwise_or() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_grant")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_grant"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Grant", &owner.id))
         .await
-        .unwrap();
-    let user = user_repo.create(&make_user("user_grant")).await.unwrap();
+        .checked("test operation should succeed");
+    let user = user_repo
+        .create(&make_user("user_grant"))
+        .await
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Grant permission 0x01
     let m1 = member_repo
         .grant_permission_atomic(&room.id, &user.id, 0x01)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(m1.added_permissions, 0x01);
 
     // Grant permission 0x02 (bitwise OR with existing)
     let m2 = member_repo
         .grant_permission_atomic(&room.id, &user.id, 0x02)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(m2.added_permissions, 0x03); // 0x01 | 0x02 = 0x03
 }
 
@@ -533,30 +582,36 @@ async fn test_revoke_permission_atomic_bitwise_or() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_revoke")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_revoke"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Revoke", &owner.id))
         .await
-        .unwrap();
-    let user = user_repo.create(&make_user("user_revoke")).await.unwrap();
+        .checked("test operation should succeed");
+    let user = user_repo
+        .create(&make_user("user_revoke"))
+        .await
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Revoke permission 0x04
     let m1 = member_repo
         .revoke_permission_atomic(&room.id, &user.id, 0x04)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(m1.removed_permissions, 0x04);
 
     // Revoke permission 0x08 (bitwise OR with existing)
     let m2 = member_repo
         .revoke_permission_atomic(&room.id, &user.id, 0x08)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(m2.removed_permissions, 0x0C); // 0x04 | 0x08 = 0x0C
 }
 
@@ -571,29 +626,32 @@ async fn test_grant_permission_atomic_removed_member_returns_not_found() {
     let owner = user_repo
         .create(&make_user("owner_removed_grant"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room RemovedGrant", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let user = user_repo
         .create(&make_user("user_removed_grant"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Remove the member
-    assert!(member_repo.remove(&room.id, &user.id).await.unwrap());
+    assert!(member_repo
+        .remove(&room.id, &user.id)
+        .await
+        .checked("test operation should succeed"));
 
     // Attempting to grant on removed member should return NotFound
     let err = member_repo
         .grant_permission_atomic(&room.id, &user.id, 0x01)
         .await
-        .unwrap_err();
+        .failed("operation should fail");
     assert!(matches!(err, Error::NotFound(_)));
 }
 
@@ -608,29 +666,32 @@ async fn test_revoke_permission_atomic_removed_member_returns_not_found() {
     let owner = user_repo
         .create(&make_user("owner_removed_revoke"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room RemovedRevoke", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let user = user_repo
         .create(&make_user("user_removed_revoke"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Remove the member
-    member_repo.remove(&room.id, &user.id).await.unwrap();
+    member_repo
+        .remove(&room.id, &user.id)
+        .await
+        .checked("test operation should succeed");
 
     // Attempting to revoke on removed member should return NotFound
     let err = member_repo
         .revoke_permission_atomic(&room.id, &user.id, 0x01)
         .await
-        .unwrap_err();
+        .failed("operation should fail");
     assert!(matches!(err, Error::NotFound(_)));
 }
 
@@ -645,40 +706,48 @@ async fn test_role_guarded_admin_permission_updates_fail_when_role_changed() {
     let owner = user_repo
         .create(&make_user("owner_role_guard"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Role Guard", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let user = user_repo
         .create(&make_user("user_role_guard"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, user.id, RoomRole::Admin))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let current = member_repo.get(&room.id, &user.id).await.unwrap().unwrap();
+    let current = member_repo
+        .get(&room.id, &user.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     member_repo
         .update_role(&room.id, &user.id, RoomRole::Member, current.version)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let grant_err = member_repo
         .grant_admin_permission_atomic_for_role(&room.id, &user.id, 0x01, RoomRole::Admin)
         .await
-        .unwrap_err();
+        .failed("operation should fail");
     assert!(matches!(grant_err, Error::OptimisticLockConflict));
 
     let revoke_err = member_repo
         .revoke_admin_permission_atomic_for_role(&room.id, &user.id, 0x02, RoomRole::Admin)
         .await
-        .unwrap_err();
+        .failed("operation should fail");
     assert!(matches!(revoke_err, Error::OptimisticLockConflict));
 
-    let refreshed = member_repo.get(&room.id, &user.id).await.unwrap().unwrap();
+    let refreshed = member_repo
+        .get(&room.id, &user.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert_eq!(refreshed.role, RoomRole::Member);
     assert_eq!(refreshed.admin_added_permissions, 0);
     assert_eq!(refreshed.admin_removed_permissions, 0);
@@ -692,27 +761,33 @@ async fn test_reset_permissions_zeroes_all_four_columns() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_reset")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_reset"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Reset", &owner.id))
         .await
-        .unwrap();
-    let user = user_repo.create(&make_user("user_reset")).await.unwrap();
+        .checked("test operation should succeed");
+    let user = user_repo
+        .create(&make_user("user_reset"))
+        .await
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Set various permissions
     member_repo
         .grant_permission_atomic(&room.id, &user.id, 0xFF)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     member_repo
         .revoke_permission_atomic(&room.id, &user.id, 0xAA)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Also set admin permissions via raw SQL (since atomic ops only touch member-level)
     sqlx::query("UPDATE room_members SET admin_added_permissions = 42, admin_removed_permissions = 84 WHERE room_id = $1 AND user_id = $2")
@@ -720,16 +795,20 @@ async fn test_reset_permissions_zeroes_all_four_columns() {
         .bind(user.id)
         .execute(&pool)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Get current version
-    let current = member_repo.get(&room.id, &user.id).await.unwrap().unwrap();
+    let current = member_repo
+        .get(&room.id, &user.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
 
     // Reset
     let reset = member_repo
         .reset_permissions(&room.id, &user.id, current.version)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(reset.added_permissions, 0);
     assert_eq!(reset.removed_permissions, 0);
     assert_eq!(reset.admin_added_permissions, 0);
@@ -745,30 +824,33 @@ async fn test_count_by_rooms_batch_basic() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_batch")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_batch"))
+        .await
+        .checked("test operation should succeed");
     let room1 = room_repo
         .create(&make_room("Room Batch1", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room2 = room_repo
         .create(&make_room("Room Batch2", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room3 = room_repo
         .create(&make_room("Room Batch3", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add 2 members to room1
     for i in 0..2 {
         let u = user_repo
             .create(&make_user(&format!("batch_u1_{i}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         member_repo
             .add(&make_member(room1.id, u.id, RoomRole::Member))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     }
 
     // Add 3 members to room2
@@ -776,11 +858,11 @@ async fn test_count_by_rooms_batch_basic() {
         let u = user_repo
             .create(&make_user(&format!("batch_u2_{i}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         member_repo
             .add(&make_member(room2.id, u.id, RoomRole::Member))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     }
 
     // room3 has 0 members
@@ -788,7 +870,7 @@ async fn test_count_by_rooms_batch_basic() {
     let counts = member_repo
         .count_by_rooms_batch(&[&room1.id, &room2.id, &room3.id])
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(counts.get(&room1.id), Some(&2));
     assert_eq!(counts.get(&room2.id), Some(&3));
@@ -802,7 +884,10 @@ async fn test_count_by_rooms_batch_empty_input() {
     let (_container, pool) = create_test_pool().await;
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let counts = member_repo.count_by_rooms_batch(&[]).await.unwrap();
+    let counts = member_repo
+        .count_by_rooms_batch(&[])
+        .await
+        .checked("test operation should succeed");
     assert!(counts.is_empty());
 }
 
@@ -817,19 +902,22 @@ async fn test_list_by_user_with_details_pagination() {
     let owner = user_repo
         .create(&make_user("owner_pagination"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let user = user_repo
         .create(&make_user("user_pagination"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     for i in 0..5 {
         let room = room_repo
             .create(&make_room(&format!("Room Pag {i}"), &owner.id))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         let member = make_member(room.id, user.id, RoomRole::Member);
-        member_repo.add(&member).await.unwrap();
+        member_repo
+            .add(&member)
+            .await
+            .checked("test operation should succeed");
         // Small delay to ensure distinct joined_at timestamps for stable ordering
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
@@ -839,7 +927,7 @@ async fn test_list_by_user_with_details_pagination() {
     let (rooms_p1, total_p1) = member_repo
         .list_by_user_with_details(&user.id, page1)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(total_p1, 5);
     assert_eq!(rooms_p1.len(), 2);
 
@@ -848,7 +936,7 @@ async fn test_list_by_user_with_details_pagination() {
     let (rooms_p2, total_p2) = member_repo
         .list_by_user_with_details(&user.id, page2)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(total_p2, 5);
     assert_eq!(rooms_p2.len(), 2);
 
@@ -857,9 +945,25 @@ async fn test_list_by_user_with_details_pagination() {
     let (rooms_p3, total_p3) = member_repo
         .list_by_user_with_details(&user.id, page3)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(total_p3, 5);
     assert_eq!(rooms_p3.len(), 1);
+
+    // Out-of-range pages still need the real total for pagination controls.
+    let page4 = PageParams::new(Some(4), Some(2));
+    let (rooms_p4, total_p4) = member_repo
+        .list_by_user_with_details(&user.id, page4)
+        .await
+        .checked("test operation should succeed");
+    assert_eq!(total_p4, 5);
+    assert!(rooms_p4.is_empty());
+
+    let (room_ids_p4, room_id_total_p4) = member_repo
+        .list_by_user(&user.id, page4)
+        .await
+        .checked("test operation should succeed");
+    assert_eq!(room_id_total_p4, 5);
+    assert!(room_ids_p4.is_empty());
 
     // Verify no overlapping room IDs between pages
     let ids_p1: Vec<_> = rooms_p1.iter().map(|(r, _, _, _)| r.id).collect();
@@ -886,43 +990,43 @@ async fn test_list_by_user_with_query_respects_filters_sort_and_pagination() {
     let owner = user_repo
         .create(&make_user("owner_related_query"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let user = user_repo
         .create(&make_user("user_related_query"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let alpha_room = room_repo
         .create(&make_room("Alpha Room", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let beta_room = room_repo
         .create(&make_room("Beta Room", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let closed_room = room_repo
         .create(&make_room("Gamma Room", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let banned_room = room_repo
         .create(&make_room("Delta Room", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_repo
         .update_status(&closed_room.id, RoomStatus::Closed)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_repo
         .update_ban_status(&banned_room.id, true)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     for room in [&alpha_room, &beta_room, &closed_room, &banned_room] {
         member_repo
             .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     }
 
     let query = MyRoomListQuery {
@@ -938,7 +1042,7 @@ async fn test_list_by_user_with_query_respects_filters_sort_and_pagination() {
     let (page1, total_page1) = member_repo
         .list_by_user_with_query(&user.id, &query)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(total_page1, 2);
     assert_eq!(page1.len(), 1);
     assert_eq!(page1[0].0.name, "Alpha Room");
@@ -952,7 +1056,7 @@ async fn test_list_by_user_with_query_respects_filters_sort_and_pagination() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(total_page2, 2);
     assert_eq!(page2.len(), 1);
     assert_eq!(page2[0].0.name, "Beta Room");
@@ -969,36 +1073,39 @@ async fn test_list_by_user_with_query_member_count_counts_active_only_rows() {
     let owner = user_repo
         .create(&make_user("owner_member_count_filters"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let viewer = user_repo
         .create(&make_user("viewer_member_count_filters"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let removed = user_repo
         .create(&make_user("removed_member_count_filters"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let room = room_repo
         .create(&make_room("Count Filter Room", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, viewer.id, RoomRole::Member))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, removed.id, RoomRole::Member))
         .await
-        .unwrap();
-    member_repo.remove(&room.id, &removed.id).await.unwrap();
+        .checked("test operation should succeed");
+    member_repo
+        .remove(&room.id, &removed.id)
+        .await
+        .checked("test operation should succeed");
 
     let (rows, total) = member_repo
         .list_by_user_with_query(
@@ -1010,7 +1117,7 @@ async fn test_list_by_user_with_query_member_count_counts_active_only_rows() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(total, 1);
     assert_eq!(rows.len(), 1);
@@ -1026,25 +1133,37 @@ async fn test_add_member_rejects_active_kick_cooldown() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_kicked")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_kicked"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Kicked", &owner.id))
         .await
-        .unwrap();
-    let user = user_repo.create(&make_user("user_kicked")).await.unwrap();
+        .checked("test operation should succeed");
+    let user = user_repo
+        .create(&make_user("user_kicked"))
+        .await
+        .checked("test operation should succeed");
 
     // Add the user first
     member_repo
         .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    member_repo.remove(&room.id, &user.id).await.unwrap();
+    member_repo
+        .remove(&room.id, &user.id)
+        .await
+        .checked("test operation should succeed");
     add_kick_cooldown(&member_repo, room.id, user.id, Some(owner.id)).await;
 
     // Try to re-add -> should get Authorization error while cooldown is active.
     let member = make_member(room.id, user.id, RoomRole::Member);
-    let err = member_repo.add(&member).await.unwrap_err();
+    let err = member_repo
+        .add(&member)
+        .await
+        .failed("operation should fail");
     assert!(matches!(err, Error::Authorization(_)));
 }
 
@@ -1059,37 +1178,37 @@ async fn test_failed_add_in_caller_transaction_does_not_advance_lifecycle_versio
     let owner = user_repo
         .create(&make_user("owner_failed_add_lifecycle"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Failed Add Lifecycle", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let user = user_repo
         .create(&make_user("user_failed_add_lifecycle"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let member = member_repo
         .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let before = member_repo
         .lifecycle_version(&room.id, &user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(before, member.version);
 
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.begin().await.checked("test operation should succeed");
     let duplicate = member_repo
         .add_with_executor(&make_member(room.id, user.id, RoomRole::Member), &mut tx)
         .await;
     assert!(matches!(duplicate, Err(Error::AlreadyExists(_))));
-    tx.commit().await.unwrap();
+    tx.commit().await.checked("test operation should succeed");
 
     let after = member_repo
         .lifecycle_version(&room.id, &user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(
         after, before,
         "failed add inside a caller-owned transaction must not burn a lifecycle version"
@@ -1107,21 +1226,21 @@ async fn test_add_with_executor_diagnoses_uncommitted_duplicate_in_same_transact
     let owner = user_repo
         .create(&make_user("owner_tx_duplicate_diag"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Tx Duplicate Diagnostic", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let user = user_repo
         .create(&make_user("user_tx_duplicate_diag"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.begin().await.checked("test operation should succeed");
     member_repo
         .add_with_executor(&make_member(room.id, user.id, RoomRole::Member), &mut tx)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let duplicate = member_repo
         .add_with_executor(&make_member(room.id, user.id, RoomRole::Member), &mut tx)
@@ -1132,7 +1251,7 @@ async fn test_add_with_executor_diagnoses_uncommitted_duplicate_in_same_transact
         "diagnostic query must see membership inserted earlier in the same transaction: {duplicate:?}"
     );
 
-    tx.rollback().await.unwrap();
+    tx.rollback().await.checked("test operation should succeed");
 }
 
 #[tokio::test]
@@ -1143,29 +1262,38 @@ async fn test_add_after_remove_creates_fresh_membership() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_removed")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_removed"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Removed", &owner.id))
         .await
-        .unwrap();
-    let user = user_repo.create(&make_user("user_removed")).await.unwrap();
+        .checked("test operation should succeed");
+    let user = user_repo
+        .create(&make_user("user_removed"))
+        .await
+        .checked("test operation should succeed");
 
     // Add the user
     member_repo
         .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
-        .unwrap();
-    member_repo.remove(&room.id, &user.id).await.unwrap();
+        .checked("test operation should succeed");
+    member_repo
+        .remove(&room.id, &user.id)
+        .await
+        .checked("test operation should succeed");
     let tombstone_version = member_repo
         .lifecycle_version(&room.id, &user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let member = make_member(room.id, user.id, RoomRole::Member);
     let result = member_repo.add(&member).await;
 
     assert!(result.is_ok());
-    let rejoined = result.unwrap();
+    let rejoined = result.checked("test operation should succeed");
     assert_eq!(rejoined.status, MemberStatus::Active);
     assert_eq!(rejoined.added_permissions, 0);
     assert_eq!(rejoined.removed_permissions, 0);
@@ -1178,7 +1306,7 @@ async fn test_add_after_remove_creates_fresh_membership() {
     let active_lifecycle_version = member_repo
         .lifecycle_version(&room.id, &user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(
         rejoined.version, active_lifecycle_version,
         "rejoined member row must publish the lifecycle version allocated in the insert transaction"
@@ -1196,25 +1324,28 @@ async fn test_update_permissions_after_member_removed_should_fail() {
     let owner = user_repo
         .create(&make_user("owner_removed_permissions_test"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member_user = user_repo
         .create(&make_user("member_removed_test"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let room = room_repo
         .create(&make_room("Permissions Test Room", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add member with no permissions
     let new_member = make_member(room.id, member_user.id, RoomRole::Member);
     let _member = member_repo
         .add_with_options(&new_member, &AddMemberOptions::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    member_repo.remove(&room.id, &member_user.id).await.unwrap();
+    member_repo
+        .remove(&room.id, &member_user.id)
+        .await
+        .checked("test operation should succeed");
 
     // SECURITY CHECK: Try to update permissions for removed member.
     let result = member_repo
@@ -1234,8 +1365,8 @@ async fn test_update_permissions_after_member_removed_should_fail() {
 
     match result {
         Err(Error::OptimisticLockConflict) => { /* Expected */ }
-        Err(e) => panic!("Expected OptimisticLockConflict, got: {e:?}"),
-        Ok(_) => panic!("update_permissions should not succeed for removed member"),
+        Err(e) => std::panic::panic_any(format!("expected OptimisticLockConflict, got: {e:?}")),
+        Ok(_) => std::panic::panic_any("update_permissions should not succeed for removed member"),
     }
 }
 
@@ -1252,20 +1383,23 @@ async fn test_update_permissions_for_active_member_should_succeed() {
     let owner = user_repo
         .create(&make_user("owner_active_perm"))
         .await
-        .unwrap();
-    let member_user = user_repo.create(&make_user("member_active")).await.unwrap();
+        .checked("test operation should succeed");
+    let member_user = user_repo
+        .create(&make_user("member_active"))
+        .await
+        .checked("test operation should succeed");
 
     let room = room_repo
         .create(&make_room("Active Permissions Test", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add active member
     let new_member = make_member(room.id, member_user.id, RoomRole::Member);
     let member = member_repo
         .add_with_options(&new_member, &AddMemberOptions::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Update permissions for active member - this should succeed
     let updated = member_repo
@@ -1283,7 +1417,7 @@ async fn test_update_permissions_for_active_member_should_succeed() {
         "update_permissions should succeed for active member"
     );
 
-    let updated_member = updated.unwrap();
+    let updated_member = updated.checked("test operation should succeed");
     assert_eq!(updated_member.added_permissions, 0b0000_0001);
     assert_eq!(updated_member.version, member.version + 1);
 }
@@ -1299,32 +1433,32 @@ async fn test_bulk_remove_for_user_returns_post_delete_lifecycle_version() {
     let owner = user_repo
         .create(&make_user("owner_bulk_user_lifecycle"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member_user = user_repo
         .create(&make_user("member_bulk_user_lifecycle"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Bulk User Lifecycle Room", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = member_repo
         .add(&make_member(room.id, member_user.id, RoomRole::Member))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.begin().await.checked("test operation should succeed");
     let removed = member_repo
         .remove_all_for_user_with_executor(&member_user.id, &mut tx)
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .checked("test operation should succeed");
+    tx.commit().await.checked("test operation should succeed");
 
     assert_eq!(removed.len(), 1);
     let lifecycle_version = member_repo
         .lifecycle_version(&room.id, &member_user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(removed[0].version, lifecycle_version);
     assert!(
         removed[0].version > member.version,
@@ -1343,32 +1477,32 @@ async fn test_bulk_remove_for_rooms_returns_post_delete_lifecycle_version() {
     let owner = user_repo
         .create(&make_user("owner_bulk_room_lifecycle"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member_user = user_repo
         .create(&make_user("member_bulk_room_lifecycle"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Bulk Room Lifecycle Room", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = member_repo
         .add(&make_member(room.id, member_user.id, RoomRole::Member))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.begin().await.checked("test operation should succeed");
     let removed = member_repo
         .remove_all_for_rooms_with_executor(&[room.id], &mut tx)
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .checked("test operation should succeed");
+    tx.commit().await.checked("test operation should succeed");
 
     assert_eq!(removed.len(), 1);
     let lifecycle_version = member_repo
         .lifecycle_version(&room.id, &member_user.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(removed[0].version, lifecycle_version);
     assert!(
         removed[0].version > member.version,

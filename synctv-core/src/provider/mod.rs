@@ -286,7 +286,7 @@ pub fn bilibili_headers() -> std::collections::HashMap<String, String> {
     );
     headers.insert(
         "User-Agent".to_string(),
-        synctv_media_providers::error::PROVIDER_USER_AGENT.to_string(),
+        synctv_media_providers::PROVIDER_USER_AGENT.to_string(),
     );
     headers
 }
@@ -587,6 +587,7 @@ mod tests {
     use crate::models::{RoomId, UserId};
     use crate::provider::store::{InMemoryProviderStore, StoreError, StoreLockGuard};
     use crate::proxy_signature::ProxySigningKey;
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
     use std::sync::Arc;
 
     struct FailVersionMappingStore {
@@ -657,7 +658,7 @@ mod tests {
     #[test]
     fn test_sign_playback_urls_signs_mpd_streams_with_indexed_proxy_paths() {
         let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .expect("test proxy signing key should derive");
+            .checked("test proxy signing key should derive");
         let mut result = PlaybackResult {
             playback_infos: std::collections::HashMap::from([(
                 "dash".to_string(),
@@ -729,7 +730,7 @@ mod tests {
     #[test]
     fn test_sign_playback_urls_preserves_multiple_plain_stream_urls() {
         let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .expect("test proxy signing key should derive");
+            .checked("test proxy signing key should derive");
         let mut result = PlaybackResult {
             playback_infos: std::collections::HashMap::from([(
                 "direct".to_string(),
@@ -779,7 +780,7 @@ mod tests {
     #[test]
     fn test_sign_playback_urls_keeps_plain_direct_hls_urls_unproxied() {
         let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .expect("test proxy signing key should derive");
+            .checked("test proxy signing key should derive");
         let mut result = PlaybackResult {
             playback_infos: std::collections::HashMap::from([(
                 "direct".to_string(),
@@ -818,7 +819,7 @@ mod tests {
     #[test]
     fn test_sign_playback_urls_proxies_direct_hls_with_headers() {
         let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .expect("test proxy signing key should derive");
+            .checked("test proxy signing key should derive");
         let mut result = PlaybackResult {
             playback_infos: std::collections::HashMap::from([(
                 "direct".to_string(),
@@ -860,7 +861,7 @@ mod tests {
     #[tokio::test]
     async fn test_finalize_versioned_playback_requires_store_for_signed_proxy() {
         let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .expect("test proxy signing key should derive");
+            .checked("test proxy signing key should derive");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_room_id(RoomId::expect_positive(10))
@@ -874,7 +875,7 @@ mod tests {
             &ctx,
         )
         .await
-        .unwrap_err();
+        .failed("operation should fail");
 
         assert!(matches!(err, ProviderError::Internal(_)));
         assert!(
@@ -886,7 +887,7 @@ mod tests {
     #[tokio::test]
     async fn test_finalize_versioned_playback_fails_closed_when_mapping_persist_fails() {
         let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .expect("test proxy signing key should derive");
+            .checked("test proxy signing key should derive");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_room_id(RoomId::expect_positive(10))
@@ -903,7 +904,7 @@ mod tests {
             &ctx,
         )
         .await
-        .unwrap_err();
+        .failed("operation should fail");
 
         assert!(matches!(err, ProviderError::Internal(_)));
         assert!(
@@ -915,7 +916,7 @@ mod tests {
     #[tokio::test]
     async fn test_cached_signed_playback_repairs_missing_version_mapping() {
         let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .expect("test proxy signing key should derive");
+            .checked("test proxy signing key should derive");
         let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
@@ -929,7 +930,7 @@ mod tests {
                 result
                     .playback_infos
                     .get_mut("direct")
-                    .expect("direct playback info")
+                    .checked("direct playback info")
                     .cors_proxy_required = true;
                 result
             },
@@ -940,18 +941,21 @@ mod tests {
             maybe_sign_cached_versioned_playback(versioned.clone(), "direct_url", &ctx).await;
 
         assert!(signed.is_ok(), "cached signing should succeed: {signed:?}");
-        let stored: Option<VersionedPlayback> = store.get("v:cached-version").await.unwrap();
+        let stored: Option<VersionedPlayback> = store
+            .get("v:cached-version")
+            .await
+            .checked("operation should succeed");
         assert!(
             stored.is_some(),
             "signed cache hit must restore version mapping"
         );
-        let url = &signed.unwrap().playback_infos["direct"].urls[0];
+        let url = &signed.checked("operation should succeed").playback_infos["direct"].urls[0];
         assert!(url.contains("/direct_url/cached-version/stream"));
 
-        let query = url.split('?').nth(1).expect("signed proxy URL query");
+        let query = url.split('?').nth(1).checked("signed proxy URL query");
         let claims = signing_key
             .parse_and_verify_query(query, "direct_url", "cached-version")
-            .expect("valid signed query");
+            .checked("valid signed query");
         assert_eq!(claims.user_id, "1");
         assert_eq!(claims.room_id, "10");
     }
@@ -1013,13 +1017,13 @@ mod tests {
                 SourceConfig::media(&serde_json::json!({ "url": "http://127.0.0.1/video.mp4" })),
             )
             .await
-            .expect("explicit disabled SSRF guard should allow DirectUrl loopback");
+            .checked("explicit disabled SSRF guard should allow DirectUrl loopback");
         live_proxy
             .validate_source_config(
                 &ctx,
                 SourceConfig::media(&serde_json::json!({ "url": "http://127.0.0.1/live.flv" })),
             )
             .await
-            .expect("explicit disabled SSRF guard should allow LiveProxy loopback");
+            .checked("explicit disabled SSRF guard should allow LiveProxy loopback");
     }
 }

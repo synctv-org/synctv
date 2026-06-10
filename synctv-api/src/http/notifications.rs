@@ -315,7 +315,7 @@ pub async fn delete_all_read(
 }
 
 /// Create the notification read router (GET endpoints -- under read rate limit)
-pub fn create_notification_read_router() -> axum::Router<AppState> {
+pub(crate) fn create_notification_read_router() -> axum::Router<AppState> {
     axum::Router::new()
         .route("/api/notifications", axum::routing::get(list_notifications))
         .route(
@@ -325,7 +325,7 @@ pub fn create_notification_read_router() -> axum::Router<AppState> {
 }
 
 /// Create the notification write router (POST/DELETE endpoints -- under write rate limit)
-pub fn create_notification_write_router() -> axum::Router<AppState> {
+pub(crate) fn create_notification_write_router() -> axum::Router<AppState> {
     axum::Router::new()
         .route(
             "/api/notifications/{notification_id}",
@@ -347,10 +347,12 @@ pub fn create_notification_write_router() -> axum::Router<AppState> {
 
 #[cfg(test)]
 mod tests {
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
     #[test]
-    fn test_list_notifications_request_deserializes_search_and_sort() {
+    fn test_list_notifications_request_deserializes_search_and_sort() -> TestResult {
         let query: synctv_proto::client::ListNotificationsRequest =
-            serde_json::from_str(r#"{"search":"alert","sort_by":3,"sort_direction":1}"#).unwrap();
+            serde_json::from_str(r#"{"search":"alert","sort_by":3,"sort_direction":1}"#)?;
         assert_eq!(query.search, "alert");
         assert_eq!(
             query.sort_by,
@@ -360,16 +362,18 @@ mod tests {
             query.sort_direction,
             synctv_proto::client::SortDirection::Asc as i32
         );
+        Ok(())
     }
 
     #[test]
-    fn test_notification_path_requests_deserialize_proto_field_names() {
+    fn test_notification_path_requests_deserialize_proto_field_names() -> TestResult {
         let get_request: synctv_proto::client::GetNotificationRequest =
-            serde_json::from_str(r#"{"notification_id":42}"#).unwrap();
+            serde_json::from_str(r#"{"notification_id":42}"#)?;
         assert_eq!(get_request.notification_id, 42);
 
         let delete_request: synctv_proto::client::DeleteNotificationRequest =
-            serde_json::from_str(r#"{"notification_id":42}"#).unwrap();
+            serde_json::from_str(r#"{"notification_id":42}"#)?;
         assert_eq!(delete_request.notification_id, 42);
+        Ok(())
     }
 }

@@ -5,7 +5,7 @@ use synctv_common::ExecutionControl;
 
 use crate::{
     models::{OpaquePasswordRecord, Room, RoomId, RoomMember, UserId},
-    repository::RoomPasswordCredentialState,
+    repository::room_password::RoomPasswordCredentialState,
     service::optimistic_retry,
     Error, Result,
 };
@@ -67,7 +67,13 @@ impl RoomService {
         let credential = ctx
             .password_credential
             .ok_or_else(|| Error::Authorization("Invalid password".to_string()))?;
-        let password_version = ctx.password_version.unwrap_or(0);
+        let password_version = ctx.password_version.ok_or_else(|| {
+            tracing::warn!(
+                room_id = %room_id,
+                "Room requires password but credential version is missing"
+            );
+            Error::Authorization("Invalid password".to_string())
+        })?;
         let login_start = self.opaque_password_service.start_login(
             Some(&credential),
             &credential.credential_identifier,

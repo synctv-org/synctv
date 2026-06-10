@@ -11,7 +11,7 @@ use crate::{
 use crate::service::user::session_types::{
     AuthFactorMethod, SensitiveVerificationChallenge, SensitiveVerificationOutcome,
     SensitiveVerificationSession, SENSITIVE_VERIFICATION_PASSWORD_BRUTE_FORCE_PREFIX,
-    SENSITIVE_VERIFICATION_SESSION_TTL_SECS,
+    SENSITIVE_VERIFICATION_SESSION_TTL_SECS, SENSITIVE_VERIFICATION_SESSION_TTL_SECS_I64,
 };
 
 impl UserService {
@@ -59,18 +59,39 @@ impl UserService {
             .user_email_repository
             .get_email(&session.user_id)
             .await?;
+        let available_methods =
+            Self::sensitive_available_methods(&auth_factors, &session.completed_methods);
+        let masked_email =
+            Self::sensitive_challenge_masked_email(&available_methods, email.as_deref())?;
+
         Ok(SensitiveVerificationChallenge {
             session_id: session_id.to_string(),
             required_count: session.required_count,
             required_methods: Self::sensitive_required_methods(&auth_factors),
             completed_methods: session.completed_methods.clone(),
-            available_methods: Self::sensitive_available_methods(
-                &auth_factors,
-                &session.completed_methods,
-            ),
-            masked_email: email.as_deref().map(crate::service::mask_email),
+            available_methods,
+            masked_email,
             expires_at: session.expires_at,
         })
+    }
+
+    fn sensitive_challenge_masked_email(
+        available_methods: &[AuthFactorMethod],
+        email: Option<&str>,
+    ) -> Result<Option<String>> {
+        if available_methods.contains(&AuthFactorMethod::Email) {
+            return email
+                .map(crate::service::mask_email)
+                .map(Some)
+                .ok_or_else(|| {
+                    Error::Internal(
+                        "Sensitive verification challenge includes email verification without a user email"
+                            .to_string(),
+                    )
+                });
+        }
+
+        Ok(None)
     }
 
     pub async fn start_sensitive_operation_verification(
@@ -105,8 +126,8 @@ impl UserService {
         }
 
         let session_id = synctv_common::snanoid!(48);
-        let expires_at = chrono::Utc::now().timestamp()
-            + i64::try_from(SENSITIVE_VERIFICATION_SESSION_TTL_SECS).unwrap_or(300);
+        let expires_at =
+            chrono::Utc::now().timestamp() + SENSITIVE_VERIFICATION_SESSION_TTL_SECS_I64;
         if can_bootstrap_from_oauth2 {
             let session = SensitiveVerificationSession {
                 user_id: *user_id,
@@ -301,5 +322,31 @@ impl UserService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sensitive_challenge_masked_email_requires_email_when_method_available() {
+        let error = UserService::sensitive_challenge_masked_email(&[AuthFactorMethod::Email], None)
+            .expect_err("email sensitive verification method requires a masked email source");
+
+        assert!(
+            matches!(error, Error::Internal(message) if message.contains("email verification"))
+        );
+    }
+
+    #[test]
+    fn sensitive_challenge_masked_email_omits_email_for_other_methods() {
+        let masked = UserService::sensitive_challenge_masked_email(
+            &[AuthFactorMethod::Password],
+            Some("user@example.com"),
+        )
+        .expect("non-email sensitive verification challenge should build");
+
+        assert_eq!(masked, None);
     }
 }

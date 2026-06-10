@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,7 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     apply_provider_headers, send_head_with_redirect_validation_with_control_and_timeout,
-    send_with_redirect_validation_with_control_and_timeout,
+    send_with_redirect_validation_with_control_and_timeout, ProviderHeaders,
 };
 
 use super::etag::CachedResourceMeta;
@@ -42,7 +41,7 @@ async fn discover_content_length_via_range_get(
     client: &reqwest::Client,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     request_control: Option<&ExecutionControl>,
     upstream_header_timeout: Option<Duration>,
 ) -> Result<u64, anyhow::Error> {
@@ -74,22 +73,20 @@ async fn discover_content_length_via_range_get(
     }
 }
 
-#[allow(clippy::implicit_hasher)]
 pub async fn head_content_length(
     client: &reqwest::Client,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
 ) -> Result<u64, anyhow::Error> {
     head_content_length_with_control(client, ssrf_guard, url, provider_headers, None).await
 }
 
-#[allow(clippy::implicit_hasher)]
 pub async fn head_content_length_with_control(
     client: &reqwest::Client,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     request_control: Option<&ExecutionControl>,
 ) -> Result<u64, anyhow::Error> {
     head_content_length_with_control_and_timeout(
@@ -103,12 +100,11 @@ pub async fn head_content_length_with_control(
     .await
 }
 
-#[allow(clippy::implicit_hasher)]
 pub async fn head_content_length_with_control_and_timeout(
     client: &reqwest::Client,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     request_control: Option<&ExecutionControl>,
     upstream_header_timeout: Option<Duration>,
 ) -> Result<u64, anyhow::Error> {
@@ -223,7 +219,7 @@ pub(super) fn cached_head_headers(
 pub(super) async fn get_or_fetch_head_resource_with_control(
     ctx: HeadFetchContext<'_>,
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     range_header: Option<&str>,
     request_control: Option<&ExecutionControl>,
     upstream_header_timeout: Option<Duration>,

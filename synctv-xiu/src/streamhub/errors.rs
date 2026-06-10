@@ -13,8 +13,14 @@ pub enum StreamHubErrorValue {
     NoAppOrStreamName,
     #[error("exists")]
     Exists,
-    #[error("send error")]
+    #[error("streamhub internal channel send failed")]
     SendError,
+    #[error("streamhub event channel closed")]
+    EventChannelClosed,
+    #[error("streamhub event send timed out")]
+    EventSendTimeout,
+    #[error("streamhub result receiver dropped")]
+    ResultReceiverDropped,
     #[error("send video error")]
     SendVideoError,
     #[error("send audio error")]
@@ -23,13 +29,13 @@ pub enum StreamHubErrorValue {
     BytesReadError(BytesReadError),
     #[error("bytes write error")]
     BytesWriteError(BytesWriteError),
-    #[error("not correct data sender type")]
+    #[error("unexpected data sender type")]
     NotCorrectDataSenderType,
     #[error("subscriber channel closed")]
     SubscriberClosed,
-    #[error("Tokio oneshot recv error")]
+    #[error("oneshot result receiver failed")]
     RecvError(RecvError),
-    #[error("Serde json error")]
+    #[error("serde json error")]
     SerdeError(Error),
     #[error("client session error: {0}")]
     ClientSessionError(String),

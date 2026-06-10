@@ -2,7 +2,6 @@
 //!
 //! This module provides reusable assertion macros to reduce boilerplate
 //! across tests.
-#![allow(clippy::unwrap_used)]
 
 /// Asserts that a value is within a range
 ///
@@ -42,7 +41,7 @@ macro_rules! assert_ok {
     ($result:expr) => {
         match $result {
             Ok(value) => value,
-            Err(e) => panic!("Expected Ok, got Err: {:?}", e),
+            Err(e) => std::panic::panic_any(format!("Expected Ok, got Err: {e:?}")),
         }
     };
 }
@@ -59,7 +58,7 @@ macro_rules! assert_err {
     ($result:expr) => {
         match $result {
             Err(e) => e,
-            Ok(v) => panic!("Expected Err, got Ok: {:?}", v),
+            Ok(v) => std::panic::panic_any(format!("Expected Err, got Ok: {v:?}")),
         }
     };
 }

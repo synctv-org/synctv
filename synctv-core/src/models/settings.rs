@@ -123,6 +123,27 @@ pub fn get_default_settings(group_name: &str) -> Option<JsonValue> {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    fn err<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> E {
+        match result {
+            Ok(_) => std::panic::panic_any(context.to_string()),
+            Err(error) => error,
+        }
+    }
+
+    fn json_field<'a>(json: &'a JsonValue, key: &str) -> &'a JsonValue {
+        match json.get(key) {
+            Some(value) => value,
+            None => std::panic::panic_any(format!("JSON should contain '{key}' field")),
+        }
+    }
+
     #[test]
     fn test_parse_json() {
         let settings = SettingsGroup::new(
@@ -130,8 +151,8 @@ mod tests {
             serde_json::json!({"test": true}).to_string(),
         );
 
-        let parsed = settings.parse_json().unwrap();
-        assert_eq!(parsed.get("test").cloned().unwrap(), JsonValue::Bool(true));
+        let parsed = ok(settings.parse_json(), "settings JSON should parse");
+        assert_eq!(json_field(&parsed, "test"), &JsonValue::Bool(true));
     }
 
     #[test]
@@ -141,14 +162,14 @@ mod tests {
             serde_json::json!({"key1": "value1", "key2": 123}).to_string(),
         );
 
-        let obj = settings.as_object().unwrap();
+        let obj = ok(settings.as_object(), "settings should be an object");
         assert_eq!(
-            obj.get("key1").cloned().unwrap(),
-            JsonValue::String("value1".to_string())
+            obj.get("key1").cloned(),
+            Some(JsonValue::String("value1".to_string()))
         );
         assert_eq!(
-            obj.get("key2").cloned().unwrap(),
-            JsonValue::Number(123.into())
+            obj.get("key2").cloned(),
+            Some(JsonValue::Number(123.into()))
         );
     }
 
@@ -163,13 +184,13 @@ mod tests {
     #[test]
     fn test_settings_group_json_field_name_is_group() {
         let sg = SettingsGroup::new("email".to_string(), r#"{"enabled":true}"#.to_string());
-        let json = serde_json::to_value(&sg).unwrap();
+        let json = ok(serde_json::to_value(&sg), "settings group should serialize");
 
         assert!(
             json.get("group").is_some(),
             "JSON should contain 'group' field"
         );
-        assert_eq!(json.get("group").unwrap(), "email");
+        assert_eq!(json_field(&json, "group"), "email");
         assert!(
             json.get("group_name").is_none(),
             "JSON should not contain 'group_name' field"
@@ -187,7 +208,10 @@ mod tests {
             "version": 0
         });
 
-        let sg: SettingsGroup = serde_json::from_value(json).unwrap();
+        let sg: SettingsGroup = ok(
+            serde_json::from_value(json),
+            "settings group should deserialize",
+        );
         assert_eq!(sg.key, "server.default");
         assert_eq!(sg.group_name, "server");
         assert_eq!(sg.value, "{\"test\": true}");
@@ -196,16 +220,14 @@ mod tests {
     #[test]
     fn test_parse_json_invalid() {
         let sg = SettingsGroup::new("test".to_string(), "not valid json".to_string());
-        let result = sg.parse_json();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("parse"));
+        let error = err(sg.parse_json(), "invalid JSON should fail");
+        assert!(error.to_string().contains("parse"));
     }
 
     #[test]
     fn test_as_object_non_object() {
         let sg = SettingsGroup::new("test".to_string(), "42".to_string());
-        let result = sg.as_object();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not an object"));
+        let error = err(sg.as_object(), "non-object settings should fail");
+        assert!(error.to_string().contains("not an object"));
     }
 }

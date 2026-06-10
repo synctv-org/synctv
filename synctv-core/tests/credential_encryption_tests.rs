@@ -1,11 +1,10 @@
 //! Credential encryption integration tests
 //!
 //! Tests JSON edge cases and malformed ciphertext handling for credential encryption.
-//!
-#![allow(clippy::unwrap_used)]
 
 use serde_json::json;
 use synctv_core::credential_encryption::CredentialEncryption;
+use synctv_core_testing::ok;
 
 fn test_key() -> Vec<u8> {
     vec![
@@ -17,27 +16,36 @@ fn test_key() -> Vec<u8> {
 
 #[test]
 fn test_empty_json_object() {
-    let enc = CredentialEncryption::new(&test_key()).unwrap();
+    let enc = ok(
+        CredentialEncryption::new(&test_key()),
+        "encryption should initialize",
+    );
     let empty = json!({});
 
-    let encrypted = enc.encrypt(&empty).unwrap();
-    let decrypted = enc.decrypt(&encrypted).unwrap();
+    let encrypted = ok(enc.encrypt(&empty), "empty object should encrypt");
+    let decrypted = ok(enc.decrypt(&encrypted), "empty object should decrypt");
     assert_eq!(empty, decrypted);
 }
 
 #[test]
 fn test_null_json_value() {
-    let enc = CredentialEncryption::new(&test_key()).unwrap();
+    let enc = ok(
+        CredentialEncryption::new(&test_key()),
+        "encryption should initialize",
+    );
     let null_val = json!(null);
 
-    let encrypted = enc.encrypt(&null_val).unwrap();
-    let decrypted = enc.decrypt(&encrypted).unwrap();
+    let encrypted = ok(enc.encrypt(&null_val), "null value should encrypt");
+    let decrypted = ok(enc.decrypt(&encrypted), "null value should decrypt");
     assert_eq!(null_val, decrypted);
 }
 
 #[test]
 fn test_nested_json_structure() {
-    let enc = CredentialEncryption::new(&test_key()).unwrap();
+    let enc = ok(
+        CredentialEncryption::new(&test_key()),
+        "encryption should initialize",
+    );
     let nested = json!({
         "provider": "emby",
         "credentials": {
@@ -51,20 +59,21 @@ fn test_nested_json_structure() {
         "tags": ["media", "home"]
     });
 
-    let encrypted = enc.encrypt(&nested).unwrap();
-    let decrypted = enc.decrypt(&encrypted).unwrap();
+    let encrypted = ok(enc.encrypt(&nested), "nested value should encrypt");
+    let decrypted = ok(enc.decrypt(&encrypted), "nested value should decrypt");
     assert_eq!(nested, decrypted);
 }
 
 #[test]
 fn test_decrypt_corrupted_data() {
-    let enc = CredentialEncryption::new(&test_key()).unwrap();
+    let enc = ok(
+        CredentialEncryption::new(&test_key()),
+        "encryption should initialize",
+    );
 
-    // Corrupted base64 payload
     let result = enc.decrypt("enc:not_valid_base64!!!");
     assert!(result.is_err());
 
-    // Too short payload (valid base64 but not enough bytes for version + nonce)
     let result = enc.decrypt("enc:AAAA");
     assert!(result.is_err());
 }

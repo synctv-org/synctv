@@ -56,14 +56,6 @@ impl RedisTicketStore {
     }
 
     #[must_use]
-    pub fn new(
-        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
-        key_prefix: impl Into<String>,
-    ) -> Self {
-        Self::from_runtime(crate::shared_runtime(shared_conn), key_prefix)
-    }
-
-    #[must_use]
     pub fn from_runtime(
         redis_runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,

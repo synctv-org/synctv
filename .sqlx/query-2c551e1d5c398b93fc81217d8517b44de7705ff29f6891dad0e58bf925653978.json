@@ -6,67 +6,145 @@
       {
         "ordinal": 0,
         "name": "id!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_images",
+            "name": "id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "room_id!: RoomId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_images",
+            "name": "room_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "message_id!",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_images",
+            "name": "message_id"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "message_created_at!",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_images",
+            "name": "message_created_at"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "storage_backend!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_images",
+            "name": "storage_backend"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "object_key!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_images",
+            "name": "object_key"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "url",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_images",
+            "name": "url"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "mime_type",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_images",
+            "name": "mime_type"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "size_bytes",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_images",
+            "name": "size_bytes"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "width",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "chat_message_images",
+            "name": "width"
+          }
+        }
       },
       {
         "ordinal": 10,
         "name": "height",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "chat_message_images",
+            "name": "height"
+          }
+        }
       },
       {
         "ordinal": 11,
         "name": "metadata!: serde_json::Value",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "chat_message_images",
+            "name": "metadata"
+          }
+        }
       },
       {
         "ordinal": 12,
         "name": "created_at!",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_images",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {

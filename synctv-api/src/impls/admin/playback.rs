@@ -12,6 +12,7 @@ use super::{
     AdminApiImpl, ApiError, PlaybackFanoutActor, ProviderPlaybackLifecycleApi, RequestContext,
     LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
+use crate::impls::client::convert::dynamic_playlist_source_fields;
 
 struct DynamicPlaylistPlaybackRequest<'a> {
     room_id_model: &'a RoomId,
@@ -22,6 +23,31 @@ struct DynamicPlaylistPlaybackRequest<'a> {
 }
 
 impl AdminApiImpl {
+    async fn management_playback_candidate_is_usable(
+        &self,
+        room_id: &RoomId,
+        candidate_id: &UserId,
+    ) -> Result<bool, ApiError> {
+        let user = match self.user_service.get_user(candidate_id).await {
+            Ok(user) => user,
+            Err(synctv_core::Error::NotFound(_)) => return Ok(false),
+            Err(error) => return Err(ApiError::from(error)),
+        };
+        if user.status != UserStatus::Active || user.deleted_at.is_some() {
+            return Ok(false);
+        }
+        if self
+            .room_service
+            .check_membership(room_id, candidate_id)
+            .await
+            .is_err()
+        {
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
+
     async fn build_static_media_playback_result(
         &self,
         user_id: &UserId,
@@ -29,12 +55,6 @@ impl AdminApiImpl {
         media: synctv_core::models::Media,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<synctv_proto::client::Playback, ApiError> {
-        let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-            self.config.jwt.secret.as_bytes(),
-        )
-        .map_err(|error| {
-            ApiError::Internal(format!("Failed to derive proxy signing key: {error}"))
-        })?;
         let public_user_id = self
             .public_id_codec
             .encode_user_id(*user_id)
@@ -64,7 +84,7 @@ impl AdminApiImpl {
             .with_public_room_id(public_room_id)
             .with_media_id(media.id)
             .with_playback_client_profile(playback_client_profile.cloned())
-            .with_signing_key(&signing_key);
+            .with_signing_key(&self.signing_key);
         if let Some(creator_id) = media.creator_id.as_ref() {
             ctx = ctx.with_credential_owner_id(*creator_id);
         }
@@ -77,12 +97,8 @@ impl AdminApiImpl {
         if let Some(enc) = self.room_service.media_service().credential_encryption() {
             ctx = ctx.with_credential_encryption(enc);
         }
-        if let Some(access_service) = &self.provider_access_service {
-            ctx = ctx.with_provider_access_service(access_service.clone());
-        }
-        if let Some(stores) = &self.provider_stores {
-            ctx = ctx.with_store(stores.load(provider.name()));
-        }
+        ctx = ctx.with_provider_access_service(self.provider_access_service.clone());
+        ctx = ctx.with_store(self.provider_stores.load(provider.name()));
         let provider_result = provider
             .generate_playback(&ctx, &media.source_config)
             .await
@@ -95,7 +111,7 @@ impl AdminApiImpl {
             &media,
             &public_user_id,
             &self.public_id_codec,
-            Some(&signing_key),
+            &self.signing_key,
             default_mode_expires_at,
         )?;
 
@@ -125,7 +141,7 @@ impl AdminApiImpl {
         sign_local_bilibili_danmaku_urls(
             &mut full_result,
             &public_user_id,
-            Some(&signing_key),
+            &self.signing_key,
             default_mode_expires_at,
         );
         let mut playback = try_playback_to_proto(&full_result, &self.public_id_codec)?;
@@ -161,30 +177,16 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound("Playlist not found".to_string()))?;
 
-        let provider_name = playlist
-            .source_provider
-            .as_deref()
-            .ok_or_else(|| ApiError::Internal("Dynamic playlist missing provider".to_string()))?;
+        let source_fields = dynamic_playlist_source_fields(&playlist)?;
         let providers_manager = self.room_service.media_service().providers_manager();
-        let bound_instance = playlist.provider_instance_name.as_deref().and_then(|name| {
-            let trimmed = name.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        });
         let provider = providers_manager
-            .resolve_provider(provider_name, bound_instance)
+            .resolve_provider(
+                source_fields.provider_name,
+                source_fields.provider_instance_name,
+            )
             .await
             .map_err(ApiError::from)?;
 
-        let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-            self.config.jwt.secret.as_bytes(),
-        )
-        .map_err(|error| {
-            ApiError::Internal(format!("Failed to derive proxy signing key: {error}"))
-        })?;
         let public_user_id = self
             .public_id_codec
             .encode_user_id(*user_id_model)
@@ -199,11 +201,11 @@ impl AdminApiImpl {
             .with_room_id(*room_id_model)
             .with_public_room_id(public_room_id)
             .with_playback_client_profile(playback_client_profile.cloned())
-            .with_signing_key(&signing_key);
+            .with_signing_key(&self.signing_key);
         if let Some(creator_id) = playlist.creator_id.as_ref() {
             ctx = ctx.with_credential_owner_id(*creator_id);
         }
-        if let Some(provider_instance_name) = bound_instance {
+        if let Some(provider_instance_name) = source_fields.provider_instance_name {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
         }
         if let Some(repo) = self.room_service.media_service().credential_repo() {
@@ -212,12 +214,8 @@ impl AdminApiImpl {
         if let Some(enc) = self.room_service.media_service().credential_encryption() {
             ctx = ctx.with_credential_encryption(enc);
         }
-        if let Some(access_service) = &self.provider_access_service {
-            ctx = ctx.with_provider_access_service(access_service.clone());
-        }
-        if let Some(stores) = &self.provider_stores {
-            ctx = ctx.with_store(stores.load(provider.name()));
-        }
+        ctx = ctx.with_provider_access_service(self.provider_access_service.clone());
+        ctx = ctx.with_store(self.provider_stores.load(provider.name()));
         let provider_result = provider
             .generate_playback(&ctx, &item.source_config)
             .await
@@ -246,9 +244,6 @@ impl AdminApiImpl {
             )
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-        playlist.source_config.as_ref().ok_or_else(|| {
-            ApiError::Internal("Dynamic playlist missing source_config".to_string())
-        })?;
         let mut playback = try_playback_to_proto(&full_result, &self.public_id_codec)?;
         playback.expires_at = playback_expires_at(&playback);
         Ok(playback)
@@ -367,17 +362,9 @@ impl AdminApiImpl {
                 continue;
             }
 
-            let Ok(user) = self.user_service.get_user(&candidate_id).await else {
-                continue;
-            };
-            if user.status != UserStatus::Active || user.deleted_at.is_some() {
-                continue;
-            }
-            if self
-                .room_service
-                .check_membership(room_id, &candidate_id)
-                .await
-                .is_err()
+            if !self
+                .management_playback_candidate_is_usable(room_id, &candidate_id)
+                .await?
             {
                 continue;
             }

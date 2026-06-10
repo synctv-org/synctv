@@ -42,11 +42,3 @@ impl From<BytesWriteError> for BitError {
         }
     }
 }
-
-// impl From<Elapsed> for NetIOError {
-//     fn from(error: Elapsed) -> Self {
-//         NetIOError {
-//             value: NetIOErrorValue::TimeoutError(error),
-//         }
-//     }
-// }

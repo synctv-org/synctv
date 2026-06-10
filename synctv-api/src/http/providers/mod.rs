@@ -53,7 +53,6 @@ pub(crate) async fn execute_proxy_action(
     proxy_http_client: &reqwest::Client,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     action: ProxyAction,
-    _client_headers: &axum::http::HeaderMap,
     request_control: Option<&ExecutionControl>,
 ) -> crate::http::error::AppResult<axum::response::Response> {
     match action {
@@ -136,23 +135,14 @@ pub(crate) async fn execute_proxy_action(
 pub(crate) async fn execute_proxy_action_with_state(
     state: &AppState,
     action: ProxyAction,
-    client_headers: &axum::http::HeaderMap,
     request_control: Option<&ExecutionControl>,
 ) -> crate::http::error::AppResult<axum::response::Response> {
-    execute_proxy_action_with_state_for_method(
-        state,
-        action,
-        client_headers,
-        request_control,
-        Method::GET,
-    )
-    .await
+    execute_proxy_action_with_state_for_method(state, action, request_control, Method::GET).await
 }
 
 pub(crate) async fn execute_proxy_action_with_state_for_method(
     state: &AppState,
     action: ProxyAction,
-    client_headers: &axum::http::HeaderMap,
     request_control: Option<&ExecutionControl>,
     method: Method,
 ) -> crate::http::error::AppResult<axum::response::Response> {
@@ -172,14 +162,8 @@ pub(crate) async fn execute_proxy_action_with_state_for_method(
                 proxy_slice_cache: &state.proxy_slice_cache,
                 proxy_signing_key: &state.shared_api_runtime.proxy_signing_key,
             };
-            execute_proxy_action_with_runtime_for_method(
-                &runtime,
-                other,
-                client_headers,
-                request_control,
-                method,
-            )
-            .await
+            execute_proxy_action_with_runtime_for_method(&runtime, other, request_control, method)
+                .await
         }
     }
 }
@@ -194,7 +178,6 @@ struct ProxyActionRuntime<'a> {
 async fn execute_proxy_action_with_runtime_for_method(
     runtime: &ProxyActionRuntime<'_>,
     action: ProxyAction,
-    client_headers: &axum::http::HeaderMap,
     request_control: Option<&ExecutionControl>,
     method: Method,
 ) -> crate::http::error::AppResult<axum::response::Response> {
@@ -213,7 +196,7 @@ async fn execute_proxy_action_with_runtime_for_method(
             let proxy_control = proxy_execution_control(request_control);
 
             if method == Method::HEAD {
-                if should_use_proxy_cache(cache_enabled) {
+                if cache_enabled {
                     return synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control_and_timeout(
                         runtime.proxy_slice_cache,
                         cache_enabled,
@@ -245,7 +228,7 @@ async fn execute_proxy_action_with_runtime_for_method(
                 return Err(proxy_method_not_allowed());
             }
 
-            if should_use_proxy_cache(cache_enabled) {
+            if cache_enabled {
                 return synctv_proxy::slice_cache::proxy_with_cache_enabled_with_control_and_timeout(
                     runtime.proxy_slice_cache,
                     cache_enabled,
@@ -267,7 +250,6 @@ async fn execute_proxy_action_with_runtime_for_method(
                     headers,
                     range_header,
                 },
-                client_headers,
                 proxy_control.as_ref(),
             )
             .await
@@ -315,7 +297,6 @@ async fn execute_proxy_action_with_runtime_for_method(
                         proxy_base,
                         proxy_url_claims: None,
                     },
-                    client_headers,
                     proxy_control.as_ref(),
                 )
                 .await
@@ -330,16 +311,11 @@ async fn execute_proxy_action_with_runtime_for_method(
                 runtime.proxy_http_client,
                 runtime.ssrf_guard,
                 other,
-                client_headers,
                 proxy_control.as_ref(),
             )
             .await
         }
     }
-}
-
-const fn should_use_proxy_cache(cache_enabled: bool) -> bool {
-    cache_enabled
 }
 
 fn proxy_method_not_allowed() -> AppError {
@@ -374,12 +350,12 @@ pub(crate) async fn proxy_options_preflight(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    proxy_options_preflight_for_server(&state.config.server, headers).await
+    proxy_options_preflight_for_server(&state.config.server, &headers)
 }
 
-async fn proxy_options_preflight_for_server(
+fn proxy_options_preflight_for_server(
     server: &synctv_core::config::ServerConfig,
-    headers: HeaderMap,
+    headers: &HeaderMap,
 ) -> axum::response::Response {
     let origin = match headers.get(axum::http::header::ORIGIN) {
         Some(value) => {
@@ -394,10 +370,8 @@ async fn proxy_options_preflight_for_server(
         }
         None => None,
     };
-    let cors_config = std::sync::Arc::new(synctv_proxy::CorsConfig::new(
-        server.cors_allowed_origins.clone(),
-    ));
-    synctv_proxy::proxy_options_preflight_with_cors(origin, cors_config).await
+    let cors_config = synctv_proxy::CorsConfig::new(server.cors_allowed_origins.clone());
+    synctv_proxy::proxy_options_preflight_with_cors(origin, &cors_config)
 }
 
 /// GET `/api/providers/proxy/{provider_name}/{*sub_path}` — Unified proxy handler.
@@ -503,12 +477,6 @@ fn proxy_execution_control(request_control: Option<&ExecutionControl>) -> Option
     request_control.map(|control| ExecutionControl::from_parts(None, control.cancellation_token()))
 }
 
-fn build_proxy_action_control(
-    action_cancellation: tokio_util::sync::CancellationToken,
-) -> ExecutionControl {
-    ExecutionControl::from_parts(None, action_cancellation)
-}
-
 fn execute_unified_proxy_handler(
     path: synctv_proto::providers::common::ProviderProxyPathRequest,
     state: AppState,
@@ -558,7 +526,7 @@ fn execute_unified_proxy_handler(
             .await
             .map_err(map_api_error)?;
 
-        let action_control = build_proxy_action_control(action_cancellation);
+        let action_control = ExecutionControl::from_parts(None, action_cancellation);
         action_control
             .check_active()
             .map_err(|err| app_error_from_control(&err))?;
@@ -576,7 +544,6 @@ fn execute_unified_proxy_handler(
                 execute_proxy_action_with_state_for_method(
                     &state,
                     other,
-                    &headers,
                     Some(&action_control),
                     method,
                 )
@@ -589,7 +556,6 @@ fn execute_unified_proxy_handler(
                 execute_proxy_action_with_state_for_method(
                     &state,
                     other,
-                    &headers,
                     Some(&action_control),
                     method,
                 )
@@ -666,6 +632,20 @@ mod tests {
 
     struct HeaderAbsent(&'static str);
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn app_ok<T>(result: Result<T, crate::http::AppError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("{error:?}")))
+    }
+
+    fn cache_ok<T>(result: anyhow::Result<T>) -> TestResult<T> {
+        result.map_err(|error| test_error(error.to_string()))
+    }
+
     impl Match for HeaderAbsent {
         fn matches(&self, request: &Request) -> bool {
             !request.headers.contains_key(self.0)
@@ -679,22 +659,21 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_proxy_path_request_deserializes_proto_field_names() {
+    fn test_provider_proxy_path_request_deserializes_proto_field_names() -> TestResult {
         let req: synctv_proto::providers::common::ProviderProxyPathRequest = serde_json::from_str(
             r#"{"provider_name":"test_provider","sub_path":"v1/media/stream.m3u8"}"#,
-        )
-        .expect("deserialize path request");
+        )?;
 
         assert_eq!(req.provider_name, "test_provider");
         assert_eq!(req.sub_path, "v1/media/stream.m3u8");
+        Ok(())
     }
 
     #[test]
-    fn test_set_default_cache_control_inserts_when_missing() {
+    fn test_set_default_cache_control_inserts_when_missing() -> TestResult {
         let response = axum::response::Response::builder()
             .status(StatusCode::OK)
-            .body(axum::body::Body::empty())
-            .expect("response");
+            .body(axum::body::Body::empty())?;
 
         let response = set_default_cache_control(response, "no-cache, no-store");
         assert_eq!(
@@ -704,15 +683,15 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("no-cache, no-store")
         );
+        Ok(())
     }
 
     #[test]
-    fn test_set_default_cache_control_preserves_existing_value() {
+    fn test_set_default_cache_control_preserves_existing_value() -> TestResult {
         let response = axum::response::Response::builder()
             .status(StatusCode::OK)
             .header(header::CACHE_CONTROL, "public, max-age=60")
-            .body(axum::body::Body::empty())
-            .expect("response");
+            .body(axum::body::Body::empty())?;
 
         let response = set_default_cache_control(response, "no-cache, no-store");
         assert_eq!(
@@ -722,21 +701,25 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("public, max-age=60")
         );
+        Ok(())
     }
 
-    async fn start_mock_server_or_skip() -> Option<MockServer> {
+    async fn start_mock_server_or_skip() -> TestResult<Option<MockServer>> {
         match std::net::TcpListener::bind("127.0.0.1:0") {
             Ok(listener) => {
                 drop(listener);
-                Some(MockServer::start().await)
+                Ok(Some(MockServer::start().await))
             }
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                eprintln!(
-                    "skipping provider proxy test: mock server cannot bind a local port in this environment"
+                tracing::debug!(
+                    error = %error,
+                    "Skipping provider proxy test because mock server cannot bind a local port"
                 );
-                None
+                Ok(None)
             }
-            Err(error) => panic!("preflight bind for provider proxy test should succeed: {error}"),
+            Err(error) => Err(test_error(format!(
+                "preflight bind for provider proxy test should succeed: {error}"
+            ))),
         }
     }
 
@@ -748,27 +731,27 @@ mod tests {
         format!("{}{}", mock_public_origin(mock_server), path)
     }
 
-    fn mock_proxy_client(mock_server: &MockServer) -> reqwest::Client {
-        reqwest::Client::builder()
+    fn mock_proxy_client(mock_server: &MockServer) -> TestResult<reqwest::Client> {
+        Ok(reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .resolve("cdn.example.com", *mock_server.address())
-            .build()
-            .expect("client should build")
+            .build()?)
     }
 
     fn test_slice_cache_for_mock(
         config: SliceCacheConfig,
         mock_server: &MockServer,
-    ) -> synctv_proxy::slice_cache::SliceCache {
-        let client = mock_proxy_client(mock_server);
-        synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
-            config,
-            client,
-            synctv_common::ssrf::SsrfGuard::builder()
-                .extra_allowed_host("cdn.example.com".to_string())
-                .build(),
+    ) -> TestResult<synctv_proxy::slice_cache::SliceCache> {
+        let client = mock_proxy_client(mock_server)?;
+        cache_ok(
+            synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
+                config,
+                client,
+                synctv_common::ssrf::SsrfGuard::builder()
+                    .extra_allowed_host("cdn.example.com".to_string())
+                    .build(),
+            ),
         )
-        .expect("test slice cache should build")
     }
 
     struct TestProxyActionRuntime {
@@ -779,19 +762,17 @@ mod tests {
     }
 
     impl TestProxyActionRuntime {
-        fn new(proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>) -> Self {
-            Self {
-                proxy_http_client: synctv_proxy::build_proxy_http_client(
+        fn new(proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>) -> TestResult<Self> {
+            Ok(Self {
+                proxy_http_client: cache_ok(synctv_proxy::build_proxy_http_client(
                     synctv_common::ssrf::SsrfGuard::disabled(),
-                )
-                .expect("proxy HTTP client should build for tests"),
+                ))?,
                 ssrf_guard: synctv_common::ssrf::SsrfGuard::disabled(),
                 proxy_slice_cache,
                 proxy_signing_key: ProxySigningKey::try_derive_from(
                     b"test-secret-key-for-http-router-tests-minimum-32-chars",
-                )
-                .expect("test proxy signing key should derive"),
-            }
+                )?,
+            })
         }
 
         fn as_runtime(&self) -> ProxyActionRuntime<'_> {
@@ -805,88 +786,111 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_slice_cache_hits_second_range_request() {
-        let Some(mock_server) = start_mock_server_or_skip().await else {
-            return;
+    async fn test_slice_cache_hits_second_range_request() -> TestResult {
+        let Some(mock_server) = start_mock_server_or_skip().await? else {
+            return Ok(());
         };
         let total_size: u64 = 10 * 1024 * 1024;
         let slice_body = Bytes::from(vec![0xAB; 2 * 1024 * 1024]);
 
-        Mock::given(method("HEAD"))
-            .and(path("/video.mp4"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("Content-Length", total_size.to_string())
-                    .insert_header("Accept-Ranges", "bytes"),
-            )
-            .expect(0)
-            .mount(&mock_server)
-            .await;
+        Mock::expect(
+            Mock::given(method("HEAD"))
+                .and(path("/video.mp4"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("Content-Length", total_size.to_string())
+                        .insert_header("Accept-Ranges", "bytes"),
+                ),
+            0,
+        )
+        .mount(&mock_server)
+        .await;
 
-        Mock::given(method("GET"))
-            .and(path("/video.mp4"))
-            .and(header("Range", "bytes=0-2097151"))
-            .respond_with(
-                ResponseTemplate::new(206)
-                    .set_body_bytes(slice_body.clone())
-                    .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
-                    .insert_header("Content-Length", "2097152"),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
+        Mock::expect(
+            Mock::given(method("GET"))
+                .and(path("/video.mp4"))
+                .and(header("Range", "bytes=0-2097151"))
+                .respond_with(
+                    ResponseTemplate::new(206)
+                        .set_body_bytes(slice_body.clone())
+                        .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
+                        .insert_header("Content-Length", "2097152"),
+                ),
+            1,
+        )
+        .mount(&mock_server)
+        .await;
 
-        let cache = test_slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+        let cache = test_slice_cache_for_mock(SliceCacheConfig::default(), &mock_server)?;
         let url = mock_public_url(&mock_server, "/video.mp4");
         let headers = HashMap::new();
 
-        let response1 = synctv_proxy::slice_cache::proxy_with_cache(
-            &cache,
-            Some("bytes=0-999"),
-            &url,
-            &headers,
-        )
-        .await
-        .unwrap();
-        let response2 = synctv_proxy::slice_cache::proxy_with_cache(
-            &cache,
-            Some("bytes=0-999"),
-            &url,
-            &headers,
-        )
-        .await
-        .unwrap();
+        let response1 = cache_ok(
+            synctv_proxy::slice_cache::proxy_with_cache(
+                &cache,
+                Some("bytes=0-999"),
+                &url,
+                &headers,
+            )
+            .await,
+        )?;
+        let response2 = cache_ok(
+            synctv_proxy::slice_cache::proxy_with_cache(
+                &cache,
+                Some("bytes=0-999"),
+                &url,
+                &headers,
+            )
+            .await,
+        )?;
 
-        assert_eq!(response1.headers().get("X-Cache-Status").unwrap(), "MISS");
-        assert_eq!(response2.headers().get("X-Cache-Status").unwrap(), "HIT");
+        assert_eq!(
+            response1
+                .headers()
+                .get("X-Cache-Status")
+                .ok_or_else(|| test_error("first response should include cache status"))?,
+            "MISS"
+        );
+        assert_eq!(
+            response2
+                .headers()
+                .get("X-Cache-Status")
+                .ok_or_else(|| test_error("second response should include cache status"))?,
+            "HIT"
+        );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_execute_proxy_action_head_uses_upstream_head_not_get() {
-        let Some(mock_server) = start_mock_server_or_skip().await else {
-            return;
+    async fn test_execute_proxy_action_head_uses_upstream_head_not_get() -> TestResult {
+        let Some(mock_server) = start_mock_server_or_skip().await? else {
+            return Ok(());
         };
         let total_size: u64 = 4096;
 
-        Mock::given(method("HEAD"))
-            .and(path("/video.mp4"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("Content-Length", total_size.to_string())
-                    .insert_header("Content-Type", "video/mp4")
-                    .insert_header("Accept-Ranges", "bytes")
-                    .insert_header("ETag", "\"video-v1\""),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
+        Mock::expect(
+            Mock::given(method("HEAD"))
+                .and(path("/video.mp4"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("Content-Length", total_size.to_string())
+                        .insert_header("Content-Type", "video/mp4")
+                        .insert_header("Accept-Ranges", "bytes")
+                        .insert_header("ETag", "\"video-v1\""),
+                ),
+            1,
+        )
+        .mount(&mock_server)
+        .await;
 
-        Mock::given(method("GET"))
-            .and(path("/video.mp4"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(0)
-            .mount(&mock_server)
-            .await;
+        Mock::expect(
+            Mock::given(method("GET"))
+                .and(path("/video.mp4"))
+                .respond_with(ResponseTemplate::new(500)),
+            0,
+        )
+        .mount(&mock_server)
+        .await;
 
         let proxy_runtime = TestProxyActionRuntime::new(Arc::new(test_slice_cache_for_mock(
             SliceCacheConfig {
@@ -894,173 +898,194 @@ mod tests {
                 ..Default::default()
             },
             &mock_server,
-        )));
+        )?))?;
         let action = ProxyAction::FetchAndForward {
             url: mock_public_url(&mock_server, "/video.mp4"),
             headers: HashMap::new(),
             range_header: None,
         };
 
-        let response = execute_proxy_action_with_runtime_for_method(
-            &proxy_runtime.as_runtime(),
-            action,
-            &HeaderMap::new(),
-            None,
-            Method::HEAD,
-        )
-        .await
-        .expect("HEAD proxy action should succeed");
+        let response = app_ok(
+            execute_proxy_action_with_runtime_for_method(
+                &proxy_runtime.as_runtime(),
+                action,
+                None,
+                Method::HEAD,
+            )
+            .await,
+        )?;
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers().get("X-Cache-Status").unwrap(), "MISS");
         assert_eq!(
-            response.headers().get(header::CONTENT_LENGTH).unwrap(),
+            response
+                .headers()
+                .get("X-Cache-Status")
+                .ok_or_else(|| test_error("HEAD response should include cache status"))?,
+            "MISS"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_LENGTH)
+                .ok_or_else(|| test_error("HEAD response should include content length"))?,
             total_size.to_string().as_str()
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_execute_proxy_action_ignores_raw_client_range_when_provider_does_not_select_it() {
-        let Some(mock_server) = start_mock_server_or_skip().await else {
-            return;
+    async fn test_execute_proxy_action_uses_provider_selected_range_header() -> TestResult {
+        let Some(mock_server) = start_mock_server_or_skip().await? else {
+            return Ok(());
         };
         let body = Bytes::from_static(b"full-body");
 
-        Mock::given(method("GET"))
-            .and(path("/video.mp4"))
-            .and(HeaderAbsent("range"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_bytes(body.clone())
-                    .insert_header("Content-Length", body.len().to_string()),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
+        Mock::expect(
+            Mock::given(method("GET"))
+                .and(path("/video.mp4"))
+                .and(HeaderAbsent("range"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_bytes(body.clone())
+                        .insert_header("Content-Length", body.len().to_string()),
+                ),
+            1,
+        )
+        .mount(&mock_server)
+        .await;
 
-        Mock::given(method("GET"))
-            .and(path("/video.mp4"))
-            .and(header("Range", "bytes=0-3"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(0)
-            .mount(&mock_server)
-            .await;
+        Mock::expect(
+            Mock::given(method("GET"))
+                .and(path("/video.mp4"))
+                .and(header("Range", "bytes=0-3"))
+                .respond_with(ResponseTemplate::new(500)),
+            0,
+        )
+        .mount(&mock_server)
+        .await;
 
-        let client = mock_proxy_client(&mock_server);
+        let client = mock_proxy_client(&mock_server)?;
         let action = ProxyAction::FetchAndForward {
             url: mock_public_url(&mock_server, "/video.mp4"),
             headers: HashMap::new(),
             range_header: None,
         };
-        let mut client_headers = HeaderMap::new();
-        client_headers.insert(header::RANGE, "bytes=0-3".parse().unwrap());
-
-        let response = execute_proxy_action(
-            &client,
-            &synctv_common::ssrf::SsrfGuard::disabled(),
-            action,
-            &client_headers,
-            None,
-        )
-        .await
-        .expect("raw client Range should be ignored unless provider selects it");
+        let response = app_ok(
+            execute_proxy_action(
+                &client,
+                &synctv_common::ssrf::SsrfGuard::disabled(),
+                action,
+                None,
+            )
+            .await,
+        )?;
 
         assert_eq!(response.status(), StatusCode::OK);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_execute_proxy_action_direct_body_sets_status_content_type_and_body() {
+    async fn test_execute_proxy_action_direct_body_sets_status_content_type_and_body() -> TestResult
+    {
         let action = ProxyAction::DirectBody {
             body: b"provider-body".to_vec(),
             content_type: "application/vnd.synctv.test+json".to_string(),
             status: 202,
         };
 
-        let response = execute_proxy_action(
-            &reqwest::Client::new(),
-            &synctv_common::ssrf::SsrfGuard::disabled(),
-            action,
-            &HeaderMap::new(),
-            None,
-        )
-        .await
-        .expect("direct body action should build a response");
+        let response = app_ok(
+            execute_proxy_action(
+                &reqwest::Client::new(),
+                &synctv_common::ssrf::SsrfGuard::disabled(),
+                action,
+                None,
+            )
+            .await,
+        )?;
 
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert_eq!(
-            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .ok_or_else(|| test_error("direct body response should include content type"))?,
             "application/vnd.synctv.test+json"
         );
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body should read");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
         assert_eq!(body.as_ref(), b"provider-body");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_execute_proxy_action_direct_body_rejects_invalid_status() {
+    async fn test_execute_proxy_action_direct_body_rejects_invalid_status() -> TestResult {
         let action = ProxyAction::DirectBody {
             body: b"provider-body".to_vec(),
             content_type: "text/plain".to_string(),
             status: 999,
         };
 
-        let err = execute_proxy_action(
+        let Err(err) = execute_proxy_action(
             &reqwest::Client::new(),
             &synctv_common::ssrf::SsrfGuard::disabled(),
             action,
-            &HeaderMap::new(),
             None,
         )
         .await
-        .expect_err("invalid provider status should fail");
+        else {
+            return Err(test_error("invalid provider status should fail"));
+        };
 
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(err.message.contains("invalid direct body status code"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_execute_proxy_action_direct_body_rejects_invalid_content_type() {
+    async fn test_execute_proxy_action_direct_body_rejects_invalid_content_type() -> TestResult {
         let action = ProxyAction::DirectBody {
             body: b"provider-body".to_vec(),
             content_type: "text/plain\r\nx-bad: yes".to_string(),
             status: 200,
         };
 
-        let err = execute_proxy_action(
+        let Err(err) = execute_proxy_action(
             &reqwest::Client::new(),
             &synctv_common::ssrf::SsrfGuard::disabled(),
             action,
-            &HeaderMap::new(),
             None,
         )
         .await
-        .expect_err("invalid provider content type should fail");
+        else {
+            return Err(test_error("invalid provider content type should fail"));
+        };
 
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(err.message.contains("invalid direct body content type"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_execute_proxy_action_maps_unsatisfiable_range_to_416() {
-        let Some(mock_server) = start_mock_server_or_skip().await else {
-            return;
+    async fn test_execute_proxy_action_maps_unsatisfiable_range_to_416() -> TestResult {
+        let Some(mock_server) = start_mock_server_or_skip().await? else {
+            return Ok(());
         };
         let total_size: u64 = 1024;
 
-        Mock::given(method("GET"))
-            .and(path("/video.mp4"))
-            .and(header("Range", "bytes=0-1023"))
-            .respond_with(
-                ResponseTemplate::new(206)
-                    .set_body_bytes(vec![0xCD; 1024])
-                    .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
-                    .insert_header("Content-Length", "1024")
-                    .insert_header("Accept-Ranges", "bytes"),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
+        Mock::expect(
+            Mock::given(method("GET"))
+                .and(path("/video.mp4"))
+                .and(header("Range", "bytes=0-1023"))
+                .respond_with(
+                    ResponseTemplate::new(206)
+                        .set_body_bytes(vec![0xCD; 1024])
+                        .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                        .insert_header("Content-Length", "1024")
+                        .insert_header("Accept-Ranges", "bytes"),
+                ),
+            1,
+        )
+        .mount(&mock_server)
+        .await;
 
         let proxy_runtime = TestProxyActionRuntime::new(Arc::new(test_slice_cache_for_mock(
             SliceCacheConfig {
@@ -1068,21 +1093,21 @@ mod tests {
                 ..Default::default()
             },
             &mock_server,
-        )));
+        )?))?;
         let action = ProxyAction::FetchAndForward {
             url: mock_public_url(&mock_server, "/video.mp4"),
             headers: HashMap::new(),
             range_header: Some("bytes=0-1".to_string()),
         };
-        execute_proxy_action_with_runtime_for_method(
-            &proxy_runtime.as_runtime(),
-            action,
-            &HeaderMap::new(),
-            None,
-            Method::GET,
-        )
-        .await
-        .expect("first satisfiable range should populate resource metadata");
+        app_ok(
+            execute_proxy_action_with_runtime_for_method(
+                &proxy_runtime.as_runtime(),
+                action,
+                None,
+                Method::GET,
+            )
+            .await,
+        )?;
 
         let action = ProxyAction::FetchAndForward {
             url: mock_public_url(&mock_server, "/video.mp4"),
@@ -1090,43 +1115,50 @@ mod tests {
             range_header: Some("bytes=1024-".to_string()),
         };
 
-        let err = execute_proxy_action_with_runtime_for_method(
+        let Err(err) = execute_proxy_action_with_runtime_for_method(
             &proxy_runtime.as_runtime(),
             action,
-            &HeaderMap::new(),
             None,
             Method::GET,
         )
         .await
-        .expect_err("unsatisfiable range should map to HTTP 416");
+        else {
+            return Err(test_error("unsatisfiable range should map to HTTP 416"));
+        };
 
         assert_eq!(err.status, StatusCode::RANGE_NOT_SATISFIABLE);
         let response = err.into_response();
         assert_eq!(
-            response.headers().get(header::CONTENT_RANGE).unwrap(),
+            response
+                .headers()
+                .get(header::CONTENT_RANGE)
+                .ok_or_else(|| test_error("416 response should include content range"))?,
             &axum::http::HeaderValue::from_static("bytes */1024")
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_execute_m3u8_rewrite_signs_each_segment_target_url() {
-        let Some(mock_server) = start_mock_server_or_skip().await else {
-            return;
+    async fn test_execute_m3u8_rewrite_signs_each_segment_target_url() -> TestResult {
+        let Some(mock_server) = start_mock_server_or_skip().await? else {
+            return Ok(());
         };
 
-        Mock::given(method("GET"))
-            .and(path("/master.m3u8"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string("#EXTM3U\nseg-1.ts\nseg-2.ts\n"),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
+        Mock::expect(
+            Mock::given(method("GET"))
+                .and(path("/master.m3u8"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string("#EXTM3U\nseg-1.ts\nseg-2.ts\n"),
+                ),
+            1,
+        )
+        .mount(&mock_server)
+        .await;
 
         let proxy_runtime = TestProxyActionRuntime::new(Arc::new(test_slice_cache_for_mock(
             SliceCacheConfig::default(),
             &mock_server,
-        )));
+        )?))?;
 
         let claims = ProxyUrlClaims {
             provider: "alist".to_string(),
@@ -1143,31 +1175,29 @@ mod tests {
             proxy_url_claims: Some(claims),
         };
 
-        let response = execute_proxy_action_with_runtime_for_method(
-            &proxy_runtime.as_runtime(),
-            action,
-            &HeaderMap::new(),
-            None,
-            Method::GET,
-        )
-        .await
-        .expect("signed M3U8 proxy action should succeed");
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body should read");
-        let playlist = String::from_utf8(body.to_vec()).expect("playlist should be utf8");
+        let response = app_ok(
+            execute_proxy_action_with_runtime_for_method(
+                &proxy_runtime.as_runtime(),
+                action,
+                None,
+                Method::GET,
+            )
+            .await,
+        )?;
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+        let playlist = String::from_utf8(body.to_vec())?;
         let first_segment = playlist
             .lines()
             .find(|line| line.starts_with("/api/providers/proxy/alist/version-1?"))
-            .expect("rewritten playlist should contain signed segment URL");
+            .ok_or_else(|| test_error("rewritten playlist should contain signed segment URL"))?;
         let query = first_segment
             .split_once('?')
             .map(|(_, query)| query)
-            .expect("segment URL should include query");
+            .ok_or_else(|| test_error("segment URL should include query"))?;
         let parsed = proxy_runtime
             .proxy_signing_key
             .parse_and_verify_query(query, "alist", "version-1")
-            .expect("segment query should verify");
+            .map_err(|error| test_error(error.to_string()))?;
 
         assert_eq!(
             parsed.target_url.as_deref(),
@@ -1176,7 +1206,7 @@ mod tests {
 
         let (prefix, _) = query
             .split_once("&url=")
-            .expect("signed segment query should include url");
+            .ok_or_else(|| test_error("signed segment query should include url"))?;
         let tampered = format!(
             "{prefix}&url={}",
             synctv_proxy::percent_encode(&format!("{}/seg-2.ts", mock_server.uri()))
@@ -1188,6 +1218,7 @@ mod tests {
                 .is_err(),
             "changing the segment target URL must invalidate the signature"
         );
+        Ok(())
     }
 
     #[test]
@@ -1273,14 +1304,13 @@ mod tests {
         )
     }
 
-    fn make_proxy_test_state(pool: sqlx::PgPool) -> AppState {
+    fn make_proxy_test_state(pool: &sqlx::PgPool) -> TestResult<AppState> {
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let jwt_service = synctv_core::service::JwtService::new(
             "test-secret-key-for-http-router-tests-minimum-32-chars",
-        )
-        .expect("jwt");
+        )?;
         let user_service = Arc::new(UserService::new_for_tests(
-            &pool,
+            pool,
             jwt_service.clone(),
             username_cache,
             Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
@@ -1289,15 +1319,19 @@ mod tests {
         ));
         let room_service = Arc::new(
             RoomService::new_for_tests(pool.clone(), (*user_service).clone())
-                .expect("room service should build"),
+                .map_err(|error| test_error(error.to_string()))?,
         );
         let provider_instance_manager =
             synctv_core_testing::create_empty_provider_instance_manager();
+        let providers_manager = Arc::new(
+            synctv_core::service::ProvidersManager::new(provider_instance_manager.clone())
+                .map_err(|error| test_error(error.to_string()))?,
+        );
         let providers = ProviderSet::new_with_ssrf_guard(
             provider_instance_manager.clone(),
             synctv_common::ssrf::SsrfGuard::strict_policy(),
         )
-        .expect("provider set should build");
+        .map_err(|error| test_error(error.to_string()))?;
         let (audit_service, _audit_handle) = AuditService::new(pool.clone());
         let mut state =
             crate::http::create_router_with_state_from_config(crate::http::RouterConfig {
@@ -1338,43 +1372,63 @@ mod tests {
                     None,
                 )),
                 redis_runtime: None,
-                shared_provider_stores: None,
-                shared_proxy_signing_key: None,
+                shared_provider_stores: Arc::new(
+                    synctv_core::provider::store::ProviderStoreRegistry::local_only(
+                        "test:provider:",
+                    ),
+                ),
+                shared_proxy_signing_key: Arc::new(
+                    synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+                        b"test-proxy-signing-key-minimum-32-bytes!!",
+                    )
+                    .expect("test proxy signing key should derive"),
+                ),
                 builtin_stun_url: None,
                 webrtc_status:
                     synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
                 credential_encryption: None,
-                proxy_slice_cache: Arc::new(
-                    synctv_proxy::slice_cache::SliceCache::new(SliceCacheConfig::default())
-                        .expect("test slice cache should build"),
-                ),
+                proxy_slice_cache: Arc::new(cache_ok(synctv_proxy::slice_cache::SliceCache::new(
+                    SliceCacheConfig::default(),
+                ))?),
                 ssrf_guard: synctv_common::ssrf::SsrfGuard::disabled(),
-                proxy_http_client: synctv_proxy::build_proxy_http_client(
+                proxy_http_client: cache_ok(synctv_proxy::build_proxy_http_client(
                     synctv_common::ssrf::SsrfGuard::disabled(),
-                )
-                .expect("proxy HTTP client should build for tests"),
+                ))?,
                 messaging_rate_limit_config: RateLimitConfig::default(),
                 heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
-                providers_manager: None,
+                providers_manager,
             })
-            .expect("provider test router should build")
+            .map_err(|error| test_error(format!("{error:?}")))?
             .1;
 
         let registry = ProxyProviderRegistry::new();
         registry.register("test_provider", Arc::new(TestProxyProvider));
         let shared_runtime = Arc::make_mut(&mut state.shared_api_runtime);
         shared_runtime.proxy_provider_registry = Arc::new(registry);
+        let credential_repo =
+            Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
+        let provider_access_service =
+            Arc::new(synctv_core::provider::CachedProviderAccessService::new(
+                credential_repo.clone(),
+                Arc::new(synctv_core::provider::AlistProvider::with_client_manager(
+                    Arc::new(synctv_core::service::RemoteProviderManager::new(Arc::new(
+                        synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+                    ))),
+                    Arc::new(
+                        synctv_core::provider::ProviderClientManager::new()
+                            .map_err(|error| test_error(error.to_string()))?,
+                    ),
+                )),
+            ));
         shared_runtime.proxy_services = Arc::new(synctv_core::provider::proxy::ProxyServices {
             room_service,
             credential_encryption: None,
-            credential_repo: Arc::new(
-                synctv_core::repository::UserProviderCredentialRepository::new(pool),
-            ),
-            provider_access_service: None,
+            credential_repo,
+            provider_access_service,
             signing_key: shared_runtime.proxy_signing_key.clone(),
             public_id_codec: shared_runtime.public_id_codec.clone(),
         });
-        state
+        Ok(state)
     }
 
     fn build_proxy_query(
@@ -1395,19 +1449,18 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_unified_proxy_handler_rejects_banned_user_even_with_valid_signature() {
+    async fn test_unified_proxy_handler_rejects_banned_user_even_with_valid_signature() -> TestResult
+    {
         let (_pg, pool) = create_test_pool().await;
-        let state = make_proxy_test_state(pool.clone());
+        let state = make_proxy_test_state(&pool)?;
         let user_repo = UserRepository::new(pool.clone());
 
         let owner = user_repo
             .create(&make_proxy_test_user("proxy_owner"))
-            .await
-            .expect("owner");
+            .await?;
         let member = user_repo
             .create(&make_proxy_test_user("proxy_member"))
-            .await
-            .expect("member");
+            .await?;
 
         let (room, _) = state
             .shared_api_runtime
@@ -1421,14 +1474,14 @@ mod tests {
                 None,
             )
             .await
-            .expect("room");
+            .map_err(|error| test_error(error.to_string()))?;
         state
             .shared_api_runtime
             .proxy_services
             .room_service
             .join_room(room.id, member.id, None)
             .await
-            .expect("join");
+            .map_err(|error| test_error(error.to_string()))?;
 
         let raw_query = build_proxy_query(
             state.shared_api_runtime.proxy_signing_key.as_ref(),
@@ -1436,12 +1489,12 @@ mod tests {
                 .shared_api_runtime
                 .public_id_codec
                 .encode_room_id(room.id)
-                .unwrap(),
+                .map_err(test_error)?,
             &state
                 .shared_api_runtime
                 .public_id_codec
                 .encode_user_id(member.id)
-                .unwrap(),
+                .map_err(test_error)?,
             "v1",
         );
 
@@ -1449,9 +1502,9 @@ mod tests {
             .user_service
             .ban_user_and_cleanup_memberships(&member.id, None, None)
             .await
-            .expect("ban user");
+            .map_err(|error| test_error(error.to_string()))?;
 
-        let err = unified_proxy_handler(
+        let Err(err) = unified_proxy_handler(
             Path(synctv_proto::providers::common::ProviderProxyPathRequest {
                 provider_name: "test_provider".to_string(),
                 sub_path: "v1/media".to_string(),
@@ -1462,26 +1515,28 @@ mod tests {
             RawQuery(Some(raw_query)),
         )
         .await
-        .expect_err("banned user must not keep using old proxy URL");
+        else {
+            return Err(test_error("banned user must fail proxy authorization"));
+        };
 
         assert_eq!(err.status, StatusCode::FORBIDDEN);
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_unified_proxy_handler_rejects_closed_room_even_with_valid_signature() {
+    async fn test_unified_proxy_handler_rejects_closed_room_even_with_valid_signature() -> TestResult
+    {
         let (_pg, pool) = create_test_pool().await;
-        let state = make_proxy_test_state(pool.clone());
+        let state = make_proxy_test_state(&pool)?;
         let user_repo = UserRepository::new(pool.clone());
 
         let owner = user_repo
             .create(&make_proxy_test_user("proxy_room_owner"))
-            .await
-            .expect("owner");
+            .await?;
         let member = user_repo
             .create(&make_proxy_test_user("proxy_room_member"))
-            .await
-            .expect("member");
+            .await?;
 
         let (room, _) = state
             .shared_api_runtime
@@ -1495,14 +1550,14 @@ mod tests {
                 None,
             )
             .await
-            .expect("room");
+            .map_err(|error| test_error(error.to_string()))?;
         state
             .shared_api_runtime
             .proxy_services
             .room_service
             .join_room(room.id, member.id, None)
             .await
-            .expect("join");
+            .map_err(|error| test_error(error.to_string()))?;
 
         let raw_query = build_proxy_query(
             state.shared_api_runtime.proxy_signing_key.as_ref(),
@@ -1510,12 +1565,12 @@ mod tests {
                 .shared_api_runtime
                 .public_id_codec
                 .encode_room_id(room.id)
-                .unwrap(),
+                .map_err(test_error)?,
             &state
                 .shared_api_runtime
                 .public_id_codec
                 .encode_user_id(member.id)
-                .unwrap(),
+                .map_err(test_error)?,
             "v1",
         );
 
@@ -1525,9 +1580,9 @@ mod tests {
             .room_service
             .update_room_status(&room.id, RoomStatus::Closed)
             .await
-            .expect("close room");
+            .map_err(|error| test_error(error.to_string()))?;
 
-        let err = unified_proxy_handler(
+        let Err(err) = unified_proxy_handler(
             Path(synctv_proto::providers::common::ProviderProxyPathRequest {
                 provider_name: "test_provider".to_string(),
                 sub_path: "v1/media".to_string(),
@@ -1538,35 +1593,20 @@ mod tests {
             RawQuery(Some(raw_query)),
         )
         .await
-        .expect_err("closed room must not keep serving old proxy URLs");
+        else {
+            return Err(test_error("closed room must fail proxy authorization"));
+        };
 
         assert_eq!(err.status, StatusCode::FORBIDDEN);
+        Ok(())
     }
 
     #[test]
-    fn test_should_use_proxy_cache_requires_enabled_cache_only() {
-        assert!(should_use_proxy_cache(true));
-        assert!(!should_use_proxy_cache(false));
-    }
-
-    #[test]
-    fn test_build_proxy_action_control_drops_deadline_but_preserves_cancellation() {
-        let cancellation = tokio_util::sync::CancellationToken::new();
-        let control = build_proxy_action_control(cancellation.clone());
-
-        assert_eq!(control.deadline(), None);
-        cancellation.cancel();
-        assert!(matches!(
-            control.check_active(),
-            Err(synctv_common::ExecutionControlError::Cancelled)
-        ));
-    }
-
-    #[test]
-    fn test_proxy_execution_control_drops_deadline_but_preserves_cancellation() {
+    fn test_proxy_execution_control_drops_deadline_but_preserves_cancellation() -> TestResult {
         let parent = ExecutionControl::from_timeout(Some(std::time::Duration::from_secs(5)));
 
-        let derived = proxy_execution_control(Some(&parent)).expect("derived proxy control");
+        let derived = proxy_execution_control(Some(&parent))
+            .ok_or_else(|| test_error("derived proxy control should exist"))?;
 
         assert_eq!(derived.deadline(), None);
         parent.cancel();
@@ -1574,19 +1614,20 @@ mod tests {
             derived.check_active(),
             Err(synctv_common::ExecutionControlError::Cancelled)
         ));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_proxy_options_preflight_uses_configured_origin_allowlist() {
+    async fn test_proxy_options_preflight_uses_configured_origin_allowlist() -> TestResult {
         let server = synctv_core::config::ServerConfig {
             cors_allowed_origins: vec!["https://app.example.com".to_string()],
             ..synctv_core::config::ServerConfig::default()
         };
 
         let mut headers = HeaderMap::new();
-        headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+        headers.insert(header::ORIGIN, "https://app.example.com".parse()?);
 
-        let response = proxy_options_preflight_for_server(&server, headers).await;
+        let response = proxy_options_preflight_for_server(&server, &headers);
         assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
         assert_eq!(
             response
@@ -1609,19 +1650,20 @@ mod tests {
                 .is_none(),
             "provider proxy preflight should match the main router and avoid credentialed browser requests by default"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_proxy_options_preflight_rejects_unconfigured_origin() {
+    async fn test_proxy_options_preflight_rejects_unconfigured_origin() -> TestResult {
         let server = synctv_core::config::ServerConfig {
             cors_allowed_origins: vec!["https://app.example.com".to_string()],
             ..synctv_core::config::ServerConfig::default()
         };
 
         let mut headers = HeaderMap::new();
-        headers.insert(header::ORIGIN, "https://evil.example.com".parse().unwrap());
+        headers.insert(header::ORIGIN, "https://evil.example.com".parse()?);
 
-        let response = proxy_options_preflight_for_server(&server, headers).await;
+        let response = proxy_options_preflight_for_server(&server, &headers);
         assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
         assert!(
             response
@@ -1630,19 +1672,20 @@ mod tests {
                 .is_none(),
             "rejected preflight must not advertise a wildcard or echoed origin"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_proxy_options_preflight_rejects_non_utf8_origin() {
+    async fn test_proxy_options_preflight_rejects_non_utf8_origin() -> TestResult {
         let server = synctv_core::config::ServerConfig::default();
 
         let mut headers = HeaderMap::new();
         headers.insert(
             header::ORIGIN,
-            axum::http::HeaderValue::from_bytes(b"https://app.example.com\xff").unwrap(),
+            axum::http::HeaderValue::from_bytes(b"https://app.example.com\xff")?,
         );
 
-        let response = proxy_options_preflight_for_server(&server, headers).await;
+        let response = proxy_options_preflight_for_server(&server, &headers);
         assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
         assert!(
             response
@@ -1651,5 +1694,6 @@ mod tests {
                 .is_none(),
             "invalid preflight origin must not produce a CORS allow-origin header"
         );
+        Ok(())
     }
 }

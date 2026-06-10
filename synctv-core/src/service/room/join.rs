@@ -305,9 +305,15 @@ impl RoomService {
 
         let members = self.member_service.list_members(&room_id).await?;
 
-        let _ = self
+        let subscriber_count = self
             .notification_service
             .notify_user_joined(&room_id, &user_id, &username);
+        tracing::debug!(
+            room_id = %room_id,
+            user_id = %user_id,
+            subscriber_count,
+            "User joined notification dispatched"
+        );
 
         tracing::info!(
             room_id = %room_id,

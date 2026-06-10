@@ -1,4 +1,5 @@
 use super::*;
+use crate::impls::admin::rooms::username_from_loaded_user;
 use crate::impls::ErrorKind;
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
@@ -27,12 +28,38 @@ use synctv_core::{
 };
 use synctv_core_testing::create_test_pool;
 use synctv_livestream::{
-    api::{LiveStreamingInfrastructure, StreamTracker},
-    error::StreamError,
-    livestream::{external_publish_manager::ExternalPublishManager, PullStreamManager},
+    LiveStreamingInfrastructure, StreamError, StreamRegistryTrait, StreamTracker,
 };
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager, PublishRequest, RealtimeEvent};
 use tokio::sync::mpsc;
+
+type TestResult<T = ()> = anyhow::Result<T>;
+
+fn test_error(message: impl Into<String>) -> anyhow::Error {
+    anyhow::anyhow!(message.into())
+}
+
+fn api_ok<T>(result: Result<T, ApiError>) -> TestResult<T> {
+    result.map_err(|error| test_error(format!("{error:?}")))
+}
+
+fn api_err<T>(result: Result<T, ApiError>) -> TestResult<ApiError> {
+    match result {
+        Ok(_) => Err(test_error("expected API error")),
+        Err(error) => Ok(error),
+    }
+}
+
+fn core_ok<T>(result: synctv_core::Result<T>) -> TestResult<T> {
+    result.map_err(|error| test_error(error.to_string()))
+}
+
+fn some_value<T>(value: Option<T>, context: &str) -> TestResult<T> {
+    match value {
+        Some(value) => Ok(value),
+        None => Err(test_error(context)),
+    }
+}
 
 #[test]
 fn proto_list_filter_enums_reject_unknown_values() {
@@ -51,22 +78,26 @@ fn proto_list_filter_enums_reject_unknown_values() {
 }
 
 #[test]
-fn proto_list_filter_enums_allow_unspecified_as_empty_filter() {
+fn proto_list_filter_enums_allow_unspecified_as_empty_filter() -> TestResult {
     assert_eq!(
-        proto_room_status_filter(synctv_proto::common::RoomStatus::Unspecified as i32)
-            .expect("unspecified room status should be accepted"),
+        api_ok(proto_room_status_filter(
+            synctv_proto::common::RoomStatus::Unspecified as i32
+        ))?,
         None
     );
     assert_eq!(
-        proto_user_status_filter(synctv_proto::common::UserStatus::Unspecified as i32)
-            .expect("unspecified user status should be accepted"),
+        api_ok(proto_user_status_filter(
+            synctv_proto::common::UserStatus::Unspecified as i32
+        ))?,
         None
     );
     assert_eq!(
-        proto_user_role_filter(synctv_proto::common::UserRole::Unspecified as i32)
-            .expect("unspecified user role should be accepted"),
+        api_ok(proto_user_role_filter(
+            synctv_proto::common::UserRole::Unspecified as i32
+        ))?,
         None
     );
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -96,10 +127,11 @@ impl MediaProvider for AdminLifecycleTestProvider {
         position: f64,
         is_paused: bool,
     ) -> Result<(), synctv_core::provider::ProviderError> {
-        self.progress_calls
-            .lock()
-            .expect("progress calls lock")
-            .push((session_id.to_string(), position, is_paused));
+        let mut progress_calls = match self.progress_calls.lock() {
+            Ok(progress_calls) => progress_calls,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        progress_calls.push((session_id.to_string(), position, is_paused));
         Ok(())
     }
 
@@ -162,15 +194,19 @@ struct RecordingMembershipEventFanout {
 
 impl RecordingMembershipEventFanout {
     fn take_calls(&self) -> Vec<MembershipEventFanoutCall> {
-        let mut calls = self.calls.lock().expect("membership fanout calls lock");
+        let mut calls = match self.calls.lock() {
+            Ok(calls) => calls,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         std::mem::take(&mut *calls)
     }
 
     fn push(&self, call: MembershipEventFanoutCall) {
-        self.calls
-            .lock()
-            .expect("membership fanout calls lock")
-            .push(call);
+        let mut calls = match self.calls.lock() {
+            Ok(calls) => calls,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        calls.push(call);
     }
 }
 
@@ -187,7 +223,12 @@ fn test_realtime_outbox_event(
         event_type: event.event_type().to_string(),
         event_version: 1,
         aggregate_version: None,
-        payload: serde_json::to_value(event).expect("test realtime event should serialize"),
+        payload: match serde_json::to_value(event) {
+            Ok(payload) => payload,
+            Err(error) => {
+                std::panic::panic_any(format!("test realtime event should serialize: {error}"))
+            }
+        },
     }
 }
 
@@ -235,12 +276,13 @@ async fn recv_matching_realtime_event(
         let now = tokio::time::Instant::now();
         assert!(now < deadline, "timed out waiting for {description}");
         let remaining = deadline - now;
-        let request = tokio::time::timeout(remaining, receiver.recv())
-            .await
-            .unwrap_or_else(|_| panic!("timed out waiting for {description}"))
-            .unwrap_or_else(|| {
-                panic!("cluster publish channel closed while waiting for {description}")
-            });
+        let request = match tokio::time::timeout(remaining, receiver.recv()).await {
+            Ok(Some(request)) => request,
+            Ok(None) => std::panic::panic_any(format!(
+                "cluster publish channel closed while waiting for {description}"
+            )),
+            Err(_) => std::panic::panic_any(format!("timed out waiting for {description}")),
+        };
         if predicate(&request.event) {
             return request.event;
         }
@@ -313,32 +355,42 @@ fn local_management_actor_id_is_reserved_numeric_actor() {
     assert_eq!(LOCAL_MANAGEMENT_ACTOR_USER_ID.as_i64(), i64::MAX);
 }
 
+fn fixture_value<T, E>(result: Result<T, E>, context: &str) -> T
+where
+    E: std::fmt::Display,
+{
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
 fn public_room_id(admin_api: &AdminApiImpl, id: RoomId) -> String {
-    admin_api
-        .public_id_codec
-        .encode_room_id(id)
-        .expect("test room id should encode")
+    fixture_value(
+        admin_api.public_id_codec.encode_room_id(id),
+        "test room id should encode",
+    )
 }
 
 fn public_user_id(admin_api: &AdminApiImpl, id: UserId) -> String {
-    admin_api
-        .public_id_codec
-        .encode_user_id(id)
-        .expect("test user id should encode")
+    fixture_value(
+        admin_api.public_id_codec.encode_user_id(id),
+        "test user id should encode",
+    )
 }
 
 fn public_media_id(admin_api: &AdminApiImpl, id: synctv_core::models::MediaId) -> String {
-    admin_api
-        .public_id_codec
-        .encode_media_id(id)
-        .expect("test media id should encode")
+    fixture_value(
+        admin_api.public_id_codec.encode_media_id(id),
+        "test media id should encode",
+    )
 }
 
 fn public_playlist_id(admin_api: &AdminApiImpl, id: PlaylistId) -> String {
-    admin_api
-        .public_id_codec
-        .encode_playlist_id(id)
-        .expect("test playlist id should encode")
+    fixture_value(
+        admin_api.public_id_codec.encode_playlist_id(id),
+        "test playlist id should encode",
+    )
 }
 
 #[test]
@@ -425,8 +477,10 @@ fn test_map_send_test_email_result_failure_is_sanitized() {
 }
 
 fn make_user_service(pool: &sqlx::PgPool) -> UserService {
-    let jwt_service =
-        JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars").expect("jwt");
+    let jwt_service = fixture_value(
+        JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars"),
+        "jwt service should build",
+    );
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
     let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400));
@@ -443,7 +497,7 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_validate_admin_auth_rejects_banned_user() {
+async fn test_validate_admin_auth_rejects_banned_user() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let user_service = make_user_service(&pool);
     let user_repo = UserRepository::new(pool);
@@ -452,17 +506,15 @@ async fn test_validate_admin_auth_rejects_banned_user() {
     user_repo
         .ban(&banned_admin.id, None, Some("admin auth test".to_string()))
         .await
-        .expect("ban admin");
+        .map_err(|error| test_error(error.to_string()))?;
 
-    let err = validate_admin_auth(&user_service, banned_admin.id, 0, 0)
-        .await
-        .err()
-        .expect("banned admin must not pass admin auth");
+    let err = api_err(validate_admin_auth(&user_service, banned_admin.id, 0, 0).await)?;
 
     assert!(
         matches!(err, ApiError::Authentication(ref msg) if msg == "Authentication failed"),
         "banned admin auth must fail with generic authentication error, got: {err:?}"
     );
+    Ok(())
 }
 
 async fn make_admin_api_for_delete_user_test(
@@ -471,23 +523,43 @@ async fn make_admin_api_for_delete_user_test(
     AdminApiImpl,
     tokio::sync::mpsc::Receiver<synctv_realtime::sync::PublishRequest>,
 ) {
-    let user_service = Arc::new(make_user_service(&pool));
+    let realtime_outbox = Arc::new(
+        synctv_core::repository::realtime_outbox::RealtimeOutboxRepository::new(pool.clone()),
+    );
+    let user_service = Arc::new(synctv_core::service::UserService::new_with_runtime(
+        &pool,
+        fixture_value(
+            JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars"),
+            "jwt service should build",
+        ),
+        UsernameCache::local_only("test:username:".to_string(), 128, 60),
+        Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+        KeyBuilder::new("test"),
+        BruteForceProtection::in_memory("test".to_string()),
+        synctv_core::service::user::UserServiceRuntimeOptions {
+            realtime_outbox: Some(realtime_outbox.clone()),
+            ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+        },
+    ));
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         ProviderInstanceRepository::new(pool.clone()),
     )));
     let providers_manager = ProvidersManager::new_with_ssrf_guard(
         provider_instance_manager.clone(),
         synctv_common::ssrf::SsrfGuard::disabled(),
-    )
-    .expect("providers manager should build");
+    );
+    let providers_manager = fixture_value(providers_manager, "providers manager should build");
     let settings_service = Arc::new(SettingsService::new(
         SettingsRepository::new(pool.clone()),
         pool.clone(),
     ));
-    settings_service
-        .initialize()
-        .await
-        .expect("settings initialized");
+    fixture_value(
+        settings_service
+            .initialize()
+            .await
+            .map_err(|error| error.to_string()),
+        "settings initialized",
+    );
     let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
     let room_service = synctv_core::service::RoomService::new_with_providers_and_options(
         pool.clone(),
@@ -495,34 +567,41 @@ async fn make_admin_api_for_delete_user_test(
         Arc::new(providers_manager),
         synctv_core::service::room::RoomServiceOptions {
             settings_registry: Some(settings_registry.clone()),
-            ..synctv_core::service::room::RoomServiceOptions::test_defaults()
+            realtime_outbox: Some(realtime_outbox),
+            ..synctv_core::service::room::RoomServiceOptions::test_defaults_with_settings(
+                pool.clone(),
+            )
         },
-    )
-    .expect("room service should build");
-    let email_service = Arc::new(
-        EmailService::new(Arc::new(RuntimeEmailConfigProvider::new(
-            &settings_registry,
-        )))
-        .expect("email service"),
     );
+    let room_service = fixture_value(room_service, "room service should build");
+    let email_service = EmailService::new(Arc::new(RuntimeEmailConfigProvider::new(
+        &settings_registry,
+    )));
+    let email_service = Arc::new(fixture_value(email_service, "email service"));
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-    connection_manager.start();
     let room_service = Arc::new(room_service);
-    room_service
-        .media_service()
-        .providers_manager()
-        .create_builtin_defaults()
-        .await
-        .expect("built-in providers should initialize");
+    fixture_value(
+        room_service
+            .media_service()
+            .providers_manager()
+            .create_builtin_defaults()
+            .await
+            .map_err(|error| error.to_string()),
+        "built-in providers should initialize",
+    );
     let audit_service = Arc::new(AuditService::new_unbuffered(pool));
     let config = Arc::new(Config::default());
-    let publish_key_service = Arc::new(
-        PublishKeyService::new(
-            JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars").expect("jwt"),
-            24,
-        )
-        .expect("publish key service should build"),
+    let publish_key_service = PublishKeyService::new(
+        fixture_value(
+            JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars"),
+            "jwt",
+        ),
+        24,
     );
+    let publish_key_service = Arc::new(fixture_value(
+        publish_key_service,
+        "publish key service should build",
+    ));
     let (redis_publish_tx, redis_publish_rx) = tokio::sync::mpsc::channel(8);
     let provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver> = Arc::new(
         synctv_core::provider::ProviderStoreRegistry::local_only("test:provider:".to_string()),
@@ -542,16 +621,22 @@ async fn make_admin_api_for_delete_user_test(
                 publish_key_service: Some(publish_key_service),
                 config,
                 audit_service,
-                public_id_codec: Arc::new(crate::PublicIdCodec::plain()),
+                public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
             },
             AdminApiRuntime {
                 realtime_fanout: crate::test_support::channel_realtime_fanout_service(
                     redis_publish_tx,
                 ),
                 realtime_event_service: Arc::new(LocalNoopRealtimeEventService::new()),
-                provider_stores: Some(provider_stores),
-                provider_access_service: None,
-                request_executor: None,
+                provider_stores,
+                provider_access_service: crate::impls::disabled_provider_access_service(),
+                signing_key: Arc::new(
+                    synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+                        b"test-admin-api-signing-key-32-bytes!!",
+                    )
+                    .expect("test signing key should derive"),
+                ),
+                request_executor: Arc::new(crate::test_support::local_request_executor()),
             },
         ),
         redis_publish_rx,
@@ -563,79 +648,74 @@ async fn make_admin_api_with_livestream_for_test(
 ) -> (
     AdminApiImpl,
     Arc<LiveStreamingInfrastructure>,
+    Arc<dyn StreamRegistryTrait>,
     tokio::sync::mpsc::Receiver<synctv_realtime::sync::PublishRequest>,
 ) {
     let user_service = Arc::new(make_user_service(&pool));
-    let room_service = Arc::new(
-        synctv_core::service::RoomService::new_for_tests(pool.clone(), (*user_service).clone())
-            .expect("room service should build"),
-    );
+    let room_service = Arc::new(fixture_value(
+        synctv_core::service::RoomService::new_for_tests(pool.clone(), (*user_service).clone()),
+        "room service should build",
+    ));
     let settings_service = Arc::new(SettingsService::new(
         SettingsRepository::new(pool.clone()),
         pool.clone(),
     ));
-    settings_service
-        .initialize()
-        .await
-        .expect("settings initialized");
-    let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
-    let email_service = Arc::new(
-        EmailService::new(Arc::new(RuntimeEmailConfigProvider::new(
-            &settings_registry,
-        )))
-        .expect("email service"),
+    fixture_value(
+        settings_service
+            .initialize()
+            .await
+            .map_err(|error| error.to_string()),
+        "settings initialized",
     );
+    let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
+    let email_service = EmailService::new(Arc::new(RuntimeEmailConfigProvider::new(
+        &settings_registry,
+    )));
+    let email_service = Arc::new(fixture_value(email_service, "email service"));
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-    connection_manager.start();
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         ProviderInstanceRepository::new(pool.clone()),
     )));
-    room_service
-        .media_service()
-        .providers_manager()
-        .create_builtin_defaults()
-        .await
-        .expect("built-in providers should initialize");
+    fixture_value(
+        room_service
+            .media_service()
+            .providers_manager()
+            .create_builtin_defaults()
+            .await
+            .map_err(|error| error.to_string()),
+        "built-in providers should initialize",
+    );
     let audit_service = Arc::new(AuditService::new_unbuffered(pool));
     let config = Arc::new(Config::default());
-    let publish_key_service = Arc::new(
-        PublishKeyService::new(
-            JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars").expect("jwt"),
-            24,
-        )
-        .expect("publish key service should build"),
+    let publish_key_service = PublishKeyService::new(
+        fixture_value(
+            JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars"),
+            "jwt",
+        ),
+        24,
     );
+    let publish_key_service = Arc::new(fixture_value(
+        publish_key_service,
+        "publish key service should build",
+    ));
     let (redis_publish_tx, redis_publish_rx) = tokio::sync::mpsc::channel(8);
     let provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver> = Arc::new(
         synctv_core::provider::ProviderStoreRegistry::local_only("test:provider:".to_string()),
     );
 
     let tracker = Arc::new(StreamTracker::new());
-    let registry = synctv_livestream::relay::local_stream_registry();
+    let registry = synctv_livestream::local_stream_registry();
     let (event_sender, _event_receiver) = mpsc::channel(64);
-    let pull_manager = Arc::new(PullStreamManager::new(
-        registry.clone(),
-        event_sender.clone(),
-    ));
-    let external_publish_manager = Arc::new(
-        ExternalPublishManager::new(
-            registry.clone(),
-            "node-local".to_string(),
-            event_sender.clone(),
-            synctv_common::ssrf::SsrfGuard::disabled(),
-        )
-        .expect("external publish manager should build"),
-    );
-    let live_streaming_infrastructure = Arc::new(
+    let live_streaming_infrastructure = Arc::new(fixture_value(
         LiveStreamingInfrastructure::new(
-            registry,
+            registry.clone(),
             event_sender,
-            pull_manager,
-            external_publish_manager,
             tracker,
-        )
-        .with_local_node_id("node-local".to_string()),
-    );
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        ),
+        "livestream infrastructure should build",
+    ));
 
     (
         AdminApiImpl::new_with_runtime(
@@ -651,19 +731,26 @@ async fn make_admin_api_with_livestream_for_test(
                 publish_key_service: Some(publish_key_service),
                 config,
                 audit_service,
-                public_id_codec: Arc::new(crate::PublicIdCodec::plain()),
+                public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
             },
             AdminApiRuntime {
                 realtime_fanout: crate::test_support::channel_realtime_fanout_service(
                     redis_publish_tx,
                 ),
                 realtime_event_service: Arc::new(LocalNoopRealtimeEventService::new()),
-                provider_stores: Some(provider_stores),
-                provider_access_service: None,
-                request_executor: None,
+                provider_stores,
+                provider_access_service: crate::impls::disabled_provider_access_service(),
+                signing_key: Arc::new(
+                    synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+                        b"test-admin-api-signing-key-32-bytes!!",
+                    )
+                    .expect("test signing key should derive"),
+                ),
+                request_executor: Arc::new(crate::test_support::local_request_executor()),
             },
         ),
         live_streaming_infrastructure,
+        registry,
         redis_publish_rx,
     )
 }
@@ -673,31 +760,35 @@ async fn create_room_with_member(
     owner_id: &UserId,
     member_id: &UserId,
 ) -> synctv_core::models::Room {
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room for user lifecycle test".to_string(),
-            *owner_id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = fixture_value(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room for user lifecycle test".to_string(),
+                *owner_id,
+                None,
+                None,
+            )
+            .await,
+        "room should be created",
+    )
+    .0;
 
-    admin_api
-        .room_service
-        .join_room(room.id, *member_id, None)
-        .await
-        .expect("member should join room");
+    fixture_value(
+        admin_api
+            .room_service
+            .join_room(room.id, *member_id, None)
+            .await,
+        "member should join room",
+    );
 
     room
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_admin_add_member_publishes_permission_changed_membership_event() {
+async fn test_admin_add_member_publishes_permission_changed_membership_event() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (mut admin_api, _redis_publish_rx) =
         make_admin_api_for_delete_user_test(pool.clone()).await;
@@ -717,18 +808,19 @@ async fn test_admin_add_member_publishes_permission_changed_membership_event() {
     .await;
     let target = create_db_user(&user_repo, "target_add_membership_outbox", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room for add member fanout test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room for add member fanout test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
     let fanout = Arc::new(RecordingMembershipEventFanout::default());
     admin_api.membership_event_fanout = fanout.clone();
@@ -745,12 +837,12 @@ async fn test_admin_add_member_publishes_permission_changed_membership_event() {
             &RequestContext::default(),
         )
         .await
-        .expect("admin add member should succeed");
+        .map_err(|error| test_error(format!("{error:?}")))?;
 
-    assert_eq!(
-        response.member.expect("member should be returned").user_id,
-        public_user_id(&admin_api, target.id)
-    );
+    let member = response
+        .member
+        .ok_or_else(|| test_error("member should be returned"))?;
+    assert_eq!(member.user_id, public_user_id(&admin_api, target.id));
     assert_eq!(
         fanout.take_calls(),
         vec![MembershipEventFanoutCall::PublishPermissionChanged {
@@ -759,11 +851,12 @@ async fn test_admin_add_member_publishes_permission_changed_membership_event() {
             changed_by: global_admin.id.to_string(),
         }]
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_admin_update_member_permissions_publishes_membership_event() {
+async fn test_admin_update_member_permissions_publishes_membership_event() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (mut admin_api, _redis_publish_rx) =
         make_admin_api_for_delete_user_test(pool.clone()).await;
@@ -808,12 +901,12 @@ async fn test_admin_update_member_permissions_publishes_membership_event() {
             &RequestContext::default(),
         )
         .await
-        .expect("admin update member permissions should succeed");
+        .map_err(|error| test_error(format!("{error:?}")))?;
 
-    assert_eq!(
-        response.member.expect("member should be returned").user_id,
-        public_user_id(&admin_api, target.id)
-    );
+    let member = response
+        .member
+        .ok_or_else(|| test_error("member should be returned"))?;
+    assert_eq!(member.user_id, public_user_id(&admin_api, target.id));
     assert_eq!(
         fanout.take_calls(),
         vec![MembershipEventFanoutCall::PublishPermissionChanged {
@@ -822,11 +915,12 @@ async fn test_admin_update_member_permissions_publishes_membership_event() {
             changed_by: global_admin.id.to_string(),
         }]
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_admin_member_response_uses_room_permission_overrides() {
+async fn test_admin_member_response_uses_room_permission_overrides() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool);
@@ -851,20 +945,17 @@ async fn test_admin_member_response_uses_room_permission_overrides() {
     .await;
     let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
-    let mut settings = admin_api
-        .room_service
-        .get_room_settings(&room.id)
-        .await
-        .expect("room settings should load");
+    let mut settings = core_ok(admin_api.room_service.get_room_settings(&room.id).await)?;
     settings.member_removed_permissions =
         synctv_core::models::room_settings::MemberRemovedPermissions(
             synctv_core::models::RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
         );
-    admin_api
-        .room_service
-        .set_room_settings(&room.id, &settings)
-        .await
-        .expect("room settings should update");
+    core_ok(
+        admin_api
+            .room_service
+            .set_room_settings(&room.id, &settings)
+            .await,
+    )?;
 
     let response = admin_api
         .update_member_permissions(
@@ -881,9 +972,11 @@ async fn test_admin_member_response_uses_room_permission_overrides() {
             &RequestContext::default(),
         )
         .await
-        .expect("admin update member permissions should succeed");
+        .map_err(|error| test_error(format!("{error:?}")))?;
 
-    let member = response.member.expect("member should be returned");
+    let member = response
+        .member
+        .ok_or_else(|| test_error("member should be returned"))?;
     assert!(
         synctv_core::models::RoomPermissionSet::default_member()
             .has(synctv_core::models::RoomPermission::CREATE_MEDIA_RESOURCE),
@@ -894,11 +987,12 @@ async fn test_admin_member_response_uses_room_permission_overrides() {
             .has(synctv_core::models::RoomPermission::CREATE_MEDIA_RESOURCE),
         "admin member response must apply room-level permission removals"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_admin_kick_member_publishes_membership_event() {
+async fn test_admin_kick_member_publishes_membership_event() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (mut admin_api, _redis_publish_rx) =
         make_admin_api_for_delete_user_test(pool.clone()).await;
@@ -934,7 +1028,7 @@ async fn test_admin_kick_member_publishes_membership_event() {
             &RequestContext::default(),
         )
         .await
-        .expect("admin kick member should succeed");
+        .map_err(|error| test_error(format!("{error:?}")))?;
 
     assert!(response.success);
     assert_eq!(
@@ -945,6 +1039,7 @@ async fn test_admin_kick_member_publishes_membership_event() {
             changed_by: global_admin.id.to_string(),
         }]
     );
+    Ok(())
 }
 
 async fn create_room_media(
@@ -954,29 +1049,33 @@ async fn create_room_media(
     name: &str,
 ) -> synctv_core::models::Media {
     let media_repo = MediaRepository::new(pool.clone());
-    let mut tx = pool.begin().await.expect("begin media test transaction");
-    let position = media_repo
-        .get_next_append_position_with_tx(&room_id, None, &mut tx)
-        .await
-        .expect("compute next media position");
-    let media = synctv_core::models::Media::from_direct_single_mode(
-        None,
-        room_id,
-        Some(creator_id),
-        name.to_string(),
-        "direct",
-        synctv_core::models::PlaybackInfo::single_url(
-            "https://example.com/video.mp4".to_string(),
-            "default".to_string(),
+    let mut tx = fixture_value(pool.begin().await, "begin media test transaction");
+    let position = fixture_value(
+        media_repo
+            .get_next_append_position_with_tx(&room_id, None, &mut tx)
+            .await,
+        "compute next media position",
+    );
+    let media = fixture_value(
+        synctv_core::models::Media::from_direct_single_mode(
+            None,
+            room_id,
+            Some(creator_id),
+            name.to_string(),
+            "direct",
+            synctv_core::models::PlaybackInfo::single_url(
+                "https://example.com/video.mp4".to_string(),
+                "default".to_string(),
+            ),
+            position,
         ),
-        position,
-    )
-    .expect("direct media should build");
-    let created = media_repo
-        .create_with_executor(&media, &mut *tx)
-        .await
-        .expect("create media");
-    tx.commit().await.expect("commit media test transaction");
+        "direct media should build",
+    );
+    let created = fixture_value(
+        media_repo.create_with_executor(&media, &mut *tx).await,
+        "create media",
+    );
+    fixture_value(tx.commit().await, "commit media test transaction");
     created
 }
 
@@ -1019,9 +1118,9 @@ fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
 }
 
 #[test]
-fn test_admin_room_to_proto_basic() {
+fn test_admin_room_to_proto_basic() -> TestResult {
     let room = make_test_room(RoomStatus::Active);
-    let public_id_codec = crate::PublicIdCodec::plain();
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
     let settings = synctv_core::models::RoomSettings::default();
     let proto = try_admin_room_to_proto(
         &room,
@@ -1031,14 +1130,21 @@ fn test_admin_room_to_proto_basic() {
         UserStatus::Active,
         &public_id_codec,
     )
-    .expect("admin room proto should encode");
+    .map_err(|error| test_error(format!("{error:?}")))?;
 
-    assert_eq!(proto.id, public_id_codec.encode_room_id(room.id).unwrap());
+    assert_eq!(
+        proto.id,
+        public_id_codec
+            .encode_room_id(room.id)
+            .map_err(test_error)?
+    );
     assert_eq!(proto.name, "Admin Test Room");
     assert_eq!(proto.description, "Room for admin tests");
     assert_eq!(
         proto.creator_id,
-        public_id_codec.encode_user_id(room.created_by).unwrap()
+        public_id_codec
+            .encode_user_id(room.created_by)
+            .map_err(test_error)?
     );
     assert_eq!(proto.creator_username, "creator_user");
     assert_eq!(
@@ -1047,35 +1153,37 @@ fn test_admin_room_to_proto_basic() {
     );
     assert_eq!(proto.member_count, 10);
     assert!(!proto.is_banned);
+    Ok(())
 }
 
 #[test]
-fn test_admin_room_to_proto_banned() {
+fn test_admin_room_to_proto_banned() -> TestResult {
     let mut room = make_test_room(RoomStatus::Active);
-    let public_id_codec = crate::PublicIdCodec::plain();
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
     let settings = synctv_core::models::RoomSettings::default();
     room.is_banned = true;
     let proto = try_admin_room_to_proto(
         &room,
         Some(&settings),
-        None,
+        Some(0),
         Some("creator_user"),
         UserStatus::Banned,
         &public_id_codec,
     )
-    .expect("admin room proto should encode");
+    .map_err(|error| test_error(format!("{error:?}")))?;
     assert!(proto.is_banned);
     assert_eq!(proto.member_count, 0);
     assert_eq!(
         proto.creator_status,
         synctv_proto::common::UserStatus::Banned as i32
     );
+    Ok(())
 }
 
 #[test]
-fn test_admin_room_to_proto_uses_supplied_settings() {
+fn test_admin_room_to_proto_uses_supplied_settings() -> TestResult {
     let room = make_test_room(RoomStatus::Active);
-    let public_id_codec = crate::PublicIdCodec::plain();
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
     let settings = synctv_core::models::RoomSettings {
         allow_auto_join: synctv_core::models::room_settings::AllowAutoJoin(false),
         ..Default::default()
@@ -1084,101 +1192,145 @@ fn test_admin_room_to_proto_uses_supplied_settings() {
     let proto = try_admin_room_to_proto(
         &room,
         Some(&settings),
-        None,
+        Some(0),
         Some("creator_user"),
         UserStatus::Active,
         &public_id_codec,
     )
-    .expect("admin room proto should encode");
-    let rendered: serde_json::Value =
-        serde_json::from_slice(&proto.settings).expect("settings should be valid json");
+    .map_err(|error| test_error(format!("{error:?}")))?;
+    let rendered: serde_json::Value = serde_json::from_slice(&proto.settings)?;
 
     assert_eq!(rendered["allow_auto_join"], false);
+    Ok(())
 }
 
 #[test]
-fn test_admin_room_to_proto_different_statuses() {
+fn test_admin_room_to_proto_different_statuses() -> TestResult {
     for status in [RoomStatus::Active, RoomStatus::Closed] {
         let room = make_test_room(status);
-        let public_id_codec = crate::PublicIdCodec::plain();
+        let public_id_codec = synctv_core::PublicIdCodec::plain();
         let settings = synctv_core::models::RoomSettings::default();
         let proto = try_admin_room_to_proto(
             &room,
             Some(&settings),
-            None,
+            Some(0),
             Some("creator_user"),
             UserStatus::Active,
             &public_id_codec,
         )
-        .expect("admin room proto should encode");
+        .map_err(|error| test_error(format!("{error:?}")))?;
         assert_eq!(
             proto.status,
             synctv_proto::common::RoomStatus::from(status) as i32
         );
     }
+    Ok(())
 }
 
 #[test]
-fn admin_query_enum_mappers_reject_unknown_values_and_preserve_defaults() {
+fn room_creator_status_from_map_returns_loaded_status() -> TestResult {
+    let room = make_test_room(RoomStatus::Active);
+    let statuses = std::collections::HashMap::from([(room.created_by, UserStatus::Active)]);
+
     assert_eq!(
-        proto_admin_user_list_sort_by(synctv_proto::admin::UserListSortBy::Status as i32)
-            .expect("status sort should be accepted"),
+        api_ok(room_creator_status_from_map(&statuses, &room))?,
+        UserStatus::Active
+    );
+    Ok(())
+}
+
+#[test]
+fn room_creator_status_from_map_rejects_missing_status() {
+    let room = make_test_room(RoomStatus::Active);
+    let statuses = std::collections::HashMap::new();
+
+    assert!(matches!(
+        room_creator_status_from_map(&statuses, &room),
+        Err(ApiError::Internal(message))
+            if message.contains("creator status")
+                && message.contains(&room.id.to_string())
+                && message.contains(&room.created_by.to_string())
+    ));
+}
+
+#[test]
+fn username_from_loaded_user_rejects_empty_username() {
+    let mut user = synctv_core::models::User::new(
+        "valid-user".to_string(),
+        synctv_core::models::SignupMethod::Password,
+    );
+    user.id = UserId::expect_positive(44);
+    user.username = "   ".to_string();
+
+    assert!(matches!(
+        username_from_loaded_user(user),
+        Err(ApiError::Internal(message))
+            if message.contains("empty username")
+                && message.contains("44")
+    ));
+}
+
+#[test]
+fn admin_query_enum_mappers_reject_unknown_values_and_preserve_defaults() -> TestResult {
+    assert_eq!(
+        api_ok(proto_admin_user_list_sort_by(
+            synctv_proto::admin::UserListSortBy::Status as i32
+        ))?,
         synctv_core::models::UserListSortBy::Status
     );
     assert_eq!(
-        proto_admin_user_list_sort_by(synctv_proto::admin::UserListSortBy::Unspecified as i32)
-            .expect("unspecified user sort should be accepted"),
+        api_ok(proto_admin_user_list_sort_by(
+            synctv_proto::admin::UserListSortBy::Unspecified as i32
+        ))?,
         synctv_core::models::UserListSortBy::CreatedAt
     );
     assert_eq!(
-        proto_admin_room_list_sort_by(synctv_proto::admin::RoomListSortBy::Unspecified as i32)
-            .expect("unspecified room sort should be accepted"),
+        api_ok(proto_admin_room_list_sort_by(
+            synctv_proto::admin::RoomListSortBy::Unspecified as i32
+        ))?,
         synctv_core::models::RoomListSortBy::CreatedAt
     );
     assert_eq!(
-        proto_admin_room_member_list_sort_by(
+        api_ok(proto_admin_room_member_list_sort_by(
             synctv_proto::admin::RoomMemberListSortBy::Unspecified as i32
-        )
-        .expect("unspecified room member sort should be accepted"),
+        ))?,
         synctv_core::models::RoomMemberListSortBy::JoinedAt
     );
     assert_eq!(
-        proto_admin_active_stream_list_sort_by(
+        api_ok(proto_admin_active_stream_list_sort_by(
             synctv_proto::admin::ActiveStreamListSortBy::Unspecified as i32
-        )
-        .expect("unspecified active stream sort should be accepted"),
+        ))?,
         synctv_proto::admin::ActiveStreamListSortBy::StartedAt
     );
     assert_eq!(
-        proto_admin_sort_direction(
+        api_ok(proto_admin_sort_direction(
             synctv_proto::admin::SortDirection::Unspecified as i32,
             CoreSortDirection::Desc
-        )
-        .expect("unspecified sort direction should be accepted"),
+        ))?,
         CoreSortDirection::Desc
     );
     assert_eq!(
-        proto_admin_active_stream_sort_direction(
+        api_ok(proto_admin_active_stream_sort_direction(
             synctv_proto::admin::SortDirection::Unspecified as i32
-        )
-        .expect("unspecified active stream sort direction should be accepted"),
+        ))?,
         synctv_proto::admin::SortDirection::Desc
     );
     assert_eq!(
-        map_admin_playlist_sort(synctv_proto::client::PlaylistListSortBy::Unspecified as i32)
-            .expect("unspecified playlist sort should be accepted"),
+        api_ok(map_admin_playlist_sort(
+            synctv_proto::client::PlaylistListSortBy::Unspecified as i32
+        ))?,
         synctv_core::models::PlaylistListSortBy::Position
     );
     assert_eq!(
-        map_admin_media_sort(synctv_proto::client::MediaListSortBy::Unspecified as i32)
-            .expect("unspecified media sort should be accepted"),
+        api_ok(map_admin_media_sort(
+            synctv_proto::client::MediaListSortBy::Unspecified as i32
+        ))?,
         synctv_core::models::MediaListSortBy::Position
     );
     assert_eq!(
-        map_resource_availability_filter(
+        api_ok(map_resource_availability_filter(
             synctv_proto::client::ResourceAvailabilityFilter::All as i32
-        )
-        .expect("all availability filter should be accepted"),
+        ))?,
         None
     );
 
@@ -1218,35 +1370,33 @@ fn admin_query_enum_mappers_reject_unknown_values_and_preserve_defaults() {
         map_resource_availability_filter(99),
         Err(ApiError::InvalidInput(message)) if message.contains("availability")
     ));
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_load_room_creator_status_maps_missing_creator_to_banned() {
+async fn test_load_room_creator_status_maps_missing_creator_to_banned() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let user_service = make_user_service(&pool);
     let room = make_test_room(RoomStatus::Active);
 
-    let status = load_room_creator_status(&user_service, &room)
-        .await
-        .expect("missing creator should map to unavailable status");
+    let status = api_ok(load_room_creator_status(&user_service, &room).await)?;
 
     assert_eq!(status, UserStatus::Banned);
     pool.close().await;
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_load_room_creator_status_propagates_backend_failures() {
+async fn test_load_room_creator_status_propagates_backend_failures() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let user_service = make_user_service(&pool);
     let room = make_test_room(RoomStatus::Active);
 
     pool.close().await;
 
-    let error = load_room_creator_status(&user_service, &room)
-        .await
-        .expect_err("creator lookup backend failures must propagate");
+    let error = api_err(load_room_creator_status(&user_service, &room).await)?;
 
     assert!(
         matches!(
@@ -1255,10 +1405,11 @@ async fn test_load_room_creator_status_propagates_backend_failures() {
         ),
         "unexpected error kind: {error:?}"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_active_room_stream_media_ids_unions_local_and_registry_streams() {
+async fn test_active_room_stream_media_ids_unions_local_and_registry_streams() -> TestResult {
     let tracker = Arc::new(StreamTracker::new());
     let room_id = RoomId::expect_positive(101);
     let local_media_id = MediaId::expect_positive(201);
@@ -1270,18 +1421,14 @@ async fn test_active_room_stream_media_ids_unions_local_and_registry_streams() {
         "user-local".to_string(),
         room_id.to_string(),
         local_media_id.to_string(),
-        "rtmp-room",
-        "rtmp-stream",
     );
     tracker.insert(
         "user-overlap".to_string(),
         room_id.to_string(),
         shared_media_id.to_string(),
-        "rtmp-room-2",
-        "rtmp-stream-2",
     );
 
-    let registry = synctv_livestream::relay::local_stream_registry();
+    let registry = synctv_livestream::local_stream_registry();
     registry
         .try_register_publisher(
             &room_id.to_string(),
@@ -1291,7 +1438,7 @@ async fn test_active_room_stream_media_ids_unions_local_and_registry_streams() {
             "127.0.0.1:50051",
         )
         .await
-        .expect("shared publisher should register");
+        .map_err(|error| test_error(error.to_string()))?;
     registry
         .try_register_publisher(
             &room_id.to_string(),
@@ -1301,7 +1448,7 @@ async fn test_active_room_stream_media_ids_unions_local_and_registry_streams() {
             "127.0.0.1:50052",
         )
         .await
-        .expect("remote publisher should register");
+        .map_err(|error| test_error(error.to_string()))?;
     registry
         .try_register_publisher(
             &other_room_id.to_string(),
@@ -1311,29 +1458,19 @@ async fn test_active_room_stream_media_ids_unions_local_and_registry_streams() {
             "127.0.0.1:50053",
         )
         .await
-        .expect("other room publisher should register");
+        .map_err(|error| test_error(error.to_string()))?;
 
     let (event_sender, _event_receiver) = mpsc::channel(64);
-    let pull_manager = Arc::new(PullStreamManager::new(
-        registry.clone(),
-        event_sender.clone(),
-    ));
-    let external_publish_manager = Arc::new(
-        ExternalPublishManager::new(
-            registry.clone(),
-            "node-local".to_string(),
-            event_sender.clone(),
+    let infra = Arc::new(
+        LiveStreamingInfrastructure::new(
+            registry,
+            event_sender,
+            tracker,
+            String::new(),
             synctv_common::ssrf::SsrfGuard::disabled(),
         )
-        .expect("external publish manager should build"),
+        .map_err(|error| test_error(error.to_string()))?,
     );
-    let infra = Arc::new(LiveStreamingInfrastructure::new(
-        registry,
-        event_sender,
-        pull_manager,
-        external_publish_manager,
-        tracker,
-    ));
 
     let media_ids = active_room_stream_media_ids_for_infra(Some(&infra), &room_id).await;
 
@@ -1341,14 +1478,14 @@ async fn test_active_room_stream_media_ids_unions_local_and_registry_streams() {
         media_ids,
         vec![local_media_id, shared_media_id, remote_media_id]
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_force_disconnect_user_publishes_cluster_kick_event() {
-    let connection_service: Arc<dyn RealtimeConnectionService> = Arc::new(ConnectionManager::new(
+async fn test_force_disconnect_user_publishes_cluster_kick_event() -> TestResult {
+    let connection_service: Arc<dyn ConnectionRuntime> = Arc::new(ConnectionManager::new(
         synctv_realtime::sync::ConnectionLimits::default(),
     ));
-    connection_service.start();
 
     let (publish_tx, mut publish_rx) = mpsc::channel(4);
     let user_id = UserId::expect_positive(110_001);
@@ -1365,7 +1502,7 @@ async fn test_force_disconnect_user_publishes_cluster_kick_event() {
     let published = publish_rx
         .recv()
         .await
-        .expect("force_disconnect_user should publish a kick event");
+        .ok_or_else(|| test_error("force_disconnect_user should publish a kick event"))?;
     match published.event {
         RealtimeEvent::KickUser {
             user_id: published_user_id,
@@ -1375,8 +1512,13 @@ async fn test_force_disconnect_user_publishes_cluster_kick_event() {
             assert_eq!(published_user_id, user_id);
             assert_eq!(reason, "user_deleted");
         }
-        other => panic!("expected KickUser event, got {other:?}"),
+        other => {
+            return Err(test_error(format!(
+                "expected KickUser event, got {other:?}"
+            )))
+        }
     }
+    Ok(())
 }
 
 fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::User {
@@ -1422,15 +1564,15 @@ async fn create_db_user(
     username: &str,
     role: UserRole,
 ) -> synctv_core::models::User {
-    user_repo
-        .create(&make_db_user(username, role))
-        .await
-        .expect("create test user")
+    fixture_value(
+        user_repo.create(&make_db_user(username, role)).await,
+        "create test user",
+    )
 }
 
 #[test]
-fn test_admin_user_to_proto_all_roles() {
-    let public_id_codec = crate::PublicIdCodec::plain();
+fn test_admin_user_to_proto_all_roles() -> TestResult {
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
     for (role, expected) in [
         (UserRole::Root, synctv_proto::common::UserRole::Root as i32),
         (
@@ -1441,14 +1583,15 @@ fn test_admin_user_to_proto_all_roles() {
     ] {
         let user = make_test_user(role, UserStatus::Active);
         let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec)
-            .expect("admin user proto should encode");
+            .map_err(|error| test_error(format!("{error:?}")))?;
         assert_eq!(proto.role, expected);
     }
+    Ok(())
 }
 
 #[test]
-fn test_admin_user_to_proto_all_statuses() {
-    let public_id_codec = crate::PublicIdCodec::plain();
+fn test_admin_user_to_proto_all_statuses() -> TestResult {
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
     for (status, expected) in [
         (
             UserStatus::Active,
@@ -1461,35 +1604,77 @@ fn test_admin_user_to_proto_all_statuses() {
     ] {
         let user = make_test_user(UserRole::User, status);
         let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec)
-            .expect("admin user proto should encode");
+            .map_err(|error| test_error(format!("{error:?}")))?;
         assert_eq!(proto.status, expected);
     }
+    Ok(())
 }
 
 #[test]
-fn test_admin_user_to_proto_fields() {
-    let public_id_codec = crate::PublicIdCodec::plain();
+fn test_admin_user_to_proto_fields() -> TestResult {
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
     let user = make_test_user(UserRole::Admin, UserStatus::Active);
     let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec)
-        .expect("admin user proto should encode");
+        .map_err(|error| test_error(format!("{error:?}")))?;
 
-    assert_eq!(proto.id, public_id_codec.encode_user_id(user.id).unwrap());
+    assert_eq!(
+        proto.id,
+        public_id_codec
+            .encode_user_id(user.id)
+            .map_err(test_error)?
+    );
     assert_eq!(proto.username, "admin_test");
     assert_eq!(proto.email, "admin@test.com");
+    Ok(())
 }
 
 #[test]
-fn test_admin_user_to_proto_no_email() {
-    let public_id_codec = crate::PublicIdCodec::plain();
+fn test_admin_user_to_proto_preserves_ban_timestamp() -> TestResult {
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let mut user = make_test_user(UserRole::User, UserStatus::Active);
+    let banned_at = chrono::Utc::now();
+    user.is_banned = true;
+    user.banned_at = Some(banned_at);
+
+    let proto = try_admin_user_to_proto(&user, Some("banned@test.com"), &public_id_codec)
+        .map_err(|error| test_error(format!("{error:?}")))?;
+
+    assert_eq!(proto.banned_at, banned_at.timestamp());
+    Ok(())
+}
+
+#[test]
+fn test_admin_user_to_proto_rejects_banned_user_without_ban_timestamp() -> TestResult {
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let mut user = make_test_user(UserRole::User, UserStatus::Active);
+    user.is_banned = true;
+
+    let error = api_err(try_admin_user_to_proto(
+        &user,
+        Some("banned@test.com"),
+        &public_id_codec,
+    ))?;
+
+    assert!(matches!(
+        error,
+        ApiError::Internal(message) if message.contains("missing banned_at")
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_admin_user_to_proto_no_email() -> TestResult {
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
     let user = make_test_user(UserRole::User, UserStatus::Active);
     let proto = try_admin_user_to_proto(&user, None, &public_id_codec)
-        .expect("admin user proto should encode");
+        .map_err(|error| test_error(format!("{error:?}")))?;
     assert_eq!(proto.email, "");
+    Ok(())
 }
 
 #[test]
-fn review_rows_preserve_absent_optional_fields() {
-    let public_id_codec = crate::PublicIdCodec::plain();
+fn review_rows_preserve_absent_optional_fields() -> TestResult {
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
     let requested_at = chrono::Utc::now();
 
     let registration = user_registration_review_row_to_proto(
@@ -1515,7 +1700,7 @@ fn review_rows_preserve_absent_optional_fields() {
         },
         &public_id_codec,
     )
-    .expect("registration review should encode");
+    .map_err(|error| test_error(format!("{error:?}")))?;
 
     assert_eq!(registration.reviewed_by, None);
     assert_eq!(registration.rejection_reason, None);
@@ -1539,7 +1724,7 @@ fn review_rows_preserve_absent_optional_fields() {
         },
         &public_id_codec,
     )
-    .expect("room creation review should encode");
+    .map_err(|error| test_error(format!("{error:?}")))?;
 
     assert_eq!(creation.reviewed_by, None);
     assert_eq!(creation.rejection_reason, None);
@@ -1560,10 +1745,11 @@ fn review_rows_preserve_absent_optional_fields() {
         },
         &public_id_codec,
     )
-    .expect("room join review should encode");
+    .map_err(|error| test_error(format!("{error:?}")))?;
 
     assert_eq!(join.reviewed_by, None);
     assert_eq!(join.rejection_reason, None);
+    Ok(())
 }
 
 #[test]
@@ -1632,23 +1818,27 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
 }
 
 #[test]
-fn test_admin_room_member_to_proto() {
+fn test_admin_room_member_to_proto() -> TestResult {
     let member = make_test_member(RoomRole::Admin);
-    let public_id_codec = crate::PublicIdCodec::plain();
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
     let proto = try_admin_room_member_to_proto_with_permissions(
         &member,
         member.effective_permissions(member.role.permissions()),
         &public_id_codec,
     )
-    .expect("admin room member proto should encode");
+    .map_err(|error| test_error(format!("{error:?}")))?;
 
     assert_eq!(
         proto.room_id,
-        public_id_codec.encode_room_id(member.room_id).unwrap()
+        public_id_codec
+            .encode_room_id(member.room_id)
+            .map_err(test_error)?
     );
     assert_eq!(
         proto.user_id,
-        public_id_codec.encode_user_id(member.user_id).unwrap()
+        public_id_codec
+            .encode_user_id(member.user_id)
+            .map_err(test_error)?
     );
     assert_eq!(proto.username, "testmember");
     assert_eq!(
@@ -1656,32 +1846,34 @@ fn test_admin_room_member_to_proto() {
         synctv_proto::common::RoomMemberRole::Admin as i32
     );
     assert!(!proto.is_online);
+    Ok(())
 }
 
 #[test]
-fn test_admin_room_member_to_proto_with_permissions() {
+fn test_admin_room_member_to_proto_with_permissions() -> TestResult {
     let mut member = make_test_member(RoomRole::Member);
     member.added_permissions = 0xAA;
     member.removed_permissions = 0x55;
     member.admin_added_permissions = 0xCC;
     member.admin_removed_permissions = 0x33;
-    let public_id_codec = crate::PublicIdCodec::plain();
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
     let proto = try_admin_room_member_to_proto_with_permissions(
         &member,
         member.effective_permissions(member.role.permissions()),
         &public_id_codec,
     )
-    .expect("admin room member proto should encode");
+    .map_err(|error| test_error(format!("{error:?}")))?;
 
     assert_eq!(proto.added_permissions, 0xAA);
     assert_eq!(proto.removed_permissions, 0x55);
     assert_eq!(proto.admin_added_permissions, 0xCC);
     assert_eq!(proto.admin_removed_permissions, 0x33);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_admins_includes_root_and_admin_only() {
+async fn test_list_admins_includes_root_and_admin_only() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool);
@@ -1737,22 +1929,20 @@ async fn test_list_admins_includes_root_and_admin_only() {
             version: 0,
         },
     ] {
-        user_repo
-            .create(&user)
-            .await
-            .expect("user should be created");
+        core_ok(user_repo.create(&user).await)?;
     }
 
-    let response = admin_api
-        .list_admins(synctv_proto::admin::ListAdminsRequest {
-            page: 1,
-            page_size: 10,
-            search: String::new(),
-            sort_by: synctv_proto::admin::UserListSortBy::Username as i32,
-            sort_direction: synctv_proto::admin::SortDirection::Asc as i32,
-        })
-        .await
-        .expect("list admins should succeed");
+    let response = api_ok(
+        admin_api
+            .list_admins(synctv_proto::admin::ListAdminsRequest {
+                page: 1,
+                page_size: 10,
+                search: String::new(),
+                sort_by: synctv_proto::admin::UserListSortBy::Username as i32,
+                sort_direction: synctv_proto::admin::SortDirection::Asc as i32,
+            })
+            .await,
+    )?;
 
     let usernames: Vec<String> = response
         .admins
@@ -1764,159 +1954,170 @@ async fn test_list_admins_includes_root_and_admin_only() {
         vec!["admin-alpha".to_string(), "root-zeta".to_string()]
     );
     assert_eq!(response.total, 2);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_admin_list_endpoints_reject_invalid_proto_requests() {
+async fn test_admin_list_endpoints_reject_invalid_proto_requests() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
 
-    let list_rooms_error = admin_api
-        .list_rooms(synctv_proto::admin::ListRoomsRequest {
-            page: -1,
-            page_size: 101,
-            status: synctv_proto::common::RoomStatus::Unspecified as i32,
-            search: String::new(),
-            creator_id: String::new(),
-            is_banned: None,
-            sort_by: synctv_proto::admin::RoomListSortBy::Unspecified as i32,
-            sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
-        })
-        .await
-        .expect_err("invalid list_rooms request must be rejected");
+    let list_rooms_error = api_err(
+        admin_api
+            .list_rooms(synctv_proto::admin::ListRoomsRequest {
+                page: -1,
+                page_size: 101,
+                status: synctv_proto::common::RoomStatus::Unspecified as i32,
+                search: String::new(),
+                creator_id: String::new(),
+                is_banned: None,
+                sort_by: synctv_proto::admin::RoomListSortBy::Unspecified as i32,
+                sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
+            })
+            .await,
+    )?;
     assert!(matches!(list_rooms_error, ApiError::InvalidInput(_)));
 
-    let get_room_members_error = admin_api
-        .get_room_members(synctv_proto::admin::GetRoomMembersRequest {
-            room_id: "room_abc123def456".to_string(),
-            page: -1,
-            page_size: 101,
-            search: "a".repeat(101),
-            role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
-            sort_by: synctv_proto::admin::RoomMemberListSortBy::Unspecified as i32,
-            sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
-        })
-        .await
-        .expect_err("invalid get_room_members request must be rejected");
+    let get_room_members_error = api_err(
+        admin_api
+            .get_room_members(synctv_proto::admin::GetRoomMembersRequest {
+                room_id: "room_abc123def456".to_string(),
+                page: -1,
+                page_size: 101,
+                search: "a".repeat(101),
+                role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
+                sort_by: synctv_proto::admin::RoomMemberListSortBy::Unspecified as i32,
+                sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
+            })
+            .await,
+    )?;
     assert!(matches!(get_room_members_error, ApiError::InvalidInput(_)));
 
-    let list_users_error = admin_api
-        .list_users(synctv_proto::admin::ListUsersRequest {
-            page: -1,
-            page_size: 101,
-            status: synctv_proto::common::UserStatus::Unspecified as i32,
-            role: synctv_proto::common::UserRole::Unspecified as i32,
-            search: "a".repeat(101),
-            is_banned: None,
-            sort_by: synctv_proto::admin::UserListSortBy::Unspecified as i32,
-            sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
-        })
-        .await
-        .expect_err("invalid list_users request must be rejected");
+    let list_users_error = api_err(
+        admin_api
+            .list_users(synctv_proto::admin::ListUsersRequest {
+                page: -1,
+                page_size: 101,
+                status: synctv_proto::common::UserStatus::Unspecified as i32,
+                role: synctv_proto::common::UserRole::Unspecified as i32,
+                search: "a".repeat(101),
+                is_banned: None,
+                sort_by: synctv_proto::admin::UserListSortBy::Unspecified as i32,
+                sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
+            })
+            .await,
+    )?;
     assert!(matches!(list_users_error, ApiError::InvalidInput(_)));
 
-    let get_user_rooms_error = admin_api
-        .get_user_rooms(synctv_proto::admin::GetUserRoomsRequest {
-            user_id: "usr_abc123def456".to_string(),
-            page: -1,
-            page_size: 101,
-            status: synctv_proto::common::RoomStatus::Unspecified as i32,
-            search: "a".repeat(101),
-            is_banned: None,
-            sort_by: synctv_proto::admin::RoomListSortBy::Unspecified as i32,
-            sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
-        })
-        .await
-        .expect_err("invalid get_user_rooms request must be rejected");
+    let get_user_rooms_error = api_err(
+        admin_api
+            .get_user_rooms(synctv_proto::admin::GetUserRoomsRequest {
+                user_id: "usr_abc123def456".to_string(),
+                page: -1,
+                page_size: 101,
+                status: synctv_proto::common::RoomStatus::Unspecified as i32,
+                search: "a".repeat(101),
+                is_banned: None,
+                sort_by: synctv_proto::admin::RoomListSortBy::Unspecified as i32,
+                sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
+            })
+            .await,
+    )?;
     assert!(matches!(get_user_rooms_error, ApiError::InvalidInput(_)));
 
-    let list_admins_error = admin_api
-        .list_admins(synctv_proto::admin::ListAdminsRequest {
-            page: -1,
-            page_size: 101,
-            search: "a".repeat(101),
-            sort_by: synctv_proto::admin::UserListSortBy::Unspecified as i32,
-            sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
-        })
-        .await
-        .expect_err("invalid list_admins request must be rejected");
+    let list_admins_error = api_err(
+        admin_api
+            .list_admins(synctv_proto::admin::ListAdminsRequest {
+                page: -1,
+                page_size: 101,
+                search: "a".repeat(101),
+                sort_by: synctv_proto::admin::UserListSortBy::Unspecified as i32,
+                sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
+            })
+            .await,
+    )?;
     assert!(matches!(list_admins_error, ApiError::InvalidInput(_)));
 
-    let list_active_streams_error = admin_api
-        .list_active_streams(synctv_proto::admin::ListActiveStreamsRequest {
-            page: -1,
-            page_size: 101,
-            room_id: String::new(),
-            user_id: String::new(),
-            node_id: String::new(),
-            search: "a".repeat(101),
-            sort_by: synctv_proto::admin::ActiveStreamListSortBy::Unspecified as i32,
-            sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
-        })
-        .await
-        .expect_err("invalid list_active_streams request must be rejected");
+    let list_active_streams_error = api_err(
+        admin_api
+            .list_active_streams(synctv_proto::admin::ListActiveStreamsRequest {
+                page: -1,
+                page_size: 101,
+                room_id: String::new(),
+                user_id: String::new(),
+                node_id: String::new(),
+                search: "a".repeat(101),
+                sort_by: synctv_proto::admin::ActiveStreamListSortBy::Unspecified as i32,
+                sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
+            })
+            .await,
+    )?;
     assert!(matches!(
         list_active_streams_error,
         ApiError::InvalidInput(_)
     ));
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_admin_client_list_endpoints_reject_invalid_proto_requests() {
+async fn test_admin_client_list_endpoints_reject_invalid_proto_requests() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool);
     let admin_user = create_db_user(&user_repo, "proto_list_admin", UserRole::Root).await;
 
-    let list_playlists_error = admin_api
-        .list_playlists(
-            "abc123def456",
-            synctv_proto::client::ListPlaylistsRequest {
-                parent_id: String::new(),
-                page: 1,
-                page_size: 20,
-                search: String::new(),
-                source_provider: "Bad Provider".to_string(),
-                provider_instance_name: "bad name".to_string(),
-                dynamic_only: None,
-                sort_by: synctv_proto::client::PlaylistListSortBy::Unspecified as i32,
-                sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
-                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
-            },
-            &admin_user.id,
-        )
-        .await
-        .expect_err("invalid list_playlists request must be rejected");
+    let list_playlists_error = api_err(
+        admin_api
+            .list_playlists(
+                "abc123def456",
+                synctv_proto::client::ListPlaylistsRequest {
+                    parent_id: String::new(),
+                    page: 1,
+                    page_size: 20,
+                    search: String::new(),
+                    source_provider: "Bad Provider".to_string(),
+                    provider_instance_name: "bad name".to_string(),
+                    dynamic_only: None,
+                    sort_by: synctv_proto::client::PlaylistListSortBy::Unspecified as i32,
+                    sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+                    availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+                },
+                &admin_user.id,
+            )
+            .await,
+    )?;
     assert!(matches!(list_playlists_error, ApiError::InvalidInput(_)));
 
-    let list_media_error = admin_api
-        .list_media(
-            "abc123def456",
-            synctv_proto::client::ListPlaylistItemsRequest {
-                playlist_id: String::new(),
-                target: Vec::new(),
-                page: 1,
-                page_size: 20,
-                search: String::new(),
-                source_provider: "Bad Provider".to_string(),
-                provider_instance_name: "bad name".to_string(),
-                sort_by: synctv_proto::client::MediaListSortBy::Unspecified as i32,
-                sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
-                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
-                refresh: false,
-            },
-            &admin_user.id,
-        )
-        .await
-        .expect_err("invalid list_media request must be rejected");
+    let list_media_error = api_err(
+        admin_api
+            .list_media(
+                "abc123def456",
+                synctv_proto::client::ListPlaylistItemsRequest {
+                    playlist_id: String::new(),
+                    target: Vec::new(),
+                    page: 1,
+                    page_size: 20,
+                    search: String::new(),
+                    source_provider: "Bad Provider".to_string(),
+                    provider_instance_name: "bad name".to_string(),
+                    sort_by: synctv_proto::client::MediaListSortBy::Unspecified as i32,
+                    sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+                    availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+                    refresh: false,
+                },
+                &admin_user.id,
+            )
+            .await,
+    )?;
     assert!(matches!(list_media_error, ApiError::InvalidInput(_)));
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_admins_respects_search_sort_and_pagination() {
+async fn test_list_admins_respects_search_sort_and_pagination() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool);
@@ -1929,25 +2130,27 @@ async fn test_list_admins_respects_search_sort_and_pagination() {
         create_db_user(&user_repo, username, role).await;
     }
 
-    let response = admin_api
-        .list_admins(synctv_proto::admin::ListAdminsRequest {
-            page: 1,
-            page_size: 1,
-            search: "admin".to_string(),
-            sort_by: synctv_proto::admin::UserListSortBy::Username as i32,
-            sort_direction: synctv_proto::admin::SortDirection::Asc as i32,
-        })
-        .await
-        .expect("admin list should succeed");
+    let response = api_ok(
+        admin_api
+            .list_admins(synctv_proto::admin::ListAdminsRequest {
+                page: 1,
+                page_size: 1,
+                search: "admin".to_string(),
+                sort_by: synctv_proto::admin::UserListSortBy::Username as i32,
+                sort_direction: synctv_proto::admin::SortDirection::Asc as i32,
+            })
+            .await,
+    )?;
 
     assert_eq!(response.admins.len(), 1);
     assert_eq!(response.admins[0].username, "alpha-admin");
     assert_eq!(response.total, 2);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_user_rooms_respects_related_room_query_semantics() {
+async fn test_get_user_rooms_respects_related_room_query_semantics() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -1955,49 +2158,53 @@ async fn test_get_user_rooms_respects_related_room_query_semantics() {
     let target_user = create_db_user(&user_repo, "target-user-rooms", UserRole::User).await;
     let other_owner = create_db_user(&user_repo, "other-owner-rooms", UserRole::User).await;
 
-    let owned_room = admin_api
-        .room_service
-        .create_room(
-            "Beta Owned Room".to_string(),
-            "owned room".to_string(),
-            target_user.id,
-            None,
-            None,
-        )
-        .await
-        .expect("owned room should be created")
-        .0;
-    let joined_room = admin_api
-        .room_service
-        .create_room(
-            "Alpha Joined Room".to_string(),
-            "joined room".to_string(),
-            other_owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("joined room should be created")
-        .0;
-    admin_api
-        .room_service
-        .join_room(joined_room.id, target_user.id, None)
-        .await
-        .expect("target user should join related room");
+    let owned_room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                "Beta Owned Room".to_string(),
+                "owned room".to_string(),
+                target_user.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
+    let joined_room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                "Alpha Joined Room".to_string(),
+                "joined room".to_string(),
+                other_owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
+    core_ok(
+        admin_api
+            .room_service
+            .join_room(joined_room.id, target_user.id, None)
+            .await,
+    )?;
 
-    let response = admin_api
-        .get_user_rooms(synctv_proto::admin::GetUserRoomsRequest {
-            user_id: public_user_id(&admin_api, target_user.id),
-            page: 1,
-            page_size: 1,
-            status: synctv_proto::common::RoomStatus::Unspecified as i32,
-            search: "room".to_string(),
-            is_banned: Some(false),
-            sort_by: synctv_proto::admin::RoomListSortBy::Name as i32,
-            sort_direction: synctv_proto::admin::SortDirection::Asc as i32,
-        })
-        .await
-        .expect("related room list should succeed");
+    let response = api_ok(
+        admin_api
+            .get_user_rooms(synctv_proto::admin::GetUserRoomsRequest {
+                user_id: public_user_id(&admin_api, target_user.id),
+                page: 1,
+                page_size: 1,
+                status: synctv_proto::common::RoomStatus::Unspecified as i32,
+                search: "room".to_string(),
+                is_banned: Some(false),
+                sort_by: synctv_proto::admin::RoomListSortBy::Name as i32,
+                sort_direction: synctv_proto::admin::SortDirection::Asc as i32,
+            })
+            .await,
+    )?;
 
     assert_eq!(response.total, 2);
     assert_eq!(response.rooms.len(), 1);
@@ -2007,24 +2214,26 @@ async fn test_get_user_rooms_respects_related_room_query_semantics() {
         public_room_id(&admin_api, joined_room.id)
     );
 
-    let page2 = admin_api
-        .get_user_rooms(synctv_proto::admin::GetUserRoomsRequest {
-            user_id: public_user_id(&admin_api, target_user.id),
-            page: 2,
-            page_size: 1,
-            status: synctv_proto::common::RoomStatus::Unspecified as i32,
-            search: "room".to_string(),
-            is_banned: Some(false),
-            sort_by: synctv_proto::admin::RoomListSortBy::Name as i32,
-            sort_direction: synctv_proto::admin::SortDirection::Asc as i32,
-        })
-        .await
-        .expect("second page should succeed");
+    let page2 = api_ok(
+        admin_api
+            .get_user_rooms(synctv_proto::admin::GetUserRoomsRequest {
+                user_id: public_user_id(&admin_api, target_user.id),
+                page: 2,
+                page_size: 1,
+                status: synctv_proto::common::RoomStatus::Unspecified as i32,
+                search: "room".to_string(),
+                is_banned: Some(false),
+                sort_by: synctv_proto::admin::RoomListSortBy::Name as i32,
+                sort_direction: synctv_proto::admin::SortDirection::Asc as i32,
+            })
+            .await,
+    )?;
 
     assert_eq!(page2.total, 2);
     assert_eq!(page2.rooms.len(), 1);
     assert_eq!(page2.rooms[0].name, "Beta Owned Room");
     assert_eq!(page2.rooms[0].id, public_room_id(&admin_api, owned_room.id));
+    Ok(())
 }
 
 // Role hierarchy rules enforced by set_user_password.
@@ -2069,49 +2278,44 @@ fn test_check_role_hierarchy_root_can_operate_on_all() {
     assert!(check_role_hierarchy(UserRole::Root, UserRole::User, "ban").is_ok());
 }
 
-#[test]
-fn test_check_role_hierarchy_admin_cannot_operate_on_root() {
-    let result = check_role_hierarchy(UserRole::Admin, UserRole::Root, "ban");
-    assert!(
-        result.is_err(),
-        "Admin should not be able to ban Root users"
-    );
+fn assert_authorization_error(result: Result<(), ApiError>, expected: &str) -> TestResult {
     match result {
         Err(ApiError::Authorization(msg)) => {
-            assert!(msg.contains("root"), "Error should mention root: {msg}");
+            assert!(
+                msg.contains(expected),
+                "authorization error should mention {expected}: {msg}"
+            );
+            Ok(())
         }
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        Ok(()) => Err(test_error("expected authorization error")),
+        Err(error) => Err(test_error(format!(
+            "expected authorization error: {error:?}"
+        ))),
     }
 }
 
 #[test]
-fn test_check_role_hierarchy_admin_cannot_operate_on_admin() {
-    let result = check_role_hierarchy(UserRole::Admin, UserRole::Admin, "delete");
-    assert!(
-        result.is_err(),
-        "Admin should not be able to delete Admin users"
-    );
-    match result {
-        Err(ApiError::Authorization(msg)) => {
-            assert!(msg.contains("root"), "Error should mention root: {msg}");
-        }
-        other => panic!("Expected Authorization error, got: {other:?}"),
-    }
+fn test_check_role_hierarchy_admin_cannot_operate_on_root() -> TestResult {
+    assert_authorization_error(
+        check_role_hierarchy(UserRole::Admin, UserRole::Root, "ban"),
+        "root",
+    )
 }
 
 #[test]
-fn test_check_role_hierarchy_admin_cannot_update_admin_preferences() {
-    let result = check_role_hierarchy(UserRole::Admin, UserRole::Admin, "update preferences");
-    assert!(
-        result.is_err(),
-        "Admin should not be able to update Admin user preferences"
-    );
-    match result {
-        Err(ApiError::Authorization(msg)) => {
-            assert!(msg.contains("admin"), "Error should mention admin: {msg}");
-        }
-        other => panic!("Expected Authorization error, got: {other:?}"),
-    }
+fn test_check_role_hierarchy_admin_cannot_operate_on_admin() -> TestResult {
+    assert_authorization_error(
+        check_role_hierarchy(UserRole::Admin, UserRole::Admin, "delete"),
+        "root",
+    )
+}
+
+#[test]
+fn test_check_role_hierarchy_admin_cannot_update_admin_preferences() -> TestResult {
+    assert_authorization_error(
+        check_role_hierarchy(UserRole::Admin, UserRole::Admin, "update preferences"),
+        "admin",
+    )
 }
 
 #[test]
@@ -2122,158 +2326,162 @@ fn test_check_role_hierarchy_admin_can_operate_on_user() {
 /// Verify that proto_role_to_user_role maps Admin role correctly
 /// (prerequisite for the role elevation check).
 #[test]
-fn test_proto_role_to_user_role_admin() {
-    let admin_role =
-        crate::impls::client::proto_role_to_user_role(synctv_proto::common::UserRole::Admin as i32)
-            .expect("should parse admin role");
+fn test_proto_role_to_user_role_admin() -> TestResult {
+    let admin_role = api_ok(crate::impls::client::proto_role_to_user_role(
+        synctv_proto::common::UserRole::Admin as i32,
+    ))?;
     assert_eq!(admin_role, UserRole::Admin);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_settings_group_projects_registered_defaults() {
+async fn test_get_settings_group_projects_registered_defaults() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
-    let response = admin_api
-        .get_settings_group(
-            synctv_proto::admin::GetSettingsGroupRequest {
-                group: "server".to_string(),
-            },
-            &UserId::new(),
-            &RequestContext::default(),
-        )
-        .await
-        .expect("get_settings_group should project registered defaults");
+    let response = api_ok(
+        admin_api
+            .get_settings_group(
+                synctv_proto::admin::GetSettingsGroupRequest {
+                    group: "server".to_string(),
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let group = response.group.expect("settings group response");
+    let group = some_value(response.group, "settings group response")?;
     assert_eq!(group.name, "server");
 
-    let payload: serde_json::Value =
-        serde_json::from_slice(&group.settings).expect("settings payload should be valid JSON");
+    let payload: serde_json::Value = serde_json::from_slice(&group.settings)?;
     assert_eq!(payload["allow_room_creation"], true);
     assert_eq!(payload["max_rooms_per_user"], 10);
     assert_eq!(payload["max_members_per_room"], 100);
     assert_eq!(payload["max_chat_messages"], 500);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_email_settings_group_does_not_project_smtp_password() {
+async fn test_get_email_settings_group_does_not_project_smtp_password() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
-    admin_api
-        .settings_service
-        .update("email.smtp_password", "smtp-secret".to_string())
-        .await
-        .expect("smtp password should be persisted internally");
+    core_ok(
+        admin_api
+            .settings_service
+            .update("email.smtp_password", "smtp-secret".to_string())
+            .await,
+    )?;
 
-    let response = admin_api
-        .get_settings_group(
-            synctv_proto::admin::GetSettingsGroupRequest {
-                group: "email".to_string(),
-            },
-            &UserId::new(),
-            &RequestContext::default(),
-        )
-        .await
-        .expect("get_settings_group should project email settings");
+    let response = api_ok(
+        admin_api
+            .get_settings_group(
+                synctv_proto::admin::GetSettingsGroupRequest {
+                    group: "email".to_string(),
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let group = response.group.expect("settings group response");
-    let payload: serde_json::Value =
-        serde_json::from_slice(&group.settings).expect("settings payload should be valid JSON");
+    let group = some_value(response.group, "settings group response")?;
+    let payload: serde_json::Value = serde_json::from_slice(&group.settings)?;
     assert_eq!(payload["enabled"], false);
     assert!(
         payload.get("smtp_password").is_none(),
-        "smtp password must not be returned in settings projection: {payload}"
+        "smtp password must stay internal to settings projection: {payload}"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_settings_ignores_hidden_registered_settings_without_warning_path() {
+async fn test_get_settings_ignores_hidden_registered_settings_without_warning_path() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
-    let server_id = admin_api
-        .settings_registry
-        .as_ref()
-        .expect("settings registry")
-        .get_or_initialize_server_id()
-        .await
-        .expect("server id should initialize");
+    let settings_registry = some_value(admin_api.settings_registry.as_ref(), "settings registry")?;
+    let server_id = core_ok(settings_registry.get_or_initialize_server_id().await)?;
     assert!(server_id.starts_with("srv_"));
 
-    let response = admin_api
-        .get_settings_group(
-            synctv_proto::admin::GetSettingsGroupRequest {
-                group: "server".to_string(),
-            },
-            &UserId::new(),
-            &RequestContext::default(),
-        )
-        .await
-        .expect("hidden registered settings should not break projection");
+    let response = api_ok(
+        admin_api
+            .get_settings_group(
+                synctv_proto::admin::GetSettingsGroupRequest {
+                    group: "server".to_string(),
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let group = response.group.expect("settings group response");
-    let payload: serde_json::Value =
-        serde_json::from_slice(&group.settings).expect("settings payload should be valid JSON");
+    let group = some_value(response.group, "settings group response")?;
+    let payload: serde_json::Value = serde_json::from_slice(&group.settings)?;
     assert!(
         payload.get("identity_id").is_none(),
         "server identity must stay hidden from admin settings projection: {payload}"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_settings_maps_group_entries_to_flat_keys_and_upserts_missing_rows() {
+async fn test_update_settings_maps_group_entries_to_flat_keys_and_upserts_missing_rows(
+) -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
-    admin_api
-        .update_settings(
-            synctv_proto::admin::UpdateSettingsRequest {
-                group: "server".to_string(),
-                settings: std::collections::HashMap::from([(
-                    "max_rooms_per_user".to_string(),
-                    "42".to_string(),
-                )]),
-            },
-            &UserId::new(),
-            &RequestContext::default(),
-        )
-        .await
-        .expect("update_settings should upsert missing flat settings");
+    api_ok(
+        admin_api
+            .update_settings(
+                synctv_proto::admin::UpdateSettingsRequest {
+                    group: "server".to_string(),
+                    settings: std::collections::HashMap::from([(
+                        "max_rooms_per_user".to_string(),
+                        "42".to_string(),
+                    )]),
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let max_rooms_per_user = admin_api
-        .settings_service
-        .get("server.max_rooms_per_user")
-        .await
-        .expect("max_rooms_per_user should be persisted");
+    let max_rooms_per_user = core_ok(
+        admin_api
+            .settings_service
+            .get("server.max_rooms_per_user")
+            .await,
+    )?;
     assert_eq!(max_rooms_per_user.group_name, "server");
     assert_eq!(max_rooms_per_user.value, "42");
 
-    let response = admin_api
-        .get_settings_group(
-            synctv_proto::admin::GetSettingsGroupRequest {
-                group: "server".to_string(),
-            },
-            &UserId::new(),
-            &RequestContext::default(),
-        )
-        .await
-        .expect("get_settings_group should reflect persisted overrides");
-    let group = response.group.expect("settings group response");
-    let payload: serde_json::Value =
-        serde_json::from_slice(&group.settings).expect("settings payload should be valid JSON");
+    let response = api_ok(
+        admin_api
+            .get_settings_group(
+                synctv_proto::admin::GetSettingsGroupRequest {
+                    group: "server".to_string(),
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+    let group = some_value(response.group, "settings group response")?;
+    let payload: serde_json::Value = serde_json::from_slice(&group.settings)?;
     assert_eq!(payload["max_rooms_per_user"], 42);
     assert_eq!(payload["allow_room_creation"], true);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fails() {
+async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fails() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
     let failing_fanout = Arc::new(FailingRealtimeFanout::default());
@@ -2297,54 +2505,59 @@ async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fai
             realtime_event_service: admin_api.realtime_event_service.clone(),
             provider_stores: admin_api.provider_stores.clone(),
             provider_access_service: admin_api.provider_access_service.clone(),
+            signing_key: admin_api.signing_key.clone(),
             request_executor: admin_api.request_executor.clone(),
         },
     );
 
-    admin_api
-        .update_settings(
-            synctv_proto::admin::UpdateSettingsRequest {
-                group: "server".to_string(),
-                settings: std::collections::HashMap::from([(
-                    "max_rooms_per_user".to_string(),
-                    "43".to_string(),
-                )]),
-            },
-            &UserId::new(),
-            &RequestContext::default(),
-        )
-        .await
-        .expect("settings update should persist even when cache fanout fails");
+    api_ok(
+        admin_api
+            .update_settings(
+                synctv_proto::admin::UpdateSettingsRequest {
+                    group: "server".to_string(),
+                    settings: std::collections::HashMap::from([(
+                        "max_rooms_per_user".to_string(),
+                        "43".to_string(),
+                    )]),
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let max_rooms_per_user = admin_api
-        .settings_service
-        .get("server.max_rooms_per_user")
-        .await
-        .expect("settings update should be persisted");
+    let max_rooms_per_user = core_ok(
+        admin_api
+            .settings_service
+            .get("server.max_rooms_per_user")
+            .await,
+    )?;
     assert_eq!(max_rooms_per_user.value, "43");
     assert_eq!(failing_fanout.publish_attempts(), 1);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_email_settings_rejects_enabled_incomplete_config() {
+async fn test_update_email_settings_rejects_enabled_incomplete_config() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
-    let error = admin_api
-        .update_settings(
-            synctv_proto::admin::UpdateSettingsRequest {
-                group: "email".to_string(),
-                settings: std::collections::HashMap::from([(
-                    "enabled".to_string(),
-                    "true".to_string(),
-                )]),
-            },
-            &UserId::new(),
-            &RequestContext::default(),
-        )
-        .await
-        .expect_err("enabling incomplete email settings should fail");
+    let error = api_err(
+        admin_api
+            .update_settings(
+                synctv_proto::admin::UpdateSettingsRequest {
+                    group: "email".to_string(),
+                    settings: std::collections::HashMap::from([(
+                        "enabled".to_string(),
+                        "true".to_string(),
+                    )]),
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
     assert!(
         matches!(error, ApiError::InvalidInput(ref message) if message.contains("email.smtp_host")),
@@ -2356,44 +2569,43 @@ async fn test_update_email_settings_rejects_enabled_incomplete_config() {
             .get("email.enabled")
             .await
             .is_err(),
-        "failed email settings update must not persist email.enabled"
+        "failed email settings update keeps email.enabled absent"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_email_settings_accepts_enabled_complete_config() {
+async fn test_update_email_settings_accepts_enabled_complete_config() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
-    admin_api
-        .update_settings(
-            synctv_proto::admin::UpdateSettingsRequest {
-                group: "email".to_string(),
-                settings: std::collections::HashMap::from([
-                    ("enabled".to_string(), "true".to_string()),
-                    ("smtp_host".to_string(), "smtp.example.com".to_string()),
-                    ("smtp_port".to_string(), "587".to_string()),
-                    ("from_email".to_string(), "noreply@example.com".to_string()),
-                ]),
-            },
-            &UserId::new(),
-            &RequestContext::default(),
-        )
-        .await
-        .expect("complete enabled email settings should update");
+    api_ok(
+        admin_api
+            .update_settings(
+                synctv_proto::admin::UpdateSettingsRequest {
+                    group: "email".to_string(),
+                    settings: std::collections::HashMap::from([
+                        ("enabled".to_string(), "true".to_string()),
+                        ("smtp_host".to_string(), "smtp.example.com".to_string()),
+                        ("smtp_port".to_string(), "587".to_string()),
+                        ("from_email".to_string(), "noreply@example.com".to_string()),
+                    ]),
+                },
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let enabled = admin_api
-        .settings_service
-        .get("email.enabled")
-        .await
-        .expect("email.enabled should be persisted");
+    let enabled = core_ok(admin_api.settings_service.get("email.enabled").await)?;
     assert_eq!(enabled.value, "true");
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_user_publishes_kick_user_realtime_event() {
+async fn test_delete_user_publishes_kick_user_realtime_event() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let admin_api = {
         let (admin_api, redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
@@ -2410,15 +2622,12 @@ async fn test_delete_user_publishes_kick_user_realtime_event() {
     };
     let ctx = RequestContext::default();
 
-    admin_api
-        .delete_user(request, &admin_user.id, &ctx)
-        .await
-        .expect("delete user should succeed");
+    api_ok(admin_api.delete_user(request, &admin_user.id, &ctx).await)?;
 
     let publish = tokio::time::timeout(std::time::Duration::from_secs(1), redis_publish_rx.recv())
         .await
-        .expect("expected cluster publish")
-        .expect("publish request");
+        .map_err(|error| test_error(format!("expected cluster publish: {error}")))?;
+    let publish = some_value(publish, "publish request")?;
 
     match publish.event {
         RealtimeEvent::KickUser {
@@ -2427,35 +2636,41 @@ async fn test_delete_user_publishes_kick_user_realtime_event() {
             assert_eq!(user_id, target_user.id);
             assert_eq!(reason, "user_deleted");
         }
-        other => panic!("expected KickUser event, got {other:?}"),
+        other => {
+            return Err(test_error(format!(
+                "expected KickUser event, got {other:?}"
+            )))
+        }
     }
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_create_user_allows_missing_email_and_explicit_status() {
+async fn test_create_user_allows_missing_email_and_explicit_status() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
     let admin_user = create_db_user(&user_repo, "root_create_user_attrs", UserRole::Root).await;
 
-    let response = admin_api
-        .create_user(
-            synctv_proto::admin::CreateUserRequest {
-                username: "attr_user".to_string(),
-                email: String::new(),
-                role: synctv_proto::common::UserRole::Admin as i32,
-                status: synctv_proto::common::UserStatus::Active as i32,
-                password: String::new(),
-            },
-            UserRole::Root,
-            &admin_user.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("create_user should accept optional email and explicit status");
+    let response = api_ok(
+        admin_api
+            .create_user(
+                synctv_proto::admin::CreateUserRequest {
+                    username: "attr_user".to_string(),
+                    email: String::new(),
+                    role: synctv_proto::common::UserRole::Admin as i32,
+                    status: synctv_proto::common::UserStatus::Active as i32,
+                    password: String::new(),
+                },
+                UserRole::Root,
+                &admin_user.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let created = response.user.expect("created user");
+    let created = some_value(response.user, "created user")?;
     assert_eq!(created.username, "attr_user");
     assert_eq!(created.email, "");
     assert_eq!(created.role, synctv_proto::common::UserRole::Admin as i32);
@@ -2463,11 +2678,12 @@ async fn test_create_user_allows_missing_email_and_explicit_status() {
         created.status,
         synctv_proto::common::UserStatus::Active as i32
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_user_username_preserves_missing_email() {
+async fn test_update_user_username_preserves_missing_email() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -2475,26 +2691,28 @@ async fn test_update_user_username_preserves_missing_email() {
     let admin_user = create_db_user(&user_repo, "root_update_username", UserRole::Root).await;
     let target_user = create_db_user(&user_repo, "target_update_username", UserRole::User).await;
 
-    let response = admin_api
-        .update_user_username(
-            synctv_proto::admin::UpdateUserUsernameRequest {
-                user_id: public_user_id(&admin_api, target_user.id),
-                new_username: "target_update_renamed".to_string(),
-            },
-            &admin_user.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("username-only update should not require binding email");
+    let response = api_ok(
+        admin_api
+            .update_user_username(
+                synctv_proto::admin::UpdateUserUsernameRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                    new_username: "target_update_renamed".to_string(),
+                },
+                &admin_user.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let updated = response.user.expect("updated user");
+    let updated = some_value(response.user, "updated user")?;
     assert_eq!(updated.username, "target_update_renamed");
     assert_eq!(updated.email, "");
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_user_cleans_memberships_and_preserves_kick_user_event() {
+async fn test_delete_user_cleans_memberships_and_preserves_kick_user_event() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, mut redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -2507,32 +2725,35 @@ async fn test_delete_user_cleans_memberships_and_preserves_kick_user_event() {
     let room_one = create_room_with_member(&admin_api, &owner_one.id, &target_user.id).await;
     let room_two = create_room_with_member(&admin_api, &owner_two.id, &target_user.id).await;
 
-    admin_api
-        .delete_user(
-            synctv_proto::admin::DeleteUserRequest {
-                user_id: public_user_id(&admin_api, target_user.id),
-            },
-            &admin_user.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("delete user should succeed");
+    api_ok(
+        admin_api
+            .delete_user(
+                synctv_proto::admin::DeleteUserRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                },
+                &admin_user.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let room_one_member = admin_api
-        .room_service
-        .get_member(&room_one.id, &target_user.id)
-        .await
-        .expect("room one membership query should succeed");
+    let room_one_member = core_ok(
+        admin_api
+            .room_service
+            .get_member(&room_one.id, &target_user.id)
+            .await,
+    )?;
     assert!(
         room_one_member.is_none(),
         "deleted user must no longer appear as an active room member"
     );
 
-    let room_two_member = admin_api
-        .room_service
-        .get_member(&room_two.id, &target_user.id)
-        .await
-        .expect("room two membership query should succeed");
+    let room_two_member = core_ok(
+        admin_api
+            .room_service
+            .get_member(&room_two.id, &target_user.id)
+            .await,
+    )?;
     assert!(
         room_two_member.is_none(),
         "deleted user must no longer appear as an active room member"
@@ -2556,11 +2777,12 @@ async fn test_delete_user_cleans_memberships_and_preserves_kick_user_event() {
     }
 
     assert!(saw_kick_user, "delete_user must still publish KickUser");
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_user_deletes_owned_rooms_and_publishes_room_deleted() {
+async fn test_delete_user_deletes_owned_rooms_and_publishes_room_deleted() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, mut redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -2569,36 +2791,34 @@ async fn test_delete_user_deletes_owned_rooms_and_publishes_room_deleted() {
     let admin_user = create_db_user(&user_repo, "root_delete_owned_room", UserRole::Root).await;
     let target_user = create_db_user(&user_repo, "owned_room_victim", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            "victim owned room".to_string(),
-            "will be deleted with owner".to_string(),
-            target_user.id,
-            None,
-            None,
-        )
-        .await
-        .expect("create owned room")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                "victim owned room".to_string(),
+                "will be deleted with owner".to_string(),
+                target_user.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
-    admin_api
-        .delete_user(
-            synctv_proto::admin::DeleteUserRequest {
-                user_id: public_user_id(&admin_api, target_user.id),
-            },
-            &admin_user.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("delete user should succeed");
+    api_ok(
+        admin_api
+            .delete_user(
+                synctv_proto::admin::DeleteUserRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                },
+                &admin_user.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
     assert!(
-        room_repo
-            .get_by_id(&room.id)
-            .await
-            .expect("query room")
-            .is_none(),
+        core_ok(room_repo.get_by_id(&room.id).await)?.is_none(),
         "owned room must be deleted with the user"
     );
 
@@ -2636,11 +2856,12 @@ async fn test_delete_user_deletes_owned_rooms_and_publishes_room_deleted() {
         "delete_user must publish RoomDeleted for owned rooms"
     );
     assert!(saw_kick_user, "delete_user must still publish KickUser");
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_user_cleans_memberships_and_preserves_kick_user_event() {
+async fn test_ban_user_cleans_memberships_and_preserves_kick_user_event() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, mut redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -2651,22 +2872,21 @@ async fn test_ban_user_cleans_memberships_and_preserves_kick_user_event() {
 
     let room = create_room_with_member(&admin_api, &owner.id, &target_user.id).await;
 
-    let response = admin_api
-        .ban_user(
-            synctv_proto::admin::BanUserRequest {
-                user_id: public_user_id(&admin_api, target_user.id),
-                reason: "policy".to_string(),
-            },
-            &admin_user.id,
-            UserRole::Root,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("ban user should succeed");
+    let response = api_ok(
+        admin_api
+            .ban_user(
+                synctv_proto::admin::BanUserRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                    reason: "policy".to_string(),
+                },
+                &admin_user.id,
+                UserRole::Root,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let banned_user = response
-        .user
-        .expect("ban_user must return the updated user");
+    let banned_user = some_value(response.user, "ban_user response user")?;
     assert_eq!(
         banned_user.status,
         synctv_proto::common::UserStatus::Banned as i32
@@ -2677,11 +2897,12 @@ async fn test_ban_user_cleans_memberships_and_preserves_kick_user_event() {
     );
     assert_eq!(banned_user.banned_reason, "policy");
 
-    let room_member = admin_api
-        .room_service
-        .get_member(&room.id, &target_user.id)
-        .await
-        .expect("room membership query should succeed");
+    let room_member = core_ok(
+        admin_api
+            .room_service
+            .get_member(&room.id, &target_user.id)
+            .await,
+    )?;
     assert!(
         room_member.is_none(),
         "banned user must no longer appear as an active room member"
@@ -2705,11 +2926,12 @@ async fn test_ban_user_cleans_memberships_and_preserves_kick_user_event() {
     }
 
     assert!(saw_kick_user, "ban_user must still publish KickUser");
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_user_resets_playback_for_media_created_by_target() {
+async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -2718,47 +2940,51 @@ async fn test_ban_user_resets_playback_for_media_created_by_target() {
     let target_user = create_db_user(&user_repo, "banned_playback_creator", UserRole::User).await;
     let room_owner = create_db_user(&user_repo, "playback_room_owner", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            "ban-playback-room".to_string(),
-            String::new(),
-            room_owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("create room")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                "ban-playback-room".to_string(),
+                String::new(),
+                room_owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
     let media = create_room_media(&pool, room.id, target_user.id, "banned-media").await;
 
-    admin_api
-        .room_service
-        .playback_service()
-        .switch(room.id, room_owner.id, Some(media.id), None, Vec::new())
-        .await
-        .expect("start playback");
+    core_ok(
+        admin_api
+            .room_service
+            .playback_service()
+            .switch(room.id, room_owner.id, Some(media.id), None, Vec::new())
+            .await,
+    )?;
 
-    admin_api
-        .ban_user(
-            synctv_proto::admin::BanUserRequest {
-                user_id: public_user_id(&admin_api, target_user.id),
-                reason: "policy".to_string(),
-            },
-            &admin_user.id,
-            UserRole::Root,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("ban user should succeed");
+    api_ok(
+        admin_api
+            .ban_user(
+                synctv_proto::admin::BanUserRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                    reason: "policy".to_string(),
+                },
+                &admin_user.id,
+                UserRole::Root,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let state = admin_api
-        .room_service
-        .playback_service()
-        .get_state(&room.id)
-        .await
-        .expect("load playback state after ban");
+    let state = core_ok(
+        admin_api
+            .room_service
+            .playback_service()
+            .get_state(&room.id)
+            .await,
+    )?;
 
     assert!(
         state.playing_media_id.is_none(),
@@ -2772,11 +2998,12 @@ async fn test_ban_user_resets_playback_for_media_created_by_target() {
         !state.is_playing,
         "playback must be stopped after banning the media creator"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_user_disconnects_owned_room_connections() {
+async fn test_ban_user_disconnects_owned_room_connections() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -2792,25 +3019,26 @@ async fn test_ban_user_disconnects_owned_room_connections() {
         .connection_service
         .register("owned-room-conn".to_string(), member_user.id)
         .await
-        .expect("register connection");
+        .map_err(|error| test_error(error.clone()))?;
     admin_api
         .connection_service
         .join_room("owned-room-conn", room.id)
         .await
-        .expect("join room connection");
+        .map_err(|error| test_error(error.clone()))?;
 
-    admin_api
-        .ban_user(
-            synctv_proto::admin::BanUserRequest {
-                user_id: public_user_id(&admin_api, target_user.id),
-                reason: "policy".to_string(),
-            },
-            &admin_user.id,
-            UserRole::Root,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("ban user should succeed");
+    api_ok(
+        admin_api
+            .ban_user(
+                synctv_proto::admin::BanUserRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                    reason: "policy".to_string(),
+                },
+                &admin_user.id,
+                UserRole::Root,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     let mut saw_room_disconnect = false;
@@ -2818,8 +3046,8 @@ async fn test_ban_user_disconnects_owned_room_connections() {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         let signal = tokio::time::timeout(remaining, disconnect_rx.recv())
             .await
-            .expect("disconnect signal must arrive before timeout")
-            .expect("disconnect channel must stay open");
+            .map_err(|error| test_error(format!("disconnect signal timeout: {error}")))?;
+        let signal = signal.map_err(|error| test_error(format!("disconnect channel: {error}")))?;
 
         if let synctv_realtime::sync::DisconnectSignal::Room(room_id) = signal {
             assert_eq!(room_id, room.id, "owned room must be disconnected");
@@ -2832,11 +3060,12 @@ async fn test_ban_user_disconnects_owned_room_connections() {
         saw_room_disconnect,
         "banning a room owner must emit a room-scoped disconnect signal"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_user_publishes_room_owner_inactive_event_for_owned_rooms() {
+async fn test_ban_user_publishes_room_owner_inactive_event_for_owned_rooms() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, mut redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -2844,31 +3073,33 @@ async fn test_ban_user_publishes_room_owner_inactive_event_for_owned_rooms() {
     let admin_user = create_db_user(&user_repo, "root_ban_owned_room_event", UserRole::Root).await;
     let target_user = create_db_user(&user_repo, "owned_room_event_creator", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            "owned-room-event".to_string(),
-            String::new(),
-            target_user.id,
-            None,
-            None,
-        )
-        .await
-        .expect("create room")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                "owned-room-event".to_string(),
+                String::new(),
+                target_user.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
-    admin_api
-        .ban_user(
-            synctv_proto::admin::BanUserRequest {
-                user_id: public_user_id(&admin_api, target_user.id),
-                reason: "policy".to_string(),
-            },
-            &admin_user.id,
-            UserRole::Root,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("ban user should succeed");
+    api_ok(
+        admin_api
+            .ban_user(
+                synctv_proto::admin::BanUserRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                    reason: "policy".to_string(),
+                },
+                &admin_user.id,
+                UserRole::Root,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
     let mut saw_owner_inactive = false;
     while let Ok(Some(publish)) = tokio::time::timeout(
@@ -2895,11 +3126,12 @@ async fn test_ban_user_publishes_room_owner_inactive_event_for_owned_rooms() {
         saw_owner_inactive,
         "banning a room owner must publish RoomOwnerInactive for owned rooms"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_batch_ban_users_resets_playback_for_media_created_by_target() {
+async fn test_batch_ban_users_resets_playback_for_media_created_by_target() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -2909,50 +3141,54 @@ async fn test_batch_ban_users_resets_playback_for_media_created_by_target() {
         create_db_user(&user_repo, "batch_banned_media_creator", UserRole::User).await;
     let room_owner = create_db_user(&user_repo, "batch_ban_playback_owner", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            "batch-ban-playback-room".to_string(),
-            String::new(),
-            room_owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("create room")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                "batch-ban-playback-room".to_string(),
+                String::new(),
+                room_owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
     let media = create_room_media(&pool, room.id, target_user.id, "batch-banned-media").await;
 
-    admin_api
-        .room_service
-        .playback_service()
-        .switch(room.id, room_owner.id, Some(media.id), None, Vec::new())
-        .await
-        .expect("start playback");
+    core_ok(
+        admin_api
+            .room_service
+            .playback_service()
+            .switch(room.id, room_owner.id, Some(media.id), None, Vec::new())
+            .await,
+    )?;
 
-    let response = admin_api
-        .batch_ban_users(
-            synctv_proto::admin::BatchBanUsersRequest {
-                user_ids: vec![public_user_id(&admin_api, target_user.id)],
-                reason: "policy".to_string(),
-            },
-            &admin_user.id,
-            UserRole::Root,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("batch ban should succeed");
+    let response = api_ok(
+        admin_api
+            .batch_ban_users(
+                synctv_proto::admin::BatchBanUsersRequest {
+                    user_ids: vec![public_user_id(&admin_api, target_user.id)],
+                    reason: "policy".to_string(),
+                },
+                &admin_user.id,
+                UserRole::Root,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
     assert_eq!(response.succeeded, 1);
     assert_eq!(response.failed, 0);
 
-    let state = admin_api
-        .room_service
-        .playback_service()
-        .get_state(&room.id)
-        .await
-        .expect("load playback state after batch ban");
+    let state = core_ok(
+        admin_api
+            .room_service
+            .playback_service()
+            .get_state(&room.id)
+            .await,
+    )?;
 
     assert!(
         state.playing_media_id.is_none(),
@@ -2966,11 +3202,12 @@ async fn test_batch_ban_users_resets_playback_for_media_created_by_target() {
         !state.is_playing,
         "batch ban must stop playback for media created by the banned user"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_batch_ban_users_publishes_room_owner_inactive_event_for_owned_rooms() {
+async fn test_batch_ban_users_publishes_room_owner_inactive_event_for_owned_rooms() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, mut redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -2983,31 +3220,33 @@ async fn test_batch_ban_users_publishes_room_owner_inactive_event_for_owned_room
     .await;
     let target_user = create_db_user(&user_repo, "batch_owned_room_creator", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            "batch-owned-room-event".to_string(),
-            String::new(),
-            target_user.id,
-            None,
-            None,
-        )
-        .await
-        .expect("create room")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                "batch-owned-room-event".to_string(),
+                String::new(),
+                target_user.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
-    let response = admin_api
-        .batch_ban_users(
-            synctv_proto::admin::BatchBanUsersRequest {
-                user_ids: vec![public_user_id(&admin_api, target_user.id)],
-                reason: "policy".to_string(),
-            },
-            &admin_user.id,
-            UserRole::Root,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("batch ban should succeed");
+    let response = api_ok(
+        admin_api
+            .batch_ban_users(
+                synctv_proto::admin::BatchBanUsersRequest {
+                    user_ids: vec![public_user_id(&admin_api, target_user.id)],
+                    reason: "policy".to_string(),
+                },
+                &admin_user.id,
+                UserRole::Root,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
     assert_eq!(response.succeeded, 1);
     assert_eq!(response.failed, 0);
@@ -3037,28 +3276,34 @@ async fn test_batch_ban_users_publishes_room_owner_inactive_event_for_owned_room
         saw_owner_inactive,
         "batch ban must publish RoomOwnerInactive for rooms owned by banned users"
     );
+    Ok(())
 }
 
 #[test]
-fn test_parse_batch_user_ids_trims_and_preserves_order() {
-    let public_id_codec = crate::PublicIdCodec::plain();
+fn test_parse_batch_user_ids_trims_and_preserves_order() -> TestResult {
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
     let first = UserId::expect_positive(901);
     let second = UserId::expect_positive(902);
     let parsed = parse_batch_user_ids(
         &[
-            format!("  {}  ", public_id_codec.encode_user_id(first).unwrap()),
-            public_id_codec.encode_user_id(second).unwrap(),
+            format!(
+                "  {}  ",
+                public_id_codec.encode_user_id(first).map_err(test_error)?
+            ),
+            public_id_codec.encode_user_id(second).map_err(test_error)?,
         ],
         &public_id_codec,
     )
-    .expect("batch ids should parse");
+    .map_err(test_error)?;
 
     assert_eq!(parsed, vec![first, second]);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_member_permissions_bypasses_room_creator_constraint_for_global_admin() {
+async fn test_update_member_permissions_bypasses_room_creator_constraint_for_global_admin(
+) -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -3070,24 +3315,25 @@ async fn test_update_member_permissions_bypasses_room_creator_constraint_for_glo
 
     let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
-    let response = admin_api
-        .update_member_permissions(
-            synctv_proto::admin::UpdateMemberPermissionsRequest {
-                room_id: public_room_id(&admin_api, room.id),
-                user_id: public_user_id(&admin_api, target.id),
-                role: synctv_proto::common::RoomMemberRole::Admin as i32,
-                added_permissions: 0,
-                removed_permissions: 0,
-                admin_added_permissions: 0b1010,
-                admin_removed_permissions: 0b0101,
-            },
-            &global_admin.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("global admin should update member permissions without room creator identity");
+    let response = api_ok(
+        admin_api
+            .update_member_permissions(
+                synctv_proto::admin::UpdateMemberPermissionsRequest {
+                    room_id: public_room_id(&admin_api, room.id),
+                    user_id: public_user_id(&admin_api, target.id),
+                    role: synctv_proto::common::RoomMemberRole::Admin as i32,
+                    added_permissions: 0,
+                    removed_permissions: 0,
+                    admin_added_permissions: 0b1010,
+                    admin_removed_permissions: 0b0101,
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let member = response.member.expect("updated member response");
+    let member = some_value(response.member, "updated member response")?;
     assert_eq!(member.user_id, public_user_id(&admin_api, target.id));
     assert_eq!(
         member.role,
@@ -3096,20 +3342,22 @@ async fn test_update_member_permissions_bypasses_room_creator_constraint_for_glo
     assert_eq!(member.admin_added_permissions, 0b1010);
     assert_eq!(member.admin_removed_permissions, 0b0101);
 
-    let persisted = admin_api
-        .room_service
-        .get_member(&room.id, &target.id)
-        .await
-        .expect("persisted member query should succeed")
-        .expect("target should remain a member");
+    let persisted = core_ok(
+        admin_api
+            .room_service
+            .get_member(&room.id, &target.id)
+            .await,
+    )?;
+    let persisted = some_value(persisted, "target should remain a member")?;
     assert_eq!(persisted.role, RoomRole::Admin);
     assert_eq!(persisted.admin_added_permissions, 0b1010);
     assert_eq!(persisted.admin_removed_permissions, 0b0101);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_kick_member_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_kick_member_bypasses_room_membership_requirement_for_global_admin() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -3120,36 +3368,40 @@ async fn test_kick_member_bypasses_room_membership_requirement_for_global_admin(
 
     let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
-    let response = admin_api
-        .kick_member(
-            synctv_proto::admin::KickMemberRequest {
-                room_id: public_room_id(&admin_api, room.id),
-                user_id: public_user_id(&admin_api, target.id),
-                kick_cooldown_seconds: 60,
-            },
-            &global_admin.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("global admin should kick member without being in the room");
+    let response = api_ok(
+        admin_api
+            .kick_member(
+                synctv_proto::admin::KickMemberRequest {
+                    room_id: public_room_id(&admin_api, room.id),
+                    user_id: public_user_id(&admin_api, target.id),
+                    kick_cooldown_seconds: 60,
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
     assert!(response.success);
 
-    let persisted = admin_api
-        .room_service
-        .get_member(&room.id, &target.id)
-        .await
-        .expect("persisted member query should succeed");
+    let persisted = core_ok(
+        admin_api
+            .room_service
+            .get_member(&room.id, &target.id)
+            .await,
+    )?;
     assert!(
         persisted.is_none(),
         "kicked member should no longer appear as an active room member"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_stream_info_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_get_stream_info_bypasses_room_membership_requirement_for_global_admin() -> TestResult
+{
     let (_postgres, pool) = create_test_pool().await;
-    let (admin_api, infra, _redis_publish_rx) =
+    let (admin_api, _infra, registry, _redis_publish_rx) =
         make_admin_api_with_livestream_for_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
 
@@ -3157,25 +3409,25 @@ async fn test_get_stream_info_bypasses_room_membership_requirement_for_global_ad
         create_db_user(&user_repo, "global_admin_stream_info", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_stream_info", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room stream info test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room stream info test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
     let media = create_room_media(&pool, room.id, owner.id, "stream-media").await;
     let registry_room_id = room.id.to_string();
     let registry_media_id = media.id.to_string();
     let registry_owner_id = owner.id.to_string();
 
-    infra
-        .registry()
+    registry
         .try_register_publisher(
             &registry_room_id,
             &registry_media_id,
@@ -3184,25 +3436,27 @@ async fn test_get_stream_info_bypasses_room_membership_requirement_for_global_ad
             "127.0.0.1:50051",
         )
         .await
-        .expect("publisher should register");
+        .map_err(|error| test_error(error.to_string()))?;
 
-    let response = admin_api
-        .get_stream_info(
-            &public_room_id(&admin_api, room.id),
-            &public_media_id(&admin_api, media.id),
-        )
-        .await
-        .expect("global admin should inspect stream info without room membership");
+    let response = api_ok(
+        admin_api
+            .get_stream_info(
+                &public_room_id(&admin_api, room.id),
+                &public_media_id(&admin_api, media.id),
+            )
+            .await,
+    )?;
     assert!(response.active);
-    let publisher = response.publisher.expect("publisher info");
+    let publisher = some_value(response.publisher, "publisher info")?;
     assert_eq!(publisher.user_id, public_user_id(&admin_api, owner.id));
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_kick_stream_reports_local_unpublish_enqueue_failure() {
+async fn test_kick_stream_reports_local_unpublish_enqueue_failure() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
-    let (admin_api, infra, mut redis_publish_rx) =
+    let (admin_api, _infra, registry, mut redis_publish_rx) =
         make_admin_api_with_livestream_for_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
 
@@ -3214,25 +3468,25 @@ async fn test_kick_stream_reports_local_unpublish_enqueue_failure() {
     .await;
     let owner = create_db_user(&user_repo, "room_owner_stream_kick_failure", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room stream kick failure test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room stream kick failure test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
     let media = create_room_media(&pool, room.id, owner.id, "stream-media").await;
     let registry_room_id = room.id.to_string();
     let registry_media_id = media.id.to_string();
     let registry_owner_id = owner.id.to_string();
 
-    infra
-        .registry()
+    registry
         .try_register_publisher(
             &registry_room_id,
             &registry_media_id,
@@ -3241,31 +3495,31 @@ async fn test_kick_stream_reports_local_unpublish_enqueue_failure() {
             "127.0.0.1:50051",
         )
         .await
-        .expect("publisher should register");
+        .map_err(|error| test_error(error.to_string()))?;
 
-    let err = admin_api
-        .kick_stream(
-            synctv_proto::admin::KickStreamRequest {
-                room_id: public_room_id(&admin_api, room.id),
-                media_id: public_media_id(&admin_api, media.id),
-                reason: "test failure".to_string(),
-            },
-            &global_admin.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect_err("closed StreamHub event receiver must surface kick failure");
+    let err = api_err(
+        admin_api
+            .kick_stream(
+                synctv_proto::admin::KickStreamRequest {
+                    room_id: public_room_id(&admin_api, room.id),
+                    media_id: public_media_id(&admin_api, media.id),
+                    reason: "test failure".to_string(),
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
     assert!(
         matches!(err, ApiError::Internal(_) | ApiError::ServiceUnavailable(_)),
         "unexpected kick_stream error: {err:?}"
     );
     assert!(
-        infra
-            .registry()
+        registry
             .get_publisher(&registry_room_id, &registry_media_id)
             .await
-            .expect("publisher lookup should succeed")
+            .map_err(|error| test_error(error.to_string()))?
             .is_some(),
         "failed kick must not unregister the publisher"
     );
@@ -3278,13 +3532,14 @@ async fn test_kick_stream_reports_local_unpublish_enqueue_failure() {
         crate::impls::map_livestream_stream_error(&stream_error),
         ApiError::ServiceUnavailable(_)
     ));
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_kick_stream_publishes_cluster_event_for_remote_publisher() {
+async fn test_kick_stream_publishes_cluster_event_for_remote_publisher() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
-    let (admin_api, infra, mut redis_publish_rx) =
+    let (admin_api, _infra, registry, mut redis_publish_rx) =
         make_admin_api_with_livestream_for_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
 
@@ -3296,25 +3551,25 @@ async fn test_kick_stream_publishes_cluster_event_for_remote_publisher() {
     .await;
     let owner = create_db_user(&user_repo, "room_owner_remote_stream_kick", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "remote stream kick test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "remote stream kick test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
     let media = create_room_media(&pool, room.id, owner.id, "remote-stream-media").await;
     let registry_room_id = room.id.to_string();
     let registry_media_id = media.id.to_string();
     let registry_owner_id = owner.id.to_string();
 
-    infra
-        .registry()
+    registry
         .try_register_publisher(
             &registry_room_id,
             &registry_media_id,
@@ -3323,46 +3578,44 @@ async fn test_kick_stream_publishes_cluster_event_for_remote_publisher() {
             "127.0.0.1:50052",
         )
         .await
-        .expect("remote publisher should register");
+        .map_err(|error| test_error(error.to_string()))?;
 
-    admin_api
-        .kick_stream(
-            synctv_proto::admin::KickStreamRequest {
-                room_id: public_room_id(&admin_api, room.id),
-                media_id: public_media_id(&admin_api, media.id),
-                reason: "remote owner".to_string(),
-            },
-            &global_admin.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("remote stream kick should publish cluster event");
+    api_ok(
+        admin_api
+            .kick_stream(
+                synctv_proto::admin::KickStreamRequest {
+                    room_id: public_room_id(&admin_api, room.id),
+                    media_id: public_media_id(&admin_api, media.id),
+                    reason: "remote owner".to_string(),
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let request = redis_publish_rx
-        .recv()
-        .await
-        .expect("remote kick should publish a replica-wide event");
+    let request = some_value(redis_publish_rx.recv().await, "remote kick publish event")?;
     assert!(matches!(
         request.event,
         RealtimeEvent::KickPublisher { room_id, media_id, ref reason, .. }
             if room_id == room.id && media_id == media.id && reason == "remote owner"
     ));
     assert!(
-        infra
-            .registry()
+        registry
             .get_publisher(&registry_room_id, &registry_media_id)
             .await
-            .expect("publisher lookup should succeed")
+            .map_err(|error| test_error(error.to_string()))?
             .is_some(),
-        "non-owner replica must not unregister remote publisher"
+        "remote publisher remains registered on non-owner replica"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_kick_stream_reports_remote_fanout_failure() {
+async fn test_kick_stream_reports_remote_fanout_failure() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
-    let (admin_api, infra, redis_publish_rx) =
+    let (admin_api, _infra, registry, redis_publish_rx) =
         make_admin_api_with_livestream_for_test(pool.clone()).await;
     drop(redis_publish_rx);
     let user_repo = UserRepository::new(pool.clone());
@@ -3380,25 +3633,25 @@ async fn test_kick_stream_reports_remote_fanout_failure() {
     )
     .await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "remote stream fanout failure test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "remote stream fanout failure test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
     let media = create_room_media(&pool, room.id, owner.id, "remote-stream-media").await;
     let registry_room_id = room.id.to_string();
     let registry_media_id = media.id.to_string();
     let registry_owner_id = owner.id.to_string();
 
-    infra
-        .registry()
+    registry
         .try_register_publisher(
             &registry_room_id,
             &registry_media_id,
@@ -3407,41 +3660,43 @@ async fn test_kick_stream_reports_remote_fanout_failure() {
             "127.0.0.1:50052",
         )
         .await
-        .expect("remote publisher should register");
+        .map_err(|error| test_error(error.to_string()))?;
 
-    let err = admin_api
-        .kick_stream(
-            synctv_proto::admin::KickStreamRequest {
-                room_id: public_room_id(&admin_api, room.id),
-                media_id: public_media_id(&admin_api, media.id),
-                reason: "remote fanout failure".to_string(),
-            },
-            &global_admin.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect_err("remote stream kick must fail if fanout fails");
+    let err = api_err(
+        admin_api
+            .kick_stream(
+                synctv_proto::admin::KickStreamRequest {
+                    room_id: public_room_id(&admin_api, room.id),
+                    media_id: public_media_id(&admin_api, media.id),
+                    reason: "remote fanout failure".to_string(),
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
     assert!(
         matches!(err, ApiError::Internal(_) | ApiError::ServiceUnavailable(_)),
         "unexpected kick_stream error: {err:?}"
     );
     assert!(
-        infra
-            .registry()
+        registry
             .get_publisher(&registry_room_id, &registry_media_id)
             .await
-            .expect("publisher lookup should succeed")
+            .map_err(|error| test_error(error.to_string()))?
             .is_some(),
-        "failed remote kick must not unregister remote publisher"
+        "remote fanout failure keeps publisher registered"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_room_streams_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_list_room_streams_bypasses_room_membership_requirement_for_global_admin() -> TestResult
+{
     let (_postgres, pool) = create_test_pool().await;
-    let (admin_api, infra, _redis_publish_rx) =
+    let (admin_api, _infra, registry, _redis_publish_rx) =
         make_admin_api_with_livestream_for_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
 
@@ -3449,33 +3704,27 @@ async fn test_list_room_streams_bypasses_room_membership_requirement_for_global_
         create_db_user(&user_repo, "global_admin_stream_list", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_stream_list", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room stream list test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room stream list test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
     let media = create_room_media(&pool, room.id, owner.id, "stream-media").await;
     let registry_room_id = room.id.to_string();
     let registry_media_id = media.id.to_string();
     let registry_owner_id = owner.id.to_string();
-    let encoded_room_id = admin_api
-        .public_id_codec
-        .encode_room_id(room.id)
-        .expect("room id should encode");
-    let encoded_media_id = admin_api
-        .public_id_codec
-        .encode_media_id(media.id)
-        .expect("media id should encode");
+    let encoded_room_id = public_room_id(&admin_api, room.id);
+    let encoded_media_id = public_media_id(&admin_api, media.id);
 
-    infra
-        .registry()
+    registry
         .try_register_publisher(
             &registry_room_id,
             &registry_media_id,
@@ -3484,30 +3733,32 @@ async fn test_list_room_streams_bypasses_room_membership_requirement_for_global_
             "127.0.0.1:50051",
         )
         .await
-        .expect("publisher should register");
+        .map_err(|error| test_error(error.to_string()))?;
 
-    let response = admin_api
-        .list_room_streams(
-            &encoded_room_id,
-            synctv_proto::client::ListRoomStreamsRequest {
-                page: 1,
-                page_size: 50,
-                search: String::new(),
-                sort_by: synctv_proto::client::RoomStreamListSortBy::Unspecified as i32,
-                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-            },
-        )
-        .await
-        .expect("global admin should list room streams without room membership");
+    let response = api_ok(
+        admin_api
+            .list_room_streams(
+                &encoded_room_id,
+                synctv_proto::client::ListRoomStreamsRequest {
+                    page: 1,
+                    page_size: 50,
+                    search: String::new(),
+                    sort_by: synctv_proto::client::RoomStreamListSortBy::Unspecified as i32,
+                    sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                },
+            )
+            .await,
+    )?;
     assert_eq!(response.total, 1);
     assert_eq!(response.streams.len(), 1);
     assert_eq!(response.streams[0].media_id, encoded_media_id);
     assert!(response.streams[0].active);
+    Ok(())
 }
 
 #[test]
-fn build_room_stream_list_response_applies_search_sort_and_pagination() {
-    let public_id_codec = crate::PublicIdCodec::plain();
+fn build_room_stream_list_response_applies_search_sort_and_pagination() -> TestResult {
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
     let media_ids = vec![
         MediaId::expect_positive(301),
         MediaId::expect_positive(302),
@@ -3515,8 +3766,12 @@ fn build_room_stream_list_response_applies_search_sort_and_pagination() {
     ];
     let mut expected_ids = media_ids
         .iter()
-        .map(|media_id| public_id_codec.encode_media_id(*media_id).unwrap())
-        .collect::<Vec<_>>();
+        .map(|media_id| {
+            public_id_codec
+                .encode_media_id(*media_id)
+                .map_err(test_error)
+        })
+        .collect::<TestResult<Vec<_>>>()?;
     expected_ids.sort_unstable();
     expected_ids.reverse();
     let response = crate::impls::client::stream::build_room_streams_response(
@@ -3530,75 +3785,76 @@ fn build_room_stream_list_response_applies_search_sort_and_pagination() {
         },
         &public_id_codec,
     )
-    .expect("valid stream ids should encode");
+    .map_err(test_error)?;
 
     assert_eq!(response.total, 3);
     assert_eq!(response.streams.len(), 1);
     assert_eq!(response.streams[0].media_id, expected_ids[1]);
     assert!(response.streams[0].active);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_create_publish_key_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_create_publish_key_bypasses_room_membership_requirement_for_global_admin(
+) -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
-    let (admin_api, _infra, _redis_publish_rx) =
+    let (admin_api, _infra, _registry, _redis_publish_rx) =
         make_admin_api_with_livestream_for_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
 
     let global_admin = create_db_user(&user_repo, "global_admin_publish_key", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_publish_key", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room publish key test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room publish key test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
     let media = create_room_media(&pool, room.id, owner.id, "stream-media").await;
-    let public_room_id = admin_api
-        .public_id_codec
-        .encode_room_id(room.id)
-        .expect("room id should encode");
-    let public_media_id = admin_api
-        .public_id_codec
-        .encode_media_id(media.id)
-        .expect("media id should encode");
+    let public_room_id = public_room_id(&admin_api, room.id);
+    let public_media_id = public_media_id(&admin_api, media.id);
 
-    let response = admin_api
-        .create_publish_key_for_actor(
-            &public_room_id,
-            &public_media_id,
-            &owner.id,
-            &global_admin.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("global admin should create publish key without room membership");
+    let response = api_ok(
+        admin_api
+            .create_publish_key_for_actor(
+                &public_room_id,
+                &public_media_id,
+                &owner.id,
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let claims = admin_api
-        .publish_key_service
-        .as_ref()
-        .expect("publish key service should be configured")
-        .validate_publish_key_for_stream_claims(&response.publish_key, &room.id, &media.id)
-        .await
-        .expect("generated publish key should be valid for the target stream");
+    let publish_key_service = some_value(
+        admin_api.publish_key_service.as_ref(),
+        "publish key service should be configured",
+    )?;
+    let claims = core_ok(
+        publish_key_service
+            .validate_publish_key_for_stream_claims(&response.publish_key, &room.id, &media.id)
+            .await,
+    )?;
 
     assert_eq!(claims.user_id, owner.id.to_string());
     assert!(!response.publish_key.is_empty());
     assert!(response.rtmp_url.contains(&public_room_id));
     assert!(response.stream_key.contains(&public_media_id));
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_start_playback_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_start_playback_bypasses_room_membership_requirement_for_global_admin() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -3607,46 +3863,45 @@ async fn test_start_playback_bypasses_room_membership_requirement_for_global_adm
         create_db_user(&user_repo, "global_admin_playback_start", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_playback_start", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room playback start test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room playback start test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
     let media = create_room_media(&pool, room.id, owner.id, "playback-media").await;
 
-    admin_api
-        .start_playback(
-            &public_room_id(&admin_api, room.id),
-            synctv_proto::client::StartPlaybackRequest {
-                media_id: public_media_id(&admin_api, media.id),
-                playlist_id: String::new(),
-                target: Vec::new(),
-            },
-            &global_admin.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("global admin should start playback without room membership");
+    api_ok(
+        admin_api
+            .start_playback(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::StartPlaybackRequest {
+                    media_id: public_media_id(&admin_api, media.id),
+                    playlist_id: String::new(),
+                    target: Vec::new(),
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let state = admin_api
-        .room_service
-        .get_playback_state(&room.id)
-        .await
-        .expect("playback state query should succeed");
+    let state = core_ok(admin_api.room_service.get_playback_state(&room.id).await)?;
     assert_eq!(state.playing_media_id.as_ref(), Some(&media.id));
     assert!(state.is_playing);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_stop_playback_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_stop_playback_bypasses_room_membership_requirement_for_global_admin() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -3655,49 +3910,49 @@ async fn test_stop_playback_bypasses_room_membership_requirement_for_global_admi
         create_db_user(&user_repo, "global_admin_playback_stop", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_playback_stop", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room playback stop test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room playback stop test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
     let media = create_room_media(&pool, room.id, owner.id, "playback-media").await;
 
-    admin_api
-        .room_service
-        .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
-        .await
-        .expect("owner should be able to seed playback state");
+    core_ok(
+        admin_api
+            .room_service
+            .playback_service()
+            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+            .await,
+    )?;
 
-    admin_api
-        .stop_playback(
-            &public_room_id(&admin_api, room.id),
-            &global_admin.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("global admin should stop playback without room membership");
+    api_ok(
+        admin_api
+            .stop_playback(
+                &public_room_id(&admin_api, room.id),
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
-    let state = admin_api
-        .room_service
-        .get_playback_state(&room.id)
-        .await
-        .expect("playback state query should succeed");
+    let state = core_ok(admin_api.room_service.get_playback_state(&room.id).await)?;
     assert!(state.playing_media_id.is_none());
     assert!(!state.is_playing);
     assert!((state.position - 0.0).abs() < f64::EPSILON);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_admin_update_playback_runs_provider_lifecycle_transition() {
+async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let user_service = Arc::new(make_user_service(&pool));
     let user_repo = UserRepository::new(pool.clone());
@@ -3709,41 +3964,40 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() {
         progress_calls: progress_calls.clone(),
     });
     let provider_for_factory = provider.clone();
-    let mut providers_manager = ProvidersManager::new(provider_instance_manager.clone())
-        .expect("providers manager should build");
+    let mut providers_manager = fixture_value(
+        ProvidersManager::new(provider_instance_manager.clone()),
+        "providers manager should build",
+    );
     providers_manager.register_factory(
         "direct_url",
         Box::new(move |_instance_id, _config, _instance_manager| Ok(provider_for_factory.clone())),
     );
-    providers_manager
-        .create_provider("direct_url", "direct_url", &serde_json::Value::Null)
-        .await
-        .expect("create lifecycle test provider");
-    let room_service = Arc::new(
+    core_ok(
+        providers_manager
+            .create_provider("direct_url", "direct_url", &serde_json::Value::Null)
+            .await,
+    )?;
+    let room_service = Arc::new(fixture_value(
         synctv_core::service::RoomService::new_with_providers_for_tests(
             pool.clone(),
             (*user_service).clone(),
             Arc::new(providers_manager),
-        )
-        .expect("room service should build"),
-    );
+        ),
+        "room service should build",
+    ));
     let settings_service = Arc::new(SettingsService::new(
         SettingsRepository::new(pool.clone()),
         pool.clone(),
     ));
-    settings_service
-        .initialize()
-        .await
-        .expect("settings initialized");
+    core_ok(settings_service.initialize().await)?;
     let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
-    let email_service = Arc::new(
+    let email_service = Arc::new(fixture_value(
         EmailService::new(Arc::new(RuntimeEmailConfigProvider::new(
             &settings_registry,
-        )))
-        .expect("email service"),
-    );
+        ))),
+        "email service",
+    ));
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-    connection_manager.start();
     let audit_service = Arc::new(AuditService::new_unbuffered(pool.clone()));
     let provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver> =
         Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
@@ -3762,14 +4016,20 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() {
             publish_key_service: None,
             config: Arc::new(Config::default()),
             audit_service,
-            public_id_codec: Arc::new(crate::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
         },
         AdminApiRuntime {
             realtime_fanout: crate::realtime_fanout::disabled_realtime_fanout_service(),
             realtime_event_service: Arc::new(LocalNoopRealtimeEventService::new()),
-            provider_stores: Some(provider_stores.clone()),
-            provider_access_service: None,
-            request_executor: None,
+            provider_stores: provider_stores.clone(),
+            provider_access_service: crate::impls::disabled_provider_access_service(),
+            signing_key: Arc::new(
+                synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+                    b"test-admin-api-signing-key-32-bytes!!",
+                )
+                .expect("test signing key should derive"),
+            ),
+            request_executor: Arc::new(crate::test_support::local_request_executor()),
         },
     );
 
@@ -3780,41 +4040,44 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() {
     )
     .await;
     let owner = create_db_user(&user_repo, "room_owner_playback_lifecycle", UserRole::User).await;
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room playback lifecycle test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room playback lifecycle test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
     let media_repo = MediaRepository::new(pool.clone());
-    let media = media_repo
-        .create(&synctv_core::models::Media::from_provider_with_params(
-            FromProviderParams {
-                playlist_id: None,
-                room_id: room.id,
-                creator_id: Some(owner.id),
-                name: "provider lifecycle media".to_string(),
-                description: String::new(),
-                source_config: serde_json::json!({"item_id": "admin-lifecycle"}),
-                provider_name: "direct_url".to_string(),
-                provider_instance_name: None,
-                position: 0.0,
-            },
-        ))
-        .await
-        .expect("create provider media");
-    let state = admin_api
-        .room_service
-        .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
-        .await
-        .expect("seed provider playback state");
+    let media = core_ok(
+        media_repo
+            .create(&synctv_core::models::Media::from_provider_with_params(
+                FromProviderParams {
+                    playlist_id: None,
+                    room_id: room.id,
+                    creator_id: Some(owner.id),
+                    name: "provider lifecycle media".to_string(),
+                    description: String::new(),
+                    source_config: serde_json::json!({"item_id": "admin-lifecycle"}),
+                    provider_name: "direct_url".to_string(),
+                    provider_instance_name: None,
+                    position: 0.0,
+                },
+            ))
+            .await,
+    )?;
+    let state = core_ok(
+        admin_api
+            .room_service
+            .playback_service()
+            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+            .await,
+    )?;
     let lifecycle_store = provider_stores.load("playback_lifecycle");
     lifecycle_store
         .set(
@@ -3838,42 +4101,42 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() {
             std::time::Duration::from_mins(1),
         )
         .await
-        .expect("seed lifecycle session");
+        .map_err(|error| test_error(error.to_string()))?;
 
-    admin_api
-        .update_playback(
-            &public_room_id(&admin_api, room.id),
-            synctv_proto::client::UpdatePlaybackRequest {
-                r#type: synctv_proto::client::PlaybackUpdateType::Pause as i32,
-                playing: None,
-                position: Some(12.5),
-                speed: None,
-                version: Some(state.version),
-                expected_media_id: Some(
-                    admin_api.public_id_codec.encode_media_id(media.id).unwrap(),
-                ),
-                expected_playlist_id: Some(String::new()),
-                expected_target_hash: Some(state.target_hash()),
-            },
-            &global_admin.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("admin update playback should succeed");
+    api_ok(
+        admin_api
+            .update_playback(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::UpdatePlaybackRequest {
+                    r#type: synctv_proto::client::PlaybackUpdateType::Pause as i32,
+                    playing: None,
+                    position: Some(12.5),
+                    speed: None,
+                    version: Some(state.version),
+                    expected_media_id: Some(public_media_id(&admin_api, media.id)),
+                    expected_playlist_id: Some(String::new()),
+                    expected_target_hash: Some(state.target_hash()),
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
+    let progress_calls = progress_calls
+        .lock()
+        .map_err(|error| test_error(format!("progress calls lock: {error}")))?;
     assert_eq!(
-        progress_calls
-            .lock()
-            .expect("progress calls lock")
-            .as_slice(),
+        progress_calls.as_slice(),
         [("admin-session".to_string(), 12.5, true)],
         "admin playback updates must trigger provider progress lifecycle hooks"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_playback_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_get_playback_bypasses_room_membership_requirement_for_global_admin() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -3882,50 +4145,53 @@ async fn test_get_playback_bypasses_room_membership_requirement_for_global_admin
         create_db_user(&user_repo, "global_admin_playback_get", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_playback_get", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room playback get test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room playback get test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
     let media = create_room_media(&pool, room.id, owner.id, "playback-media").await;
 
-    admin_api
-        .room_service
-        .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
-        .await
-        .expect("owner should be able to seed playback state");
+    core_ok(
+        admin_api
+            .room_service
+            .playback_service()
+            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+            .await,
+    )?;
 
-    let response = admin_api
-        .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
-        .await
-        .expect("global admin should get playback without room membership");
+    let response = api_ok(
+        admin_api
+            .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
+            .await,
+    )?;
 
-    let state = response
-        .playback_state
-        .expect("playback state should be present");
+    let state = some_value(response.playback_state, "playback state should be present")?;
     assert!(state.is_playing);
     assert_eq!(
         state.playing_media_id,
         public_media_id(&admin_api, media.id)
     );
 
-    let result = response.playback.expect("playback should be present");
+    let result = some_value(response.playback, "playback should be present")?;
     assert_eq!(result.media_id, public_media_id(&admin_api, media.id));
     assert_eq!(result.room_id, public_room_id(&admin_api, room.id));
     assert_eq!(result.name, media.name);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_playback_returns_state_when_playback_info_generation_fails_for_global_admin() {
+async fn test_get_playback_returns_state_when_playback_info_generation_fails_for_global_admin(
+) -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -3939,18 +4205,19 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails_for
     .await;
     let owner = create_db_user(&user_repo, "room_owner_playback_state_only", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room playback degrade test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room playback degrade test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
     let media = synctv_core::models::Media::from_provider_with_params(FromProviderParams {
         playlist_id: None,
@@ -3963,23 +4230,23 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails_for
         provider_instance_name: None,
         position: 0.0,
     });
-    let media = media_repo.create(&media).await.expect("create media");
+    let media = core_ok(media_repo.create(&media).await)?;
 
-    admin_api
-        .room_service
-        .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
-        .await
-        .expect("owner should seed playback state");
+    core_ok(
+        admin_api
+            .room_service
+            .playback_service()
+            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+            .await,
+    )?;
 
-    let response = admin_api
-        .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
-        .await
-        .expect("global admin should get playback state even if playback info generation fails");
+    let response = api_ok(
+        admin_api
+            .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
+            .await,
+    )?;
 
-    let state = response
-        .playback_state
-        .expect("playback state should be present");
+    let state = some_value(response.playback_state, "playback state should be present")?;
     assert!(state.is_playing);
     assert_eq!(
         state.playing_media_id,
@@ -3989,11 +4256,12 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails_for
         response.playback.is_none(),
         "admin playback queries should degrade to state-only responses on playback info failures"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin() {
+async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4007,18 +4275,19 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
     .await;
     let owner = create_db_user(&user_repo, "room_owner_playback_get_signed", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room provider playback get test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room provider playback get test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
     let media = synctv_core::models::Media::from_provider_with_params(FromProviderParams {
         playlist_id: None,
@@ -4036,28 +4305,27 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
         provider_instance_name: None,
         position: 0.0,
     });
-    let media = media_repo
-        .create(&media)
-        .await
-        .expect("create provider media");
+    let media = core_ok(media_repo.create(&media).await)?;
 
-    admin_api
-        .room_service
-        .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
-        .await
-        .expect("owner should be able to seed playback state");
+    core_ok(
+        admin_api
+            .room_service
+            .playback_service()
+            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+            .await,
+    )?;
 
-    let response = admin_api
-        .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
-        .await
-        .expect("global admin should get signed provider playback");
+    let response = api_ok(
+        admin_api
+            .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
+            .await,
+    )?;
 
-    let result = response.playback.expect("playback should be present");
+    let result = some_value(response.playback, "playback should be present")?;
     let direct = result
         .playback_infos
         .get("direct")
-        .expect("direct mode should be present");
+        .ok_or_else(|| test_error("direct mode should be present"))?;
     assert_eq!(direct.urls.len(), 1);
     assert!(
         direct.urls[0]
@@ -4073,13 +4341,15 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
     );
     assert!(
         direct.urls[0].headers.is_empty(),
-        "proxy-backed playback should not require client-side secret headers"
+        "proxy-backed playback keeps client headers empty"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_management_actor() {
+async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_management_actor(
+) -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4092,18 +4362,19 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_managem
     )
     .await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room provider playback get local management test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room provider playback get local management test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
     let media = synctv_core::models::Media::from_provider_with_params(FromProviderParams {
         playlist_id: None,
@@ -4121,33 +4392,32 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_managem
         provider_instance_name: None,
         position: 0.0,
     });
-    let media = media_repo
-        .create(&media)
-        .await
-        .expect("create provider media");
+    let media = core_ok(media_repo.create(&media).await)?;
 
-    admin_api
-        .room_service
-        .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
-        .await
-        .expect("owner should be able to seed playback state");
+    core_ok(
+        admin_api
+            .room_service
+            .playback_service()
+            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+            .await,
+    )?;
 
     let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
-    let response = admin_api
-        .get_playback(
-            &public_room_id(&admin_api, room.id),
-            &management_actor,
-            None,
-        )
-        .await
-        .expect("local management actor should get signed provider playback");
+    let response = api_ok(
+        admin_api
+            .get_playback(
+                &public_room_id(&admin_api, room.id),
+                &management_actor,
+                None,
+            )
+            .await,
+    )?;
 
-    let result = response.playback.expect("playback should be present");
+    let result = some_value(response.playback, "playback should be present")?;
     let direct = result
         .playback_infos
         .get("direct")
-        .expect("direct mode should be present");
+        .ok_or_else(|| test_error("direct mode should be present"))?;
     assert_eq!(direct.urls.len(), 1);
     assert!(
         direct.urls[0]
@@ -4167,13 +4437,14 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_managem
         !direct.urls[0]
             .url
             .contains(&LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string()),
-        "local management playback must not sign proxy URLs with the synthetic management actor"
+        "local management playback signs proxy URLs with the resolved room member"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_playlists_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_list_playlists_bypasses_room_membership_requirement_for_global_admin() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4182,57 +4453,60 @@ async fn test_list_playlists_bypasses_room_membership_requirement_for_global_adm
         create_db_user(&user_repo, "global_admin_list_playlists", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_list_playlists", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room list playlists test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room list playlists test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
-    let playlist = admin_api
-        .room_service
-        .playlist_service()
-        .create_playlist(
-            room.id,
-            owner.id,
-            synctv_core::service::playlist::CreatePlaylistRequest {
-                room_id: room.id,
-                name: "playlist-a".to_string(),
-                description: String::new(),
-                parent_id: None,
-                source_provider: None,
-                source_config: None,
-                provider_instance_name: None,
-            },
-        )
-        .await
-        .expect("owner should create playlist");
+    let playlist = core_ok(
+        admin_api
+            .room_service
+            .playlist_service()
+            .create_playlist(
+                room.id,
+                owner.id,
+                synctv_core::service::playlist::CreatePlaylistRequest {
+                    room_id: room.id,
+                    name: "playlist-a".to_string(),
+                    description: String::new(),
+                    parent_id: None,
+                    source_provider: None,
+                    source_config: None,
+                    provider_instance_name: None,
+                },
+            )
+            .await,
+    )?;
 
-    let response = admin_api
-        .list_playlists(
-            &public_room_id(&admin_api, room.id),
-            synctv_proto::client::ListPlaylistsRequest {
-                parent_id: String::new(),
-                page: 1,
-                page_size: 20,
-                search: String::new(),
-                source_provider: String::new(),
-                provider_instance_name: String::new(),
-                dynamic_only: None,
-                sort_by: synctv_proto::client::PlaylistListSortBy::Position as i32,
-                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
-            },
-            &global_admin.id,
-        )
-        .await
-        .expect("global admin should list playlists without room membership");
+    let response = api_ok(
+        admin_api
+            .list_playlists(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::ListPlaylistsRequest {
+                    parent_id: String::new(),
+                    page: 1,
+                    page_size: 20,
+                    search: String::new(),
+                    source_provider: String::new(),
+                    provider_instance_name: String::new(),
+                    dynamic_only: None,
+                    sort_by: synctv_proto::client::PlaylistListSortBy::Position as i32,
+                    sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                    availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+                },
+                &global_admin.id,
+            )
+            .await,
+    )?;
 
     assert_eq!(response.total, 1);
     assert_eq!(response.playlists.len(), 1);
@@ -4241,11 +4515,12 @@ async fn test_list_playlists_bypasses_room_membership_requirement_for_global_adm
         public_playlist_id(&admin_api, playlist.id)
     );
     assert_eq!(response.playlists[0].name, "playlist-a");
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_playlist_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_get_playlist_bypasses_room_membership_requirement_for_global_admin() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4254,59 +4529,64 @@ async fn test_get_playlist_bypasses_room_membership_requirement_for_global_admin
         create_db_user(&user_repo, "global_admin_get_playlist", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_get_playlist", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room get playlist test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room get playlist test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
-    let playlist = admin_api
-        .room_service
-        .playlist_service()
-        .create_playlist(
-            room.id,
-            owner.id,
-            synctv_core::service::playlist::CreatePlaylistRequest {
-                room_id: room.id,
-                name: "playlist-b".to_string(),
-                description: String::new(),
-                parent_id: None,
-                source_provider: None,
-                source_config: None,
-                provider_instance_name: None,
-            },
-        )
-        .await
-        .expect("owner should create playlist");
+    let playlist = core_ok(
+        admin_api
+            .room_service
+            .playlist_service()
+            .create_playlist(
+                room.id,
+                owner.id,
+                synctv_core::service::playlist::CreatePlaylistRequest {
+                    room_id: room.id,
+                    name: "playlist-b".to_string(),
+                    description: String::new(),
+                    parent_id: None,
+                    source_provider: None,
+                    source_config: None,
+                    provider_instance_name: None,
+                },
+            )
+            .await,
+    )?;
 
-    let response = admin_api
-        .get_playlist(
-            &public_room_id(&admin_api, room.id),
-            &public_playlist_id(&admin_api, playlist.id),
-            &global_admin.id,
-        )
-        .await
-        .expect("global admin should get playlist without room membership");
+    let response = api_ok(
+        admin_api
+            .get_playlist(
+                &public_room_id(&admin_api, room.id),
+                &public_playlist_id(&admin_api, playlist.id),
+                &global_admin.id,
+            )
+            .await,
+    )?;
 
-    let response_playlist = response.playlist.expect("playlist should be returned");
+    let response_playlist = some_value(response.playlist, "playlist should be returned")?;
     assert_eq!(
         response_playlist.id,
         public_playlist_id(&admin_api, playlist.id)
     );
     assert_eq!(response_playlist.name, "playlist-b");
     assert_eq!(response.media_count, 0);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_playlist_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_update_playlist_bypasses_room_membership_requirement_for_global_admin() -> TestResult
+{
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4315,59 +4595,64 @@ async fn test_update_playlist_bypasses_room_membership_requirement_for_global_ad
         create_db_user(&user_repo, "global_admin_update_playlist", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_update_playlist", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room update playlist test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room update playlist test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
-    let playlist = admin_api
-        .room_service
-        .playlist_service()
-        .create_playlist(
-            room.id,
-            owner.id,
-            synctv_core::service::playlist::CreatePlaylistRequest {
-                room_id: room.id,
-                name: "playlist-before".to_string(),
-                description: String::new(),
-                parent_id: None,
-                source_provider: None,
-                source_config: None,
-                provider_instance_name: None,
-            },
-        )
-        .await
-        .expect("owner should create playlist");
+    let playlist = core_ok(
+        admin_api
+            .room_service
+            .playlist_service()
+            .create_playlist(
+                room.id,
+                owner.id,
+                synctv_core::service::playlist::CreatePlaylistRequest {
+                    room_id: room.id,
+                    name: "playlist-before".to_string(),
+                    description: String::new(),
+                    parent_id: None,
+                    source_provider: None,
+                    source_config: None,
+                    provider_instance_name: None,
+                },
+            )
+            .await,
+    )?;
 
-    let response = admin_api
-        .update_playlist(
-            &public_room_id(&admin_api, room.id),
-            synctv_proto::client::UpdatePlaylistRequest {
-                playlist_id: public_playlist_id(&admin_api, playlist.id),
-                name: "playlist-after".to_string(),
-                description: String::new(),
-            },
-            &global_admin.id,
-        )
-        .await
-        .expect("global admin should update playlist without room membership");
+    let response = api_ok(
+        admin_api
+            .update_playlist(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::UpdatePlaylistRequest {
+                    playlist_id: public_playlist_id(&admin_api, playlist.id),
+                    name: "playlist-after".to_string(),
+                    description: String::new(),
+                },
+                &global_admin.id,
+            )
+            .await,
+    )?;
 
-    let updated = response.playlist.expect("playlist should be returned");
+    let updated = some_value(response.playlist, "playlist should be returned")?;
     assert_eq!(updated.id, public_playlist_id(&admin_api, playlist.id));
     assert_eq!(updated.name, "playlist-after");
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_playlist_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_delete_playlist_bypasses_room_membership_requirement_for_global_admin() -> TestResult
+{
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4376,63 +4661,69 @@ async fn test_delete_playlist_bypasses_room_membership_requirement_for_global_ad
         create_db_user(&user_repo, "global_admin_delete_playlist", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_delete_playlist", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room delete playlist test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room delete playlist test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
-    let playlist = admin_api
-        .room_service
-        .playlist_service()
-        .create_playlist(
-            room.id,
-            owner.id,
-            synctv_core::service::playlist::CreatePlaylistRequest {
-                room_id: room.id,
-                name: "playlist-delete".to_string(),
-                description: String::new(),
-                parent_id: None,
-                source_provider: None,
-                source_config: None,
-                provider_instance_name: None,
-            },
-        )
-        .await
-        .expect("owner should create playlist");
+    let playlist = core_ok(
+        admin_api
+            .room_service
+            .playlist_service()
+            .create_playlist(
+                room.id,
+                owner.id,
+                synctv_core::service::playlist::CreatePlaylistRequest {
+                    room_id: room.id,
+                    name: "playlist-delete".to_string(),
+                    description: String::new(),
+                    parent_id: None,
+                    source_provider: None,
+                    source_config: None,
+                    provider_instance_name: None,
+                },
+            )
+            .await,
+    )?;
 
-    let response = admin_api
-        .delete_playlist(
-            &public_room_id(&admin_api, room.id),
-            synctv_proto::client::DeletePlaylistRequest {
-                playlist_id: public_playlist_id(&admin_api, playlist.id),
-                force: true,
-            },
-            &global_admin.id,
-        )
-        .await
-        .expect("global admin should delete playlist without room membership");
+    let response = api_ok(
+        admin_api
+            .delete_playlist(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::DeletePlaylistRequest {
+                    playlist_id: public_playlist_id(&admin_api, playlist.id),
+                    force: true,
+                },
+                &global_admin.id,
+            )
+            .await,
+    )?;
 
     assert!(response.success);
-    let playlist_after = admin_api
-        .room_service
-        .playlist_service()
-        .get_playlist(&playlist.id)
-        .await
-        .expect("playlist lookup should succeed");
+    let playlist_after = core_ok(
+        admin_api
+            .room_service
+            .playlist_service()
+            .get_playlist(&playlist.id)
+            .await,
+    )?;
     assert!(playlist_after.is_none());
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_playlist_publishes_cascaded_playlist_and_media_events_for_global_admin() {
+async fn test_delete_playlist_publishes_cascaded_playlist_and_media_events_for_global_admin(
+) -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, mut redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4450,86 +4741,91 @@ async fn test_delete_playlist_publishes_cascaded_playlist_and_media_events_for_g
     )
     .await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room delete playlist cascade test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room delete playlist cascade test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
-    let parent_playlist = admin_api
-        .room_service
-        .playlist_service()
-        .create_playlist(
-            room.id,
-            owner.id,
-            synctv_core::service::playlist::CreatePlaylistRequest {
-                room_id: room.id,
-                name: "playlist-delete-parent".to_string(),
-                description: String::new(),
-                parent_id: None,
-                source_provider: None,
-                source_config: None,
-                provider_instance_name: None,
-            },
-        )
-        .await
-        .expect("owner should create parent playlist");
-    let child_playlist = admin_api
-        .room_service
-        .playlist_service()
-        .create_playlist(
-            room.id,
-            owner.id,
-            synctv_core::service::playlist::CreatePlaylistRequest {
-                room_id: room.id,
-                name: "playlist-delete-child".to_string(),
-                description: String::new(),
-                parent_id: Some(parent_playlist.id),
-                source_provider: None,
-                source_config: None,
-                provider_instance_name: None,
-            },
-        )
-        .await
-        .expect("owner should create child playlist");
-    let nested_media = admin_api
-        .room_service
-        .media_service()
-        .add_media(
-            room.id,
-            owner.id,
-            synctv_core::service::media::AddMediaRequest {
-                playlist_id: Some(child_playlist.id),
-                name: "playlist-delete-cascade-media".to_string(),
-                description: String::new(),
-                source_provider: "direct_url".to_string(),
-                provider_instance_name: None,
-                source_config: serde_json::json!({
-                    "url": "https://example.com/admin-playlist-delete-cascade.mp4"
-                }),
-            },
-        )
-        .await
-        .expect("owner should create nested media");
+    let parent_playlist = core_ok(
+        admin_api
+            .room_service
+            .playlist_service()
+            .create_playlist(
+                room.id,
+                owner.id,
+                synctv_core::service::playlist::CreatePlaylistRequest {
+                    room_id: room.id,
+                    name: "playlist-delete-parent".to_string(),
+                    description: String::new(),
+                    parent_id: None,
+                    source_provider: None,
+                    source_config: None,
+                    provider_instance_name: None,
+                },
+            )
+            .await,
+    )?;
+    let child_playlist = core_ok(
+        admin_api
+            .room_service
+            .playlist_service()
+            .create_playlist(
+                room.id,
+                owner.id,
+                synctv_core::service::playlist::CreatePlaylistRequest {
+                    room_id: room.id,
+                    name: "playlist-delete-child".to_string(),
+                    description: String::new(),
+                    parent_id: Some(parent_playlist.id),
+                    source_provider: None,
+                    source_config: None,
+                    provider_instance_name: None,
+                },
+            )
+            .await,
+    )?;
+    let nested_media = core_ok(
+        admin_api
+            .room_service
+            .media_service()
+            .add_media(
+                room.id,
+                owner.id,
+                synctv_core::service::media::AddMediaRequest {
+                    playlist_id: Some(child_playlist.id),
+                    name: "playlist-delete-cascade-media".to_string(),
+                    description: String::new(),
+                    source_provider: "direct_url".to_string(),
+                    provider_instance_name: None,
+                    source_config: serde_json::json!({
+                        "url": "https://example.com/admin-playlist-delete-cascade.mp4"
+                    }),
+                },
+            )
+            .await,
+    )?;
 
-    let response = admin_api
-        .delete_playlist(
-            &public_room_id(&admin_api, room.id),
-            synctv_proto::client::DeletePlaylistRequest {
-                playlist_id: public_playlist_id(&admin_api, parent_playlist.id),
-                force: true,
-            },
-            &global_admin.id,
-        )
-        .await
-        .expect("global admin should delete playlist without room membership");
+    let response = api_ok(
+        admin_api
+            .delete_playlist(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::DeletePlaylistRequest {
+                    playlist_id: public_playlist_id(&admin_api, parent_playlist.id),
+                    force: true,
+                },
+                &global_admin.id,
+            )
+            .await,
+    )?;
 
     assert!(response.success);
 
@@ -4549,7 +4845,11 @@ async fn test_delete_playlist_publishes_cascaded_playlist_and_media_events_for_g
                 kicked_media_ids.push(media_id.to_string());
             }
             RealtimeEvent::CacheInvalidate { .. } => {}
-            other => panic!("unexpected admin delete_playlist cascade event: {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "unexpected admin delete_playlist cascade event: {other:?}"
+                )))
+            }
         }
     }
 
@@ -4576,11 +4876,12 @@ async fn test_delete_playlist_publishes_cascaded_playlist_and_media_events_for_g
         vec![nested_media.id.to_string()],
         "admin delete_playlist must kick publishers for media deleted through playlist cascade"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_media_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_list_media_bypasses_room_membership_requirement_for_global_admin() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4588,107 +4889,111 @@ async fn test_list_media_bypasses_room_membership_requirement_for_global_admin()
     let global_admin = create_db_user(&user_repo, "global_admin_list_media", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_list_media", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room list media test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room list media test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
     let media = create_room_media(&pool, room.id, owner.id, "media-a").await;
 
-    let response = admin_api
-        .list_media(
-            &public_room_id(&admin_api, room.id),
-            synctv_proto::client::ListPlaylistItemsRequest {
-                playlist_id: String::new(),
-                target: Vec::new(),
-                page: 1,
-                page_size: 20,
-                search: String::new(),
-                source_provider: String::new(),
-                provider_instance_name: String::new(),
-                sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
-                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
-                refresh: false,
-            },
-            &global_admin.id,
-        )
-        .await
-        .expect("global admin should list media without room membership");
+    let response = api_ok(
+        admin_api
+            .list_media(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::ListPlaylistItemsRequest {
+                    playlist_id: String::new(),
+                    target: Vec::new(),
+                    page: 1,
+                    page_size: 20,
+                    search: String::new(),
+                    source_provider: String::new(),
+                    provider_instance_name: String::new(),
+                    sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                    sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                    availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+                    refresh: false,
+                },
+                &global_admin.id,
+            )
+            .await,
+    )?;
 
     assert_eq!(response.media.len(), 1);
     assert_eq!(response.media[0].id, public_media_id(&admin_api, media.id));
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_reset_room_settings_bypasses_room_membership_for_local_management_actor() {
+async fn test_reset_room_settings_bypasses_room_membership_for_local_management_actor() -> TestResult
+{
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
 
     let owner = create_db_user(&user_repo, "room_owner_reset_room_settings", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room settings reset test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room settings reset test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
     let customized = synctv_core::models::RoomSettings {
         chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
         ..synctv_core::models::RoomSettings::default()
     };
-    admin_api
-        .room_service
-        .set_room_settings(&room.id, &customized)
-        .await
-        .expect("room settings should be updated");
+    core_ok(
+        admin_api
+            .room_service
+            .set_room_settings(&room.id, &customized)
+            .await,
+    )?;
 
     let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
-    let response = admin_api
-        .reset_room_settings(
-            synctv_proto::admin::ResetRoomSettingsRequest {
-                room_id: public_room_id(&admin_api, room.id),
-            },
-            &management_actor,
-        )
-        .await
-        .expect("local management actor should reset room settings without membership");
+    let response = api_ok(
+        admin_api
+            .reset_room_settings(
+                synctv_proto::admin::ResetRoomSettingsRequest {
+                    room_id: public_room_id(&admin_api, room.id),
+                },
+                &management_actor,
+            )
+            .await,
+    )?;
 
-    let response_room = response.room.expect("response should include room");
+    let response_room = some_value(response.room, "response should include room")?;
     let room_id = admin_api
         .public_id_codec
         .decode_room_id(&response_room.id)
-        .expect("response room id should decode");
-    let settings = admin_api
-        .room_service
-        .get_room_settings(&room_id)
-        .await
-        .expect("room settings should be readable");
+        .map_err(test_error)?;
+    let settings = core_ok(admin_api.room_service.get_room_settings(&room_id).await)?;
     assert!(settings.chat_enabled.0);
     assert!(!settings.allow_guest_join.0);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_room_bypasses_room_membership_for_local_management_actor() {
+async fn test_delete_room_bypasses_room_membership_for_local_management_actor() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4696,45 +5001,44 @@ async fn test_delete_room_bypasses_room_membership_for_local_management_actor() 
 
     let owner = create_db_user(&user_repo, "room_owner_delete_room", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room delete test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room delete test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
     let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
-    let response = admin_api
-        .delete_room(
-            synctv_proto::admin::DeleteRoomRequest {
-                room_id: public_room_id(&admin_api, room.id),
-            },
-            &management_actor,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("local management actor should delete room without membership");
+    let response = api_ok(
+        admin_api
+            .delete_room(
+                synctv_proto::admin::DeleteRoomRequest {
+                    room_id: public_room_id(&admin_api, room.id),
+                },
+                &management_actor,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
     assert!(response.success);
     assert!(
-        room_repo
-            .get_by_id(&room.id)
-            .await
-            .expect("room lookup should succeed")
-            .is_none(),
+        core_ok(room_repo.get_by_id(&room.id).await)?.is_none(),
         "room should be deleted by local management actor"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_media_respects_search_filters_and_sort_for_static_root() {
+async fn test_list_media_respects_search_filters_and_sort_for_static_root() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4747,61 +5051,64 @@ async fn test_list_media_respects_search_filters_and_sort_for_static_root() {
     .await;
     let owner = create_db_user(&user_repo, "room_owner_list_media_filters", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room list media filter test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room list media filter test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
-    admin_api
-        .room_service
-        .playlist_service()
-        .create_playlist(
-            room.id,
-            owner.id,
-            synctv_core::service::playlist::CreatePlaylistRequest {
-                room_id: room.id,
-                name: "Alpha Folder".to_string(),
-                description: String::new(),
-                parent_id: None,
-                source_provider: None,
-                source_config: None,
-                provider_instance_name: None,
-            },
-        )
-        .await
-        .expect("playlist should be created");
+    core_ok(
+        admin_api
+            .room_service
+            .playlist_service()
+            .create_playlist(
+                room.id,
+                owner.id,
+                synctv_core::service::playlist::CreatePlaylistRequest {
+                    room_id: room.id,
+                    name: "Alpha Folder".to_string(),
+                    description: String::new(),
+                    parent_id: None,
+                    source_provider: None,
+                    source_config: None,
+                    provider_instance_name: None,
+                },
+            )
+            .await,
+    )?;
 
     create_room_media(&pool, room.id, owner.id, "Alpha Media").await;
     create_room_media(&pool, room.id, owner.id, "Beta Media").await;
 
-    let response = admin_api
-        .list_media(
-            &public_room_id(&admin_api, room.id),
-            synctv_proto::client::ListPlaylistItemsRequest {
-                playlist_id: String::new(),
-                target: Vec::new(),
-                page: 1,
-                page_size: 10,
-                search: "alpha".to_string(),
-                source_provider: "direct_url".to_string(),
-                provider_instance_name: String::new(),
-                sort_by: synctv_proto::client::MediaListSortBy::Name as i32,
-                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
-                refresh: false,
-            },
-            &global_admin.id,
-        )
-        .await
-        .expect("list media should succeed");
+    let response = api_ok(
+        admin_api
+            .list_media(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::ListPlaylistItemsRequest {
+                    playlist_id: String::new(),
+                    target: Vec::new(),
+                    page: 1,
+                    page_size: 10,
+                    search: "alpha".to_string(),
+                    source_provider: "direct_url".to_string(),
+                    provider_instance_name: String::new(),
+                    sort_by: synctv_proto::client::MediaListSortBy::Name as i32,
+                    sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                    availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+                    refresh: false,
+                },
+                &global_admin.id,
+            )
+            .await,
+    )?;
 
     assert_eq!(response.total, 1);
     assert_eq!(response.folder_count, 0);
@@ -4809,11 +5116,12 @@ async fn test_list_media_respects_search_filters_and_sort_for_static_root() {
     assert!(response.playlists.is_empty());
     assert_eq!(response.media.len(), 1);
     assert_eq!(response.media[0].name, "Alpha Media");
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_edit_media_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_edit_media_bypasses_room_membership_requirement_for_global_admin() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, mut redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4821,35 +5129,37 @@ async fn test_edit_media_bypasses_room_membership_requirement_for_global_admin()
     let global_admin = create_db_user(&user_repo, "global_admin_edit_media", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_edit_media", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room edit media test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room edit media test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
     let media = create_room_media(&pool, room.id, owner.id, "media-edit").await;
 
-    let response = admin_api
-        .edit_media(
-            &public_room_id(&admin_api, room.id),
-            synctv_proto::client::EditMediaRequest {
-                media_id: public_media_id(&admin_api, media.id),
-                name: "media-edited".to_string(),
-                description: String::new(),
-            },
-            &global_admin.id,
-        )
-        .await
-        .expect("global admin should edit media without room membership");
+    let response = api_ok(
+        admin_api
+            .edit_media(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::EditMediaRequest {
+                    media_id: public_media_id(&admin_api, media.id),
+                    name: "media-edited".to_string(),
+                    description: String::new(),
+                },
+                &global_admin.id,
+            )
+            .await,
+    )?;
 
-    let updated = response.media.expect("media should be returned");
+    let updated = some_value(response.media, "media should be returned")?;
     assert_eq!(updated.id, public_media_id(&admin_api, media.id));
     assert_eq!(updated.name, "media-edited");
 
@@ -4868,13 +5178,18 @@ async fn test_edit_media_bypasses_room_membership_requirement_for_global_admin()
             assert_eq!(media_id.to_string(), media.id.to_string());
             assert_eq!(media_title, "media-edited");
         }
-        other => panic!("expected MediaUpdated event, got {other:?}"),
+        other => {
+            return Err(test_error(format!(
+                "expected MediaUpdated event, got {other:?}"
+            )))
+        }
     }
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_local_management_actor_preserves_username_in_media_notifications() {
+async fn test_local_management_actor_preserves_username_in_media_notifications() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4886,93 +5201,97 @@ async fn test_local_management_actor_preserves_username_in_media_notifications()
     )
     .await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room management media notification test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room management media notification test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
     let media = create_room_media(&pool, room.id, owner.id, "management-media").await;
     let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
     let mut notification_rx = admin_api.room_service.notification_service().subscribe();
 
-    admin_api
-        .edit_media(
-            &public_room_id(&admin_api, room.id),
-            synctv_proto::client::EditMediaRequest {
-                media_id: public_media_id(&admin_api, media.id),
-                name: "management-media-updated".to_string(),
-                description: String::new(),
-            },
-            &management_actor,
-        )
-        .await
-        .expect("local management actor should edit media");
+    api_ok(
+        admin_api
+            .edit_media(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::EditMediaRequest {
+                    media_id: public_media_id(&admin_api, media.id),
+                    name: "management-media-updated".to_string(),
+                    description: String::new(),
+                },
+                &management_actor,
+            )
+            .await,
+    )?;
 
     let updated_event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {
             let (_, event) = notification_rx
                 .recv()
                 .await
-                .expect("notification should arrive");
+                .map_err(|error| test_error(format!("notification should arrive: {error}")))?;
             match event {
                 synctv_core::service::notification::RoomEvent::MediaUpdated {
                     media_id,
                     username,
                     ..
-                } if media_id == media.id => break username,
+                } if media_id == media.id => break Ok::<_, anyhow::Error>(username),
                 _ => {}
             }
         }
     })
     .await
-    .expect("media updated notification should arrive");
+    .map_err(|error| test_error(format!("media updated notification timeout: {error}")))??;
     assert_eq!(updated_event, "local-management");
 
-    admin_api
-        .delete_media(
-            &public_room_id(&admin_api, room.id),
-            synctv_proto::client::DeleteMediaRequest {
-                media_id: public_media_id(&admin_api, media.id),
-                force: false,
-            },
-            &management_actor,
-        )
-        .await
-        .expect("local management actor should delete media");
+    api_ok(
+        admin_api
+            .delete_media(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::DeleteMediaRequest {
+                    media_id: public_media_id(&admin_api, media.id),
+                    force: false,
+                },
+                &management_actor,
+            )
+            .await,
+    )?;
 
     let removed_event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {
             let (_, event) = notification_rx
                 .recv()
                 .await
-                .expect("notification should arrive");
+                .map_err(|error| test_error(format!("notification should arrive: {error}")))?;
             match event {
                 synctv_core::service::notification::RoomEvent::MediaRemoved {
                     media_id,
                     username,
                     user_id,
-                } if media_id == media.id => break (username, user_id),
+                } if media_id == media.id => break Ok::<_, anyhow::Error>((username, user_id)),
                 _ => {}
             }
         }
     })
     .await
-    .expect("media removed notification should arrive");
+    .map_err(|error| test_error(format!("media removed notification timeout: {error}")))??;
     assert_eq!(removed_event.0, "local-management");
     assert_eq!(removed_event.1, Some(management_actor));
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_media_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_delete_media_bypasses_room_membership_requirement_for_global_admin() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4981,46 +5300,50 @@ async fn test_delete_media_bypasses_room_membership_requirement_for_global_admin
         create_db_user(&user_repo, "global_admin_delete_media", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_delete_media", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room delete media test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room delete media test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
     let media = create_room_media(&pool, room.id, owner.id, "media-delete").await;
 
-    let response = admin_api
-        .delete_media(
-            &public_room_id(&admin_api, room.id),
-            synctv_proto::client::DeleteMediaRequest {
-                media_id: public_media_id(&admin_api, media.id),
-                force: true,
-            },
-            &global_admin.id,
-        )
-        .await
-        .expect("global admin should delete media without room membership");
+    let response = api_ok(
+        admin_api
+            .delete_media(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::DeleteMediaRequest {
+                    media_id: public_media_id(&admin_api, media.id),
+                    force: true,
+                },
+                &global_admin.id,
+            )
+            .await,
+    )?;
 
     assert!(response.success);
-    let media_after = admin_api
-        .room_service
-        .media_service()
-        .get_media(&media.id)
-        .await
-        .expect("media lookup should succeed");
+    let media_after = core_ok(
+        admin_api
+            .room_service
+            .media_service()
+            .get_media(&media.id)
+            .await,
+    )?;
     assert!(media_after.is_none());
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_move_media_bypasses_room_membership_requirement_for_global_admin() {
+async fn test_move_media_bypasses_room_membership_requirement_for_global_admin() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -5028,58 +5351,63 @@ async fn test_move_media_bypasses_room_membership_requirement_for_global_admin()
     let global_admin = create_db_user(&user_repo, "global_admin_move_media", UserRole::Root).await;
     let owner = create_db_user(&user_repo, "room_owner_move_media", UserRole::User).await;
 
-    let room = admin_api
-        .room_service
-        .create_room(
-            format!("room-{}", synctv_common::snanoid!(6)),
-            "room move media test".to_string(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created")
-        .0;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "room move media test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
 
     let media_a = create_room_media(&pool, room.id, owner.id, "media-move-a").await;
     let media_b = create_room_media(&pool, room.id, owner.id, "media-move-b").await;
 
-    admin_api
-        .move_media(
-            &public_room_id(&admin_api, room.id),
-            synctv_proto::client::MoveMediaRequest {
-                media_ids: vec![public_media_id(&admin_api, media_b.id)],
-                source_playlist_id: None,
-                target_playlist_id: None,
-                all_from_scope: false,
-                before_media_id: Some(public_media_id(&admin_api, media_a.id)),
-                after_media_id: None,
-            },
-            &global_admin.id,
-        )
-        .await
-        .expect("global admin should move media without room membership");
+    api_ok(
+        admin_api
+            .move_media(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::MoveMediaRequest {
+                    media_ids: vec![public_media_id(&admin_api, media_b.id)],
+                    source_playlist_id: None,
+                    target_playlist_id: None,
+                    all_from_scope: false,
+                    before_media_id: Some(public_media_id(&admin_api, media_a.id)),
+                    after_media_id: None,
+                },
+                &global_admin.id,
+            )
+            .await,
+    )?;
 
-    let media_a_after = admin_api
-        .room_service
-        .media_service()
-        .get_media(&media_a.id)
-        .await
-        .expect("media lookup should succeed")
-        .expect("media_a should exist");
-    let media_b_after = admin_api
-        .room_service
-        .media_service()
-        .get_media(&media_b.id)
-        .await
-        .expect("media lookup should succeed")
-        .expect("media_b should exist");
+    let media_a_after = core_ok(
+        admin_api
+            .room_service
+            .media_service()
+            .get_media(&media_a.id)
+            .await,
+    )?;
+    let media_a_after = some_value(media_a_after, "media_a should exist")?;
+    let media_b_after = core_ok(
+        admin_api
+            .room_service
+            .media_service()
+            .get_media(&media_b.id)
+            .await,
+    )?;
+    let media_b_after = some_value(media_b_after, "media_b should exist")?;
     assert!(media_b_after.position < media_a_after.position);
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_ban_room_publishes_room_banned_realtime_event() {
+async fn test_ban_room_publishes_room_banned_realtime_event() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, mut redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -5088,24 +5416,25 @@ async fn test_ban_room_publishes_room_banned_realtime_event() {
     let admin_user = create_db_user(&user_repo, "room_admin", UserRole::Root).await;
 
     let room = make_test_room_model(&admin_user.id);
-    let room = room_repo.create(&room).await.expect("create room");
+    let room = core_ok(room_repo.create(&room).await)?;
 
-    admin_api
-        .ban_room(
-            synctv_proto::admin::BanRoomRequest {
-                room_id: public_room_id(&admin_api, room.id),
-                reason: "moderation".to_string(),
-            },
-            &admin_user.id,
-            &RequestContext::default(),
-        )
-        .await
-        .expect("ban room should succeed");
+    api_ok(
+        admin_api
+            .ban_room(
+                synctv_proto::admin::BanRoomRequest {
+                    room_id: public_room_id(&admin_api, room.id),
+                    reason: "moderation".to_string(),
+                },
+                &admin_user.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
 
     let publish = tokio::time::timeout(std::time::Duration::from_secs(1), redis_publish_rx.recv())
         .await
-        .expect("expected cluster publish")
-        .expect("publish request");
+        .map_err(|error| test_error(format!("expected cluster publish: {error}")))?;
+    let publish = some_value(publish, "publish request")?;
 
     match publish.event {
         RealtimeEvent::RoomBanned {
@@ -5114,6 +5443,11 @@ async fn test_ban_room_publishes_room_banned_realtime_event() {
             assert_eq!(room_id, room.id);
             assert_eq!(banned_by, admin_user.id);
         }
-        other => panic!("expected RoomBanned event, got {other:?}"),
+        other => {
+            return Err(test_error(format!(
+                "expected RoomBanned event, got {other:?}"
+            )))
+        }
     }
+    Ok(())
 }

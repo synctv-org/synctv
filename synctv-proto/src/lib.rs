@@ -114,7 +114,6 @@ pub mod providers {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use prost::Message;
 

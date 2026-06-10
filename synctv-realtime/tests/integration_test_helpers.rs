@@ -13,7 +13,9 @@ use synctv_core_testing::redis::{
     redis_connection_manager, redis_multiplexed_connection, RedisContainer,
 };
 use synctv_core_testing::{start_redis_url_with_label, test_redis_key_prefix};
-use synctv_realtime::{build_room_message_runtime, ConnectionId, RealtimeConfig, RealtimeManager};
+use synctv_realtime::sync::{
+    build_room_message_runtime, ConnectionId, RealtimeConfig, RealtimeManager,
+};
 
 const ROUND_TIMEOUT: Duration = Duration::from_millis(750);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -102,10 +104,10 @@ pub async fn create_node_with_prefix(
     let shared_runtime: Arc<dyn RedisConnectionRuntime> =
         Arc::new(DirectRedisConnectionRuntime::new(conn.clone()));
     let realtime_profile =
-        SharedStateProfile::from_runtime(Some(shared_runtime), &key_prefix, true);
+        SharedStateProfile::for_cluster_runtime(Some(shared_runtime), &key_prefix, true);
     let config = RealtimeConfig {
         distributed_transport_factory: Some(Arc::new(
-            synctv_realtime::RedisRealtimeMessageTransportFactory::new(
+            synctv_realtime::sync::RedisRealtimeMessageTransportFactory::new(
                 synctv_core::coordination_runtime_from_client(client),
             ),
         )),
@@ -139,10 +141,10 @@ pub async fn create_node_with_config(
     let shared_runtime: Arc<dyn RedisConnectionRuntime> =
         Arc::new(DirectRedisConnectionRuntime::new(conn.clone()));
     let realtime_profile =
-        SharedStateProfile::from_runtime(Some(shared_runtime), &key_prefix, true);
+        SharedStateProfile::for_cluster_runtime(Some(shared_runtime), &key_prefix, true);
     let mut config = RealtimeConfig {
         distributed_transport_factory: Some(Arc::new(
-            synctv_realtime::RedisRealtimeMessageTransportFactory::new(
+            synctv_realtime::sync::RedisRealtimeMessageTransportFactory::new(
                 synctv_core::coordination_runtime_from_client(client),
             ),
         )),
@@ -171,11 +173,11 @@ pub async fn create_node_with_config(
 pub async fn broadcast_until_all_clients_receive(
     manager: &RealtimeManager,
     clients: &mut [(
-        tokio::sync::mpsc::Receiver<synctv_realtime::sync::events::RealtimeEvent>,
+        tokio::sync::mpsc::Receiver<synctv_realtime::sync::RealtimeEvent>,
         ConnectionId,
     )],
     expected_message: &str,
-    mut make_event: impl FnMut() -> synctv_realtime::sync::events::RealtimeEvent,
+    mut make_event: impl FnMut() -> synctv_realtime::sync::RealtimeEvent,
     label: &str,
 ) {
     broadcast_until_all_clients_receive_with(
@@ -192,7 +194,7 @@ pub async fn broadcast_until_all_clients_receive(
 async fn broadcast_until_all_clients_receive_with(
     mut broadcast: impl FnMut(),
     clients: &mut [(
-        tokio::sync::mpsc::Receiver<synctv_realtime::sync::events::RealtimeEvent>,
+        tokio::sync::mpsc::Receiver<synctv_realtime::sync::RealtimeEvent>,
         ConnectionId,
     )],
     expected_message: &str,
@@ -213,10 +215,9 @@ async fn broadcast_until_all_clients_receive_with(
                 }
 
                 match rx.try_recv() {
-                    Ok(synctv_realtime::sync::events::RealtimeEvent::ChatMessage {
-                        message,
-                        ..
-                    }) if message == expected_message => {
+                    Ok(synctv_realtime::sync::RealtimeEvent::ChatMessage { message, .. })
+                        if message == expected_message =>
+                    {
                         pending[index] = false;
                         made_progress = true;
                     }
@@ -255,11 +256,11 @@ async fn broadcast_until_all_clients_receive_with(
 
 pub async fn broadcast_until_room_event(
     manager: &RealtimeManager,
-    room_rx: &mut tokio::sync::mpsc::Receiver<synctv_realtime::sync::events::RealtimeEvent>,
-    mut make_event: impl FnMut() -> synctv_realtime::sync::events::RealtimeEvent,
-    mut matches: impl FnMut(&synctv_realtime::sync::events::RealtimeEvent) -> bool,
+    room_rx: &mut tokio::sync::mpsc::Receiver<synctv_realtime::sync::RealtimeEvent>,
+    mut make_event: impl FnMut() -> synctv_realtime::sync::RealtimeEvent,
+    mut matches: impl FnMut(&synctv_realtime::sync::RealtimeEvent) -> bool,
     label: &str,
-) -> synctv_realtime::sync::events::RealtimeEvent {
+) -> synctv_realtime::sync::RealtimeEvent {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
 
     loop {
@@ -280,11 +281,11 @@ pub async fn broadcast_until_room_event(
 
 pub async fn broadcast_until_admin_event(
     manager: &RealtimeManager,
-    admin_rx: &mut tokio::sync::broadcast::Receiver<synctv_realtime::sync::events::RealtimeEvent>,
-    mut make_event: impl FnMut() -> synctv_realtime::sync::events::RealtimeEvent,
-    mut matches: impl FnMut(&synctv_realtime::sync::events::RealtimeEvent) -> bool,
+    admin_rx: &mut tokio::sync::broadcast::Receiver<synctv_realtime::sync::RealtimeEvent>,
+    mut make_event: impl FnMut() -> synctv_realtime::sync::RealtimeEvent,
+    mut matches: impl FnMut(&synctv_realtime::sync::RealtimeEvent) -> bool,
     label: &str,
-) -> synctv_realtime::sync::events::RealtimeEvent {
+) -> synctv_realtime::sync::RealtimeEvent {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
 
     loop {
@@ -349,7 +350,7 @@ where
 pub async fn broadcast_until_cache_invalidation(
     manager: &RealtimeManager,
     rx: &mut tokio::sync::broadcast::Receiver<InvalidationMessage>,
-    mut make_event: impl FnMut() -> synctv_realtime::sync::events::RealtimeEvent,
+    mut make_event: impl FnMut() -> synctv_realtime::sync::RealtimeEvent,
     mut consume: impl FnMut(InvalidationMessage) -> bool,
     label: &str,
 ) {
@@ -389,7 +390,7 @@ mod tests {
             let (_tx, rx) = tokio::sync::mpsc::channel(1);
             clients.push((
                 rx,
-                synctv_realtime::ConnectionId::new(format!("conn-{index}")),
+                synctv_realtime::sync::ConnectionId::new(format!("conn-{index}")),
             ));
         }
 

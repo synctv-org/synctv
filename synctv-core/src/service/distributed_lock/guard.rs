@@ -7,40 +7,20 @@ pub struct LockGuard {
     key: String,
     value: Option<String>,
     fencing_token: Option<u64>,
-    drop_tx: Option<tokio::sync::oneshot::Sender<(String, String)>>,
 }
 
 impl LockGuard {
-    fn spawn_drop_task(lock: DistributedLock) -> tokio::sync::oneshot::Sender<(String, String)> {
-        let (tx, rx) = tokio::sync::oneshot::channel::<(String, String)>();
-        tokio::spawn(async move {
-            if let Ok((key, value)) = rx.await {
-                if let Err(error) = lock.release(&key, &value).await {
-                    tracing::error!(
-                        key = %key,
-                        error = %error,
-                        "Background task failed to release lock"
-                    );
-                }
-            }
-        });
-        tx
-    }
-
     pub async fn new(lock: DistributedLock, key: String, ttl_seconds: u64) -> Result<Self> {
         let value = lock
             .acquire(&key, ttl_seconds)
             .await?
             .ok_or_else(|| Error::LockConflict(format!("Lock already held: {key}")))?;
 
-        let drop_tx = Some(Self::spawn_drop_task(lock.clone()));
-
         Ok(Self {
             lock,
             key,
             value: Some(value),
             fencing_token: None,
-            drop_tx,
         })
     }
 
@@ -54,14 +34,11 @@ impl LockGuard {
             .await?
             .ok_or_else(|| Error::LockConflict(format!("Lock already held: {key}")))?;
 
-        let drop_tx = Some(Self::spawn_drop_task(lock.clone()));
-
         Ok(Self {
             lock,
             key,
             value: Some(value),
             fencing_token: Some(fencing_token),
-            drop_tx,
         })
     }
 
@@ -87,8 +64,6 @@ impl LockGuard {
     }
 
     pub async fn release(mut self) -> Result<bool> {
-        let _ = self.drop_tx.take();
-
         if let Some(value) = self.value.take() {
             self.lock.release(&self.key, &value).await
         } else {
@@ -100,14 +75,24 @@ impl LockGuard {
 impl Drop for LockGuard {
     fn drop(&mut self) {
         if let Some(value) = self.value.take() {
-            if let Some(tx) = self.drop_tx.take() {
-                let key = self.key.clone();
-                if tx.send((key.clone(), value)).is_err() {
-                    tracing::warn!(
-                        key = %key,
-                        "Lock drop task exited before receiving unlock signal; lock will expire after TTL"
-                    );
-                }
+            let key = self.key.clone();
+            let lock = self.lock.clone();
+
+            if tokio::runtime::Handle::try_current().is_ok() {
+                tokio::spawn(async move {
+                    if let Err(error) = lock.release(&key, &value).await {
+                        tracing::error!(
+                            key = %key,
+                            error = %error,
+                            "Background task failed to release lock"
+                        );
+                    }
+                });
+            } else {
+                tracing::warn!(
+                    key = %key,
+                    "Lock dropped without a runtime handle; lock will expire after TTL"
+                );
             }
         }
     }

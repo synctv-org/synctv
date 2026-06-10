@@ -7,7 +7,7 @@ use sqlx::{Executor, PgPool, Postgres};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::Level;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::repository::query_builder::trusted_dynamic_sql;
 use crate::resilience::timeout::DB_QUERY_TIMEOUT;
@@ -173,32 +173,39 @@ fn mask_database_url(url: &str) -> String {
 
     if let Ok(mut parsed) = url::Url::parse(url) {
         if !parsed.username().is_empty() {
-            let _ = parsed.set_username("***");
+            if let Err(()) = parsed.set_username("***") {
+                debug!("Database URL username could not be masked with URL parser");
+                return mask_database_url_manually(url);
+            }
         }
         if parsed.password().is_some() {
-            let _ = parsed.set_password(Some("***"));
+            if let Err(()) = parsed.set_password(Some("***")) {
+                debug!("Database URL password could not be masked with URL parser");
+                return mask_database_url_manually(url);
+            }
         }
         parsed.to_string()
     } else {
-        // Parsing failed - attempt manual masking to prevent credential leakage
-        // This handles edge cases where URL is malformed but contains credentials
-        if let Some(at_pos) = url.rfind('@') {
-            if let Some(scheme_end) = url.find("://") {
-                // Found scheme and @ symbol, reconstruct safely masked URL
-                let scheme = &url[..scheme_end + 3];
-                let host_part = &url[at_pos..];
-                return format!("{scheme}***:***{host_part}");
-            }
-        }
-        // Completely unparseable URL - return safe placeholder
-        "<invalid-url>".to_string()
+        mask_database_url_manually(url)
     }
+}
+
+fn mask_database_url_manually(url: &str) -> String {
+    if let Some(at_pos) = url.rfind('@') {
+        if let Some(scheme_end) = url.find("://") {
+            let scheme = &url[..scheme_end + 3];
+            let host_part = &url[at_pos..];
+            return format!("{scheme}***:***{host_part}");
+        }
+    }
+    "<invalid-url>".to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::LoggingConfig;
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
@@ -222,7 +229,7 @@ mod tests {
         };
 
         let effective = crate::logging::effective_log_level(&config.logging)
-            .expect("effective log level should resolve");
+            .checked("effective log level should resolve");
 
         assert_eq!(effective, Level::DEBUG);
         assert_eq!(pg_client_min_messages_for_level(effective), "warning");
@@ -235,14 +242,14 @@ mod tests {
 
         let mut conn = acquire_unbounded_ddl_connection(&pool)
             .await
-            .expect("should acquire dedicated ddl connection");
+            .checked("should acquire dedicated ddl connection");
 
         let timeout = sqlx::query_scalar!(
             r#"SELECT current_setting('statement_timeout') as "statement_timeout!""#
         )
         .fetch_one(&mut *conn)
         .await
-        .expect("should query session statement timeout");
+        .checked("should query session statement timeout");
 
         assert_eq!(
             timeout, "0",
@@ -271,29 +278,29 @@ mod tests {
         };
         let pool = init_database_with_cancel(&config, None)
             .await
-            .expect("production pool initialization should succeed")
+            .checked("production pool initialization should succeed")
             .pool;
 
         {
             let mut conn = acquire_unbounded_ddl_connection(&pool)
                 .await
-                .expect("should acquire dedicated ddl connection");
+                .checked("should acquire dedicated ddl connection");
             sqlx::query_scalar!(r#"SELECT 1 as "one!""#)
                 .fetch_one(&mut *conn)
                 .await
-                .expect("ddl connection should stay usable");
+                .checked("ddl connection should stay usable");
         }
 
         let mut conn = pool
             .acquire()
             .await
-            .expect("should reacquire pooled connection");
+            .checked("should reacquire pooled connection");
         let timeout = sqlx::query_scalar!(
             r#"SELECT current_setting('statement_timeout') as "statement_timeout!""#
         )
         .fetch_one(&mut *conn)
         .await
-        .expect("should query reset statement timeout");
+        .checked("should query reset statement timeout");
 
         assert_ne!(
             timeout, "0",
@@ -328,19 +335,19 @@ mod tests {
         };
         let pool = init_database_with_cancel(&config, None)
             .await
-            .expect("database init should succeed")
+            .checked("database init should succeed")
             .pool;
 
         let mut conn = pool
             .acquire()
             .await
-            .expect("should acquire pooled connection");
+            .checked("should acquire pooled connection");
         let level = sqlx::query_scalar!(
             r#"SELECT current_setting('client_min_messages') as "client_min_messages!""#
         )
         .fetch_one(&mut *conn)
         .await
-        .expect("should query session client_min_messages");
+        .checked("should query session client_min_messages");
 
         assert_eq!(
             level, "warning",
@@ -375,29 +382,31 @@ mod tests {
         };
         let pool = init_database_with_cancel(&config, None)
             .await
-            .expect("database init should succeed")
+            .checked("database init should succeed")
             .pool;
 
         {
             let mut conn = acquire_unbounded_ddl_connection(&pool)
                 .await
-                .expect("should acquire dedicated ddl connection");
+                .checked("should acquire dedicated ddl connection");
             sqlx::query!("SET client_min_messages = 'notice'")
                 .execute(&mut *conn)
                 .await
-                .expect("ddl connection should allow session-level override during migration work");
+                .checked(
+                    "ddl connection should allow session-level override during migration work",
+                );
         }
 
         let mut conn = pool
             .acquire()
             .await
-            .expect("should reacquire pooled connection");
+            .checked("should reacquire pooled connection");
         let level = sqlx::query_scalar!(
             r#"SELECT current_setting('client_min_messages') as "client_min_messages!""#
         )
         .fetch_one(&mut *conn)
         .await
-        .expect("should query reset client_min_messages");
+        .checked("should query reset client_min_messages");
 
         assert_eq!(
             level, "warning",
@@ -429,7 +438,7 @@ mod tests {
 
         let db_init = init_database(&config)
             .await
-            .expect("database init should succeed without background task");
+            .checked("database init should succeed without background task");
         assert!(
             db_init.metrics_task.is_none(),
             "init_database must not spawn an unmanaged metrics task"
@@ -462,17 +471,17 @@ mod tests {
         let cancel = CancellationToken::new();
         let db_init = init_database_with_cancel(&config, Some(cancel.clone()))
             .await
-            .expect("database init with cancellation should succeed");
+            .checked("database init with cancellation should succeed");
 
         let handle = db_init
             .metrics_task
-            .expect("cancellable init must return a managed metrics task");
+            .checked("cancellable init must return a managed metrics task");
 
         cancel.cancel();
         timeout(Duration::from_secs(1), handle)
             .await
-            .expect("metrics task should stop after cancellation")
-            .expect("metrics task should exit cleanly");
+            .checked("metrics task should stop after cancellation")
+            .checked("metrics task should exit cleanly");
         db_init.pool.close().await;
     }
 }

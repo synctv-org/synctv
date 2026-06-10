@@ -14,7 +14,6 @@
 //! # Requirements
 //!
 //! - Docker for testcontainers (`PostgreSQL` + Redis)
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -37,7 +36,7 @@ use synctv_core::{
     },
     Error, KeyBuilder,
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, err, ok, some};
 
 struct TestOpaqueCipherSuite;
 
@@ -48,8 +47,10 @@ impl CipherSuite for TestOpaqueCipherSuite {
 }
 
 fn create_jwt_service() -> JwtService {
-    JwtService::new("test-secret-key-for-integration-tests-minimum-length-32-chars")
-        .expect("Failed to create JWT service")
+    ok(
+        JwtService::new("test-secret-key-for-integration-tests-minimum-length-32-chars"),
+        "JWT service should be created",
+    )
 }
 
 fn create_user_service(pool: &PgPool) -> UserService {
@@ -85,8 +86,8 @@ fn security_pipeline_with_blacklist(
         user_service,
         SecurityPipelineRuntime {
             user_cache: None,
-            token_blacklist: Some(token_blacklist),
-            key_builder: Some(key_builder),
+            token_blacklist,
+            key_builder,
         },
     )
 }
@@ -97,8 +98,10 @@ async fn opaque_login(
     password: &str,
 ) -> synctv_core::Result<(synctv_core::models::User, String, String)> {
     let mut rng = OsRng;
-    let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
-        .expect("client OPAQUE login start should succeed");
+    let client_start = ok(
+        ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes()),
+        "client OPAQUE login start should succeed",
+    );
     let challenge = service
         .start_opaque_login_with_control(
             identifier,
@@ -107,9 +110,10 @@ async fn opaque_login(
             None,
         )
         .await?;
-    let credential_response =
-        CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&challenge.credential_response)
-            .expect("server credential response should deserialize");
+    let credential_response = ok(
+        CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&challenge.credential_response),
+        "server credential response should deserialize",
+    );
     let client_finish = client_start
         .state
         .finish(
@@ -148,9 +152,10 @@ async fn opaque_register(
     password: &str,
 ) -> synctv_core::Result<(synctv_core::models::User, Option<String>, Option<String>)> {
     let mut rng = OsRng;
-    let client_start =
-        ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
-            .expect("client OPAQUE registration start should succeed");
+    let client_start = ok(
+        ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes()),
+        "client OPAQUE registration start should succeed",
+    );
     let challenge = service
         .start_opaque_registration_with_control(
             username,
@@ -160,10 +165,12 @@ async fn opaque_register(
             None,
         )
         .await?;
-    let registration_response = RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(
-        &challenge.registration_response,
-    )
-    .expect("server registration response should deserialize");
+    let registration_response = ok(
+        RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(
+            &challenge.registration_response,
+        ),
+        "server registration response should deserialize",
+    );
     let client_finish = client_start
         .state
         .finish(
@@ -203,12 +210,14 @@ async fn opaque_update_password(
     new_password: &str,
 ) -> synctv_core::Result<synctv_core::models::User> {
     let mut rng = OsRng;
-    let login_start =
-        ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, old_password.as_bytes())
-            .expect("client OPAQUE login start should succeed");
-    let registration_start =
-        ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, new_password.as_bytes())
-            .expect("client OPAQUE registration start should succeed");
+    let login_start = ok(
+        ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, old_password.as_bytes()),
+        "client OPAQUE login start should succeed",
+    );
+    let registration_start = ok(
+        ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, new_password.as_bytes()),
+        "client OPAQUE registration start should succeed",
+    );
     let challenge = service
         .start_opaque_password_update(
             user_id,
@@ -216,9 +225,10 @@ async fn opaque_update_password(
             registration_start.message.serialize().to_vec(),
         )
         .await?;
-    let credential_response =
-        CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&challenge.credential_response)
-            .expect("server credential response should deserialize");
+    let credential_response = ok(
+        CredentialResponse::<TestOpaqueCipherSuite>::deserialize(&challenge.credential_response),
+        "server credential response should deserialize",
+    );
     let login_finish = login_start
         .state
         .finish(
@@ -228,10 +238,12 @@ async fn opaque_update_password(
             ClientLoginFinishParameters::default(),
         )
         .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
-    let registration_response = RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(
-        &challenge.registration_response,
-    )
-    .expect("server registration response should deserialize");
+    let registration_response = ok(
+        RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(
+            &challenge.registration_response,
+        ),
+        "server registration response should deserialize",
+    );
     let registration_finish = registration_start
         .state
         .finish(
@@ -263,23 +275,26 @@ async fn scenario_password_change_invalidates_old_tokens() {
     let email = format!("{}@test.com", synctv_common::snanoid!(8));
     let original_password = "OriginalPassword123!".to_string();
 
-    let (user, _, _) = opaque_register(
-        &user_service,
-        username.clone(),
-        Some(email),
-        &original_password,
-    )
-    .await
-    .expect("Failed to register user");
+    let (user, _, _) = ok(
+        opaque_register(
+            &user_service,
+            username.clone(),
+            Some(email),
+            &original_password,
+        )
+        .await,
+        "user should register",
+    );
 
-    let (_user, access_token, _refresh_token) =
-        opaque_login(&user_service, username.clone(), &original_password)
-            .await
-            .expect("Failed to login");
+    let (_user, access_token, _refresh_token) = ok(
+        opaque_login(&user_service, username.clone(), &original_password).await,
+        "user should login",
+    );
 
-    let old_claims = jwt_service
-        .verify_access_token(&access_token)
-        .expect("Failed to verify old token");
+    let old_claims = ok(
+        jwt_service.verify_access_token(&access_token),
+        "old access token should verify",
+    );
 
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -293,9 +308,10 @@ async fn scenario_password_change_invalidates_old_tokens() {
     );
 
     let new_password = "NewPassword456!";
-    opaque_update_password(&user_service, &user.id, &original_password, new_password)
-        .await
-        .expect("Failed to change password through OPAQUE update");
+    ok(
+        opaque_update_password(&user_service, &user.id, &original_password, new_password).await,
+        "password update should succeed",
+    );
 
     let auth_result = pipeline.check(&old_claims).await;
     assert!(
@@ -303,20 +319,21 @@ async fn scenario_password_change_invalidates_old_tokens() {
         "Old token should be rejected after password change"
     );
 
-    let err = auth_result.unwrap_err();
+    let err = err(auth_result, "old token should fail after password change");
     assert!(
         matches!(&err, Error::Authentication(msg) if msg.contains("password change")),
         "Error should mention password change, got: {err}"
     );
 
-    let (_user, new_access_token, _new_refresh_token) =
-        opaque_login(&user_service, username, new_password)
-            .await
-            .expect("Failed to login with new OPAQUE password");
+    let (_user, new_access_token, _new_refresh_token) = ok(
+        opaque_login(&user_service, username, new_password).await,
+        "new password login should succeed",
+    );
 
-    let new_claims = jwt_service
-        .verify_access_token(&new_access_token)
-        .expect("Failed to verify new token");
+    let new_claims = ok(
+        jwt_service.verify_access_token(&new_access_token),
+        "new access token should verify",
+    );
 
     let auth_result = pipeline.check(&new_claims).await;
     assert!(
@@ -332,13 +349,15 @@ async fn scenario_opaque_registration_allows_opaque_login() {
     let username = format!("opaque_user_{}", synctv_common::snanoid!(8));
     let password = "OpaquePassword123!";
 
-    opaque_register(&user_service, username.clone(), None, password)
-        .await
-        .expect("Failed to register user with OPAQUE");
+    ok(
+        opaque_register(&user_service, username.clone(), None, password).await,
+        "user should register with OPAQUE",
+    );
 
-    opaque_login(&user_service, username, password)
-        .await
-        .expect("Failed to login with OPAQUE password after OPAQUE registration");
+    ok(
+        opaque_login(&user_service, username, password).await,
+        "user should login with OPAQUE password after registration",
+    );
 }
 
 async fn scenario_opaque_password_update_allows_opaque_login() {
@@ -348,17 +367,20 @@ async fn scenario_opaque_password_update_allows_opaque_login() {
     let username = format!("opaque_update_user_{}", synctv_common::snanoid!(8));
     let old_password = "OldOpaquePassword123!";
     let new_password = "NewOpaquePassword456!";
-    let (user, _, _) = opaque_register(&user_service, username.clone(), None, old_password)
-        .await
-        .expect("Failed to register user with OPAQUE");
+    let (user, _, _) = ok(
+        opaque_register(&user_service, username.clone(), None, old_password).await,
+        "user should register with OPAQUE",
+    );
 
-    opaque_update_password(&user_service, &user.id, old_password, new_password)
-        .await
-        .expect("Failed to update password with OPAQUE");
+    ok(
+        opaque_update_password(&user_service, &user.id, old_password, new_password).await,
+        "password should update with OPAQUE",
+    );
 
-    opaque_login(&user_service, username, new_password)
-        .await
-        .expect("Failed to login with OPAQUE password after OPAQUE update");
+    ok(
+        opaque_login(&user_service, username, new_password).await,
+        "user should login with OPAQUE password after update",
+    );
 }
 
 // Test 2: User Ban Invalidates Tokens
@@ -371,18 +393,20 @@ async fn scenario_ban_user_invalidates_tokens() {
     let username = format!("banned_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
-    opaque_register(&user_service, username.clone(), None, &password)
-        .await
-        .expect("Failed to register user");
+    ok(
+        opaque_register(&user_service, username.clone(), None, &password).await,
+        "user should register",
+    );
 
-    let (_user, access_token, _refresh_token) =
-        opaque_login(&user_service, username.clone(), &password)
-            .await
-            .expect("Failed to login");
+    let (_user, access_token, _refresh_token) = ok(
+        opaque_login(&user_service, username.clone(), &password).await,
+        "user should login",
+    );
 
-    let claims = jwt_service
-        .verify_access_token(&access_token)
-        .expect("Failed to verify token");
+    let claims = ok(
+        jwt_service.verify_access_token(&access_token),
+        "access token should verify",
+    );
 
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -393,20 +417,24 @@ async fn scenario_ban_user_invalidates_tokens() {
     assert!(auth_result.is_ok(), "Token should work before ban");
 
     let user_repo = UserRepository::new(pool);
-    let user = user_repo
-        .get_by_username(&username)
-        .await
-        .expect("Failed to get user")
-        .expect("User should exist");
-    user_repo
-        .ban(&user.id, None, Some("auth integration test".to_string()))
-        .await
-        .expect("Failed to ban user");
+    let user = some(
+        ok(
+            user_repo.get_by_username(&username).await,
+            "user should be fetched",
+        ),
+        "user should exist",
+    );
+    ok(
+        user_repo
+            .ban(&user.id, None, Some("auth integration test".to_string()))
+            .await,
+        "user should be banned",
+    );
 
     let auth_result = pipeline.check(&claims).await;
     assert!(auth_result.is_err(), "Token should be rejected after ban");
 
-    let err = auth_result.unwrap_err();
+    let err = err(auth_result, "token should fail after ban");
     assert!(
         matches!(&err, Error::Authentication(_)),
         "Should be an Authentication error, got: {err}"
@@ -423,17 +451,20 @@ async fn scenario_blacklisted_access_token_rejected() {
     let username = format!("blacklist_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
-    opaque_register(&user_service, username.clone(), None, &password)
-        .await
-        .expect("Failed to register user");
+    ok(
+        opaque_register(&user_service, username.clone(), None, &password).await,
+        "user should register",
+    );
 
-    let (_user, access_token, _refresh_token) = opaque_login(&user_service, username, &password)
-        .await
-        .expect("Failed to login");
+    let (_user, access_token, _refresh_token) = ok(
+        opaque_login(&user_service, username, &password).await,
+        "user should login",
+    );
 
-    let claims = jwt_service
-        .verify_access_token(&access_token)
-        .expect("Failed to verify token");
+    let claims = ok(
+        jwt_service.verify_access_token(&access_token),
+        "access token should verify",
+    );
 
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -447,15 +478,15 @@ async fn scenario_blacklisted_access_token_rejected() {
     assert!(auth_result.is_ok(), "Token should work before blacklisting");
 
     let blacklist_key = key_builder.access_token_blacklist(&claims.jti);
-    token_blacklist
-        .blacklist(&blacklist_key, 3600)
-        .await
-        .expect("Failed to blacklist token");
+    ok(
+        token_blacklist.blacklist(&blacklist_key, 3600).await,
+        "access token should be blacklisted",
+    );
 
     let auth_result = pipeline.check(&claims).await;
     assert!(auth_result.is_err(), "Blacklisted token should be rejected");
 
-    let err = auth_result.unwrap_err();
+    let err = err(auth_result, "blacklisted token should fail");
     assert!(
         matches!(&err, Error::Authentication(_)),
         "Should be an Authentication error, got: {err}"
@@ -470,13 +501,15 @@ async fn scenario_refresh_token_validation() {
     let username = format!("refresh_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
-    opaque_register(&user_service, username.clone(), None, &password)
-        .await
-        .expect("Failed to register user");
+    ok(
+        opaque_register(&user_service, username.clone(), None, &password).await,
+        "user should register",
+    );
 
-    let (_user, _access_token, refresh_token) = opaque_login(&user_service, username, &password)
-        .await
-        .expect("Failed to login");
+    let (_user, _access_token, refresh_token) = ok(
+        opaque_login(&user_service, username, &password).await,
+        "user should login",
+    );
 
     // Refresh token should work
     let refresh_result = user_service.refresh_token(refresh_token).await;
@@ -503,53 +536,53 @@ async fn scenario_complete_authentication_flow() {
     let email = format!("{}@test.com", synctv_common::snanoid!(8));
     let password = "SecurePassword123!".to_string();
 
-    let (user, _, _) = opaque_register(&user_service, username.clone(), Some(email), &password)
-        .await
-        .expect("Failed to register user");
+    let (user, _, _) = ok(
+        opaque_register(&user_service, username.clone(), Some(email), &password).await,
+        "user should register",
+    );
 
     assert_eq!(user.username, username.to_lowercase());
     assert_eq!(user.status, UserStatus::Active);
 
-    let (_user, access_token, refresh_token) =
-        opaque_login(&user_service, username.clone(), &password)
-            .await
-            .expect("Failed to login");
+    let (_user, access_token, refresh_token) = ok(
+        opaque_login(&user_service, username.clone(), &password).await,
+        "user should login",
+    );
 
     assert!(!access_token.is_empty());
     assert!(!refresh_token.is_empty());
 
-    let claims = jwt_service
-        .verify_access_token(&access_token)
-        .expect("Failed to verify access token");
+    let claims = ok(
+        jwt_service.verify_access_token(&access_token),
+        "access token should verify",
+    );
 
-    assert_eq!(claims.user_id().unwrap(), user.id);
+    assert_eq!(ok(claims.user_id(), "claims user id should parse"), user.id);
 
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let pipeline =
         security_pipeline_with_blacklist(user_service.clone(), token_blacklist, key_builder);
 
-    let auth_result = pipeline
-        .check(&claims)
-        .await
-        .expect("Security check failed");
+    let auth_result = ok(pipeline.check(&claims).await, "security check should pass");
     assert_eq!(auth_result.user_id, user.id);
 
-    let (new_access_token, _new_refresh_token) = user_service
-        .refresh_token(refresh_token.clone())
-        .await
-        .expect("Failed to refresh token");
+    let (new_access_token, _new_refresh_token) = ok(
+        user_service.refresh_token(refresh_token.clone()).await,
+        "refresh token should rotate",
+    );
 
     assert!(!new_access_token.is_empty());
 
-    let new_claims = jwt_service
-        .verify_access_token(&new_access_token)
-        .expect("Failed to verify refreshed token");
+    let new_claims = ok(
+        jwt_service.verify_access_token(&new_access_token),
+        "refreshed access token should verify",
+    );
 
-    let auth_result = pipeline
-        .check(&new_claims)
-        .await
-        .expect("New token should work");
+    let auth_result = ok(
+        pipeline.check(&new_claims).await,
+        "new token should pass security check",
+    );
     assert_eq!(auth_result.user_id, user.id);
 }
 
@@ -561,9 +594,10 @@ async fn scenario_login_wrong_password_fails() {
     let username = format!("wrong_pwd_user_{}", synctv_common::snanoid!(8));
     let password = "CorrectPassword123!".to_string();
 
-    opaque_register(&user_service, username.clone(), None, &password)
-        .await
-        .expect("Failed to register user");
+    ok(
+        opaque_register(&user_service, username.clone(), None, &password).await,
+        "user should register",
+    );
 
     let login_result = opaque_login(&user_service, username, "WrongPassword456!").await;
 
@@ -582,24 +616,24 @@ async fn scenario_deleted_user_cannot_authenticate() {
     let username = format!("deleted_user_{}", synctv_common::snanoid!(8));
     let password = "Password123!".to_string();
 
-    let (user, _, _) = opaque_register(&user_service, username.clone(), None, &password)
-        .await
-        .expect("Failed to register user");
+    let (user, _, _) = ok(
+        opaque_register(&user_service, username.clone(), None, &password).await,
+        "user should register",
+    );
 
-    let (_user, access_token, _refresh_token) = opaque_login(&user_service, username, &password)
-        .await
-        .expect("Failed to login");
+    let (_user, access_token, _refresh_token) = ok(
+        opaque_login(&user_service, username, &password).await,
+        "user should login",
+    );
 
-    let claims = jwt_service
-        .verify_access_token(&access_token)
-        .expect("Failed to verify token");
+    let claims = ok(
+        jwt_service.verify_access_token(&access_token),
+        "access token should verify",
+    );
 
     // Delete user
     let user_repo = UserRepository::new(pool);
-    user_repo
-        .delete(&user.id)
-        .await
-        .expect("Failed to delete user");
+    ok(user_repo.delete(&user.id).await, "user should be deleted");
 
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");

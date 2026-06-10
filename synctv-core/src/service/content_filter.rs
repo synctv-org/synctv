@@ -151,16 +151,23 @@ impl Default for ContentFilter {
 mod tests {
     use super::*;
 
+    fn valid<T>(result: Result<T, ContentFilterError>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn filter_chat_accepts_plain_unicode_text() {
         let filter = ContentFilter::new();
 
         assert_eq!(
-            filter.filter_chat("Hello bonjour مرحبا 🌍").unwrap(),
+            valid(filter.filter_chat("Hello bonjour مرحبا 🌍"), "unicode text"),
             "Hello bonjour مرحبا 🌍"
         );
         assert_eq!(
-            filter.filter_chat("Line 1\nLine 2").unwrap(),
+            valid(filter.filter_chat("Line 1\nLine 2"), "multiline text"),
             "Line 1\nLine 2"
         );
     }
@@ -184,9 +191,10 @@ mod tests {
     fn filter_chat_strips_html_and_common_xss_vectors() {
         let filter = ContentFilter::new();
 
-        let result = filter
-            .filter_chat("<script>alert(1)</script><b>Hello</b>")
-            .unwrap();
+        let result = valid(
+            filter.filter_chat("<script>alert(1)</script><b>Hello</b>"),
+            "html stripping",
+        );
         assert!(!result.contains("<script"));
         assert_eq!(result, "Hello");
 
@@ -196,7 +204,7 @@ mod tests {
             "<iframe src='https://evil.example'></iframe>",
             "<svg onload='alert(1)'><circle></circle></svg>",
         ] {
-            let result = filter.filter_chat(input).unwrap();
+            let result = valid(filter.filter_chat(input), "xss vector should sanitize");
             assert!(!result.contains("javascript:"));
             assert!(!result.contains("onerror"));
             assert!(!result.contains("onload"));
@@ -209,16 +217,18 @@ mod tests {
     fn filter_chat_can_allow_small_safe_html_subset() {
         let filter = ContentFilter::new_with_config(2000, None, false);
 
-        let result = filter
-            .filter_chat("<b>Bold</b><em>Em</em><script>alert(1)</script>")
-            .unwrap();
+        let result = valid(
+            filter.filter_chat("<b>Bold</b><em>Em</em><script>alert(1)</script>"),
+            "safe html subset",
+        );
         assert!(result.contains("<b>Bold</b>"));
         assert!(result.contains("<em>Em</em>"));
         assert!(!result.contains("<script"));
 
-        let result = filter
-            .filter_chat("<img src='x'><a href='https://example.com'>Link</a>")
-            .unwrap();
+        let result = valid(
+            filter.filter_chat("<img src='x'><a href='https://example.com'>Link</a>"),
+            "safe link html",
+        );
         assert!(!result.contains("<img"));
         assert!(result.contains("<a href=\"https://example.com\""));
     }
@@ -235,10 +245,19 @@ mod tests {
             filter.filter_chat("This contains BADWORD"),
             Err(ContentFilterError::ProhibitedContent { .. })
         ));
-        assert_eq!(filter.filter_chat("clean").unwrap(), "clean");
+        assert_eq!(
+            valid(filter.filter_chat("clean"), "clean sensitive word text"),
+            "clean"
+        );
 
         let empty_filter = ContentFilter::new_with_config(1000, Some(vec![" ".to_string()]), true);
-        assert_eq!(empty_filter.filter_chat("clean").unwrap(), "clean");
+        assert_eq!(
+            valid(
+                empty_filter.filter_chat("clean"),
+                "empty sensitive word config"
+            ),
+            "clean"
+        );
     }
 
     #[test]
@@ -246,11 +265,17 @@ mod tests {
         let filter = ContentFilter::new();
 
         assert_eq!(
-            filter.validate_username("  user name-123_测试  ").unwrap(),
+            valid(
+                filter.validate_username("  user name-123_测试  "),
+                "unicode username",
+            ),
             "user name-123_测试"
         );
         assert_eq!(
-            filter.validate_username("пользователь").unwrap(),
+            valid(
+                filter.validate_username("пользователь"),
+                "cyrillic username"
+            ),
             "пользователь"
         );
     }

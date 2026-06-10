@@ -1,21 +1,29 @@
 //! Global settings registry integration tests.
 
-#![allow(clippy::unwrap_used)]
-
 use synctv_core::service::global_settings::*;
+use synctv_core_testing::{err, ok};
 
 #[test]
 fn test_room_password_policy_parse_and_display() {
     assert_eq!(
-        "optional".parse::<RoomPasswordPolicy>().unwrap(),
+        ok(
+            "optional".parse::<RoomPasswordPolicy>(),
+            "optional policy should parse",
+        ),
         RoomPasswordPolicy::Optional
     );
     assert_eq!(
-        "required".parse::<RoomPasswordPolicy>().unwrap(),
+        ok(
+            "required".parse::<RoomPasswordPolicy>(),
+            "required policy should parse",
+        ),
         RoomPasswordPolicy::Required
     );
     assert_eq!(
-        "forbidden".parse::<RoomPasswordPolicy>().unwrap(),
+        ok(
+            "forbidden".parse::<RoomPasswordPolicy>(),
+            "forbidden policy should parse",
+        ),
         RoomPasswordPolicy::Forbidden
     );
 
@@ -46,7 +54,7 @@ fn test_stun_server_list_updates() {
     assert!(empty.0.is_empty());
 
     let json = custom.to_string();
-    let parsed: IceServerList = json.parse().unwrap();
+    let parsed: IceServerList = ok(json.parse(), "ICE server list should parse");
     assert_eq!(parsed.0.len(), 3);
     assert_eq!(parsed.0[1].username.as_deref(), Some("turn-user"));
     assert_eq!(parsed.0[1].credential.as_deref(), Some("turn-secret"));
@@ -68,14 +76,17 @@ fn test_cors_allowed_origins_updates() {
     assert!(empty.0.is_empty());
 
     let json = with_origins.to_string();
-    let parsed: CorsAllowedOrigins = json.parse().unwrap();
+    let parsed: CorsAllowedOrigins = ok(json.parse(), "CORS origins should parse");
     assert_eq!(parsed.0.len(), 3);
 }
 
 #[test]
 fn test_public_settings_skips_empty_custom_publish_host() {
     let defaults = PublicSettings::defaults();
-    let json = serde_json::to_string(&defaults).unwrap();
+    let json = ok(
+        serde_json::to_string(&defaults),
+        "public settings should serialize",
+    );
 
     assert!(!json.contains("custom_publish_host"));
 }
@@ -102,12 +113,12 @@ fn test_custom_setting_value_roundtrip() {
             .with_auth("alice", "secret"),
     ]);
     let stun_json = stun_list.to_string();
-    let stun_parsed: IceServerList = stun_json.parse().unwrap();
+    let stun_parsed: IceServerList = ok(stun_json.parse(), "STUN list should parse");
     assert_eq!(stun_list, stun_parsed);
 
     let cors_origins = CorsAllowedOrigins(vec!["https://example.com".to_string()]);
     let cors_json = cors_origins.to_string();
-    let cors_parsed: CorsAllowedOrigins = cors_json.parse().unwrap();
+    let cors_parsed: CorsAllowedOrigins = ok(cors_json.parse(), "CORS origins should parse");
     assert_eq!(cors_origins, cors_parsed);
 }
 
@@ -124,16 +135,20 @@ async fn test_email_enabled_update_requires_complete_email_config() {
         SettingsRepository::new(pool.clone()),
         pool,
     ));
-    service.initialize().await.unwrap();
+    ok(
+        service.initialize().await,
+        "settings service should initialize",
+    );
     let registry = SettingsRegistry::new(service.clone());
-    registry
-        .init(tokio_util::sync::CancellationToken::new())
-        .unwrap();
+    ok(
+        registry.init(tokio_util::sync::CancellationToken::new()),
+        "settings registry should init",
+    );
 
-    let error = service
-        .update("email.enabled", "true".to_string())
-        .await
-        .expect_err("email.enabled=true must reject incomplete SMTP settings");
+    let error = err(
+        service.update("email.enabled", "true".to_string()).await,
+        "email.enabled=true must reject incomplete SMTP settings",
+    );
     assert!(
         error.to_string().contains("email.smtp_host"),
         "expected missing smtp_host validation error, got: {error:?}"
@@ -157,30 +172,40 @@ async fn test_email_enabled_batch_update_accepts_complete_email_config() {
         SettingsRepository::new(pool.clone()),
         pool,
     ));
-    service.initialize().await.unwrap();
+    ok(
+        service.initialize().await,
+        "settings service should initialize",
+    );
     let registry = SettingsRegistry::new(service.clone());
-    registry
-        .init(tokio_util::sync::CancellationToken::new())
-        .unwrap();
+    ok(
+        registry.init(tokio_util::sync::CancellationToken::new()),
+        "settings registry should init",
+    );
 
-    service
-        .update_batch([
-            ("email.enabled".to_string(), "true".to_string()),
-            (
-                "email.smtp_host".to_string(),
-                "smtp.example.com".to_string(),
-            ),
-            ("email.smtp_port".to_string(), "587".to_string()),
-            (
-                "email.from_email".to_string(),
-                "noreply@example.com".to_string(),
-            ),
-        ])
-        .await
-        .expect("complete enabled email settings should persist");
+    ok(
+        service
+            .update_batch([
+                ("email.enabled".to_string(), "true".to_string()),
+                (
+                    "email.smtp_host".to_string(),
+                    "smtp.example.com".to_string(),
+                ),
+                ("email.smtp_port".to_string(), "587".to_string()),
+                (
+                    "email.from_email".to_string(),
+                    "noreply@example.com".to_string(),
+                ),
+            ])
+            .await,
+        "complete enabled email settings should persist",
+    );
 
     assert_eq!(
-        service.get("email.enabled").await.unwrap().value,
+        ok(
+            service.get("email.enabled").await,
+            "email.enabled should load"
+        )
+        .value,
         "true",
         "email.enabled should persist after complete batch update"
     );

@@ -82,11 +82,23 @@ pub(super) async fn cleanup_temp_files(cache_dir: &Path) {
                         path = %path.display(),
                         "Removing orphaned temp file"
                     );
-                    let _ = fs::remove_file(&path).await;
+                    if let Err(error) = fs::remove_file(&path).await {
+                        tracing::debug!(
+                            path = %path.display(),
+                            %error,
+                            "failed to remove orphaned slice cache temp file"
+                        );
+                    }
                 }
             }
             Err(_) => {
-                let _ = fs::remove_file(&path).await;
+                if let Err(error) = fs::remove_file(&path).await {
+                    tracing::debug!(
+                        path = %path.display(),
+                        %error,
+                        "failed to remove unreadable slice cache temp file"
+                    );
+                }
             }
         }
     }
@@ -168,7 +180,13 @@ async fn write_atomic(
         .map_err(|e| anyhow::anyhow!("Failed to write temp file {}: {e}", tmp_path.display()))?;
 
     if let Err(e) = fs::rename(&tmp_path, path).await {
-        let _ = fs::remove_file(&tmp_path).await;
+        if let Err(cleanup_error) = fs::remove_file(&tmp_path).await {
+            tracing::warn!(
+                path = %tmp_path.display(),
+                %cleanup_error,
+                "failed to remove slice cache temp file after rename failure"
+            );
+        }
         return Err(anyhow::anyhow!(
             "Failed to rename {} -> {}: {e}",
             tmp_path.display(),

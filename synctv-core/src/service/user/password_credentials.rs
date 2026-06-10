@@ -13,7 +13,7 @@ impl UserService {
     pub async fn get_password_credential_state(
         &self,
         user_id: &UserId,
-    ) -> Result<crate::repository::PasswordCredentialState> {
+    ) -> Result<crate::repository::user_password::PasswordCredentialState> {
         self.user_password_repository.get_state(user_id).await
     }
 

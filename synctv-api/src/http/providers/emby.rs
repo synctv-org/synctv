@@ -7,7 +7,6 @@
 
 use axum::{
     extract::{Path, Query, RawQuery, State},
-    http::HeaderMap,
     routing::{get, post},
     Json, Router,
 };
@@ -139,12 +138,7 @@ fn thumbnail_signature_version(scope: ThumbnailSignatureScope<'_>) -> String {
     hasher.update(scope.max_height.to_be_bytes());
     hasher.update(scope.max_width.to_be_bytes());
     let digest = hasher.finalize();
-    let mut encoded = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut encoded, "{byte:02x}");
-    }
-    encoded
+    hex::encode(digest)
 }
 
 fn build_signed_thumbnail_query(
@@ -230,11 +224,8 @@ pub(crate) fn sign_emby_thumbnail_url(
     thumbnail_url: &str,
     room_id: &str,
     user_id: &str,
-    signing_key: Option<&ProxySigningKey>,
+    signing_key: &ProxySigningKey,
 ) -> Result<String, String> {
-    let Some(signing_key) = signing_key else {
-        return Ok(thumbnail_url.to_string());
-    };
     let Some(path_with_item) = thumbnail_url.strip_prefix(THUMBNAIL_ROUTE_PREFIX) else {
         return Ok(thumbnail_url.to_string());
     };
@@ -266,8 +257,9 @@ pub(crate) fn sign_emby_thumbnail_url(
             _ => {}
         }
     }
+    let server_id = server_id.ok_or_else(|| "Emby thumbnail URL missing server_id".to_string())?;
     let query = ThumbnailQuery {
-        server_id: server_id.unwrap_or_default(),
+        server_id,
         credential_owner_id,
         max_height,
         max_width,
@@ -295,14 +287,14 @@ pub(crate) fn sign_emby_thumbnail_url(
 }
 
 /// Emby endpoints that perform authentication or credential mutation.
-pub fn emby_auth_routes() -> Router<AppState> {
+pub(crate) fn emby_auth_routes() -> Router<AppState> {
     Router::new()
         .route("/login", post(login))
         .route("/logout", post(logout))
 }
 
 /// Emby read/query endpoints.
-pub fn emby_read_routes() -> Router<AppState> {
+pub(crate) fn emby_read_routes() -> Router<AppState> {
     Router::new()
         .route("/list", post(list))
         .route("/me", post(me))
@@ -609,7 +601,6 @@ pub(crate) async fn thumbnail(
     Path(item_id): Path<String>,
     Query(query): Query<ThumbnailQuery>,
     RawQuery(raw_query): RawQuery,
-    headers: HeaderMap,
 ) -> AppResult<axum::response::Response> {
     let (server_id, credential_owner_id, max_height, max_width) = resolve_thumbnail_query(&query)?;
     let raw_query = raw_query.as_deref().unwrap_or("");
@@ -698,7 +689,7 @@ pub(crate) async fn thumbnail(
         .await
         .map_err(map_api_error)?;
 
-    let response = super::execute_proxy_action_with_state(&state, action, &headers, None).await?;
+    let response = super::execute_proxy_action_with_state(&state, action, None).await?;
 
     Ok(response)
 }
@@ -707,21 +698,46 @@ pub(crate) async fn thumbnail(
 mod tests {
     use super::*;
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn route_ok<T>(result: Result<T, AppError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("route error: {error:?}")))
+    }
+
+    fn api_ok<T>(result: Result<T, ApiError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("{error:?}")))
+    }
+
+    fn string_ok<T>(result: Result<T, String>) -> TestResult<T> {
+        result.map_err(test_error)
+    }
+
+    fn route_err<T>(result: Result<T, AppError>) -> TestResult<AppError> {
+        match result {
+            Ok(_) => Err(test_error("expected route error")),
+            Err(error) => Ok(error),
+        }
+    }
+
     #[test]
-    fn test_resolve_thumbnail_query_requires_server_id() {
-        let err = resolve_thumbnail_query(&ThumbnailQuery {
+    fn test_resolve_thumbnail_query_requires_server_id() -> TestResult {
+        let err = route_err(resolve_thumbnail_query(&ThumbnailQuery {
             server_id: "   ".to_string(),
             credential_owner_id: None,
             max_height: None,
             max_width: None,
-        })
-        .expect_err("thumbnail query must require server_id");
+        }))?;
 
         assert_eq!(err.message, "server_id must not be empty");
+        Ok(())
     }
 
     #[test]
-    fn test_resolve_thumbnail_query_preserves_shared_credential_owner_id() {
+    fn test_resolve_thumbnail_query_preserves_shared_credential_owner_id() -> TestResult {
         let query = ThumbnailQuery {
             server_id: " emby-main ".to_string(),
             credential_owner_id: Some(" owner-123 ".to_string()),
@@ -729,19 +745,19 @@ mod tests {
             max_width: Some(640),
         };
         let (server_id, credential_owner_id, max_height, max_width) =
-            resolve_thumbnail_query(&query).expect("thumbnail query should parse");
+            route_ok(resolve_thumbnail_query(&query))?;
 
         assert_eq!(server_id, "emby-main");
         assert_eq!(credential_owner_id, Some("owner-123"));
         assert_eq!(max_height, 480);
         assert_eq!(max_width, 640);
+        Ok(())
     }
 
     #[test]
-    fn test_authorize_thumbnail_request_requires_signature_for_shared_credentials() {
-        let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")
-            .expect("test proxy signing key should derive");
-        let err = authorize_thumbnail_request(
+    fn test_authorize_thumbnail_request_requires_signature_for_shared_credentials() -> TestResult {
+        let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")?;
+        let err = route_err(authorize_thumbnail_request(
             &signing_key,
             "viewer-1",
             "viewer-1",
@@ -754,17 +770,16 @@ mod tests {
                 max_height: 300,
                 max_width: 0,
             },
-        )
-        .expect_err("shared credential thumbnails must require a signed query");
+        ))?;
 
         assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
         assert_eq!(err.message, "Invalid thumbnail signature");
+        Ok(())
     }
 
     #[test]
-    fn test_authorize_thumbnail_request_rejects_signed_url_for_other_user() {
-        let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")
-            .expect("test proxy signing key should derive");
+    fn test_authorize_thumbnail_request_rejects_signed_url_for_other_user() -> TestResult {
+        let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")?;
         let raw_query = build_signed_thumbnail_query(
             &signing_key,
             "room-1",
@@ -779,7 +794,7 @@ mod tests {
             chrono::Utc::now().timestamp() + 300,
         );
 
-        let err = authorize_thumbnail_request(
+        let err = route_err(authorize_thumbnail_request(
             &signing_key,
             "viewer-2",
             "viewer-2",
@@ -792,26 +807,27 @@ mod tests {
                 max_height: 300,
                 max_width: 0,
             },
-        )
-        .expect_err("signed query must be bound to the authenticated user");
+        ))?;
 
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
         assert_eq!(err.message, "Thumbnail URL is not valid for this user");
+        Ok(())
     }
 
     #[test]
-    fn test_sign_emby_thumbnail_url_appends_room_scoped_signature() {
-        let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")
-            .expect("test proxy signing key should derive");
-        let signed = sign_emby_thumbnail_url(
+    fn test_sign_emby_thumbnail_url_appends_room_scoped_signature() -> TestResult {
+        let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")?;
+        let signed = string_ok(sign_emby_thumbnail_url(
             "/api/providers/emby/thumbnail/item-123?server_id=emby-main&credential_owner_id=owner-1&max_height=300",
             "room-7",
             "viewer-1",
-            Some(&signing_key),
-        )
-        .expect("thumbnail URL should sign successfully");
+            &signing_key,
+        ))?;
 
-        let query = signed.split('?').nth(1).expect("signed thumbnail query");
+        let query = signed
+            .split('?')
+            .nth(1)
+            .ok_or_else(|| test_error("signed thumbnail query should exist"))?;
         let claims = signing_key
             .parse_and_verify_query(
                 query,
@@ -824,16 +840,32 @@ mod tests {
                     max_width: 0,
                 }),
             )
-            .expect("signed thumbnail query should verify");
+            .map_err(|error| test_error(error.to_string()))?;
 
         assert_eq!(claims.room_id, "room-7");
         assert_eq!(claims.user_id, "viewer-1");
         assert!(signed.contains("credential_owner_id=owner-1"));
+        Ok(())
     }
 
     #[test]
-    fn test_build_thumbnail_proxy_action_from_credential_uses_server_side_token() {
-        let action = build_thumbnail_proxy_action_from_credential(
+    fn test_sign_emby_thumbnail_url_requires_server_id() -> TestResult {
+        let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")?;
+        let err = sign_emby_thumbnail_url(
+            "/api/providers/emby/thumbnail/item-123?max_height=300",
+            "room-7",
+            "viewer-1",
+            &signing_key,
+        )
+        .expect_err("missing server_id should fail signing");
+
+        assert_eq!(err, "Emby thumbnail URL missing server_id");
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_thumbnail_proxy_action_from_credential_uses_server_side_token() -> TestResult {
+        let action = api_ok(build_thumbnail_proxy_action_from_credential(
             "item-123",
             &ProviderCredential::Emby {
                 host: "https://emby.example.com/base".to_string(),
@@ -842,8 +874,7 @@ mod tests {
             },
             300,
             640,
-        )
-        .expect("emby credential should build thumbnail proxy action");
+        ))?;
 
         match action {
             ProxyAction::FetchAndForward { url, headers, .. } => {
@@ -856,7 +887,12 @@ mod tests {
                     Some(&"secret-token".to_string())
                 );
             }
-            other => panic!("expected FetchAndForward, got {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "expected FetchAndForward, got {other:?}"
+                )))
+            }
         }
+        Ok(())
     }
 }

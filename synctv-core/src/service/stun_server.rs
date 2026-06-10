@@ -490,6 +490,27 @@ mod tests {
     use tokio::net::UdpSocket;
     use tokio::time::{timeout, Duration};
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
+        match result {
+            Ok(_) => std::panic::panic_any(context.to_string()),
+            Err(error) => error,
+        }
+    }
+
+    fn some<T>(value: Option<T>, context: &str) -> T {
+        match value {
+            Some(value) => value,
+            None => std::panic::panic_any(context.to_string()),
+        }
+    }
+
     fn binding_request(transaction_id: [u8; 12]) -> Vec<u8> {
         let mut request = Vec::from(STUN_BINDING_REQUEST.to_be_bytes());
         request.extend_from_slice(&0_u16.to_be_bytes());
@@ -538,7 +559,7 @@ mod tests {
                 }
                 SocketAddr::from((octets, port))
             }
-            other => panic!("unexpected address family {other}"),
+            other => std::panic::panic_any(format!("unexpected address family {other}")),
         }
     }
 
@@ -546,12 +567,12 @@ mod tests {
     fn build_binding_response_returns_ipv4_xor_mapped_address() {
         let transaction_id = [1, 35, 69, 103, 137, 171, 205, 239, 2, 4, 6, 8];
         let request = binding_request(transaction_id);
-        let mapped_addr = "203.0.113.7:3478"
-            .parse()
-            .expect("socket addr should parse");
+        let mapped_addr = ok("203.0.113.7:3478".parse(), "socket addr should parse");
 
-        let response =
-            build_binding_response(&request, mapped_addr).expect("binding request should respond");
+        let response = some(
+            build_binding_response(&request, mapped_addr),
+            "binding request should respond",
+        );
 
         assert_eq!(response[8..20], transaction_id);
         assert_eq!(decode_xor_mapped_address(&response), mapped_addr);
@@ -561,19 +582,20 @@ mod tests {
     fn build_binding_response_returns_ipv6_xor_mapped_address() {
         let transaction_id = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
         let request = binding_request(transaction_id);
-        let mapped_addr = "[2001:db8::1234]:3478"
-            .parse()
-            .expect("socket addr should parse");
+        let mapped_addr = ok("[2001:db8::1234]:3478".parse(), "socket addr should parse");
 
-        let response =
-            build_binding_response(&request, mapped_addr).expect("binding request should respond");
+        let response = some(
+            build_binding_response(&request, mapped_addr),
+            "binding request should respond",
+        );
 
         assert_eq!(decode_xor_mapped_address(&response), mapped_addr);
     }
 
     #[test]
     fn build_binding_response_rejects_non_stun_packets() {
-        assert!(build_binding_response(b"not-stun", "203.0.113.7:3478".parse().unwrap()).is_none());
+        let mapped_addr = ok("203.0.113.7:3478".parse(), "socket addr should parse");
+        assert!(build_binding_response(b"not-stun", mapped_addr).is_none());
     }
 
     #[test]
@@ -583,40 +605,55 @@ mod tests {
 
     #[test]
     fn test_validate_external_addr_unspecified() {
-        let err = validate_external_addr("0.0.0.0:3478").unwrap_err();
+        let err = err(
+            validate_external_addr("0.0.0.0:3478"),
+            "unspecified external addr should fail",
+        );
         assert!(err.contains("not routable"));
     }
 
     #[test]
     fn test_validate_external_addr_loopback() {
-        let err = validate_external_addr("127.0.0.1:3478").unwrap_err();
+        let err = err(
+            validate_external_addr("127.0.0.1:3478"),
+            "loopback external addr should fail",
+        );
         assert!(err.contains("not routable"));
     }
 
     #[test]
     fn test_validate_external_addr_private_rfc1918() {
-        assert!(validate_external_addr("10.0.0.1:3478")
-            .unwrap_err()
-            .contains("not routable"));
-        assert!(validate_external_addr("172.16.0.1:3478")
-            .unwrap_err()
-            .contains("not routable"));
-        assert!(validate_external_addr("192.168.1.1:3478")
-            .unwrap_err()
-            .contains("not routable"));
+        assert!(err(
+            validate_external_addr("10.0.0.1:3478"),
+            "private external addr should fail"
+        )
+        .contains("not routable"));
+        assert!(err(
+            validate_external_addr("172.16.0.1:3478"),
+            "private external addr should fail"
+        )
+        .contains("not routable"));
+        assert!(err(
+            validate_external_addr("192.168.1.1:3478"),
+            "private external addr should fail"
+        )
+        .contains("not routable"));
     }
 
     #[test]
     fn test_validate_external_addr_link_local() {
-        let err = validate_external_addr("169.254.1.1:3478").unwrap_err();
+        let err = err(
+            validate_external_addr("169.254.1.1:3478"),
+            "link-local external addr should fail",
+        );
         assert!(err.contains("not routable"));
     }
 
     #[test]
     fn test_webrtc_runtime_status_marks_running_task_exit_as_degraded() {
         let status = WebRtcRuntimeStatus::running(
-            "0.0.0.0:3478".parse().unwrap(),
-            "203.0.113.1:3478".parse().unwrap(),
+            ok("0.0.0.0:3478".parse(), "local addr should parse"),
+            ok("203.0.113.1:3478".parse(), "external addr should parse"),
         )
         .with_task_running(false);
 
@@ -631,27 +668,34 @@ mod tests {
             bind_addr: "127.0.0.1:0".to_string(),
             external_addr: "203.0.113.1:3478".to_string(),
         })
-        .expect("stun server should start");
+        .map_err(|error| error.to_string());
+        let server = ok(server, "stun server should start");
 
-        let client = UdpSocket::bind("127.0.0.1:0")
-            .await
-            .expect("client socket should bind");
-        let client_addr = client
-            .local_addr()
-            .expect("client local address should be available");
+        let client = ok(
+            UdpSocket::bind("127.0.0.1:0").await,
+            "client socket should bind",
+        );
+        let client_addr = ok(
+            client.local_addr(),
+            "client local address should be available",
+        );
 
         let transaction_id = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 11, 12];
         let request = binding_request(transaction_id);
-        client
-            .send_to(&request, server.local_addr())
-            .await
-            .expect("binding request should send");
+        ok(
+            client
+                .send_to(&request, server.local_addr())
+                .await
+                .map_err(|error| error.to_string()),
+            "binding request should send",
+        );
 
         let mut buf = [0_u8; 1500];
-        let (len, _) = timeout(Duration::from_secs(2), client.recv_from(&mut buf))
-            .await
-            .expect("stun response should arrive before timeout")
-            .expect("stun response should be readable");
+        let packet = ok(
+            timeout(Duration::from_secs(2), client.recv_from(&mut buf)).await,
+            "stun response should arrive before timeout",
+        );
+        let (len, _) = ok(packet, "stun response should be readable");
 
         let response = &buf[..len];
         assert_eq!(response[8..20], transaction_id);

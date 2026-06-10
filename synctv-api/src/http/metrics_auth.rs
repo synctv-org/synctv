@@ -146,12 +146,11 @@ impl MetricsAccessController {
     #[cfg(not(feature = "k8s"))]
     fn authorize_kubernetes(
         &self,
-        metrics: &MetricsConfig,
-        headers: &HeaderMap,
-        path: &str,
-        method: &str,
+        _metrics: &MetricsConfig,
+        _headers: &HeaderMap,
+        _path: &str,
+        _method: &str,
     ) -> Result<(), MetricsAccessError> {
-        let _ = (self, metrics, headers, path, method);
         Err(MetricsAccessError::Internal)
     }
 }
@@ -280,11 +279,13 @@ impl KubernetesMetricsAuthorizer {
             )
             .await?;
 
-        let authenticated = review
-            .status
-            .as_ref()
-            .and_then(|status| status.authenticated)
-            .unwrap_or(false);
+        let authenticated = matches!(
+            review
+                .status
+                .as_ref()
+                .and_then(|status| status.authenticated),
+            Some(true)
+        );
         if !authenticated {
             return Err(kube::Error::Api(
                 kube::core::Status::failure(
@@ -470,34 +471,30 @@ mod tests {
 
     #[cfg(not(feature = "k8s"))]
     #[test]
-    fn metrics_access_controller_rejects_non_ascii_bearer_authorization() {
+    fn metrics_access_controller_rejects_non_ascii_bearer_authorization() -> anyhow::Result<()> {
         let controller = MetricsAccessController::new();
         let config = bearer_metrics_config("secret");
         let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
-        );
+        headers.insert(AUTHORIZATION, HeaderValue::from_bytes(&[0xff])?);
 
         let result = controller.authorize(&config, &headers, "/metrics", "GET");
 
         assert_eq!(result, Err(MetricsAccessError::Unauthorized));
+        Ok(())
     }
 
     #[cfg(not(feature = "k8s"))]
     #[test]
-    fn metrics_access_controller_rejects_non_ascii_basic_authorization() {
+    fn metrics_access_controller_rejects_non_ascii_basic_authorization() -> anyhow::Result<()> {
         let controller = MetricsAccessController::new();
         let config = basic_metrics_config("metrics", "secret");
         let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
-        );
+        headers.insert(AUTHORIZATION, HeaderValue::from_bytes(&[0xff])?);
 
         let result = controller.authorize(&config, &headers, "/metrics", "GET");
 
         assert_eq!(result, Err(MetricsAccessError::Unauthorized));
+        Ok(())
     }
 
     #[cfg(feature = "k8s")]
@@ -520,37 +517,35 @@ mod tests {
 
     #[cfg(feature = "k8s")]
     #[tokio::test]
-    async fn metrics_access_controller_rejects_non_ascii_bearer_authorization() {
+    async fn metrics_access_controller_rejects_non_ascii_bearer_authorization() -> anyhow::Result<()>
+    {
         let controller = MetricsAccessController::new();
         let config = bearer_metrics_config("secret");
         let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
-        );
+        headers.insert(AUTHORIZATION, HeaderValue::from_bytes(&[0xff])?);
 
         let result = controller
             .authorize(&config, &headers, "/metrics", "GET")
             .await;
 
         assert_eq!(result, Err(MetricsAccessError::Unauthorized));
+        Ok(())
     }
 
     #[cfg(feature = "k8s")]
     #[tokio::test]
-    async fn metrics_access_controller_rejects_non_ascii_basic_authorization() {
+    async fn metrics_access_controller_rejects_non_ascii_basic_authorization() -> anyhow::Result<()>
+    {
         let controller = MetricsAccessController::new();
         let config = basic_metrics_config("metrics", "secret");
         let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
-        );
+        headers.insert(AUTHORIZATION, HeaderValue::from_bytes(&[0xff])?);
 
         let result = controller
             .authorize(&config, &headers, "/metrics", "GET")
             .await;
 
         assert_eq!(result, Err(MetricsAccessError::Unauthorized));
+        Ok(())
     }
 }

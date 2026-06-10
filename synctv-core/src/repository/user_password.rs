@@ -107,8 +107,23 @@ impl TryFrom<UserWithPasswordCredentialRow> for UserWithPasswordCredential {
         let user = row.to_user();
         let user_id = row.id;
         let user_created_at = row.created_at;
-        let changed_at = row.changed_at;
-        let credential_version = row.credential_version;
+        let credential_state = match (row.changed_at, row.credential_version) {
+            (Some(changed_at), Some(version)) => PasswordCredentialState {
+                user_id,
+                changed_at,
+                version,
+            },
+            (None, None) => PasswordCredentialState {
+                user_id,
+                changed_at: user_created_at,
+                version: 0,
+            },
+            _ => {
+                return Err(Error::Internal(
+                    "Incomplete password credential state".to_string(),
+                ));
+            }
+        };
         let opaque = match (
             row.opaque_record,
             row.opaque_credential_identifier,
@@ -134,12 +149,8 @@ impl TryFrom<UserWithPasswordCredentialRow> for UserWithPasswordCredential {
         };
 
         Ok(Self {
-            credential_state: PasswordCredentialState {
-                user_id,
-                changed_at: changed_at.unwrap_or(user_created_at),
-                version: credential_version.unwrap_or(0),
-            },
             user,
+            credential_state,
             opaque,
         })
     }

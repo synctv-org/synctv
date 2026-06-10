@@ -109,8 +109,7 @@ pub struct PreparedPlaybackStateFanout {
 impl PreparedPlaybackStateFanout {
     #[must_use]
     pub fn outbox_factory(&self) -> RealtimeOutboxPlaybackStateEventFactory {
-        let factory = self.prepared.outbox_factory();
-        Arc::new(move |state| factory(state))
+        self.prepared.outbox_factory()
     }
 
     pub fn publish_after_outbox_commit(&self) {
@@ -197,6 +196,12 @@ mod tests {
     use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
     use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
+    }
+
     #[derive(Default)]
     struct RecordingRealtimeFanout {
         published: AtomicUsize,
@@ -207,10 +212,9 @@ mod tests {
     impl RealtimeFanoutService for RecordingRealtimeFanout {
         async fn try_publish(&self, request: PublishRequest) -> bool {
             self.published.fetch_add(1, Ordering::SeqCst);
-            *self
-                .events
-                .lock()
-                .expect("event mutex should not be poisoned") = vec![request.event];
+            if let Ok(mut events) = self.events.lock() {
+                *events = vec![request.event];
+            }
             true
         }
 
@@ -229,10 +233,9 @@ mod tests {
 
         fn publish_after_outbox_commit(&self, event: RealtimeEvent) {
             self.published.fetch_add(1, Ordering::SeqCst);
-            self.events
-                .lock()
-                .expect("event mutex should not be poisoned")
-                .push(event);
+            if let Ok(mut events) = self.events.lock() {
+                events.push(event);
+            }
         }
 
         fn is_distributed_enabled(&self) -> bool {
@@ -264,14 +267,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_playback_fanout_publishes_prepared_state_changed_event_after_commit() {
+    async fn test_playback_fanout_publishes_prepared_state_changed_event_after_commit() -> TestResult
+    {
         let realtime = Arc::new(RecordingRealtimeFanout::default());
         let service = default_playback_fanout_service(realtime.clone());
         let actor = PlaybackFanoutActor::new(UserId::expect_positive(160_003), "alice");
         let prepared = service.prepare_state_changed_outbox_fanout(actor);
         let factory = prepared.outbox_factory();
 
-        let outbox_event = factory(&playback_state()).expect("outbox event should be prepared");
+        let outbox_event = factory(&playback_state())?;
         assert!(!outbox_event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
 
@@ -283,16 +287,15 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
-        .await
-        .expect("playback fanout should publish");
+        .await?;
 
         let event = realtime
             .events
             .lock()
-            .expect("event mutex should not be poisoned")
+            .map_err(|_| test_error("event mutex should not be poisoned"))?
             .first()
             .cloned()
-            .expect("published event should be recorded");
+            .ok_or_else(|| test_error("published event should be recorded"))?;
         match event {
             RealtimeEvent::PlaybackStateChanged {
                 user_id,
@@ -304,21 +307,24 @@ mod tests {
                 assert_eq!(username, "alice");
                 assert_eq!(state.version, 7);
             }
-            other => panic!("expected PlaybackStateChanged, got {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "expected PlaybackStateChanged, got {other:?}"
+                )))
+            }
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_playback_batch_fanout_publishes_all_prepared_events_after_commit() {
+    async fn test_playback_batch_fanout_publishes_all_prepared_events_after_commit() -> TestResult {
         let realtime = Arc::new(RecordingRealtimeFanout::default());
         let service = default_playback_fanout_service(realtime.clone());
         let prepared = service.prepare_system_state_changed_batch_outbox_fanout();
         let factory = prepared.outbox_factory();
 
-        let first_event = factory(&playback_state_with_version(7))
-            .expect("first batch outbox event should prepare");
-        let second_event = factory(&playback_state_with_version(8))
-            .expect("second batch outbox event should prepare");
+        let first_event = factory(&playback_state_with_version(7))?;
+        let second_event = factory(&playback_state_with_version(8))?;
         assert_eq!(first_event.event_type, "playback_state_changed");
         assert_eq!(second_event.event_type, "playback_state_changed");
         assert_eq!(realtime.published.load(Ordering::SeqCst), 0);
@@ -329,13 +335,16 @@ mod tests {
         let versions = realtime
             .events
             .lock()
-            .expect("event mutex should not be poisoned")
+            .map_err(|_| test_error("event mutex should not be poisoned"))?
             .iter()
             .map(|event| match event {
-                RealtimeEvent::PlaybackStateChanged { state, .. } => state.version,
-                other => panic!("expected PlaybackStateChanged, got {other:?}"),
+                RealtimeEvent::PlaybackStateChanged { state, .. } => Ok(state.version),
+                other => Err(test_error(format!(
+                    "expected PlaybackStateChanged, got {other:?}"
+                ))),
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(versions, vec![7, 8]);
+        Ok(())
     }
 }

@@ -38,7 +38,7 @@ use super::ApiError;
 pub struct OAuth2ApiImpl {
     pub oauth2_service: Arc<OAuth2Service>,
     pub user_service: Arc<UserService>,
-    public_id_codec: Arc<crate::PublicIdCodec>,
+    public_id_codec: Arc<synctv_core::PublicIdCodec>,
 }
 
 struct UnlinkProviderPlan {
@@ -302,7 +302,7 @@ impl OAuth2ApiImpl {
     pub fn new(
         oauth2_service: Arc<OAuth2Service>,
         user_service: Arc<UserService>,
-        public_id_codec: Arc<crate::PublicIdCodec>,
+        public_id_codec: Arc<synctv_core::PublicIdCodec>,
     ) -> Self {
         Self {
             oauth2_service,
@@ -787,7 +787,7 @@ impl OAuth2ApiImpl {
             .map(|mapping| LinkedProviderInfo {
                 provider_type: mapping.provider,
                 provider_instance_name: mapping.provider_instance_name,
-                provider_issuer: mapping.provider_issuer.unwrap_or_default(),
+                provider_issuer: mapping.provider_issuer,
                 provider_user_id: mapping.provider_user_id,
                 provider_username: mapping.username,
                 linked_at: mapping.created_at.timestamp(),
@@ -842,7 +842,7 @@ pub struct UnlinkResult {
 pub struct LinkedProviderInfo {
     pub provider_type: String,
     pub provider_instance_name: String,
-    pub provider_issuer: String,
+    pub provider_issuer: Option<String>,
     pub provider_user_id: String,
     pub provider_username: String,
     pub linked_at: i64, // Unix timestamp (seconds)
@@ -852,7 +852,7 @@ pub struct LinkedProviderInfo {
 fn user_to_oauth2_user_info(
     user: &User,
     email: Option<&str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<OAuth2UserInfo, ApiError> {
     use synctv_proto::common::{UserRole as ProtoUserRole, UserStatus as ProtoUserStatus};
 
@@ -916,6 +916,16 @@ mod tests {
         GetAuthorizationUrlRequest, OAuth2UserInfo, UnlinkProviderRequest,
     };
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn api_ok<T>(result: Result<T, ApiError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("{error:?}")))
+    }
+
     fn oauth_user_info() -> OAuth2UserInfo {
         OAuth2UserInfo {
             user_id: "user_1".to_string(),
@@ -929,9 +939,9 @@ mod tests {
     }
 
     #[test]
-    fn exchange_code_result_to_proto_returns_login_payload() {
-        let response =
-            super::OAuth2ApiImpl::exchange_code_result_to_proto(super::ExchangeCodeResult {
+    fn exchange_code_result_to_proto_returns_login_payload() -> TestResult {
+        let response = api_ok(super::OAuth2ApiImpl::exchange_code_result_to_proto(
+            super::ExchangeCodeResult {
                 access_token: Some("access".to_string()),
                 refresh_token: Some("refresh".to_string()),
                 expires_in: 3600,
@@ -940,8 +950,8 @@ mod tests {
                 is_bind: false,
                 registration_review_required: false,
                 registration_review_id: None,
-            })
-            .expect("complete login response should convert");
+            },
+        ))?;
 
         assert_eq!(response.access_token.as_deref(), Some("access"));
         assert_eq!(response.refresh_token.as_deref(), Some("refresh"));
@@ -950,12 +960,13 @@ mod tests {
             response.redirect_url.as_deref(),
             Some("https://app.example.test/callback")
         );
+        Ok(())
     }
 
     #[test]
-    fn exchange_code_result_to_proto_returns_bind_payload() {
-        let response =
-            super::OAuth2ApiImpl::exchange_code_result_to_proto(super::ExchangeCodeResult {
+    fn exchange_code_result_to_proto_returns_bind_payload() -> TestResult {
+        let response = api_ok(super::OAuth2ApiImpl::exchange_code_result_to_proto(
+            super::ExchangeCodeResult {
                 access_token: None,
                 refresh_token: None,
                 expires_in: 0,
@@ -964,19 +975,20 @@ mod tests {
                 is_bind: true,
                 registration_review_required: false,
                 registration_review_id: None,
-            })
-            .expect("bind response should convert");
+            },
+        ))?;
 
         assert!(response.access_token.is_none());
         assert!(response.refresh_token.is_none());
         assert!(response.user_info.is_none());
         assert!(response.is_bind);
+        Ok(())
     }
 
     #[test]
-    fn exchange_code_result_to_proto_returns_review_payload() {
-        let response =
-            super::OAuth2ApiImpl::exchange_code_result_to_proto(super::ExchangeCodeResult {
+    fn exchange_code_result_to_proto_returns_review_payload() -> TestResult {
+        let response = api_ok(super::OAuth2ApiImpl::exchange_code_result_to_proto(
+            super::ExchangeCodeResult {
                 access_token: None,
                 refresh_token: None,
                 expires_in: 0,
@@ -985,13 +997,14 @@ mod tests {
                 is_bind: false,
                 registration_review_required: true,
                 registration_review_id: Some("review_1".to_string()),
-            })
-            .expect("review response should convert");
+            },
+        ))?;
 
         assert!(response.access_token.is_none());
         assert!(response.refresh_token.is_none());
         assert!(response.registration_review_required);
         assert_eq!(response.registration_review_id.as_deref(), Some("review_1"));
+        Ok(())
     }
 
     #[test]
@@ -1256,7 +1269,7 @@ mod tests {
         let proto: synctv_proto::client::LinkedProvider = super::LinkedProviderInfo {
             provider_type: "github".to_string(),
             provider_instance_name: "github-main".to_string(),
-            provider_issuer: "https://github.com".to_string(),
+            provider_issuer: Some("https://github.com".to_string()),
             provider_user_id: "gh_123".to_string(),
             provider_username: "alice".to_string(),
             linked_at: 1_700_000_000,
@@ -1265,7 +1278,23 @@ mod tests {
 
         assert_eq!(proto.provider_type, "github");
         assert_eq!(proto.provider_instance_name, "github-main");
+        assert_eq!(proto.provider_issuer.as_deref(), Some("https://github.com"));
         assert_eq!(proto.provider_user_id, "gh_123");
         assert_eq!(proto.provider_username, "alice");
+    }
+
+    #[test]
+    fn test_linked_provider_proto_preserves_missing_provider_issuer() {
+        let proto: synctv_proto::client::LinkedProvider = super::LinkedProviderInfo {
+            provider_type: "github".to_string(),
+            provider_instance_name: "github-main".to_string(),
+            provider_issuer: None,
+            provider_user_id: "gh_123".to_string(),
+            provider_username: "alice".to_string(),
+            linked_at: 1_700_000_000,
+        }
+        .into();
+
+        assert!(proto.provider_issuer.is_none());
     }
 }

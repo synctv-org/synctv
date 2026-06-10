@@ -4,7 +4,6 @@
 //! loading all members into memory. This is critical for rooms with large
 //! numbers of members.
 //!
-#![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
 use synctv_core::{
@@ -15,6 +14,7 @@ use synctv_core::{
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
 };
 use synctv_core_testing::create_test_pool;
+use synctv_core_testing::TestResultExt;
 
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -69,28 +69,31 @@ async fn test_list_by_room_paginated_first_page() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_page1")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_page1"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Pagination", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add owner as creator
     member_repo
         .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add 25 regular members
     for i in 0..25 {
         let user = user_repo
             .create(&make_user(&format!("member_page1_{i:02}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         member_repo
             .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         // Small delay to ensure distinct joined_at for stable ordering
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
     }
@@ -102,7 +105,7 @@ async fn test_list_by_room_paginated_first_page() {
     let (members, total) = member_repo
         .list_by_room_paginated(&room.id, pagination)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(
         total, 26,
@@ -119,27 +122,30 @@ async fn test_list_by_room_paginated_second_page() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_page2")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_page2"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Pagination 2", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add 25 regular members
     for i in 0..25 {
         let user = user_repo
             .create(&make_user(&format!("member_page2_{i:02}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         member_repo
             .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
     }
 
@@ -148,7 +154,7 @@ async fn test_list_by_room_paginated_second_page() {
     let (members, total) = member_repo
         .list_by_room_paginated(&room.id, pagination)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(total, 26);
     assert_eq!(members.len(), 10, "Second page should have 10 members");
@@ -162,27 +168,30 @@ async fn test_list_by_room_paginated_last_page_partial() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_page3")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_page3"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Pagination 3", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add 25 regular members
     for i in 0..25 {
         let user = user_repo
             .create(&make_user(&format!("member_page3_{i:02}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         member_repo
             .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
     }
 
@@ -191,7 +200,7 @@ async fn test_list_by_room_paginated_last_page_partial() {
     let (members, total) = member_repo
         .list_by_room_paginated(&room.id, pagination)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(total, 26);
     assert_eq!(
@@ -209,16 +218,19 @@ async fn test_list_by_room_paginated_empty_page() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_empty")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_empty"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Empty Page", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Only 1 member, requesting page 2 should return an empty page while
     // preserving the total number of matching members.
@@ -226,7 +238,7 @@ async fn test_list_by_room_paginated_empty_page() {
     let (members, total) = member_repo
         .list_by_room_paginated(&room.id, pagination)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(total, 1, "Total should reflect all matching members");
     assert!(members.is_empty(), "Page 2 should be empty");
@@ -240,27 +252,30 @@ async fn test_list_by_room_paginated_no_overlap_between_pages() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_overlap")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_overlap"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Overlap", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add 35 members (total 36)
     for i in 0..35 {
         let user = user_repo
             .create(&make_user(&format!("member_overlap_{i:02}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         member_repo
             .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
     }
 
@@ -273,19 +288,19 @@ async fn test_list_by_room_paginated_no_overlap_between_pages() {
     let (members1, _) = member_repo
         .list_by_room_paginated(&room.id, page1)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (members2, _) = member_repo
         .list_by_room_paginated(&room.id, page2)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (members3, _) = member_repo
         .list_by_room_paginated(&room.id, page3)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (members4, _) = member_repo
         .list_by_room_paginated(&room.id, page4)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Collect all user IDs
     let ids1: std::collections::HashSet<_> = members1.iter().map(|m| m.user_id).collect();
@@ -325,54 +340,57 @@ async fn test_list_by_room_paginated_large_member_count() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_large")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_large"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Large", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add 150 members (a realistic large room scenario)
     for i in 0..150 {
         let user = user_repo
             .create(&make_user(&format!("member_large_{i:03}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         member_repo
             .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     }
 
     let (p1, total1) = member_repo
         .list_by_room_paginated(&room.id, PageParams::new(Some(1), Some(50)))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(total1, 151);
     assert_eq!(p1.len(), 50);
 
     let (p2, total2) = member_repo
         .list_by_room_paginated(&room.id, PageParams::new(Some(2), Some(50)))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(total2, 151);
     assert_eq!(p2.len(), 50);
 
     let (p3, total3) = member_repo
         .list_by_room_paginated(&room.id, PageParams::new(Some(3), Some(50)))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(total3, 151);
     assert_eq!(p3.len(), 50);
 
     let (p4, total4) = member_repo
         .list_by_room_paginated(&room.id, PageParams::new(Some(4), Some(50)))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(total4, 151);
     assert_eq!(p4.len(), 1);
 }
@@ -385,16 +403,19 @@ async fn test_list_by_room_paginated_excludes_left_members() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("owner_removed")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("owner_removed"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Removed", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add 5 active members
     let mut active_users = Vec::new();
@@ -402,11 +423,11 @@ async fn test_list_by_room_paginated_excludes_left_members() {
         let user = user_repo
             .create(&make_user(&format!("active_{i}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         member_repo
             .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         active_users.push(user);
     }
 
@@ -416,24 +437,27 @@ async fn test_list_by_room_paginated_excludes_left_members() {
         let user = user_repo
             .create(&make_user(&format!("removed_{i}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         member_repo
             .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         removed_users.push(user);
     }
 
     // Remove those members
     for user in &removed_users {
-        member_repo.remove(&room.id, &user.id).await.unwrap();
+        member_repo
+            .remove(&room.id, &user.id)
+            .await
+            .checked("test operation should succeed");
     }
 
     // Paginated query should only return active members (1 creator + 5 active = 6)
     let (members, total) = member_repo
         .list_by_room_paginated(&room.id, PageParams::new(Some(1), Some(20)))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(total, 6, "Total should only count active members");
     assert_eq!(members.len(), 6);
@@ -460,27 +484,27 @@ async fn test_list_by_room_paginated_counts_active_only_after_removals() {
     let owner = user_repo
         .create(&make_user("owner_removed_count"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Room Removed Count", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     member_repo
         .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add 5 active members
     for i in 0..5 {
         let user = user_repo
             .create(&make_user(&format!("active_banned_{i}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         member_repo
             .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     }
 
     // Add 2 members who will be removed
@@ -489,24 +513,27 @@ async fn test_list_by_room_paginated_counts_active_only_after_removals() {
         let user = user_repo
             .create(&make_user(&format!("removed_count_{i}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         member_repo
             .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         removed_users.push(user);
     }
 
     // Remove these members
     for user in &removed_users {
-        member_repo.remove(&room.id, &user.id).await.unwrap();
+        member_repo
+            .remove(&room.id, &user.id)
+            .await
+            .checked("test operation should succeed");
     }
 
     // Paginated query should only return active members (1 creator + 5 active = 6)
     let (_members, total) = member_repo
         .list_by_room_paginated(&room.id, PageParams::new(Some(1), Some(20)))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(total, 6, "Total should only count active members");
 }
@@ -522,16 +549,16 @@ async fn test_list_by_room_paginated_empty_room() {
     let owner = user_repo
         .create(&make_user("owner_empty_room"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Empty Room", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (members, total) = member_repo
         .list_by_room_paginated(&room.id, PageParams::new(Some(1), Some(20)))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(total, 0);
     assert!(members.is_empty());

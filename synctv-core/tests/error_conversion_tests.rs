@@ -2,10 +2,22 @@
 //!
 //! Tests Error -> `tonic::Status` conversions, `InternalExt` trait, and
 //! the error Display formatting that is exposed to gRPC clients.
-//!
-#![allow(clippy::unwrap_used)]
 
 use synctv_core::Error;
+
+fn ok<T, E: std::fmt::Debug>(result: Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error:?}")),
+    }
+}
+
+fn err<T: std::fmt::Debug, E>(result: Result<T, E>, context: &str) -> E {
+    match result {
+        Ok(value) => std::panic::panic_any(format!("{context}: {value:?}")),
+        Err(error) => error,
+    }
+}
 
 // Error -> tonic::Status mapping
 
@@ -85,7 +97,10 @@ fn test_internal_error_does_not_leak_details() {
 
 #[test]
 fn test_serialization_error_maps_to_internal() {
-    let err = serde_json::from_str::<serde_json::Value>("not valid json").unwrap_err();
+    let err = err(
+        serde_json::from_str::<serde_json::Value>("not valid json"),
+        "invalid json should fail",
+    );
     let status: tonic::Status = Error::Serialization(err).into();
     assert_eq!(status.code(), tonic::Code::Internal);
 }
@@ -98,9 +113,9 @@ fn test_internal_ext_maps_error() {
 
     let mapped = result.internal("Failed to write file");
     assert!(mapped.is_err());
-    match mapped.unwrap_err() {
+    match err(mapped, "internal mapping should fail") {
         Error::Internal(msg) => assert_eq!(msg, "Failed to write file"),
-        other => panic!("Expected Internal, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected Internal, got: {other:?}")),
     }
 }
 
@@ -115,12 +130,12 @@ fn test_internal_ext_with_err_includes_cause() {
 
     let mapped = result.internal_with_err("Failed to read config");
     assert!(mapped.is_err());
-    match mapped.unwrap_err() {
+    match err(mapped, "internal_with_err mapping should fail") {
         Error::Internal(msg) => {
             assert!(msg.contains("Failed to read config"));
             assert!(msg.contains("access denied"));
         }
-        other => panic!("Expected Internal, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected Internal, got: {other:?}")),
     }
 }
 
@@ -130,7 +145,7 @@ fn test_internal_ext_preserves_ok() {
 
     let result: Result<i32, std::io::Error> = Ok(42);
     let mapped = result.internal("should not happen");
-    assert_eq!(mapped.unwrap(), 42);
+    assert_eq!(ok(mapped, "internal mapping should preserve Ok"), 42);
 }
 
 // From<anyhow::Error> preserves error chain
@@ -152,6 +167,6 @@ fn test_anyhow_error_preserves_chain() {
                 "Should contain root cause: {msg}"
             );
         }
-        other => panic!("Expected Internal, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected Internal, got: {other:?}")),
     }
 }

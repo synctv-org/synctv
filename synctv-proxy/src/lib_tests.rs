@@ -1,12 +1,27 @@
 use super::*;
+use crate::manifest::{make_absolute, rewrite_uri_attribute_with_count};
+use crate::redirect::{send_with_redirect_validation, REDIRECT_PRESERVE_HEADERS};
 use axum::http::StatusCode;
 use http_body_util::BodyExt;
 
-fn test_proxy_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("test proxy client should build")
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+fn test_proxy_client() -> Result<reqwest::Client, reqwest::Error> {
+    proxy_client_builder().build()
+}
+
+fn proxy_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+}
+
+fn require_proxy_err<T>(
+    result: anyhow::Result<T>,
+    message: &'static str,
+) -> Result<anyhow::Error, Box<dyn std::error::Error>> {
+    match result {
+        Ok(_) => Err(message.into()),
+        Err(error) => Ok(error),
+    }
 }
 
 #[test]
@@ -34,25 +49,135 @@ fn test_make_absolute_already_absolute() {
 }
 
 #[test]
-fn test_make_absolute_relative() {
-    let base = url::Url::parse("https://cdn.example.com/path/master.m3u8").unwrap();
+fn test_make_absolute_relative() -> TestResult {
+    let base = url::Url::parse("https://cdn.example.com/path/master.m3u8")?;
     assert_eq!(
         make_absolute("seg1.ts", Some(&base)),
         "https://cdn.example.com/path/seg1.ts"
     );
+    Ok(())
 }
 
 #[test]
-fn test_rewrite_m3u8_basic() {
+fn test_make_absolute_no_base_returns_raw() {
+    assert_eq!(make_absolute("seg1.ts", None), "seg1.ts");
+}
+
+#[test]
+fn test_make_absolute_root_relative() -> TestResult {
+    let base = url::Url::parse("https://cdn.example.com/path/master.m3u8")?;
+    assert_eq!(
+        make_absolute("/other/seg1.ts", Some(&base)),
+        "https://cdn.example.com/other/seg1.ts"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_make_absolute_protocol_relative() -> TestResult {
+    let base = url::Url::parse("https://cdn.example.com/hls/master.m3u8")?;
+    let result = make_absolute("//other.cdn.com/seg.ts", Some(&base));
+    assert!(result.contains("other.cdn.com/seg.ts"));
+    Ok(())
+}
+
+#[test]
+fn test_make_absolute_parent_directory() -> TestResult {
+    let base = url::Url::parse("https://cdn.example.com/hls/stream/master.m3u8")?;
+    assert_eq!(
+        make_absolute("../init.mp4", Some(&base)),
+        "https://cdn.example.com/hls/init.mp4"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_make_absolute_deep_relative() -> TestResult {
+    let base = url::Url::parse("https://cdn.example.com/a/b/c/master.m3u8")?;
+    assert_eq!(
+        make_absolute("d/seg.ts", Some(&base)),
+        "https://cdn.example.com/a/b/c/d/seg.ts"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_make_absolute_with_traversal() -> TestResult {
+    let base = url::Url::parse("https://cdn.example.com/hls/stream/master.m3u8")?;
+
+    assert_eq!(
+        make_absolute("../secret.ts", Some(&base)),
+        "https://cdn.example.com/hls/secret.ts"
+    );
+
+    let result = make_absolute("../../../../etc/passwd", Some(&base));
+    assert!(result.starts_with("https://cdn.example.com/"));
+    assert!(!result.contains(".."));
+    Ok(())
+}
+
+#[test]
+fn test_make_absolute_scheme_injection() -> TestResult {
+    let base = url::Url::parse("https://cdn.example.com/hls/master.m3u8")?;
+    assert_eq!(
+        make_absolute("file:///etc/passwd", Some(&base)),
+        "file:///etc/passwd"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_rewrite_uri_single_uri() -> TestResult {
+    let base = url::Url::parse("https://cdn.example.com/hls/master.m3u8")?;
+    let (result, count) = rewrite_uri_attribute_with_count(
+        "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"",
+        Some(&base),
+        "/proxy",
+    );
+    assert_eq!(count, 1);
+    assert!(result.contains("URI=\"/proxy?url="));
+    assert!(result.contains("cdn%2Eexample%2Ecom"));
+    Ok(())
+}
+
+#[test]
+fn test_rewrite_uri_multiple_uris() -> TestResult {
+    let base = url::Url::parse("https://cdn.example.com/hls/master.m3u8")?;
+    let line =
+        "#EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"key1.bin\",KEYFORMAT=\"urn\",URI=\"key2.bin\"";
+    let (result, count) = rewrite_uri_attribute_with_count(line, Some(&base), "/proxy");
+    assert_eq!(count, 2);
+    assert_eq!(result.match_indices("/proxy?url=").count(), 2);
+    Ok(())
+}
+
+#[test]
+fn test_rewrite_uri_malformed_no_closing_quote() {
+    let (result, count) =
+        rewrite_uri_attribute_with_count("#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin", None, "/proxy");
+    assert_eq!(count, 0);
+    assert!(result.contains("URI=\""));
+    assert!(result.contains("key.bin"));
+}
+
+#[test]
+fn test_rewrite_uri_no_uri_attribute() {
+    let (result, count) = rewrite_uri_attribute_with_count("#EXT-X-VERSION:3", None, "/proxy");
+    assert_eq!(count, 0);
+    assert_eq!(result, "#EXT-X-VERSION:3");
+}
+
+#[test]
+fn test_rewrite_m3u8_basic() -> TestResult {
     let m3u8 = "#EXTM3U\n#EXT-X-VERSION:3\nseg1.ts\nseg2.ts\n";
     let rewritten = rewrite_m3u8(
         m3u8,
         "https://cdn.example.com/path/master.m3u8",
         "/proxy/stream",
-    )
-    .unwrap();
+    )?;
     assert!(rewritten.contains("/proxy/stream?url="));
     assert!(rewritten.contains("cdn%2Eexample%2Ecom"));
+    Ok(())
 }
 
 #[test]
@@ -81,32 +206,34 @@ fn test_rewrite_m3u8_rejects_newline_in_proxy_base() {
 }
 
 #[test]
-fn test_ssrf_acl_blocks_private_ips() {
+fn test_ssrf_acl_blocks_private_ips() -> TestResult {
     use std::net::IpAddr;
     let blocked: &[&str] = &["127.0.0.1", "192.168.1.1", "10.0.0.1"];
     for ip_str in blocked {
-        let ip: IpAddr = ip_str.parse().unwrap();
+        let ip: IpAddr = ip_str.parse()?;
         assert!(
             synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
             "strict SSRF policy should block {ip}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn test_ssrf_acl_allows_public_ips() {
+fn test_ssrf_acl_allows_public_ips() -> TestResult {
     use std::net::IpAddr;
     let guard = synctv_common::ssrf::SsrfGuard::strict_policy();
     let allowed: &[&str] = &["1.1.1.1", "8.8.8.8"];
     for ip_str in allowed {
-        let ip: IpAddr = ip_str.parse().unwrap();
+        let ip: IpAddr = ip_str.parse()?;
         assert!(!guard.is_ip_blocked(&ip), "IP {ip} should be allowed");
     }
+    Ok(())
 }
 
 #[test]
-fn test_proxy_ssrf_rejects_hostname_non_default_ports() {
-    let url = url::Url::parse("https://public.example:25/video.mp4").unwrap();
+fn test_proxy_ssrf_rejects_hostname_non_default_ports() -> TestResult {
+    let url = url::Url::parse("https://public.example:25/video.mp4")?;
     let err =
         validate_target_url_against_ssrf(&url, &synctv_common::ssrf::SsrfGuard::strict_policy())
             .expect_err("strict SSRF policy should reject disallowed hostname ports");
@@ -115,21 +242,22 @@ fn test_proxy_ssrf_rejects_hostname_non_default_ports() {
         err.to_string().contains("target port `25` is blocked"),
         "unexpected SSRF error: {err}"
     );
+    Ok(())
 }
 
 #[test]
-fn test_proxy_ssrf_allows_hostname_default_ports() {
-    let url = url::Url::parse("https://public.example/video.mp4").unwrap();
-    validate_target_url_against_ssrf(&url, &synctv_common::ssrf::SsrfGuard::strict_policy())
-        .expect("strict SSRF policy should allow default HTTPS ports for public hostnames");
+fn test_proxy_ssrf_allows_hostname_default_ports() -> TestResult {
+    let url = url::Url::parse("https://public.example/video.mp4")?;
+    validate_target_url_against_ssrf(&url, &synctv_common::ssrf::SsrfGuard::strict_policy())?;
+    Ok(())
 }
 
 // URL scheme validation tests
 
 #[tokio::test]
-async fn test_proxy_fetch_rejects_file_scheme() {
+async fn test_proxy_fetch_rejects_file_scheme() -> TestResult {
     let provider_headers = HashMap::new();
-    let client = test_proxy_client();
+    let client = test_proxy_client()?;
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
     let cfg = ProxyConfig {
         ssrf_guard: &ssrf_guard,
@@ -143,18 +271,19 @@ async fn test_proxy_fetch_rejects_file_scheme() {
 
     let result = proxy_fetch_and_forward_inner(cfg).await;
     assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = result.expect_err("invalid proxy URL scheme should fail");
     assert!(
         err.to_string()
             .contains("only http and https are supported"),
         "Expected invalid-request scheme rejection, got: {err}"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_proxy_fetch_rejects_ftp_scheme() {
+async fn test_proxy_fetch_rejects_ftp_scheme() -> TestResult {
     let provider_headers = HashMap::new();
-    let client = test_proxy_client();
+    let client = test_proxy_client()?;
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
     let cfg = ProxyConfig {
         ssrf_guard: &ssrf_guard,
@@ -168,18 +297,19 @@ async fn test_proxy_fetch_rejects_ftp_scheme() {
 
     let result = proxy_fetch_and_forward_inner(cfg).await;
     assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = result.expect_err("invalid proxy URL scheme should fail");
     assert!(
         err.to_string()
             .contains("only http and https are supported"),
         "Expected invalid-request scheme rejection, got: {err}"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_proxy_fetch_rejects_javascript_scheme() {
+async fn test_proxy_fetch_rejects_javascript_scheme() -> TestResult {
     let provider_headers = HashMap::new();
-    let client = test_proxy_client();
+    let client = test_proxy_client()?;
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
     let cfg = ProxyConfig {
         ssrf_guard: &ssrf_guard,
@@ -193,18 +323,19 @@ async fn test_proxy_fetch_rejects_javascript_scheme() {
 
     let result = proxy_fetch_and_forward_inner(cfg).await;
     assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = result.expect_err("invalid proxy URL scheme should fail");
     assert!(
         err.to_string()
             .contains("only http and https are supported"),
         "Expected invalid-request scheme rejection, got: {err}"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_proxy_fetch_rejects_data_scheme() {
+async fn test_proxy_fetch_rejects_data_scheme() -> TestResult {
     let provider_headers = HashMap::new();
-    let client = test_proxy_client();
+    let client = test_proxy_client()?;
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
     let cfg = ProxyConfig {
         ssrf_guard: &ssrf_guard,
@@ -218,16 +349,17 @@ async fn test_proxy_fetch_rejects_data_scheme() {
 
     let result = proxy_fetch_and_forward_inner(cfg).await;
     assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = result.expect_err("invalid proxy URL scheme should fail");
     assert!(
         err.to_string()
             .contains("only http and https are supported"),
         "Expected invalid-request scheme rejection, got: {err}"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_proxy_fetch_ignores_outer_deadline_for_body_lifetime() {
+async fn test_proxy_fetch_ignores_outer_deadline_for_body_lifetime() -> TestResult {
     let server = wiremock::MockServer::start().await;
     let public_origin = format!("http://cdn.example.com:{}", server.address().port());
 
@@ -241,11 +373,9 @@ async fn test_proxy_fetch_ignores_outer_deadline_for_body_lifetime() {
         .mount(&server)
         .await;
 
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+    let client = proxy_client_builder()
         .resolve("cdn.example.com", *server.address())
-        .build()
-        .expect("client should build");
+        .build()?;
     let provider_headers = HashMap::new();
     let request_control = ExecutionControl::from_timeout(Some(Duration::from_millis(50)));
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
@@ -259,14 +389,13 @@ async fn test_proxy_fetch_ignores_outer_deadline_for_body_lifetime() {
         upstream_header_timeout: None,
     };
 
-    let response = proxy_fetch_and_forward(cfg, &NoopMetrics)
-        .await
-        .expect("proxy fetch should not inherit the outer request deadline");
+    let response = proxy_fetch_and_forward(cfg, &NoopMetrics).await?;
     assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_proxy_head_and_forward_applies_upstream_header_timeout() {
+async fn test_proxy_head_and_forward_applies_upstream_header_timeout() -> TestResult {
     let server = wiremock::MockServer::start().await;
     let public_origin = format!("http://cdn.example.com:{}", server.address().port());
 
@@ -276,11 +405,9 @@ async fn test_proxy_head_and_forward_applies_upstream_header_timeout() {
         .mount(&server)
         .await;
 
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+    let client = proxy_client_builder()
         .resolve("cdn.example.com", *server.address())
-        .build()
-        .expect("client should build");
+        .build()?;
     let provider_headers = HashMap::new();
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
     let cfg = ProxyConfig {
@@ -298,10 +425,11 @@ async fn test_proxy_head_and_forward_applies_upstream_header_timeout() {
         .expect_err("HEAD proxy should enforce upstream header timeout");
 
     assert_eq!(proxy_error_kind(&err), Some(ProxyErrorKind::Timeout));
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_proxy_fetch_preserves_content_encoding_for_byte_transparent_body() {
+async fn test_proxy_fetch_preserves_content_encoding_for_byte_transparent_body() -> TestResult {
     let server = wiremock::MockServer::start().await;
     let public_origin = format!("http://cdn.example.com:{}", server.address().port());
 
@@ -316,11 +444,9 @@ async fn test_proxy_fetch_preserves_content_encoding_for_byte_transparent_body()
         .mount(&server)
         .await;
 
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+    let client = proxy_client_builder()
         .resolve("cdn.example.com", *server.address())
-        .build()
-        .expect("client should build");
+        .build()?;
     let provider_headers = HashMap::new();
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
     let cfg = ProxyConfig {
@@ -333,9 +459,7 @@ async fn test_proxy_fetch_preserves_content_encoding_for_byte_transparent_body()
         upstream_header_timeout: None,
     };
 
-    let response = proxy_fetch_and_forward(cfg, &NoopMetrics)
-        .await
-        .expect("proxy fetch should succeed");
+    let response = proxy_fetch_and_forward(cfg, &NoopMetrics).await?;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response
@@ -344,6 +468,7 @@ async fn test_proxy_fetch_preserves_content_encoding_for_byte_transparent_body()
             .and_then(|value| value.to_str().ok()),
         Some("gzip")
     );
+    Ok(())
 }
 
 #[test]
@@ -427,7 +552,7 @@ async fn test_proxy_body_stream_preserves_typed_oversize_error() {
 }
 
 #[tokio::test]
-async fn test_send_with_redirect_validation_resolves_relative_location() {
+async fn test_send_with_redirect_validation_resolves_relative_location() -> TestResult {
     let server = wiremock::MockServer::start().await;
     let public_origin = format!("http://cdn.example.com:{}", server.address().port());
 
@@ -443,48 +568,38 @@ async fn test_send_with_redirect_validation_resolves_relative_location() {
         .mount(&server)
         .await;
 
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+    let client = proxy_client_builder()
         .resolve("cdn.example.com", *server.address())
-        .build()
-        .expect("client should build");
+        .build()?;
     let request = client.get(format!("{public_origin}/start"));
 
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let result = send_with_redirect_validation(&client, request, &ssrf_guard).await;
-    assert!(
-        result.is_ok(),
-        "relative redirects should resolve against original URL"
-    );
-
-    let proxy_response = result.expect("redirect should succeed");
+    let proxy_response = send_with_redirect_validation(&client, request, &ssrf_guard).await?;
     assert_eq!(proxy_response.response.status(), reqwest::StatusCode::OK);
-    let body = proxy_response
-        .response
-        .bytes()
-        .await
-        .expect("body should be readable");
+    let body = proxy_response.response.bytes().await?;
     assert_eq!(body.as_ref(), b"ok");
     assert!(proxy_response.followed_redirects);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_send_with_redirect_validation_dns_rebind_error_is_typed_ssrf() {
-    let client = build_proxy_http_client(synctv_common::ssrf::SsrfGuard::strict_policy())
-        .expect("strict proxy client should build");
+async fn test_send_with_redirect_validation_dns_rebind_error_is_typed_ssrf() -> TestResult {
+    let client = build_proxy_http_client(synctv_common::ssrf::SsrfGuard::strict_policy())?;
     let request = client.get("http://localhost/private");
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
 
-    let Err(err) = send_with_redirect_validation(&client, request, &ssrf_guard).await else {
-        panic!("DNS-level SSRF denial should fail");
-    };
+    let err = require_proxy_err(
+        send_with_redirect_validation(&client, request, &ssrf_guard).await,
+        "DNS-level SSRF denial should fail",
+    )?;
 
     assert_eq!(proxy_error_kind(&err), Some(ProxyErrorKind::Ssrf));
+    Ok(())
 }
 
 #[tokio::test]
 async fn test_send_with_redirect_validation_redirect_to_loopback_without_listener_fails_with_disabled_ssrf(
-) {
+) -> TestResult {
     let server = wiremock::MockServer::start().await;
 
     wiremock::Mock::given(wiremock::matchers::method("GET"))
@@ -496,127 +611,114 @@ async fn test_send_with_redirect_validation_redirect_to_loopback_without_listene
         .mount(&server)
         .await;
 
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client should build");
+    let client = test_proxy_client()?;
     let request = client.get(format!("{}/start", server.uri()));
 
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let result = send_with_redirect_validation(&client, request, &ssrf_guard).await;
-    let Err(err) = result else {
-        panic!("redirect to loopback without a listener must fail");
-    };
+    let err = require_proxy_err(
+        send_with_redirect_validation(&client, request, &ssrf_guard).await,
+        "redirect to loopback without a listener must fail",
+    )?;
     let proxy_err = err
         .downcast_ref::<ProxyError>()
-        .expect("error should downcast to ProxyError");
+        .ok_or("error should downcast to ProxyError")?;
     assert!(matches!(proxy_err, ProxyError::Connection(_)));
     assert!(
         proxy_err.to_string().contains("Connection failed"),
         "unexpected error: {proxy_err}"
     );
+    Ok(())
 }
 
 #[tokio::test]
 async fn test_send_with_redirect_validation_initial_loopback_fails_by_connection_with_disabled_ssrf(
-) {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client should build");
+) -> TestResult {
+    let client = test_proxy_client()?;
     let request = client.get("http://127.0.0.1:12345/private");
 
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let Err(err) = send_with_redirect_validation(&client, request, &ssrf_guard).await else {
-        panic!("initial loopback target without a listener must fail");
-    };
+    let err = require_proxy_err(
+        send_with_redirect_validation(&client, request, &ssrf_guard).await,
+        "initial loopback target without a listener must fail",
+    )?;
     let proxy_err = err
         .downcast_ref::<ProxyError>()
-        .expect("error should downcast to ProxyError");
+        .ok_or("error should downcast to ProxyError")?;
     assert!(matches!(proxy_err, ProxyError::Connection(_)));
     assert!(
         proxy_err.to_string().contains("Connection failed"),
         "unexpected error: {proxy_err}"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_send_with_redirect_validation_closed_connection_is_typed_connection() {
+async fn test_send_with_redirect_validation_closed_connection_is_typed_connection() -> TestResult {
     use tokio::io::AsyncReadExt;
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("test listener should bind");
-    let addr = listener
-        .local_addr()
-        .expect("test listener should expose local addr");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
 
     let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.expect("client should connect");
+        let (mut stream, _) = listener.accept().await?;
         let mut buf = [0u8; 1024];
-        let _ = stream.read(&mut buf).await;
+        let _ = stream.read(&mut buf).await?;
+        Ok::<(), std::io::Error>(())
     });
 
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client should build");
+    let client = test_proxy_client()?;
     let request = client.get(format!("http://{addr}/closed"));
 
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let Err(err) = send_with_redirect_validation(&client, request, &ssrf_guard).await else {
-        panic!("closed upstream connection must fail");
-    };
+    let err = require_proxy_err(
+        send_with_redirect_validation(&client, request, &ssrf_guard).await,
+        "closed upstream connection must fail",
+    )?;
 
-    server.await.expect("test server task should finish");
+    server.await??;
     assert_eq!(proxy_error_kind(&err), Some(ProxyErrorKind::Connection));
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_send_with_redirect_validation_malformed_response_is_typed_bad_gateway_error() {
+async fn test_send_with_redirect_validation_malformed_response_is_typed_bad_gateway_error(
+) -> TestResult {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("test listener should bind");
-    let addr = listener
-        .local_addr()
-        .expect("test listener should expose local addr");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
 
     let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.expect("client should connect");
+        let (mut stream, _) = listener.accept().await?;
         let mut buf = [0u8; 1024];
-        let _ = stream.read(&mut buf).await;
+        let _ = stream.read(&mut buf).await?;
         stream
             .write_all(b"this is not an http response\r\n\r\n")
-            .await
-            .expect("malformed response should write");
+            .await?;
+        Ok::<(), std::io::Error>(())
     });
 
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client should build");
+    let client = test_proxy_client()?;
     let request = client.get(format!("http://{addr}/malformed"));
 
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let Err(err) = send_with_redirect_validation(&client, request, &ssrf_guard).await else {
-        panic!("malformed upstream response must fail");
-    };
+    let err = require_proxy_err(
+        send_with_redirect_validation(&client, request, &ssrf_guard).await,
+        "malformed upstream response must fail",
+    )?;
 
-    server.await.expect("test server task should finish");
+    server.await??;
     assert!(matches!(
         proxy_error_kind(&err),
         Some(ProxyErrorKind::Connection | ProxyErrorKind::Upstream)
     ));
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_proxy_m3u8_and_rewrite_initial_loopback_fails_by_connection_with_disabled_ssrf() {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client should build");
+async fn test_proxy_m3u8_and_rewrite_initial_loopback_fails_by_connection_with_disabled_ssrf(
+) -> TestResult {
+    let client = test_proxy_client()?;
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
 
     let err = proxy_m3u8_and_rewrite(
@@ -633,4 +735,5 @@ async fn test_proxy_m3u8_and_rewrite_initial_loopback_fails_by_connection_with_d
         err.to_string().contains("Connection failed"),
         "unexpected error: {err}"
     );
+    Ok(())
 }

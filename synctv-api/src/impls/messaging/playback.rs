@@ -145,16 +145,14 @@ impl StreamMessageHandler {
                     *guard = Some((report.position, tokio::time::Instant::now()));
                 }
 
-                if let Some(service) = &self.playback_service {
-                    service
-                        .report_provider_playback_progress(
-                            &updated_state,
-                            report.position,
-                            !report.is_playing,
-                            false,
-                        )
-                        .await;
-                }
+                self.playback_service
+                    .report_provider_playback_progress(
+                        &updated_state,
+                        report.position,
+                        !report.is_playing,
+                        false,
+                    )
+                    .await;
             }
         }
 
@@ -214,11 +212,9 @@ impl StreamMessageHandler {
             .await
             .map_err(|e| e.to_string())?;
         prepared_fanout.publish_after_outbox_commit();
-        if let Some(service) = &self.playback_service {
-            service
-                .handle_provider_lifecycle_transition(Some(&previous_state), &state)
-                .await;
-        }
+        self.playback_service
+            .handle_provider_lifecycle_transition(Some(&previous_state), &state)
+            .await;
 
         Ok(())
     }

@@ -33,7 +33,7 @@ fn emby_thumbnail_url(server_id: &str, credential_owner_id: &UserId, item_id: &s
 pub struct EmbyApiImpl {
     provider: Arc<EmbyProvider>,
     credential_repo: Arc<UserProviderCredentialRepository>,
-    access_service: Option<Arc<dyn ProviderAccessService>>,
+    access_service: Arc<dyn ProviderAccessService>,
     event_service: Arc<dyn crate::runtime::RealtimeEventService>,
 }
 
@@ -60,63 +60,16 @@ impl EmbyApiImpl {
         request_context: Option<&ExecutionControl>,
     ) -> Result<(String, String, String, Option<String>), synctv_core::provider::ProviderError>
     {
-        if let Some(access_service) = &self.access_service {
-            let access = access_service
-                .emby_access(*caller_user_id, server_id, None, request_context)
-                .await?;
-            return Ok((
-                access.host,
-                access.api_key,
-                access.emby_user_id,
-                access.provider_instance_name,
-            ));
-        }
-
-        let cred = self
-            .credential_repo
-            .get_by_provider_and_server(
-                *caller_user_id,
-                synctv_core::provider::EmbyProvider::NAME,
-                server_id,
-            )
-            .await
-            .map_err(|e| {
-                synctv_core::provider::ProviderError::Internal(format!(
-                    "Failed to query emby credential: {e}"
-                ))
-            })?
-            .ok_or(synctv_core::provider::ProviderError::CredentialNotFound(
-                format!("No emby credential found for server_id '{server_id}'"),
-            ))?;
-
-        if cred.is_expired() {
-            return Err(synctv_core::provider::ProviderError::CredentialExpired(
-                "Emby credential has expired".to_string(),
-            ));
-        }
-
-        match cred.get_credential() {
-            Ok(ProviderCredential::Emby {
-                host,
-                api_key,
-                emby_user_id,
-            }) => Ok((host, api_key, emby_user_id, cred.provider_instance_name)),
-            Ok(_) => Err(synctv_core::provider::ProviderError::InvalidCredentialType),
-            Err(e) => Err(synctv_core::provider::ProviderError::Internal(format!(
-                "Failed to parse emby credential: {e}"
-            ))),
-        }
-    }
-
-    /// Login to Emby and persist credentials
-    pub async fn login(
-        &self,
-        caller_user_id: &UserId,
-        req: LoginRequest,
-        instance_name: Option<&str>,
-    ) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
-        self.login_with_context(caller_user_id, req, instance_name, None)
-            .await
+        let access = self
+            .access_service
+            .emby_access(*caller_user_id, server_id, None, request_context)
+            .await?;
+        Ok((
+            access.host,
+            access.api_key,
+            access.emby_user_id,
+            access.provider_instance_name,
+        ))
     }
 
     pub async fn login_with_context(
@@ -184,15 +137,13 @@ impl EmbyApiImpl {
                 ))
             })?;
 
-        if let Some(access_service) = &self.access_service {
-            access_service
-                .invalidate(
-                    *caller_user_id,
-                    synctv_core::provider::EmbyProvider::NAME,
-                    &server_id,
-                )
-                .await?;
-        }
+        self.access_service
+            .invalidate(
+                *caller_user_id,
+                synctv_core::provider::EmbyProvider::NAME,
+                &server_id,
+            )
+            .await?;
         publish_provider_credential_changed(
             &self.event_service,
             *caller_user_id,
@@ -225,17 +176,6 @@ impl EmbyApiImpl {
                 "Emby login requires exactly one credential".to_string(),
             )),
         }
-    }
-
-    /// List Emby library items using stored credential
-    pub async fn list(
-        &self,
-        caller_user_id: &UserId,
-        req: ListRequest,
-        requested_instance_name: Option<&str>,
-    ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
-        self.list_with_context(caller_user_id, req, requested_instance_name, None)
-            .await
     }
 
     pub async fn list_with_context(
@@ -299,17 +239,6 @@ impl EmbyApiImpl {
             items,
             total: resp.total,
         })
-    }
-
-    /// Get Emby user info using stored credential
-    pub async fn get_me(
-        &self,
-        caller_user_id: &UserId,
-        req: GetMeRequest,
-        requested_instance_name: Option<&str>,
-    ) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
-        self.get_me_with_context(caller_user_id, req, requested_instance_name, None)
-            .await
     }
 
     pub async fn get_me_with_context(
@@ -378,15 +307,13 @@ impl EmbyApiImpl {
                         "Failed to delete credential: {e}"
                     ))
                 })?;
-            if let Some(access_service) = &self.access_service {
-                access_service
-                    .invalidate(
-                        *caller_user_id,
-                        synctv_core::provider::EmbyProvider::NAME,
-                        &req.server_id,
-                    )
-                    .await?;
-            }
+            self.access_service
+                .invalidate(
+                    *caller_user_id,
+                    synctv_core::provider::EmbyProvider::NAME,
+                    &req.server_id,
+                )
+                .await?;
             publish_provider_credential_changed(
                 &self.event_service,
                 *caller_user_id,
@@ -433,65 +360,78 @@ mod tests {
     use super::{EmbyApiImpl, ProviderApiRuntime};
     use std::sync::Arc;
     use synctv_core::provider::{EmbyProvider, ProviderError};
-    use synctv_core::repository::UserProviderCredentialRepository;
+    use synctv_core::repository::{ProviderInstanceRepository, UserProviderCredentialRepository};
     use synctv_core_testing::create_test_pool;
 
-    fn provider() -> Arc<EmbyProvider> {
-        Arc::new(EmbyProvider::new_local_only().expect("provider should build"))
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
     }
 
-    fn test_provider_runtime() -> ProviderApiRuntime {
-        ProviderApiRuntime {
-            access_service: None,
-            event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
+    fn invalid_config<T>(result: Result<T, ProviderError>) -> TestResult<String> {
+        match result {
+            Ok(_) => Err(test_error("expected provider invalid config")),
+            Err(ProviderError::InvalidConfig(message)) => Ok(message),
+            Err(other) => Err(test_error(format!("expected InvalidConfig, got {other:?}"))),
         }
     }
 
-    fn test_api(
-        provider: Arc<EmbyProvider>,
-        credential_repo: Arc<UserProviderCredentialRepository>,
-    ) -> EmbyApiImpl {
-        EmbyApiImpl::new_with_runtime(provider, credential_repo, test_provider_runtime())
+    fn test_api(pool: sqlx::PgPool) -> TestResult<EmbyApiImpl> {
+        let instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(
+            Arc::new(ProviderInstanceRepository::new(pool.clone())),
+        ));
+        let provider = Arc::new(EmbyProvider::with_client_manager(
+            instance_manager,
+            Arc::new(synctv_core::provider::ProviderClientManager::new()?),
+        ));
+        let credential_repo = Arc::new(UserProviderCredentialRepository::new(pool.clone()));
+        let alist_instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(
+            Arc::new(ProviderInstanceRepository::new(pool)),
+        ));
+        let runtime = ProviderApiRuntime {
+            access_service: Arc::new(synctv_core::provider::CachedProviderAccessService::new(
+                credential_repo.clone(),
+                Arc::new(synctv_core::provider::AlistProvider::with_client_manager(
+                    alist_instance_manager,
+                    Arc::new(synctv_core::provider::ProviderClientManager::new()?),
+                )),
+            )),
+            event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
+        };
+        Ok(EmbyApiImpl::new_with_runtime(
+            provider,
+            credential_repo,
+            runtime,
+        ))
     }
 
     #[test]
-    fn resolve_login_credential_rejects_missing_credential() {
-        let err = EmbyApiImpl::resolve_login_credential(None)
-            .expect_err("missing credential must fail before provider login");
+    fn resolve_login_credential_rejects_missing_credential() -> TestResult {
+        let message = invalid_config(EmbyApiImpl::resolve_login_credential(None))?;
 
-        match err {
-            ProviderError::InvalidConfig(message) => {
-                assert!(message.contains("exactly one credential"));
-            }
-            other => panic!("expected InvalidConfig, got {other:?}"),
-        }
+        assert!(message.contains("exactly one credential"));
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn logout_rejects_empty_server_id() {
+    async fn logout_rejects_empty_server_id() -> TestResult {
         let (_postgres, pool) = create_test_pool().await;
-        let api = test_api(
-            provider(),
-            Arc::new(UserProviderCredentialRepository::new(pool)),
-        );
+        let api = test_api(pool)?;
 
-        let err = api
-            .logout(
+        let message = invalid_config(
+            api.logout(
                 &synctv_core::models::UserId::new(),
                 synctv_proto::providers::emby::LogoutRequest {
                     server_id: String::new(),
                     instance_name: String::new(),
                 },
             )
-            .await
-            .expect_err("empty server_id must fail before credential lookup");
+            .await,
+        )?;
 
-        match err {
-            ProviderError::InvalidConfig(message) => {
-                assert!(message.contains("explicit server_id"));
-            }
-            other => panic!("expected InvalidConfig, got {other:?}"),
-        }
+        assert!(message.contains("explicit server_id"));
+        Ok(())
     }
 }

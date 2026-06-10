@@ -6,8 +6,6 @@
 //! These tests exercise the `play_next` decision logic with a real `PostgreSQL`
 //! via testcontainers, since `play_next` reads from the DB repo layer.
 //!
-#![allow(clippy::unwrap_used)]
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -35,10 +33,10 @@ use synctv_core::{
     },
     service::{ProvidersManager, RemoteProviderManager},
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};
 fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = JwtService::new(secret).checked("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -54,35 +52,35 @@ fn make_user_service(pool: &PgPool) -> UserService {
     )
 }
 
-fn make_room_service(pool: PgPool) -> RoomService {
-    let user_service = make_user_service(&pool);
+fn make_room_service(pool: &PgPool) -> RoomService {
+    let user_service = make_user_service(pool);
 
-    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+    RoomService::new_for_tests(pool.clone(), user_service).checked("room service should build")
 }
 
 fn make_room_service_with_providers(
-    pool: PgPool,
+    pool: &PgPool,
     providers_manager: Arc<ProvidersManager>,
 ) -> RoomService {
-    let user_service = make_user_service(&pool);
+    let user_service = make_user_service(pool);
     let credential_encryption =
-        CredentialEncryption::new(&[0x42; 32]).expect("test encryption key should be valid");
+        CredentialEncryption::new(&[0x42; 32]).checked("test encryption key should be valid");
     let credential_repo = Arc::new(UserProviderCredentialRepository::new_with_encryption(
         pool.clone(),
         credential_encryption.clone(),
     ));
 
     RoomService::new_with_providers_and_options(
-        pool,
+        pool.clone(),
         user_service,
         providers_manager,
         RoomServiceOptions {
             credential_encryption: Some(credential_encryption),
             credential_repo: Some(credential_repo),
-            ..RoomServiceOptions::test_defaults()
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
-    .expect("room service should build")
+    .checked("room service should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -118,15 +116,15 @@ fn make_settings_with_mode(mode: PlayMode) -> RoomSettings {
 
 fn dynamic_target(cursor: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({ "relative_path": cursor }))
-        .expect("dynamic playback target should serialize")
+        .checked("dynamic playback target should serialize")
 }
 
 fn decode_dynamic_target(target: &[u8]) -> String {
     serde_json::from_slice::<serde_json::Value>(target)
-        .expect("dynamic playback target should deserialize")
+        .checked("dynamic playback target should deserialize")
         .get("relative_path")
         .and_then(serde_json::Value::as_str)
-        .expect("dynamic playback target should contain provider cursor")
+        .checked("dynamic playback target should contain provider cursor")
         .to_string()
 }
 
@@ -151,7 +149,7 @@ async fn create_top_level_playlist(pool: &PgPool, room_id: &RoomId) -> Playlist 
     synctv_core::repository::PlaylistRepository::new(pool.clone())
         .create(&playlist)
         .await
-        .expect("Top-level playlist should be created")
+        .checked("Top-level playlist should be created")
 }
 
 /// Helper: insert a media item into the playlist at a given position
@@ -182,7 +180,7 @@ async fn insert_media(
     media_repo
         .create(&media)
         .await
-        .expect("Failed to create media")
+        .checked("Failed to create media")
 }
 
 async fn insert_root_media(pool: &PgPool, room_id: &RoomId, name: &str, position: i32) -> Media {
@@ -205,7 +203,7 @@ async fn insert_root_media(pool: &PgPool, room_id: &RoomId, name: &str, position
     MediaRepository::new(pool.clone())
         .create(&media)
         .await
-        .expect("Failed to create root media")
+        .checked("Failed to create root media")
 }
 
 #[derive(Debug)]
@@ -408,24 +406,32 @@ async fn register_alist_provider(room_service: &RoomService) {
 }
 
 async fn register_alist_provider_instance(room_service: &RoomService, instance_id: &str) {
-    room_service
+    if let Err(error) = room_service
         .media_service()
         .providers_manager()
         .create_provider("alist", instance_id, &serde_json::json!({}))
         .await
-        .expect("Failed to register fake dynamic provider");
+    {
+        std::panic::panic_any(format!(
+            "failed to register fake dynamic provider: {error:?}"
+        ));
+    }
 }
 
 async fn register_alist_provider_instance_requiring_encryption(
     room_service: &RoomService,
     instance_id: &str,
 ) {
-    room_service
+    if let Err(error) = room_service
         .media_service()
         .providers_manager()
         .create_provider("alist", instance_id, &serde_json::json!({}))
         .await
-        .expect("Failed to register fake dynamic provider requiring encryption");
+    {
+        std::panic::panic_any(format!(
+            "failed to register fake dynamic provider requiring encryption: {error:?}"
+        ));
+    }
 }
 
 async fn create_dynamic_playlist(
@@ -455,7 +461,7 @@ async fn create_dynamic_playlist(
     synctv_core::repository::PlaylistRepository::new(pool.clone())
         .create(&playlist)
         .await
-        .expect("Dynamic playlist should be created")
+        .checked("Dynamic playlist should be created")
 }
 
 async fn create_dynamic_sensitive_playlist(
@@ -485,7 +491,7 @@ async fn create_dynamic_sensitive_playlist(
     synctv_core::repository::PlaylistRepository::new(pool.clone())
         .create(&playlist)
         .await
-        .expect("Dynamic sensitive playlist should be created")
+        .checked("Dynamic sensitive playlist should be created")
 }
 
 async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str) {
@@ -507,7 +513,7 @@ async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str
     ProviderInstanceRepository::new(pool.clone())
         .create(&instance)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 }
 
 #[tokio::test]
@@ -515,16 +521,16 @@ async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str
 async fn test_sequential_advance_to_next() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
     let owner = user_repo
         .create(&make_user("seq_next_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room("Seq Next".to_string(), String::new(), owner.id, None, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "video1", 0).await;
@@ -535,13 +541,16 @@ async fn test_sequential_advance_to_next() {
     playback
         .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::Sequential);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed");
 
     assert!(result.is_some(), "Should advance to next media");
-    let state = result.unwrap();
+    let state = result.checked("test operation should succeed");
     assert_eq!(
         state.playing_media_id,
         Some(media2.id),
@@ -554,13 +563,16 @@ async fn test_sequential_advance_to_next() {
 async fn test_sequential_end_of_playlist_returns_none() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
-    let owner = user_repo.create(&make_user("seq_end_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("seq_end_owner"))
+        .await
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room("Seq End".to_string(), String::new(), owner.id, None, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "last_video", 0).await;
@@ -569,10 +581,13 @@ async fn test_sequential_end_of_playlist_returns_none() {
     playback
         .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::Sequential);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed");
 
     assert!(result.is_none(), "Should return None at end of playlist");
 }
@@ -582,13 +597,16 @@ async fn test_sequential_end_of_playlist_returns_none() {
 async fn test_repeat_one_replays_current() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
-    let owner = user_repo.create(&make_user("rep1_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("rep1_owner"))
+        .await
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room("Rep1".to_string(), String::new(), owner.id, None, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "repeat_me", 0).await;
@@ -598,13 +616,16 @@ async fn test_repeat_one_replays_current() {
     playback
         .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::RepeatOne);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed");
 
     assert!(result.is_some(), "RepeatOne should replay current");
-    let state = result.unwrap();
+    let state = result.checked("test operation should succeed");
     assert_eq!(
         state.playing_media_id,
         Some(media1.id),
@@ -621,13 +642,16 @@ async fn test_repeat_one_replays_current() {
 async fn test_repeat_all_wraps_around_at_end() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
-    let owner = user_repo.create(&make_user("repa_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("repa_owner"))
+        .await
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room("RepAll".to_string(), String::new(), owner.id, None, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "first", 0).await;
@@ -638,13 +662,16 @@ async fn test_repeat_all_wraps_around_at_end() {
     playback
         .switch(room.id, owner.id, Some(media3.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::RepeatAll);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed");
 
     assert!(result.is_some(), "RepeatAll should wrap around");
-    let state = result.unwrap();
+    let state = result.checked("test operation should succeed");
     assert_eq!(
         state.playing_media_id,
         Some(media1.id),
@@ -657,12 +684,12 @@ async fn test_repeat_all_wraps_around_at_end() {
 async fn test_repeat_all_middle_advances_to_next() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
     let owner = user_repo
         .create(&make_user("repa_mid_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "RepAll Mid".to_string(),
@@ -672,7 +699,7 @@ async fn test_repeat_all_middle_advances_to_next() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "vid_a", 0).await;
@@ -683,13 +710,16 @@ async fn test_repeat_all_middle_advances_to_next() {
     playback
         .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::RepeatAll);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed");
 
     assert!(result.is_some());
-    let state = result.unwrap();
+    let state = result.checked("test operation should succeed");
     assert_eq!(
         state.playing_media_id,
         Some(media2.id),
@@ -702,12 +732,12 @@ async fn test_repeat_all_middle_advances_to_next() {
 async fn test_shuffle_with_single_item_keeps_current_media() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
     let owner = user_repo
         .create(&make_user("shuf_single_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Shuffle Single".to_string(),
@@ -717,7 +747,7 @@ async fn test_shuffle_with_single_item_keeps_current_media() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "single", 0).await;
@@ -726,13 +756,16 @@ async fn test_shuffle_with_single_item_keeps_current_media() {
     playback
         .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::Shuffle);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed");
 
     assert!(result.is_some(), "Shuffle should keep playback active");
-    let state = result.unwrap();
+    let state = result.checked("test operation should succeed");
     assert_eq!(
         state.playing_media_id,
         Some(media1.id),
@@ -745,12 +778,12 @@ async fn test_shuffle_with_single_item_keeps_current_media() {
 async fn test_shuffle_with_multiple_items_excludes_current_media() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
     let owner = user_repo
         .create(&make_user("shuf_multi_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Shuffle Multi".to_string(),
@@ -760,7 +793,7 @@ async fn test_shuffle_with_multiple_items_excludes_current_media() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "multi1", 0).await;
@@ -770,13 +803,16 @@ async fn test_shuffle_with_multiple_items_excludes_current_media() {
     playback
         .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::Shuffle);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed");
 
     assert!(result.is_some(), "Shuffle should choose an available media");
-    let state = result.unwrap();
+    let state = result.checked("test operation should succeed");
     assert_eq!(
         state.playing_media_id,
         Some(media2.id),
@@ -789,13 +825,16 @@ async fn test_shuffle_with_multiple_items_excludes_current_media() {
 async fn test_auto_play_disabled_returns_none() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
-    let owner = user_repo.create(&make_user("noauto_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("noauto_owner"))
+        .await
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room("No Auto".to_string(), String::new(), owner.id, None, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "vid", 0).await;
@@ -805,7 +844,7 @@ async fn test_auto_play_disabled_returns_none() {
     playback
         .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Disabled: auto_play.enabled = false
     let settings = RoomSettings {
@@ -817,7 +856,10 @@ async fn test_auto_play_disabled_returns_none() {
         ..Default::default()
     };
 
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed");
     assert!(
         result.is_none(),
         "play_next should return None when auto_play disabled"
@@ -829,21 +871,24 @@ async fn test_auto_play_disabled_returns_none() {
 async fn test_empty_playlist_returns_none() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
     let owner = user_repo
         .create(&make_user("empty_pl_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room("Empty PL".to_string(), String::new(), owner.id, None, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Don't add any media -- playlist is empty
     let playback = room_service.playback_service();
     let settings = make_settings_with_mode(PlayMode::Sequential);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed");
 
     assert!(result.is_none(), "Empty playlist should return None");
 }
@@ -853,9 +898,12 @@ async fn test_empty_playlist_returns_none() {
 async fn test_no_current_media_plays_first() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
-    let owner = user_repo.create(&make_user("nocur_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("nocur_owner"))
+        .await
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "No Current".to_string(),
@@ -865,7 +913,7 @@ async fn test_no_current_media_plays_first() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media_repo = MediaRepository::new(pool.clone());
     let media1 = media_repo
@@ -886,7 +934,7 @@ async fn test_no_current_media_plays_first() {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     media_repo
         .create(&Media {
             id: MediaId::new(),
@@ -905,18 +953,21 @@ async fn test_no_current_media_plays_first() {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Don't switch to any media -- playing_media_id is None
     let playback = room_service.playback_service();
     let settings = make_settings_with_mode(PlayMode::Sequential);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed");
 
     assert!(
         result.is_some(),
         "Should play first item when nothing is playing"
     );
-    let state = result.unwrap();
+    let state = result.checked("test operation should succeed");
     assert_eq!(
         state.playing_media_id,
         Some(media1.id),
@@ -929,12 +980,12 @@ async fn test_no_current_media_plays_first() {
 async fn test_no_current_media_ignores_other_rooms_root_media() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
     let owner = user_repo
         .create(&make_user("nocur_root_scope_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room_a, _) = room_service
         .create_room(
             "No Current Root A".to_string(),
@@ -944,7 +995,7 @@ async fn test_no_current_media_ignores_other_rooms_root_media() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room_b, _) = room_service
         .create_room(
             "No Current Root B".to_string(),
@@ -954,20 +1005,23 @@ async fn test_no_current_media_ignores_other_rooms_root_media() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let room_a_media = insert_root_media(&pool, &room_a.id, "room_a_first", 1).await;
     insert_root_media(&pool, &room_b.id, "room_b_first", 0).await;
 
     let playback = room_service.playback_service();
     let settings = make_settings_with_mode(PlayMode::Sequential);
-    let result = playback.play_next(&room_a.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room_a.id, &settings)
+        .await
+        .checked("test operation should succeed");
 
     assert!(
         result.is_some(),
         "play_next should still find room-local root media"
     );
-    let state = result.unwrap();
+    let state = result.checked("test operation should succeed");
     assert_eq!(
         state.playing_media_id,
         Some(room_a_media.id),
@@ -981,16 +1035,16 @@ async fn test_no_current_media_ignores_other_rooms_root_media() {
 async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
     let room_owner = user_repo
         .create(&make_user("play_next_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let next_creator = user_repo
         .create(&make_user("play_next_inactive_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Play Next Inactive Media".to_string(),
@@ -1000,7 +1054,7 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media_repo = MediaRepository::new(pool.clone());
@@ -1036,27 +1090,33 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         updated_at: Utc::now(),
         version: 0,
     };
-    let media1 = media_repo.create(&media1).await.unwrap();
-    media_repo.create(&media2).await.unwrap();
+    let media1 = media_repo
+        .create(&media1)
+        .await
+        .checked("test operation should succeed");
+    media_repo
+        .create(&media2)
+        .await
+        .checked("test operation should succeed");
 
     room_service
         .playback_service()
         .switch(room.id, room_owner.id, Some(media1.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     user_repo
         .ban(&next_creator.id, None, Some("play next test".to_string()))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::Sequential);
     let state = room_service
         .playback_service()
         .play_next(&room.id, &settings)
         .await
-        .unwrap()
-        .expect("play_next should stop playback when next media creator is inactive");
+        .checked("test operation should succeed")
+        .checked("play_next should stop playback when next media creator is inactive");
 
     assert!(state.playing_media_id.is_none());
     assert!(state.playing_playlist_id.is_none());
@@ -1072,7 +1132,7 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
     )));
     let mut providers_manager =
-        ProvidersManager::new(provider_instance_manager).expect("providers manager should build");
+        ProvidersManager::new(provider_instance_manager).checked("providers manager should build");
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
@@ -1080,12 +1140,12 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
         }),
     );
     let providers_manager = Arc::new(providers_manager);
-    let room_service = make_room_service_with_providers(pool.clone(), providers_manager);
+    let room_service = make_room_service_with_providers(&pool, providers_manager);
 
     let owner = user_repo
         .create(&make_user("dynamic_seq_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Dynamic Seq".to_string(),
@@ -1095,7 +1155,7 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     register_alist_provider(&room_service).await;
     let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "alist_default").await;
@@ -1110,15 +1170,19 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
             dynamic_target("/episode-1.mp4"),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::Sequential);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed");
 
-    let state = result.expect("dynamic playlist should advance to next item");
+    let state = result.checked("dynamic playlist should advance to next item");
     assert!(state.playing_media_id.is_none());
     assert_eq!(state.playing_playlist_id, Some(playlist.id));
-    let target: serde_json::Value = serde_json::from_slice(&state.target).unwrap();
+    let target: serde_json::Value =
+        serde_json::from_slice(&state.target).checked("test operation should succeed");
     assert_eq!(
         target,
         serde_json::json!({"relative_path":"/episode-2.mp4"})
@@ -1136,7 +1200,7 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
     )));
     let mut providers_manager =
-        ProvidersManager::new(provider_instance_manager).expect("providers manager should build");
+        ProvidersManager::new(provider_instance_manager).checked("providers manager should build");
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
@@ -1144,16 +1208,16 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
         }),
     );
     let providers_manager = Arc::new(providers_manager);
-    let room_service = make_room_service_with_providers(pool.clone(), providers_manager);
+    let room_service = make_room_service_with_providers(&pool, providers_manager);
 
     let room_owner = user_repo
         .create(&make_user("dynamic_inactive_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let playlist_creator = user_repo
         .create(&make_user("dynamic_inactive_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1164,7 +1228,7 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     register_alist_provider(&room_service).await;
     let playlist =
@@ -1177,7 +1241,7 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
             Some("play next test".to_string()),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .playback_service()
@@ -1190,14 +1254,14 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
         )
         .await;
 
-    match result.expect_err("dynamic playlist created by banned user must not be playable") {
+    match result.failed("dynamic playlist created by banned user must not be playable") {
         synctv_core::Error::Authorization(message) => {
             assert!(
                 message.contains("creator") && message.contains("active"),
                 "error should explain creator status: {message}"
             );
         }
-        other => panic!("expected authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected authorization error, got: {other:?}")),
     }
 }
 
@@ -1210,7 +1274,7 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
     )));
     let mut providers_manager =
-        ProvidersManager::new(provider_instance_manager).expect("providers manager should build");
+        ProvidersManager::new(provider_instance_manager).checked("providers manager should build");
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
@@ -1218,16 +1282,16 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
         }),
     );
     let providers_manager = Arc::new(providers_manager);
-    let room_service = make_room_service_with_providers(pool.clone(), providers_manager);
+    let room_service = make_room_service_with_providers(&pool, providers_manager);
 
     let room_owner = user_repo
         .create(&make_user("dynamic_play_next_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let playlist_creator = user_repo
         .create(&make_user("dynamic_play_next_inactive_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1238,7 +1302,7 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     register_alist_provider(&room_service).await;
     let playlist =
@@ -1254,7 +1318,7 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
             dynamic_target("/episode-1.mp4"),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     user_repo
         .ban(
@@ -1263,15 +1327,15 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
             Some("play next test".to_string()),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::Sequential);
     let state = room_service
         .playback_service()
         .play_next(&room.id, &settings)
         .await
-        .unwrap()
-        .expect("play_next should stop playback when dynamic playlist creator is inactive");
+        .checked("test operation should succeed")
+        .checked("play_next should stop playback when dynamic playlist creator is inactive");
 
     assert!(state.playing_media_id.is_none());
     assert!(state.playing_playlist_id.is_none());
@@ -1287,7 +1351,7 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
     )));
     let mut providers_manager =
-        ProvidersManager::new(provider_instance_manager).expect("providers manager should build");
+        ProvidersManager::new(provider_instance_manager).checked("providers manager should build");
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
@@ -1295,12 +1359,12 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
         }),
     );
     let providers_manager = Arc::new(providers_manager);
-    let room_service = make_room_service_with_providers(pool.clone(), providers_manager);
+    let room_service = make_room_service_with_providers(&pool, providers_manager);
 
     let owner = user_repo
         .create(&make_user("dynamic_repeat_all_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Dynamic Repeat All".to_string(),
@@ -1310,7 +1374,7 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     register_alist_provider(&room_service).await;
     let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "alist_default").await;
@@ -1325,15 +1389,19 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
             dynamic_target("/episode-2.mp4"),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::RepeatAll);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed");
 
-    let state = result.expect("dynamic playlist repeat-all should wrap to first item");
+    let state = result.checked("dynamic playlist repeat-all should wrap to first item");
     assert!(state.playing_media_id.is_none());
     assert_eq!(state.playing_playlist_id, Some(playlist.id));
-    let target: serde_json::Value = serde_json::from_slice(&state.target).unwrap();
+    let target: serde_json::Value =
+        serde_json::from_slice(&state.target).checked("test operation should succeed");
     assert_eq!(
         target,
         serde_json::json!({"relative_path":"/episode-1.mp4"})
@@ -1349,7 +1417,7 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
     )));
     let mut providers_manager =
-        ProvidersManager::new(provider_instance_manager).expect("providers manager should build");
+        ProvidersManager::new(provider_instance_manager).checked("providers manager should build");
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
@@ -1357,12 +1425,12 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
         }),
     );
     let providers_manager = Arc::new(providers_manager);
-    let room_service = make_room_service_with_providers(pool.clone(), providers_manager);
+    let room_service = make_room_service_with_providers(&pool, providers_manager);
 
     let owner = user_repo
         .create(&make_user("dynamic_bound_instance_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Dynamic Bound Instance".to_string(),
@@ -1372,7 +1440,7 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     register_alist_provider(&room_service).await;
     register_alist_provider_instance(&room_service, "alist_alt").await;
@@ -1388,15 +1456,19 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
             dynamic_target("/bound-episode-1.mp4"),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::Sequential);
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
+    let result = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed");
 
-    let state = result.expect("dynamic playlist should advance using the bound provider instance");
+    let state = result.checked("dynamic playlist should advance using the bound provider instance");
     assert!(state.playing_media_id.is_none());
     assert_eq!(state.playing_playlist_id, Some(playlist.id));
-    let target: serde_json::Value = serde_json::from_slice(&state.target).unwrap();
+    let target: serde_json::Value =
+        serde_json::from_slice(&state.target).checked("test operation should succeed");
     assert_eq!(
         target,
         serde_json::json!({"relative_path":"/bound-episode-2.mp4"})
@@ -1412,7 +1484,7 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
         synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
     )));
     let mut providers_manager =
-        ProvidersManager::new(provider_instance_manager).expect("providers manager should build");
+        ProvidersManager::new(provider_instance_manager).checked("providers manager should build");
     providers_manager.register_factory(
         "alist",
         Box::new(|instance_id, _config, _instance_manager| {
@@ -1429,20 +1501,20 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
         RoomServiceOptions {
             credential_encryption: Some(
                 CredentialEncryption::new(&[0x42; 32])
-                    .expect("test encryption key should be valid"),
+                    .checked("test encryption key should be valid"),
             ),
             credential_repo: Some(Arc::new(UserProviderCredentialRepository::new(
                 pool.clone(),
             ))),
-            ..RoomServiceOptions::test_defaults()
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
-    .expect("room service should build");
+    .checked("room service should build");
 
     let owner = user_repo
         .create(&make_user("dynamic_sensitive_list_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Dynamic Sensitive List".to_string(),
@@ -1452,7 +1524,7 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     register_alist_provider_instance_requiring_encryption(&room_service, "alist_sensitive_default")
         .await;
@@ -1474,7 +1546,7 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
             },
         )
         .await
-        .expect("dynamic playlist listing should receive credential encryption");
+        .checked("dynamic playlist listing should receive credential encryption");
 
     assert_eq!(items.len(), 2);
 }

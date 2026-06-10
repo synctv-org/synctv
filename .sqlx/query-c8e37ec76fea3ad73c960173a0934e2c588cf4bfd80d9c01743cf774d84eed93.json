@@ -6,37 +6,79 @@
       {
         "ordinal": 0,
         "name": "id",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "auth_email_tokens",
+            "name": "id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "token",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "auth_email_tokens",
+            "name": "token"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "user_id: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "auth_email_tokens",
+            "name": "user_id"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "token_type",
-        "type_info": "Int2"
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "auth_email_tokens",
+            "name": "token_type"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "expires_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_email_tokens",
+            "name": "expires_at"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "used_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_email_tokens",
+            "name": "used_at"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "created_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_email_tokens",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {

@@ -10,32 +10,33 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tempfile::TempDir;
 
-/// Helper: create a `FileBackend` in a fresh temp directory.
-async fn make_backend() -> (FileBackend, TempDir) {
-    let tmp = TempDir::new().expect("create temp dir");
-    let backend = FileBackend::new(tmp.path().to_path_buf(), (2, 2))
-        .await
-        .expect("create backend");
-    (backend, tmp)
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+async fn make_backend() -> anyhow::Result<(FileBackend, TempDir)> {
+    let tmp = TempDir::new()?;
+    let backend = FileBackend::new(tmp.path().to_path_buf(), (2, 2)).await?;
+    Ok((backend, tmp))
 }
 
-/// Helper: store an entry with sensible defaults.
-async fn put_entry(backend: &FileBackend, key: &str, data: &[u8]) {
+async fn put_entry(backend: &FileBackend, key: &str, data: &[u8]) -> anyhow::Result<()> {
     let entry = StoredEntry::new(Bytes::from(data.to_vec()), Duration::from_mins(5));
-    backend.put(key, entry).await.expect("put entry");
+    backend.put(key, entry).await
 }
 
 #[tokio::test]
-async fn test_file_backend_put_get() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_put_get() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
     let data = b"hello cache world";
     let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 
-    put_entry(&backend, key, data).await;
+    put_entry(&backend, key, data).await?;
 
     let result = backend.get(key).await;
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().data, Bytes::from(data.to_vec()));
+    assert_eq!(
+        result.ok_or("entry should be cached")?.data,
+        Bytes::from(data.to_vec())
+    );
+    Ok(())
 }
 
 #[test]
@@ -78,7 +79,7 @@ fn test_file_index_total_size_saturates() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_file_index_total_size_matches_entries_after_concurrent_mutations() {
+async fn test_file_index_total_size_matches_entries_after_concurrent_mutations() -> TestResult {
     let index = Arc::new(FileIndex::new());
     let mut handles = Vec::new();
 
@@ -106,7 +107,7 @@ async fn test_file_index_total_size_matches_entries_after_concurrent_mutations()
     }
 
     for handle in handles {
-        handle.await.expect("mutation task should finish");
+        handle.await?;
     }
 
     let actual_size = index
@@ -114,22 +115,24 @@ async fn test_file_index_total_size_matches_entries_after_concurrent_mutations()
         .iter()
         .fold(0u64, |total, entry| total.saturating_add(entry.data_size));
     assert_eq!(index.total_size(), actual_size);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_get_missing() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_get_missing() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
     let result = backend
         .get("nonexistent_key_00000000000000000000000000000000000000000000")
         .await;
     assert!(result.is_none());
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_remove() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_remove() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
     let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
-    put_entry(&backend, key, b"data").await;
+    put_entry(&backend, key, b"data").await?;
     assert!(backend.contains(key).await);
 
     backend.remove(key).await;
@@ -137,32 +140,35 @@ async fn test_file_backend_remove() {
 
     let result = backend.get(key).await;
     assert!(result.is_none());
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_remove_nonexistent() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_remove_nonexistent() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
     backend
         .remove("does_not_exist_0000000000000000000000000000000000000000000000")
         .await;
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_contains() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_contains() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
     let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
     assert!(!backend.contains(key).await);
 
-    put_entry(&backend, key, b"data").await;
+    put_entry(&backend, key, b"data").await?;
     assert!(backend.contains(key).await);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_directory_structure() {
-    let (backend, tmp) = make_backend().await;
+async fn test_file_backend_directory_structure() -> TestResult {
+    let (backend, tmp) = make_backend().await?;
     let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 
-    put_entry(&backend, key, b"payload").await;
+    put_entry(&backend, key, b"payload").await?;
 
     let expected_path = tmp.path().join("ab").join("cd").join(key);
     assert!(
@@ -170,32 +176,32 @@ async fn test_file_backend_directory_structure() {
         "Expected cache file at {}",
         expected_path.display()
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_atomic_write() {
-    let (backend, tmp) = make_backend().await;
+async fn test_file_backend_atomic_write() -> TestResult {
+    let (backend, tmp) = make_backend().await?;
     let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 
-    put_entry(&backend, key, b"first").await;
-    put_entry(&backend, key, b"second").await;
+    put_entry(&backend, key, b"first").await?;
+    put_entry(&backend, key, b"second").await?;
 
-    let result = backend.get(key).await.expect("should exist");
+    let result = backend.get(key).await.ok_or("entry should exist")?;
     assert_eq!(result.data, Bytes::from("second"));
 
-    let mut tmp_entries = fs::read_dir(tmp.path().join(".tmp"))
-        .await
-        .expect("read .tmp");
+    let mut tmp_entries = fs::read_dir(tmp.path().join(".tmp")).await?;
     let mut count = 0u64;
-    while tmp_entries.next_entry().await.expect("entry").is_some() {
+    while tmp_entries.next_entry().await?.is_some() {
         count += 1;
     }
     assert_eq!(count, 0, "No orphaned temp files should remain");
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_current_size() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_current_size() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
     assert_eq!(backend.current_size(), 0);
 
     put_entry(
@@ -203,7 +209,7 @@ async fn test_file_backend_current_size() {
         "aaaa0000000000000000000000000000000000000000000000000000000000aa",
         &[0u8; 100],
     )
-    .await;
+    .await?;
     assert_eq!(backend.current_size(), 100);
 
     put_entry(
@@ -211,18 +217,19 @@ async fn test_file_backend_current_size() {
         "bbbb0000000000000000000000000000000000000000000000000000000000bb",
         &[0u8; 200],
     )
-    .await;
+    .await?;
     assert_eq!(backend.current_size(), 300);
 
     backend
         .remove("aaaa0000000000000000000000000000000000000000000000000000000000aa")
         .await;
     assert_eq!(backend.current_size(), 200);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_entry_count() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_entry_count() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
     assert_eq!(backend.entry_count(), 0);
 
     put_entry(
@@ -230,19 +237,20 @@ async fn test_file_backend_entry_count() {
         "aaaa0000000000000000000000000000000000000000000000000000000000aa",
         b"a",
     )
-    .await;
+    .await?;
     put_entry(
         &backend,
         "bbbb0000000000000000000000000000000000000000000000000000000000bb",
         b"b",
     )
-    .await;
+    .await?;
     assert_eq!(backend.entry_count(), 2);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_evict_expired() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_evict_expired() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
 
     let past = SystemTime::now() - Duration::from_secs(10);
     let expired_entry = StoredEntry {
@@ -256,15 +264,14 @@ async fn test_file_backend_evict_expired() {
             "expired_key_000000000000000000000000000000000000000000000000000000",
             expired_entry,
         )
-        .await
-        .expect("put expired");
+        .await?;
 
     put_entry(
         &backend,
         "fresh_key_0000000000000000000000000000000000000000000000000000000000",
         b"fresh_data",
     )
-    .await;
+    .await?;
 
     assert_eq!(backend.entry_count(), 2);
 
@@ -276,11 +283,12 @@ async fn test_file_backend_evict_expired() {
             .contains("fresh_key_0000000000000000000000000000000000000000000000000000000000")
             .await
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_evict_to_size() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_evict_to_size() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
 
     let t1 = SystemTime::now() - Duration::from_secs(30);
     let t2 = SystemTime::now() - Duration::from_secs(20);
@@ -296,8 +304,7 @@ async fn test_file_backend_evict_to_size() {
                 last_accessed: t1,
             },
         )
-        .await
-        .expect("put oldest");
+        .await?;
 
     backend
         .put(
@@ -309,8 +316,7 @@ async fn test_file_backend_evict_to_size() {
                 last_accessed: t2,
             },
         )
-        .await
-        .expect("put middle");
+        .await?;
 
     backend
         .put(
@@ -322,8 +328,7 @@ async fn test_file_backend_evict_to_size() {
                 last_accessed: t3,
             },
         )
-        .await
-        .expect("put newest");
+        .await?;
 
     assert_eq!(backend.current_size(), 300);
 
@@ -343,41 +348,35 @@ async fn test_file_backend_evict_to_size() {
             .contains("newest_key_0000000000000000000000000000000000000000000000000000000")
             .await
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_load_index() {
-    let tmp = TempDir::new().expect("create temp dir");
+async fn test_file_backend_load_index() -> TestResult {
+    let tmp = TempDir::new()?;
     let cache_dir = tmp.path().to_path_buf();
 
     {
-        let backend = FileBackend::new(cache_dir.clone(), (2, 2))
-            .await
-            .expect("create backend");
+        let backend = FileBackend::new(cache_dir.clone(), (2, 2)).await?;
 
         put_entry(
             &backend,
             "aaaa0000000000000000000000000000000000000000000000000000000000aa",
             b"hello",
         )
-        .await;
+        .await?;
         put_entry(
             &backend,
             "bbbb0000000000000000000000000000000000000000000000000000000000bb",
             b"world",
         )
-        .await;
+        .await?;
     }
 
-    let backend2 = FileBackend::new(cache_dir, (2, 2))
-        .await
-        .expect("create backend2");
+    let backend2 = FileBackend::new(cache_dir, (2, 2)).await?;
     assert_eq!(backend2.entry_count(), 0, "Fresh backend has empty index");
 
-    let result = backend2
-        .load_index(Duration::from_hours(1))
-        .await
-        .expect("load index");
+    let result = backend2.load_index(Duration::from_hours(1)).await?;
 
     assert_eq!(result.loaded, 2);
     assert_eq!(result.errors, 0);
@@ -387,19 +386,18 @@ async fn test_file_backend_load_index() {
     let entry = backend2
         .get("aaaa0000000000000000000000000000000000000000000000000000000000aa")
         .await
-        .expect("should exist");
+        .ok_or("entry should exist")?;
     assert_eq!(entry.data, Bytes::from("hello"));
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_load_index_deletes_stale() {
-    let tmp = TempDir::new().expect("create temp dir");
+async fn test_file_backend_load_index_deletes_stale() -> TestResult {
+    let tmp = TempDir::new()?;
     let cache_dir = tmp.path().to_path_buf();
 
     {
-        let backend = FileBackend::new(cache_dir.clone(), (2, 2))
-            .await
-            .expect("create backend");
+        let backend = FileBackend::new(cache_dir.clone(), (2, 2)).await?;
         let past = SystemTime::now() - Duration::from_secs(100);
         let stale_entry = StoredEntry {
             data: Bytes::from("stale_data"),
@@ -412,46 +410,32 @@ async fn test_file_backend_load_index_deletes_stale() {
                 "stale_key_0000000000000000000000000000000000000000000000000000000",
                 stale_entry,
             )
-            .await
-            .expect("put stale");
+            .await?;
     }
 
-    let backend2 = FileBackend::new(cache_dir, (2, 2))
-        .await
-        .expect("create backend2");
-    let result = backend2
-        .load_index(Duration::from_secs(10))
-        .await
-        .expect("load index");
+    let backend2 = FileBackend::new(cache_dir, (2, 2)).await?;
+    let result = backend2.load_index(Duration::from_secs(10)).await?;
 
     assert_eq!(result.loaded, 0);
     assert_eq!(result.deleted, 1);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_corrupted_file_handled() {
-    let tmp = TempDir::new().expect("create temp dir");
+async fn test_file_backend_corrupted_file_handled() -> TestResult {
+    let tmp = TempDir::new()?;
     let cache_dir = tmp.path().to_path_buf();
 
     let garbage_dir = cache_dir.join("ga").join("rb");
-    fs::create_dir_all(&garbage_dir).await.expect("create dirs");
+    fs::create_dir_all(&garbage_dir).await?;
     let garbage_path =
         garbage_dir.join("garb0000000000000000000000000000000000000000000000000000000000");
-    fs::write(&garbage_path, b"this is not a valid cache file")
-        .await
-        .expect("write garbage");
+    fs::write(&garbage_path, b"this is not a valid cache file").await?;
 
-    fs::create_dir_all(cache_dir.join(".tmp"))
-        .await
-        .expect("create .tmp");
+    fs::create_dir_all(cache_dir.join(".tmp")).await?;
 
-    let backend = FileBackend::new(cache_dir, (2, 2))
-        .await
-        .expect("create backend");
-    let result = backend
-        .load_index(Duration::from_hours(1))
-        .await
-        .expect("load index");
+    let backend = FileBackend::new(cache_dir, (2, 2)).await?;
+    let result = backend.load_index(Duration::from_hours(1)).await?;
 
     assert_eq!(result.errors, 1);
     assert_eq!(result.loaded, 0);
@@ -460,35 +444,27 @@ async fn test_file_backend_corrupted_file_handled() {
         !garbage_path.exists(),
         "Corrupted file should have been deleted"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_load_index_deletes_size_mismatch() {
-    let tmp = TempDir::new().expect("create temp dir");
+async fn test_file_backend_load_index_deletes_size_mismatch() -> TestResult {
+    let tmp = TempDir::new()?;
     let cache_dir = tmp.path().to_path_buf();
     let key = "aaaa0000000000000000000000000000000000000000000000000000000000aa";
 
     {
-        let backend = FileBackend::new(cache_dir.clone(), (2, 2))
-            .await
-            .expect("create backend");
-        put_entry(&backend, key, b"payload").await;
+        let backend = FileBackend::new(cache_dir.clone(), (2, 2)).await?;
+        put_entry(&backend, key, b"payload").await?;
     }
 
     let cache_file = cache_dir.join("aa").join("aa").join(key);
-    let mut bytes = fs::read(&cache_file).await.expect("read cache file");
-    bytes.pop().expect("cache file should have data");
-    fs::write(&cache_file, bytes)
-        .await
-        .expect("truncate cache file");
+    let mut bytes = fs::read(&cache_file).await?;
+    let _ = bytes.pop().ok_or("cache file should have data")?;
+    fs::write(&cache_file, bytes).await?;
 
-    let backend = FileBackend::new(cache_dir, (2, 2))
-        .await
-        .expect("create backend");
-    let result = backend
-        .load_index(Duration::from_hours(1))
-        .await
-        .expect("load index");
+    let backend = FileBackend::new(cache_dir, (2, 2)).await?;
+    let result = backend.load_index(Duration::from_hours(1)).await?;
 
     assert_eq!(result.loaded, 0);
     assert_eq!(result.errors, 1);
@@ -496,21 +472,18 @@ async fn test_file_backend_load_index_deletes_size_mismatch() {
         !cache_file.exists(),
         "size-mismatched file should be deleted"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_load_index_deletes_invalid_timestamp() {
-    let tmp = TempDir::new().expect("create temp dir");
+async fn test_file_backend_load_index_deletes_invalid_timestamp() -> TestResult {
+    let tmp = TempDir::new()?;
     let cache_dir = tmp.path().to_path_buf();
     let key = "bbbb0000000000000000000000000000000000000000000000000000000000bb";
     let payload = b"payload";
     let cache_file = cache_dir.join("bb").join("bb").join(key);
-    fs::create_dir_all(cache_file.parent().expect("cache file parent"))
-        .await
-        .expect("create cache dirs");
-    fs::create_dir_all(cache_dir.join(".tmp"))
-        .await
-        .expect("create .tmp");
+    fs::create_dir_all(cache_file.parent().ok_or("cache file parent")?).await?;
+    fs::create_dir_all(cache_dir.join(".tmp")).await?;
 
     let header = FileEntryHeader {
         key: key.to_string(),
@@ -519,27 +492,20 @@ async fn test_file_backend_load_index_deletes_invalid_timestamp() {
         last_accessed_millis: 0,
         data_size: payload.len() as u64,
     };
-    let header_bytes = encode_header(&header).expect("encode header");
+    let header_bytes = encode_header(&header)?;
     let mut file_bytes = Vec::new();
     file_bytes.extend_from_slice(CACHE_FILE_MAGIC);
     file_bytes.extend_from_slice(
         &u32::try_from(header_bytes.len())
-            .expect("header len fits")
+            .map_err(|_| "header len fits")?
             .to_le_bytes(),
     );
     file_bytes.extend_from_slice(&header_bytes);
     file_bytes.extend_from_slice(payload);
-    fs::write(&cache_file, file_bytes)
-        .await
-        .expect("write cache file");
+    fs::write(&cache_file, file_bytes).await?;
 
-    let backend = FileBackend::new(cache_dir, (2, 2))
-        .await
-        .expect("create backend");
-    let result = backend
-        .load_index(Duration::from_hours(1))
-        .await
-        .expect("load index");
+    let backend = FileBackend::new(cache_dir, (2, 2)).await?;
+    let result = backend.load_index(Duration::from_hours(1)).await?;
 
     assert_eq!(result.loaded, 0);
     assert_eq!(result.errors, 1);
@@ -547,38 +513,28 @@ async fn test_file_backend_load_index_deletes_invalid_timestamp() {
         !cache_file.exists(),
         "invalid timestamp file should be deleted"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_load_index_deletes_key_path_mismatch() {
-    let tmp = TempDir::new().expect("create temp dir");
+async fn test_file_backend_load_index_deletes_key_path_mismatch() -> TestResult {
+    let tmp = TempDir::new()?;
     let cache_dir = tmp.path().to_path_buf();
     let key = "aaaa0000000000000000000000000000000000000000000000000000000000aa";
     let wrong_key = "bbbb0000000000000000000000000000000000000000000000000000000000bb";
 
     {
-        let backend = FileBackend::new(cache_dir.clone(), (2, 2))
-            .await
-            .expect("create backend");
-        put_entry(&backend, key, b"payload").await;
+        let backend = FileBackend::new(cache_dir.clone(), (2, 2)).await?;
+        put_entry(&backend, key, b"payload").await?;
     }
 
     let original_path = cache_dir.join("aa").join("aa").join(key);
     let wrong_path = cache_dir.join("bb").join("bb").join(wrong_key);
-    fs::create_dir_all(wrong_path.parent().expect("wrong path parent"))
-        .await
-        .expect("create wrong path parent");
-    fs::rename(&original_path, &wrong_path)
-        .await
-        .expect("move cache file to wrong path");
+    fs::create_dir_all(wrong_path.parent().ok_or("wrong path parent")?).await?;
+    fs::rename(&original_path, &wrong_path).await?;
 
-    let backend = FileBackend::new(cache_dir, (2, 2))
-        .await
-        .expect("create backend");
-    let result = backend
-        .load_index(Duration::from_hours(1))
-        .await
-        .expect("load index");
+    let backend = FileBackend::new(cache_dir, (2, 2)).await?;
+    let result = backend.load_index(Duration::from_hours(1)).await?;
 
     assert_eq!(result.loaded, 0);
     assert_eq!(result.errors, 1);
@@ -586,24 +542,25 @@ async fn test_file_backend_load_index_deletes_key_path_mismatch() {
         !wrong_path.exists(),
         "key/path mismatched file should be deleted"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_keys() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_keys() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
 
     put_entry(
         &backend,
         "aaaa0000000000000000000000000000000000000000000000000000000000aa",
         b"data_a",
     )
-    .await;
+    .await?;
     put_entry(
         &backend,
         "bbbb0000000000000000000000000000000000000000000000000000000000bb",
         b"data_b",
     )
-    .await;
+    .await?;
 
     let mut keys = backend.keys().await;
     keys.sort();
@@ -617,96 +574,95 @@ async fn test_file_backend_keys() {
         keys[1],
         "bbbb0000000000000000000000000000000000000000000000000000000000bb"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_cleanup_temp_files() {
-    let (backend, tmp) = make_backend().await;
+async fn test_file_backend_cleanup_temp_files() -> TestResult {
+    let (backend, tmp) = make_backend().await?;
 
     let tmp_dir = tmp.path().join(".tmp");
     let orphan = tmp_dir.join("tmp_orphaned_file");
-    fs::write(&orphan, b"orphan data")
-        .await
-        .expect("write orphan");
+    fs::write(&orphan, b"orphan data").await?;
 
     backend.cleanup_temp_files().await;
 
     assert!(orphan.exists(), "Fresh temp file should not be cleaned up");
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_overwrite_updates_size() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_overwrite_updates_size() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
     let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 
-    put_entry(&backend, key, &[0u8; 100]).await;
+    put_entry(&backend, key, &[0u8; 100]).await?;
     assert_eq!(backend.current_size(), 100);
 
-    put_entry(&backend, key, &[0u8; 50]).await;
+    put_entry(&backend, key, &[0u8; 50]).await?;
     assert_eq!(backend.current_size(), 50);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_empty_data() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_empty_data() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
     let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 
-    put_entry(&backend, key, b"").await;
-    let result = backend.get(key).await.expect("should exist");
+    put_entry(&backend, key, b"").await?;
+    let result = backend.get(key).await.ok_or("entry should exist")?;
     assert_eq!(result.data, Bytes::new());
     assert_eq!(backend.current_size(), 0);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_get_returns_stored_entry_fields() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_get_returns_stored_entry_fields() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
     let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
     let ttl = Duration::from_mins(10);
 
     let entry = StoredEntry::new(Bytes::from("test data"), ttl);
-    backend.put(key, entry).await.expect("put");
+    backend.put(key, entry).await?;
 
-    let got = backend.get(key).await.expect("should exist");
+    let got = backend.get(key).await.ok_or("entry should exist")?;
     assert_eq!(got.data, Bytes::from("test data"));
     assert_eq!(got.ttl.as_secs(), 600);
     assert!(
         got.inserted_at.elapsed().unwrap_or_default() < Duration::from_secs(5),
         "inserted_at should be recent"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_persist_access_times() {
-    let tmp = TempDir::new().expect("create temp dir");
+async fn test_file_backend_persist_access_times() -> TestResult {
+    let tmp = TempDir::new()?;
     let cache_dir = tmp.path().to_path_buf();
 
     let key_a = "aaaa0000000000000000000000000000000000000000000000000000000000aa";
     let key_b = "bbbb0000000000000000000000000000000000000000000000000000000000bb";
 
     {
-        let backend = FileBackend::new(cache_dir.clone(), (2, 2))
-            .await
-            .expect("create backend");
-        put_entry(&backend, key_a, b"data_a").await;
-        put_entry(&backend, key_b, b"data_b").await;
+        let backend = FileBackend::new(cache_dir.clone(), (2, 2)).await?;
+        put_entry(&backend, key_a, b"data_a").await?;
+        put_entry(&backend, key_b, b"data_b").await?;
 
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let _ = backend.get(key_b).await.expect("get key_b");
+        assert!(
+            backend.get(key_b).await.is_some(),
+            "key_b should exist before refreshing access time"
+        );
 
         backend.persist_access_times().await;
     }
 
     {
-        let backend2 = FileBackend::new(cache_dir, (2, 2))
-            .await
-            .expect("create backend2");
-        backend2
-            .load_index(Duration::from_hours(1))
-            .await
-            .expect("load index");
+        let backend2 = FileBackend::new(cache_dir, (2, 2)).await?;
+        backend2.load_index(Duration::from_hours(1)).await?;
 
-        let entry_a = backend2.index.entries.get(key_a).expect("key_a in index");
-        let entry_b = backend2.index.entries.get(key_b).expect("key_b in index");
+        let entry_a = backend2.index.entries.get(key_a).ok_or("key_a in index")?;
+        let entry_b = backend2.index.entries.get(key_b).ok_or("key_b in index")?;
 
         let accessed_a = entry_a.last_accessed.load(Ordering::Relaxed);
         let accessed_b = entry_b.last_accessed.load(Ordering::Relaxed);
@@ -717,19 +673,24 @@ async fn test_file_backend_persist_access_times() {
              (key_a={accessed_a}, key_b={accessed_b})"
         );
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_file_backend_persist_access_times_no_corruption() {
-    let (backend, _tmp) = make_backend().await;
+async fn test_file_backend_persist_access_times_no_corruption() -> TestResult {
+    let (backend, _tmp) = make_backend().await?;
     let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 
-    put_entry(&backend, key, b"important data").await;
+    put_entry(&backend, key, b"important data").await?;
 
-    let _ = backend.get(key).await;
+    assert!(
+        backend.get(key).await.is_some(),
+        "entry should exist before persisting access times"
+    );
 
     backend.persist_access_times().await;
 
-    let got = backend.get(key).await.expect("should still exist");
+    let got = backend.get(key).await.ok_or("entry should still exist")?;
     assert_eq!(got.data, Bytes::from("important data"));
+    Ok(())
 }

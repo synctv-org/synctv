@@ -19,6 +19,29 @@ pub(crate) fn validate_source_config_size(source_config: &JsonValue) -> Result<(
 mod tests {
     use super::*;
 
+    fn source_config_error(source_config: &JsonValue) -> Error {
+        match validate_source_config_size(source_config) {
+            Ok(()) => std::panic::panic_any("source_config validation should fail"),
+            Err(error) => error,
+        }
+    }
+
+    fn assert_source_config_valid(source_config: &JsonValue) {
+        if let Err(error) = validate_source_config_size(source_config) {
+            std::panic::panic_any(format!("source_config validation should pass: {error}"));
+        }
+    }
+
+    fn assert_source_config_too_large(error: Error) {
+        match error {
+            Error::InvalidInput(message) => {
+                assert!(message.contains("source_config too large"));
+                assert!(message.contains(&MAX_SOURCE_CONFIG_SIZE.to_string()));
+            }
+            other => std::panic::panic_any(format!("expected InvalidInput, got {other:?}")),
+        }
+    }
+
     #[test]
     fn test_source_config_large_rejection() {
         let large_string = "x".repeat(2 * 1024 * 1024);
@@ -26,40 +49,35 @@ mod tests {
             "data": large_string
         });
 
-        let err = validate_source_config_size(&large_config).unwrap_err();
-
-        match err {
-            Error::InvalidInput(message) => {
-                assert!(message.contains("source_config too large"));
-                assert!(message.contains("1048576"));
-            }
-            other => panic!("expected InvalidInput, got {other:?}"),
-        }
+        assert_source_config_too_large(source_config_error(&large_config));
     }
 
     #[test]
     fn test_source_config_exactly_1mb_accepted() {
-        // JSON overhead: {"data":"..."} = 11 bytes when serialized compactly.
-        let data_size = MAX_SOURCE_CONFIG_SIZE - 11;
+        let empty_config_size = serialized_size(&serde_json::json!({ "data": "" }));
+        let data_size = MAX_SOURCE_CONFIG_SIZE - empty_config_size;
         let exact_config = serde_json::json!({
             "data": "x".repeat(data_size)
         });
 
-        validate_source_config_size(&exact_config).unwrap();
+        assert_source_config_valid(&exact_config);
     }
 
     #[test]
     fn test_source_config_1mb_plus_one_rejected() {
-        let data_size = MAX_SOURCE_CONFIG_SIZE - 10;
+        let empty_config_size = serialized_size(&serde_json::json!({ "data": "" }));
+        let data_size = MAX_SOURCE_CONFIG_SIZE - empty_config_size + 1;
         let over_config = serde_json::json!({
             "data": "x".repeat(data_size)
         });
 
-        let err = validate_source_config_size(&over_config).unwrap_err();
+        assert_source_config_too_large(source_config_error(&over_config));
+    }
 
-        match err {
-            Error::InvalidInput(message) => assert!(message.contains("source_config too large")),
-            other => panic!("expected InvalidInput, got {other:?}"),
+    fn serialized_size(source_config: &JsonValue) -> usize {
+        match serde_json::to_vec(source_config) {
+            Ok(bytes) => bytes.len(),
+            Err(error) => std::panic::panic_any(format!("source_config should serialize: {error}")),
         }
     }
 
@@ -86,6 +104,6 @@ mod tests {
             }
         });
 
-        validate_source_config_size(&nested_config).unwrap();
+        assert_source_config_valid(&nested_config);
     }
 }

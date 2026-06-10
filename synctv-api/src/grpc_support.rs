@@ -158,8 +158,10 @@ pub const fn grpc_unary_request_timeout() -> std::time::Duration {
 mod tests {
     use super::request_metadata;
 
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
     #[test]
-    fn request_metadata_extracts_ascii_authorization() {
+    fn request_metadata_extracts_ascii_authorization() -> TestResult {
         let config = synctv_core::Config::default();
         let mut request = tonic::Request::new(());
         request.metadata_mut().insert(
@@ -167,14 +169,15 @@ mod tests {
             tonic::metadata::MetadataValue::from_static("Bearer token"),
         );
 
-        let metadata = request_metadata(&request, &config, None).expect("metadata should parse");
+        let metadata = request_metadata(&request, &config, None)?;
 
         assert_eq!(metadata.authorization.as_deref(), Some("Bearer token"));
         assert_eq!(metadata.transport, crate::impls::TransportProtocol::Grpc);
+        Ok(())
     }
 
     #[test]
-    fn request_metadata_ignores_authorization_binary_metadata() {
+    fn request_metadata_ignores_authorization_binary_metadata() -> TestResult {
         let config = synctv_core::Config::default();
         let mut request = tonic::Request::new(());
         request.metadata_mut().insert_bin(
@@ -182,13 +185,14 @@ mod tests {
             tonic::metadata::MetadataValue::from_bytes(b"\xff"),
         );
 
-        let metadata = request_metadata(&request, &config, None).expect("metadata should parse");
+        let metadata = request_metadata(&request, &config, None)?;
 
         assert!(metadata.authorization.is_none());
+        Ok(())
     }
 
     #[test]
-    fn request_metadata_extracts_ascii_user_agent() {
+    fn request_metadata_extracts_ascii_user_agent() -> TestResult {
         let config = synctv_core::Config::default();
         let mut request = tonic::Request::new(());
         request.metadata_mut().insert(
@@ -196,18 +200,20 @@ mod tests {
             tonic::metadata::MetadataValue::from_static("synctv-test/1.0"),
         );
 
-        let metadata = request_metadata(&request, &config, None).expect("metadata should parse");
+        let metadata = request_metadata(&request, &config, None)?;
 
         assert_eq!(metadata.user_agent.as_deref(), Some("synctv-test/1.0"));
+        Ok(())
     }
 
     #[test]
-    fn request_metadata_allows_missing_user_agent() {
+    fn request_metadata_allows_missing_user_agent() -> TestResult {
         let config = synctv_core::Config::default();
         let request = tonic::Request::new(());
 
-        let metadata = request_metadata(&request, &config, None).expect("metadata should parse");
+        let metadata = request_metadata(&request, &config, None)?;
 
         assert!(metadata.user_agent.is_none());
+        Ok(())
     }
 }

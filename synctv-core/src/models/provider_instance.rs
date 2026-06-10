@@ -497,6 +497,13 @@ fn decode_base32_secret(secret: &str) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn test_provider_instance_supports_provider() {
         let instance = ProviderInstance {
@@ -536,7 +543,7 @@ mod tests {
             updated_at: Utc::now(),
         };
 
-        let duration = instance.parse_timeout().unwrap();
+        let duration = ok(instance.parse_timeout(), "provider timeout should parse");
         assert_eq!(duration, std::time::Duration::from_secs(15));
     }
 
@@ -693,9 +700,10 @@ mod tests {
 
     #[test]
     fn alist_otp_code_matches_rfc6238_sha1_vector_truncated_to_six_digits() {
-        let code =
-            ProviderCredential::alist_otp_code_at_timestamp("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", 59)
-                .expect("RFC test vector secret should decode");
+        let code = ok(
+            ProviderCredential::alist_otp_code_at_timestamp("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", 59),
+            "RFC test vector secret should decode",
+        );
 
         assert_eq!(code, "287082");
     }
@@ -714,11 +722,13 @@ mod tests {
     #[test]
     fn provider_instance_binding_uses_credential_when_request_omits_instance() {
         assert_eq!(
-            resolve_provider_instance_binding(
-                None,
-                CredentialProviderInstanceName::CredentialBacked(Some(" alist_remote ")),
+            ok(
+                resolve_provider_instance_binding(
+                    None,
+                    CredentialProviderInstanceName::CredentialBacked(Some(" alist_remote ")),
+                ),
+                "credential binding should resolve"
             )
-            .expect("credential binding should resolve")
             .as_deref(),
             Some("alist_remote")
         );

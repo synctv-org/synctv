@@ -22,17 +22,6 @@ pub struct ActivePublisherEntry {
 /// `StreamRegistry` trait for publisher registration
 #[async_trait]
 pub trait StreamRegistryTrait: Send + Sync {
-    /// Register a publisher for a media in a room (atomic operation).
-    /// Returns `true` if registered successfully, `false` if already exists.
-    async fn register_publisher(
-        &self,
-        room_id: &str,
-        media_id: &str,
-        node_id: &str,
-        app_name: &str,
-        api_address: &str,
-    ) -> Result<bool>;
-
     /// Try to register as publisher (atomic operation)
     /// Returns true if registered successfully, false if already exists.
     /// `user_id` is stored for reverse-index lookups (pass "" if unknown).
@@ -79,27 +68,8 @@ pub trait StreamRegistryTrait: Send + Sync {
     /// List all active publishers with their current registry snapshot.
     async fn list_active_publishers(&self) -> Result<Vec<ActivePublisherEntry>>;
 
-    /// List all active streams (returns tuples of (`room_id`, `media_id`))
-    async fn list_active_streams(&self) -> Result<Vec<(String, String)>> {
-        Ok(self
-            .list_active_publishers()
-            .await?
-            .into_iter()
-            .map(|entry| (entry.room_id, entry.media_id))
-            .collect())
-    }
-
     /// List active streams for a specific room (returns `media_id` values).
-    /// Default implementation filters `list_active_streams`; backends can
-    /// override for a more efficient query.
-    async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
-        let all = self.list_active_streams().await?;
-        Ok(all
-            .into_iter()
-            .filter(|(rid, _)| rid == room_id)
-            .map(|(_, media_id)| media_id)
-            .collect())
-    }
+    async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>>;
 
     /// Get all active publishers for a user (via reverse index)
     /// Returns list of (`room_id`, `media_id`) pairs
@@ -110,17 +80,7 @@ pub trait StreamRegistryTrait: Send + Sync {
         &self,
         room_id: &str,
         user_id: &str,
-    ) -> Result<Vec<(String, String)>> {
-        Ok(self
-            .get_user_publishers(user_id)
-            .await?
-            .into_iter()
-            .filter(|(publisher_room_id, _)| publisher_room_id == room_id)
-            .collect())
-    }
-
-    /// Remove all publisher entries for a user
-    async fn unregister_all_user_publishers(&self, user_id: &str) -> Result<()>;
+    ) -> Result<Vec<(String, String)>>;
 
     /// Validate that the given epoch matches the current publisher's epoch.
     /// Returns Ok(true) if valid, Ok(false) if stale (split-brain detected).
@@ -135,17 +95,6 @@ pub trait StreamRegistryTrait: Send + Sync {
 // Implement StreamRegistryTrait for StreamRegistry
 #[async_trait]
 impl StreamRegistryTrait for StreamRegistry {
-    async fn register_publisher(
-        &self,
-        room_id: &str,
-        media_id: &str,
-        node_id: &str,
-        app_name: &str,
-        api_address: &str,
-    ) -> Result<bool> {
-        Self::register_publisher(self, room_id, media_id, node_id, app_name, api_address).await
-    }
-
     async fn try_register_publisher(
         &self,
         room_id: &str,
@@ -185,7 +134,7 @@ impl StreamRegistryTrait for StreamRegistry {
     }
 
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
-        Self::unregister_publisher_immut(self, room_id, media_id).await
+        StreamRegistry::unregister_publisher(self, room_id, media_id).await
     }
 
     async fn unregister_publisher_if_epoch_matches(
@@ -198,27 +147,23 @@ impl StreamRegistryTrait for StreamRegistry {
     }
 
     async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>> {
-        Self::get_publisher_immut(self, room_id, media_id).await
+        StreamRegistry::get_publisher(self, room_id, media_id).await
     }
 
     async fn is_stream_active(&self, room_id: &str, media_id: &str) -> Result<bool> {
-        Self::is_stream_active_immut(self, room_id, media_id).await
+        StreamRegistry::is_stream_active(self, room_id, media_id).await
     }
 
     async fn list_active_publishers(&self) -> Result<Vec<ActivePublisherEntry>> {
-        Self::list_active_publishers_immut(self).await
-    }
-
-    async fn list_active_streams(&self) -> Result<Vec<(String, String)>> {
-        Self::list_active_streams_immut(self).await
+        StreamRegistry::list_active_publishers(self).await
     }
 
     async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
-        Self::list_streams_for_room(self, room_id).await
+        StreamRegistry::list_streams_for_room(self, room_id).await
     }
 
     async fn get_user_publishers(&self, user_id: &str) -> Result<Vec<(String, String)>> {
-        Self::get_user_publishers(self, user_id).await
+        StreamRegistry::get_user_publishers(self, user_id).await
     }
 
     async fn get_user_publishers_for_room(
@@ -226,11 +171,7 @@ impl StreamRegistryTrait for StreamRegistry {
         room_id: &str,
         user_id: &str,
     ) -> Result<Vec<(String, String)>> {
-        Self::get_user_publishers_for_room(self, room_id, user_id).await
-    }
-
-    async fn unregister_all_user_publishers(&self, user_id: &str) -> Result<()> {
-        Self::unregister_all_user_publishers(self, user_id).await
+        StreamRegistry::get_user_publishers_for_room(self, room_id, user_id).await
     }
 
     async fn validate_epoch(&self, room_id: &str, media_id: &str, epoch: u64) -> Result<bool> {

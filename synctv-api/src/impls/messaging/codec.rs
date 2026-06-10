@@ -161,7 +161,7 @@ fn chat_presentation_text_from_metadata(
 
 pub(crate) fn chat_playback_media_id_from_metadata(
     metadata: &serde_json::Value,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<String, String> {
     let Some(id) = chat_playback_positive_id_from_metadata(metadata, "media_id")? else {
         return Ok(String::new());
@@ -175,7 +175,7 @@ pub(crate) fn chat_playback_media_id_from_metadata(
 
 pub(crate) fn chat_playback_playlist_id_from_metadata(
     metadata: &serde_json::Value,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<String, String> {
     let Some(id) = chat_playback_positive_id_from_metadata(metadata, "playlist_id")? else {
         return Ok(String::new());
@@ -223,7 +223,7 @@ pub(crate) struct ChatPlaybackMetadata {
 
 pub(crate) fn chat_playback_metadata_from_metadata(
     metadata: &serde_json::Value,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<ChatPlaybackMetadata, String> {
     let target = chat_playback_target_from_metadata(metadata)?;
     let target_hash = if target.is_empty() {
@@ -407,7 +407,7 @@ pub(crate) fn chat_metadata_for_send(
 
 pub(crate) fn chat_message_event_to_proto(
     event: &ChatMessageEvent,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::ChatMessageEvent, String> {
     let message = &event.message.message;
     let room_id = public_id_codec

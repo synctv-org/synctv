@@ -14,7 +14,7 @@ pub use local::{
     InMemoryMfaSessionStore, InMemoryOpaqueLoginSessionStore,
     InMemoryOpaqueRegistrationSessionStore, InMemorySensitiveVerificationSessionStore,
 };
-pub use redis::{
+use redis::{
     RedisMfaSessionStore, RedisOpaqueLoginSessionStore, RedisOpaqueRegistrationSessionStore,
     RedisSensitiveVerificationSessionStore,
 };
@@ -75,27 +75,27 @@ pub trait SensitiveVerificationSessionStore: Send + Sync {
 }
 
 #[must_use]
-pub fn local_opaque_login_session_store() -> Arc<dyn OpaqueLoginSessionStore> {
+pub(crate) fn local_opaque_login_session_store() -> Arc<dyn OpaqueLoginSessionStore> {
     Arc::new(InMemoryOpaqueLoginSessionStore::new())
 }
 
 #[must_use]
-pub fn local_opaque_registration_session_store() -> Arc<dyn OpaqueRegistrationSessionStore> {
+pub(crate) fn local_opaque_registration_session_store() -> Arc<dyn OpaqueRegistrationSessionStore> {
     Arc::new(InMemoryOpaqueRegistrationSessionStore::new())
 }
 
 #[must_use]
-pub fn local_mfa_session_store() -> Arc<dyn MfaSessionStore> {
+pub(crate) fn local_mfa_session_store() -> Arc<dyn MfaSessionStore> {
     Arc::new(InMemoryMfaSessionStore::new())
 }
 
 #[must_use]
-pub fn local_sensitive_verification_session_store() -> Arc<dyn SensitiveVerificationSessionStore> {
+pub(crate) fn local_sensitive_verification_session_store(
+) -> Arc<dyn SensitiveVerificationSessionStore> {
     Arc::new(InMemorySensitiveVerificationSessionStore::new())
 }
 
-#[must_use]
-pub fn shared_opaque_login_session_store(
+fn shared_opaque_login_session_store(
     runtime: Arc<dyn RedisConnectionRuntime>,
     key_prefix: impl Into<String>,
 ) -> Arc<dyn OpaqueLoginSessionStore> {
@@ -104,8 +104,7 @@ pub fn shared_opaque_login_session_store(
     ))
 }
 
-#[must_use]
-pub fn shared_opaque_registration_session_store(
+fn shared_opaque_registration_session_store(
     runtime: Arc<dyn RedisConnectionRuntime>,
     key_prefix: impl Into<String>,
 ) -> Arc<dyn OpaqueRegistrationSessionStore> {
@@ -114,16 +113,14 @@ pub fn shared_opaque_registration_session_store(
     ))
 }
 
-#[must_use]
-pub fn shared_mfa_session_store(
+fn shared_mfa_session_store(
     runtime: Arc<dyn RedisConnectionRuntime>,
     key_prefix: impl Into<String>,
 ) -> Arc<dyn MfaSessionStore> {
     Arc::new(RedisMfaSessionStore::from_runtime(runtime, key_prefix))
 }
 
-#[must_use]
-pub fn shared_sensitive_verification_session_store(
+fn shared_sensitive_verification_session_store(
     runtime: Arc<dyn RedisConnectionRuntime>,
     key_prefix: impl Into<String>,
 ) -> Arc<dyn SensitiveVerificationSessionStore> {
@@ -132,7 +129,7 @@ pub fn shared_sensitive_verification_session_store(
     ))
 }
 
-pub fn opaque_login_session_store_from_shared_state_profile(
+pub(crate) fn opaque_login_session_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn OpaqueLoginSessionStore>> {
     match profile.state_mode() {
@@ -152,7 +149,7 @@ pub fn opaque_login_session_store_from_shared_state_profile(
     }
 }
 
-pub fn opaque_registration_session_store_from_shared_state_profile(
+pub(crate) fn opaque_registration_session_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn OpaqueRegistrationSessionStore>> {
     match profile.state_mode() {
@@ -172,7 +169,7 @@ pub fn opaque_registration_session_store_from_shared_state_profile(
     }
 }
 
-pub fn mfa_session_store_from_shared_state_profile(
+pub(crate) fn mfa_session_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn MfaSessionStore>> {
     match profile.state_mode() {
@@ -191,7 +188,7 @@ pub fn mfa_session_store_from_shared_state_profile(
     }
 }
 
-pub fn sensitive_verification_session_store_from_shared_state_profile(
+pub(crate) fn sensitive_verification_session_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn SensitiveVerificationSessionStore>> {
     match profile.state_mode() {

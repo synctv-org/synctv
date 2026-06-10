@@ -16,6 +16,10 @@ struct MediaCoverFileReferenceRow {
     object_key: String,
 }
 
+fn required_playlist_depth(depth: Option<i32>) -> Result<i32> {
+    depth.ok_or_else(|| Error::Internal("playlist tree query did not return depth".to_string()))
+}
+
 async fn collect_target_playlist_nodes_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
@@ -51,7 +55,7 @@ async fn collect_target_playlist_nodes_in_tx(
 
     let mut result = Vec::with_capacity(rows.len());
     for row in rows {
-        result.push((row.id, row.depth.unwrap_or(0)));
+        result.push((row.id, required_playlist_depth(row.depth)?));
     }
     Ok(result)
 }
@@ -83,7 +87,7 @@ async fn collect_all_room_playlist_nodes_in_tx(
 
     let mut result = Vec::with_capacity(rows.len());
     for row in rows {
-        result.push((row.id, row.depth.unwrap_or(0)));
+        result.push((row.id, required_playlist_depth(row.depth)?));
     }
     Ok(result)
 }

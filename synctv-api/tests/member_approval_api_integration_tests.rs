@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
+mod support;
+
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -65,8 +67,8 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
     )
 }
 
-fn public_id_codec() -> synctv_api::PublicIdCodec {
-    synctv_api::PublicIdCodec::plain()
+fn public_id_codec() -> synctv_core::PublicIdCodec {
+    synctv_core::PublicIdCodec::plain()
 }
 
 fn review_request_public_id(id: i64) -> String {
@@ -80,7 +82,6 @@ fn make_client_api(
     room_service: Arc<RoomService>,
 ) -> ClientApiImpl {
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-    connection_manager.start();
 
     ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
@@ -91,16 +92,16 @@ fn make_client_api(
             publish_key_service: None,
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
-            providers_manager: None,
             settings_registry: None,
             public_id_codec: Arc::new(public_id_codec()),
             chat_service: None,
-            credential_encryption: None,
-            provider_stores: None,
+            provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
+                "test:provider:",
+            )),
             email_api: None,
             passkey_service: None,
         },
-        synctv_api::impls::ClientApiRuntime::test_disabled(),
+        support::client_api_runtime(),
     )
 }
 
@@ -120,14 +121,13 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
         (*user_service).clone(),
         RoomServiceOptions {
             settings_registry: Some(settings_registry.clone()),
-            ..RoomServiceOptions::test_defaults()
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
     .expect("room service should build");
     let email_service =
         Arc::new(EmailService::new(Arc::new(DisabledEmailConfigProvider)).expect("email service"));
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-    connection_manager.start();
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         ProviderInstanceRepository::new(pool.clone()),
     )));
@@ -154,7 +154,7 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
             audit_service: Arc::new(AuditService::new_unbuffered(pool)),
             public_id_codec: Arc::new(public_id_codec()),
         },
-        synctv_api::impls::AdminApiRuntime::test_disabled(),
+        support::admin_api_runtime(),
     )
 }
 

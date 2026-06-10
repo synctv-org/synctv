@@ -6,7 +6,7 @@
 //! and key hashing live in sibling modules to keep this file focused on cache
 //! behavior.
 
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::BinaryHeap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::{
     apply_provider_headers, run_with_proxy_cancellation,
-    send_with_redirect_validation_with_control_and_timeout,
+    send_with_redirect_validation_with_control_and_timeout, ProviderHeaders,
 };
 
 use super::backend::{CacheBackend, SliceCacheBackend};
@@ -46,6 +46,17 @@ type SliceLock = Arc<Mutex<()>>;
 struct SliceRangeRequest {
     request: reqwest::RequestBuilder,
     range_start: u64,
+}
+
+struct SliceResponseContext<'a> {
+    url: &'a str,
+    provider_headers: &'a ProviderHeaders,
+    key: &'a str,
+    slice_index: u64,
+    known_total_size: Option<u64>,
+    range_start: u64,
+    cache_status: CacheStatus,
+    request_control: Option<&'a ExecutionControl>,
 }
 
 async fn read_exact_slice_body(
@@ -158,7 +169,7 @@ impl SliceCache {
     fn build_slice_range_request(
         &self,
         url: &str,
-        provider_headers: &HashMap<String, String>,
+        provider_headers: &ProviderHeaders,
         slice_index: u64,
         include_conditionals: bool,
     ) -> Result<SliceRangeRequest, anyhow::Error> {
@@ -224,7 +235,7 @@ impl SliceCache {
     fn spawn_slice_revalidation(
         &self,
         url: &str,
-        provider_headers: &HashMap<String, String>,
+        provider_headers: &ProviderHeaders,
         slice_index: u64,
         total_size: u64,
         upstream_header_timeout: Option<Duration>,
@@ -257,7 +268,7 @@ impl SliceCache {
     async fn refresh_stale_slice(
         &self,
         url: &str,
-        provider_headers: &HashMap<String, String>,
+        provider_headers: &ProviderHeaders,
         slice_index: u64,
         total_size: u64,
         upstream_header_timeout: Option<Duration>,
@@ -297,11 +308,16 @@ impl SliceCache {
         };
 
         if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
-            let _ = resp.bytes().await;
+            if let Err(error) = resp.bytes().await {
+                tracing::debug!(%error, "failed to drain slice cache 304 response body");
+            }
 
             if let Some(existing) = self.backend.get(&key).await {
                 let refreshed = StoredEntry::new(existing.data.clone(), self.config.segment_ttl);
-                let _ = self.backend.put(&key, refreshed).await;
+                self.backend
+                    .put(&key, refreshed)
+                    .await
+                    .with_context(|| format!("failed to refresh cached slice TTL for {key}"))?;
                 return Ok(());
             }
 
@@ -321,14 +337,16 @@ impl SliceCache {
             };
             self.process_slice_response(
                 retry_resp,
-                url,
-                provider_headers,
-                &key,
-                slice_index,
-                Some(total_size),
-                range_request.range_start,
-                CacheStatus::Miss,
-                None,
+                SliceResponseContext {
+                    url,
+                    provider_headers,
+                    key: &key,
+                    slice_index,
+                    known_total_size: Some(total_size),
+                    range_start: range_request.range_start,
+                    cache_status: CacheStatus::Miss,
+                    request_control: None,
+                },
             )
             .await
             .map(|_| ())?;
@@ -337,14 +355,16 @@ impl SliceCache {
 
         self.process_slice_response(
             resp,
-            url,
-            provider_headers,
-            &key,
-            slice_index,
-            Some(total_size),
-            range_request.range_start,
-            CacheStatus::Miss,
-            None,
+            SliceResponseContext {
+                url,
+                provider_headers,
+                key: &key,
+                slice_index,
+                known_total_size: Some(total_size),
+                range_start: range_request.range_start,
+                cache_status: CacheStatus::Miss,
+                request_control: None,
+            },
         )
         .await
         .map(|_| ())?;
@@ -566,14 +586,14 @@ impl SliceCache {
     #[must_use]
     pub fn compute_cache_key(
         url: &str,
-        provider_headers: &HashMap<String, String>,
+        provider_headers: &ProviderHeaders,
         slice_index: u64,
     ) -> String {
         slice_cache_key(url, provider_headers, slice_index)
     }
 
     /// Compute the key used to store per-resource metadata.
-    pub(super) fn meta_key(url: &str, provider_headers: &HashMap<String, String>) -> String {
+    pub(super) fn meta_key(url: &str, provider_headers: &ProviderHeaders) -> String {
         resource_meta_key(url, provider_headers)
     }
 
@@ -600,7 +620,7 @@ impl SliceCache {
     pub fn get_resource_meta(
         &self,
         url: &str,
-        provider_headers: &HashMap<String, String>,
+        provider_headers: &ProviderHeaders,
     ) -> Option<CachedResourceMeta> {
         self.get_resource_meta_sync(url, provider_headers)
     }
@@ -608,7 +628,7 @@ impl SliceCache {
     pub(super) fn get_resource_meta_sync(
         &self,
         url: &str,
-        provider_headers: &HashMap<String, String>,
+        provider_headers: &ProviderHeaders,
     ) -> Option<CachedResourceMeta> {
         let mk = Self::meta_key(url, provider_headers);
         if let Some(mut entry) = self.meta.get_mut(&mk) {
@@ -622,7 +642,7 @@ impl SliceCache {
     pub(super) fn put_resource_meta(
         &self,
         url: &str,
-        provider_headers: &HashMap<String, String>,
+        provider_headers: &ProviderHeaders,
         meta: CachedResourceMeta,
     ) {
         let mk = Self::meta_key(url, provider_headers);
@@ -632,7 +652,7 @@ impl SliceCache {
     pub(super) fn resource_meta_lock(
         &self,
         url: &str,
-        provider_headers: &HashMap<String, String>,
+        provider_headers: &ProviderHeaders,
     ) -> SliceLock {
         let key = format!("meta:{}", Self::meta_key(url, provider_headers));
         self.locks
@@ -644,7 +664,7 @@ impl SliceCache {
     pub(super) async fn get_or_fetch_head_resource_with_control(
         &self,
         url: &str,
-        provider_headers: &HashMap<String, String>,
+        provider_headers: &ProviderHeaders,
         range_header: Option<&str>,
         request_control: Option<&ExecutionControl>,
         upstream_header_timeout: Option<Duration>,
@@ -689,7 +709,7 @@ impl SliceCache {
     pub async fn get_or_fetch_slice(
         &self,
         url: &str,
-        provider_headers: &HashMap<String, String>,
+        provider_headers: &ProviderHeaders,
         slice_index: u64,
         total_size: u64,
     ) -> Result<(Bytes, CacheStatus), anyhow::Error> {
@@ -708,7 +728,7 @@ impl SliceCache {
     pub async fn get_or_fetch_slice_with_control(
         &self,
         url: &str,
-        provider_headers: &HashMap<String, String>,
+        provider_headers: &ProviderHeaders,
         slice_index: u64,
         total_size: u64,
         request_control: Option<&ExecutionControl>,
@@ -738,7 +758,7 @@ impl SliceCache {
     pub(super) async fn get_or_fetch_slice_or_bypass_with_control(
         &self,
         url: &str,
-        provider_headers: &HashMap<String, String>,
+        provider_headers: &ProviderHeaders,
         slice_index: u64,
         known_total_size: Option<u64>,
         request_control: Option<&ExecutionControl>,
@@ -898,16 +918,22 @@ impl SliceCache {
         // Handle 304 Not Modified: refresh the TTL and return Revalidated.
         if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
             // Consume the (empty) body to release the connection.
-            let _ =
+            if let Err(error) =
                 run_with_proxy_cancellation("slice cache 304 drain", request_control, resp.bytes())
-                    .await;
+                    .await
+            {
+                tracing::debug!(%error, "failed to drain slice cache 304 response body");
+            }
 
             // Refresh the entry's TTL by re-inserting it.
             if let Some(existing) = self.backend.get(&key).await {
                 if let Some(total_size) = effective_total_size {
                     let refreshed =
                         StoredEntry::new(existing.data.clone(), self.config.segment_ttl);
-                    let _ = self.backend.put(&key, refreshed).await;
+                    self.backend
+                        .put(&key, refreshed)
+                        .await
+                        .with_context(|| format!("failed to refresh cached slice TTL for {key}"))?;
                     self.updating_keys.remove(&key);
                     return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
                         total_size,
@@ -944,14 +970,16 @@ impl SliceCache {
             let result = self
                 .process_slice_response(
                     resp2,
-                    url,
-                    provider_headers,
-                    &key,
-                    slice_index,
-                    effective_total_size,
-                    range_request.range_start,
-                    fetch_status,
-                    request_control,
+                    SliceResponseContext {
+                        url,
+                        provider_headers,
+                        key: &key,
+                        slice_index,
+                        known_total_size: effective_total_size,
+                        range_start: range_request.range_start,
+                        cache_status: fetch_status,
+                        request_control,
+                    },
                 )
                 .await;
             // Always clean up updating_keys (idempotent remove).
@@ -967,14 +995,16 @@ impl SliceCache {
         let result = self
             .process_slice_response(
                 resp,
-                url,
-                provider_headers,
-                &key,
-                slice_index,
-                effective_total_size,
-                range_request.range_start,
-                fetch_status,
-                request_control,
+                SliceResponseContext {
+                    url,
+                    provider_headers,
+                    key: &key,
+                    slice_index,
+                    known_total_size: effective_total_size,
+                    range_start: range_request.range_start,
+                    cache_status: fetch_status,
+                    request_control,
+                },
             )
             .await;
         // Always clean up updating_keys (idempotent). Prevents the key from
@@ -985,19 +1015,22 @@ impl SliceCache {
 
     /// Process a successful (non-304) slice response: validate, store, and
     /// return the data.
-    #[allow(clippy::too_many_arguments)]
     async fn process_slice_response(
         &self,
         resp: reqwest::Response,
-        url: &str,
-        provider_headers: &HashMap<String, String>,
-        key: &str,
-        slice_index: u64,
-        known_total_size: Option<u64>,
-        range_start: u64,
-        cache_status: CacheStatus,
-        request_control: Option<&ExecutionControl>,
+        context: SliceResponseContext<'_>,
     ) -> Result<FetchedSlice, anyhow::Error> {
+        let SliceResponseContext {
+            url,
+            provider_headers,
+            key,
+            slice_index,
+            known_total_size,
+            range_start,
+            cache_status,
+            request_control,
+        } = context;
+
         let requested_range_end_exclusive = range_start
             .checked_add(self.config.slice_size as u64)
             .ok_or_else(|| anyhow::anyhow!("Slice request end overflow for slice {slice_index}"))?;
@@ -1183,7 +1216,7 @@ impl SliceCache {
     pub(super) async fn invalidate_resource(
         &self,
         url: &str,
-        provider_headers: &HashMap<String, String>,
+        provider_headers: &ProviderHeaders,
         total_size: u64,
     ) {
         let ss = self.config.slice_size as u64;

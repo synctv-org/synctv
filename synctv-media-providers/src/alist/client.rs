@@ -61,7 +61,7 @@ fn header_value<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<
 }
 
 fn effective_user_agent(headers: &HashMap<String, String>) -> &str {
-    header_value(headers, USER_AGENT.as_str()).unwrap_or(crate::error::PROVIDER_USER_AGENT)
+    header_value(headers, USER_AGENT.as_str()).unwrap_or(crate::PROVIDER_USER_AGENT)
 }
 
 /// Alist HTTP Client

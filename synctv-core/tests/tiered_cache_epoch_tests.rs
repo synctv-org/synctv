@@ -6,7 +6,6 @@
 //!
 //! Uses a mock L2 backend with artificial delay to simulate the race condition.
 //!
-#![allow(clippy::unwrap_used)]
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -14,6 +13,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 use synctv_core::cache::{CacheKey, CacheL2Backend, TieredCache, Timestamped, Versioned};
 use synctv_core::Result;
+use synctv_core_testing::{ok, some};
 
 // Test types
 
@@ -63,9 +63,7 @@ impl Versioned for VersionedTestValue {
 // Mock L2 backend with artificial delay
 
 struct DelayedL2 {
-    /// Values stored in the mock L2
     store: tokio::sync::RwLock<std::collections::HashMap<String, String>>,
-    /// How long to delay on `get()`
     get_delay: std::time::Duration,
 }
 
@@ -105,15 +103,6 @@ impl CacheL2Backend for DelayedL2 {
         self.store.write().await.remove(key);
 
         Ok(())
-    }
-
-    async fn delete_with_retry(
-        &self,
-        key: &str,
-        _max_retries: u32,
-        _cache_type: &str,
-    ) -> Result<()> {
-        self.delete(key).await
     }
 
     async fn get_batch(&self, keys: &[String]) -> Result<Vec<Option<String>>> {
@@ -167,8 +156,14 @@ async fn test_epoch_prevents_stale_l1_write() {
         name: "stale".to_string(),
         updated_at: chrono::Utc::now() - chrono::Duration::seconds(60),
     };
-    let stale_json = serde_json::to_string(&stale_value).unwrap();
-    l2.set("test:epoch:k1", &stale_json, 300).await.unwrap();
+    let stale_json = ok(
+        serde_json::to_string(&stale_value),
+        "stale cache value should serialize",
+    );
+    ok(
+        l2.set("test:epoch:k1", &stale_json, 300).await,
+        "stale cache value should be written to L2",
+    );
 
     let cache: TieredCache<TestId, TestValue> = TieredCache::new(
         l2.clone(),
@@ -186,26 +181,41 @@ async fn test_epoch_prevents_stale_l1_write() {
     let get_handle = tokio::spawn(async move { cache_clone.get(&key_clone).await });
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    cache.invalidate(&key).await.unwrap();
+    ok(
+        cache.invalidate(&key).await,
+        "cache key should be invalidated while L2 fetch is in flight",
+    );
 
-    let result = get_handle.await.unwrap().unwrap();
+    let result = ok(
+        ok(get_handle.await, "in-flight cache get task should join"),
+        "in-flight cache get should succeed",
+    );
 
     // The get() should return the stale value from L2 (it was already in-flight)
     assert!(
         result.is_some(),
         "The in-flight fetch should still return the L2 value"
     );
-    assert_eq!(result.unwrap().name, "stale");
+    assert_eq!(
+        some(result, "in-flight cache get should return L2 value").name,
+        "stale"
+    );
 
     // But L1 should NOT have been populated with the stale value because
     // the epoch changed during the fetch. A subsequent get() that only checks
     // L1 should miss.
     // Clear L2 to ensure we only check L1
-    l2.delete("test:epoch:k1").await.unwrap();
+    ok(
+        l2.delete("test:epoch:k1").await,
+        "stale cache value should be removed from L2",
+    );
 
     // Since L2 is now empty, if L1 was populated with stale data, we'd get it back.
     // If epoch guard works, L1 should be empty and we get None.
-    let l1_result = cache.get(&key).await.unwrap();
+    let l1_result = ok(
+        cache.get(&key).await,
+        "cache lookup after L2 delete should succeed",
+    );
     assert!(
         l1_result.is_none(),
         "Stale value should NOT have been written to L1 due to epoch guard"
@@ -225,36 +235,40 @@ async fn test_l2_versioned_write_does_not_downgrade_newer_l1() {
     );
     let key = TestId("k1".to_string());
 
-    cache
-        .set_if_version_at_least(
-            &key,
-            VersionedTestValue {
-                name: "newer-local".to_string(),
-                version: 10,
-            },
-        )
-        .await
-        .unwrap();
+    ok(
+        cache
+            .set_if_version_at_least(
+                &key,
+                VersionedTestValue {
+                    name: "newer-local".to_string(),
+                    version: 10,
+                },
+            )
+            .await,
+        "newer versioned cache value should be accepted",
+    );
 
-    let updated = cache
-        .set_if_version_at_least(
-            &key,
-            VersionedTestValue {
-                name: "older-reload".to_string(),
-                version: 9,
-            },
-        )
-        .await
-        .unwrap();
+    let updated = ok(
+        cache
+            .set_if_version_at_least(
+                &key,
+                VersionedTestValue {
+                    name: "older-reload".to_string(),
+                    version: 9,
+                },
+            )
+            .await,
+        "older versioned cache value write should be evaluated",
+    );
 
     assert!(
         !updated,
         "L1 should reject an older version even when L2 accepts the write"
     );
-    let cached = cache
-        .get_l1(&key)
-        .await
-        .expect("newer L1 entry should remain cached");
+    let cached = some(
+        cache.get_l1(&key).await,
+        "newer L1 entry should remain cached",
+    );
     assert_eq!(cached.version, 10);
     assert_eq!(cached.name, "newer-local");
 }

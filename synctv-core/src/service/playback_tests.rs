@@ -18,6 +18,34 @@ use sqlx::PgPool;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
+fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
+fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
+    match result {
+        Ok(_) => std::panic::panic_any(context.to_string()),
+        Err(error) => error,
+    }
+}
+
+fn some<T>(value: Option<T>, context: &str) -> T {
+    match value {
+        Some(value) => value,
+        None => std::panic::panic_any(context.to_string()),
+    }
+}
+
+fn joined<T>(result: std::result::Result<T, tokio::task::JoinError>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
 #[derive(Default)]
 struct CountingL2Backend {
     delete_calls: AtomicUsize,
@@ -34,16 +62,6 @@ impl CacheL2Backend for CountingL2Backend {
     }
 
     async fn delete(&self, _key: &str) -> Result<()> {
-        self.delete_calls.fetch_add(1, AtomicOrdering::Relaxed);
-        Ok(())
-    }
-
-    async fn delete_with_retry(
-        &self,
-        _key: &str,
-        _max_retries: u32,
-        _cache_type: &str,
-    ) -> Result<()> {
         self.delete_calls.fetch_add(1, AtomicOrdering::Relaxed);
         Ok(())
     }
@@ -82,7 +100,10 @@ impl CacheL2Backend for CountingL2Backend {
 }
 
 fn make_user_service(pool: &PgPool) -> UserService {
-    let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
+    let jwt_service = ok(
+        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!"),
+        "JWT service should build",
+    );
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -148,12 +169,13 @@ fn make_playback_invalidation_runtime_for_lifecycle_tests(
 }
 
 #[tokio::test]
-async fn standalone_playback_service_uses_non_authoritative_fence_by_default() {
-    let consistency = ConsistencyCoordinator::new(PlaybackService::version_fence_or_default(None));
+async fn standalone_playback_runtime_uses_local_authoritative_fence() {
+    let runtime = crate::service::playback::PlaybackServiceRuntime::local_only();
+    let consistency = ConsistencyCoordinator::new(runtime.version_fence);
 
     assert!(
-        !consistency.is_authoritative(),
-        "standalone playback constructors must not create private authoritative fences"
+        consistency.is_authoritative(),
+        "standalone playback runtime should use a local authoritative fence"
     );
 }
 
@@ -204,10 +226,10 @@ async fn write_playback_cache_refreshes_l1_when_l2_is_configured() {
     PlaybackService::write_playback_cache_entry(&playback_cache, Some(l2_cache), &fresh_state)
         .await;
 
-    let cached = playback_cache
-        .get(&cache_key)
-        .await
-        .expect("local L1 cache should be refreshed by local write");
+    let cached = some(
+        playback_cache.get(&cache_key).await,
+        "local L1 cache should be refreshed by local write",
+    );
     assert_eq!(cached.version, fresh_state.version);
     assert!((cached.position - fresh_state.position).abs() < f64::EPSILON);
     assert!(cached.is_playing);
@@ -276,7 +298,10 @@ fn test_position_update_requires_current_playback_source() {
         version: 1,
     };
 
-    let err = validate_position_update_source(&state).unwrap_err();
+    let err = err(
+        validate_position_update_source(&state),
+        "position update without source should fail",
+    );
     assert!(matches!(err, Error::InvalidInput(_)));
 
     state.playing_media_id = Some(MediaId::expect_positive(30_001));
@@ -323,14 +348,16 @@ async fn test_invalidation_listener_stops_after_cache_invalidation_service_stop(
     let room_id = RoomId::expect_positive(10_001);
     let cache_key = room_id.to_string();
 
-    runtime
-        .start(
-            invalidation_service.clone(),
-            playback_cache.clone(),
-            l2_cache.clone(),
-        )
-        .await
-        .expect("playback invalidation listener should start");
+    ok(
+        runtime
+            .start(
+                invalidation_service.clone(),
+                playback_cache.clone(),
+                l2_cache.clone(),
+            )
+            .await,
+        "playback invalidation listener should start",
+    );
 
     assert!(
         runtime.is_started(),
@@ -352,13 +379,15 @@ async fn test_invalidation_listener_stops_after_cache_invalidation_service_stop(
         version: 7,
     };
 
-    invalidation_service
-        .broadcast_all(InvalidationMessage::PlaybackStateUpdate {
-            room_id: cache_key.clone(),
-            state: updated_state,
-        })
-        .await
-        .expect("local invalidation broadcast should succeed");
+    ok(
+        invalidation_service
+            .broadcast_all(InvalidationMessage::PlaybackStateUpdate {
+                room_id: cache_key.clone(),
+                state: updated_state,
+            })
+            .await,
+        "local invalidation broadcast should succeed",
+    );
     tokio::task::yield_now().await;
 
     assert!(
@@ -374,14 +403,16 @@ async fn test_start_can_restart_playback_invalidation_listener_after_shutdown() 
     let room_id = RoomId::expect_positive(10_002);
     let cache_key = room_id.to_string();
 
-    runtime
-        .start(
-            invalidation_service.clone(),
-            playback_cache.clone(),
-            l2_cache.clone(),
-        )
-        .await
-        .expect("initial playback invalidation start should succeed");
+    ok(
+        runtime
+            .start(
+                invalidation_service.clone(),
+                playback_cache.clone(),
+                l2_cache.clone(),
+            )
+            .await,
+        "initial playback invalidation start should succeed",
+    );
     runtime.shutdown().await;
 
     let updated_state = RoomPlaybackState {
@@ -397,28 +428,32 @@ async fn test_start_can_restart_playback_invalidation_listener_after_shutdown() 
         version: 9,
     };
 
-    runtime
-        .start(
-            invalidation_service.clone(),
-            playback_cache.clone(),
-            l2_cache.clone(),
-        )
-        .await
-        .expect("restart after playback invalidation shutdown should succeed");
+    ok(
+        runtime
+            .start(
+                invalidation_service.clone(),
+                playback_cache.clone(),
+                l2_cache.clone(),
+            )
+            .await,
+        "restart after playback invalidation shutdown should succeed",
+    );
 
-    invalidation_service
-        .broadcast_all(InvalidationMessage::PlaybackStateUpdate {
-            room_id: cache_key.clone(),
-            state: updated_state,
-        })
-        .await
-        .expect("local invalidation broadcast should succeed after restart");
+    ok(
+        invalidation_service
+            .broadcast_all(InvalidationMessage::PlaybackStateUpdate {
+                room_id: cache_key.clone(),
+                state: updated_state,
+            })
+            .await,
+        "local invalidation broadcast should succeed after restart",
+    );
     tokio::task::yield_now().await;
 
-    let cached = playback_cache
-        .get(&cache_key)
-        .await
-        .expect("restarted listener should populate cache from invalidation broadcast");
+    let cached = some(
+        playback_cache.get(&cache_key).await,
+        "restarted listener should populate cache from invalidation broadcast",
+    );
     assert_eq!(cached.version, 9);
 
     runtime.shutdown().await;
@@ -431,22 +466,26 @@ async fn test_start_activates_invalidation_listener_after_wiring_service() {
     let room_id = RoomId::expect_positive(10_003);
     let cache_key = room_id.to_string();
 
-    runtime
-        .start(
-            invalidation_service.clone(),
-            playback_cache.clone(),
-            l2_cache.clone(),
-        )
-        .await
-        .expect("explicit start should activate playback invalidation listener");
+    ok(
+        runtime
+            .start(
+                invalidation_service.clone(),
+                playback_cache.clone(),
+                l2_cache.clone(),
+            )
+            .await,
+        "explicit start should activate playback invalidation listener",
+    );
 
-    tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while !runtime.is_started() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("start() should mark playback invalidation listener as running");
+    ok(
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !runtime.is_started() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await,
+        "start() should mark playback invalidation listener as running",
+    );
 
     let updated_state = RoomPlaybackState {
         room_id,
@@ -461,24 +500,28 @@ async fn test_start_activates_invalidation_listener_after_wiring_service() {
         version: 11,
     };
 
-    invalidation_service
-        .broadcast_all(InvalidationMessage::PlaybackStateUpdate {
-            room_id: cache_key.clone(),
-            state: updated_state.clone(),
-        })
-        .await
-        .expect("local invalidation broadcast should succeed");
+    ok(
+        invalidation_service
+            .broadcast_all(InvalidationMessage::PlaybackStateUpdate {
+                room_id: cache_key.clone(),
+                state: updated_state.clone(),
+            })
+            .await,
+        "local invalidation broadcast should succeed",
+    );
 
-    let cached = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        loop {
-            if let Some(cached) = playback_cache.get(&cache_key).await {
-                break cached;
+    let cached = ok(
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Some(cached) = playback_cache.get(&cache_key).await {
+                    break cached;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("started playback invalidation listener should process broadcasts");
+        })
+        .await,
+        "started playback invalidation listener should process broadcasts",
+    );
 
     assert_eq!(cached.version, updated_state.version);
 
@@ -499,37 +542,45 @@ async fn test_started_invalidation_listener_uses_configured_l2_cache() {
         make_playback_invalidation_runtime_for_lifecycle_tests(Some(l2_cache));
     let room_id = RoomId::expect_positive(10_004);
 
-    runtime
-        .start(
-            invalidation_service.clone(),
-            playback_cache.clone(),
-            l2_cache.clone(),
-        )
-        .await
-        .expect("explicit start should activate playback invalidation listener");
+    ok(
+        runtime
+            .start(
+                invalidation_service.clone(),
+                playback_cache.clone(),
+                l2_cache.clone(),
+            )
+            .await,
+        "explicit start should activate playback invalidation listener",
+    );
 
-    tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while !runtime.is_started() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("start() should mark playback invalidation listener as running");
-
-    invalidation_service
-        .broadcast_all(InvalidationMessage::PlaybackState {
-            room_id: room_id.to_string(),
+    ok(
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !runtime.is_started() {
+                tokio::task::yield_now().await;
+            }
         })
-        .await
-        .expect("playback invalidation should broadcast locally");
+        .await,
+        "start() should mark playback invalidation listener as running",
+    );
 
-    tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while backend.delete_calls.load(AtomicOrdering::Relaxed) == 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("listener should invalidate configured L2 cache");
+    ok(
+        invalidation_service
+            .broadcast_all(InvalidationMessage::PlaybackState {
+                room_id: room_id.to_string(),
+            })
+            .await,
+        "playback invalidation should broadcast locally",
+    );
+
+    ok(
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while backend.delete_calls.load(AtomicOrdering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await,
+        "listener should invalidate configured L2 cache",
+    );
 
     runtime.shutdown().await;
 }
@@ -540,40 +591,47 @@ async fn test_db_reload_seeds_missing_local_playback_fence() {
     let (_container, pool) = synctv_core_testing::create_test_pool().await;
     let user_repo = crate::repository::UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
-    let owner = user_repo
-        .create(&make_user("playback_seed_fence_owner"))
-        .await
-        .expect("owner should be created");
-    let room = room_repo
-        .create(&crate::models::Room::new(
-            "Playback Seed Fence".to_string(),
-            owner.id,
-        ))
-        .await
-        .expect("room should be created");
+    let owner = ok(
+        user_repo
+            .create(&make_user("playback_seed_fence_owner"))
+            .await,
+        "owner should be created",
+    );
+    let room = ok(
+        room_repo
+            .create(&crate::models::Room::new(
+                "Playback Seed Fence".to_string(),
+                owner.id,
+            ))
+            .await,
+        "room should be created",
+    );
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
-    let mut state = playback_repo
-        .create_or_get(&room.id)
-        .await
-        .expect("playback state should exist");
+    let mut state = ok(
+        playback_repo.create_or_get(&room.id).await,
+        "playback state should exist",
+    );
     state.position = 42.0;
-    let state = playback_repo
-        .update_with_exact_version(&state, 5)
-        .await
-        .expect("playback state should have a nonzero version");
+    let state = ok(
+        playback_repo.update_with_exact_version(&state, 5).await,
+        "playback state should have a nonzero version",
+    );
 
     let fence = Arc::new(crate::cache::LocalVersionFenceStore::new());
     let member_repo = crate::repository::RoomMemberRepository::new(pool.clone());
-    let permission_service = PermissionService::without_cache(member_repo, room_repo, None)
-        .expect("permission service should build");
+    let permission_service = ok(
+        PermissionService::without_cache(member_repo, room_repo, None),
+        "permission service should build",
+    );
     let provider_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
     let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
         provider_repo,
         None,
     ));
-    let providers_manager = Arc::new(
-        ProvidersManager::new(provider_instance_manager).expect("providers manager should build"),
-    );
+    let providers_manager = Arc::new(ok(
+        ProvidersManager::new(provider_instance_manager),
+        "providers manager should build",
+    ));
     let media_service = MediaService::new(
         MediaRepository::new(pool.clone()),
         PlaylistRepository::new(pool.clone()),
@@ -586,31 +644,33 @@ async fn test_db_reload_seeds_missing_local_playback_fence() {
         permission_service,
         media_service,
         make_user_service(&pool),
-        None,
-        None,
-        Some(fence.clone()),
-        None,
+        crate::service::playback::PlaybackServiceRuntime {
+            version_fence: fence.clone(),
+            invalidation_service: None,
+            l2_cache: None,
+            realtime_outbox: None,
+        },
     );
     let domain = CacheDomain::Playback { room_id: room.id };
     assert_eq!(
-        fence
-            .current_version(&domain)
-            .await
-            .expect("local fence should be readable"),
+        ok(
+            fence.current_version(&domain).await,
+            "local fence should be readable"
+        ),
         None
     );
 
-    let loaded = playback_service
-        .get_state(&room.id)
-        .await
-        .expect("strong playback read should fall back to DB");
+    let loaded = ok(
+        playback_service.get_state(&room.id).await,
+        "strong playback read should fall back to DB",
+    );
 
     assert_eq!(loaded.version, state.version);
     assert_eq!(
-        fence
-            .current_version(&domain)
-            .await
-            .expect("local fence should be readable"),
+        ok(
+            fence.current_version(&domain).await,
+            "local fence should be readable"
+        ),
         Some(state.version)
     );
 }
@@ -638,6 +698,7 @@ mod optimistic_retry_tests {
 /// `update_multiple_with_version`. These replicate the pre-check logic
 /// without requiring a database.
 mod cas_version_pre_check_tests {
+    use super::err;
     use crate::Error;
 
     /// Replicates the CAS pre-check from `update_multiple_with_version`:
@@ -661,9 +722,11 @@ mod cas_version_pre_check_tests {
     fn test_cas_wrong_version_returns_conflict() {
         let result = check_cas_version(5, Some(3));
         assert!(result.is_err(), "Stale version should return conflict");
-        match result.unwrap_err() {
+        match err(result, "stale CAS version should fail") {
             Error::OptimisticLockConflict => {} // expected
-            other => panic!("Expected OptimisticLockConflict, got: {other:?}"),
+            other => {
+                std::panic::panic_any(format!("Expected OptimisticLockConflict, got: {other:?}"))
+            }
         }
     }
 
@@ -715,9 +778,23 @@ mod version_check_tests {
         }
     }
 
-    #[allow(clippy::cast_precision_loss)]
     fn version_to_position(version: i64) -> f64 {
-        version as f64 * 10.0
+        match version {
+            0 => 0.0,
+            1 => 10.0,
+            2 => 20.0,
+            3 => 30.0,
+            4 => 40.0,
+            5 => 50.0,
+            6 => 60.0,
+            7 => 70.0,
+            8 => 80.0,
+            9 => 90.0,
+            10 => 100.0,
+            _ => std::panic::panic_any(format!(
+                "test version {version} must be added to version_to_position"
+            )),
+        }
     }
 
     /// Test: When cache is empty, incoming state should be inserted
@@ -749,7 +826,7 @@ mod version_check_tests {
             })
             .await;
 
-        let cached = cache.get(&cache_key).await.expect("should have entry");
+        let cached = some(cache.get(&cache_key).await, "should have entry");
         assert_eq!(cached.version, 5);
         assert!((cached.position - 100.0).abs() < f64::EPSILON);
     }
@@ -768,7 +845,7 @@ mod version_check_tests {
         cache.insert(cache_key.clone(), initial_state).await;
 
         // Verify initial state
-        let cached = cache.get(&cache_key).await.expect("should have entry");
+        let cached = some(cache.get(&cache_key).await, "should have entry");
         assert_eq!(cached.version, 3);
 
         // Try to update with version 7 (higher)
@@ -792,7 +869,7 @@ mod version_check_tests {
             .await;
 
         // Cache should now have version 7
-        let cached = cache.get(&cache_key).await.expect("should have entry");
+        let cached = some(cache.get(&cache_key).await, "should have entry");
         assert_eq!(cached.version, 7);
         assert!((cached.position - 150.0).abs() < f64::EPSILON);
     }
@@ -831,7 +908,7 @@ mod version_check_tests {
             .await;
 
         // Cache should still have version 10 (not downgraded to 5)
-        let cached = cache.get(&cache_key).await.expect("should have entry");
+        let cached = some(cache.get(&cache_key).await, "should have entry");
         assert_eq!(cached.version, 10);
         assert!((cached.position - 200.0).abs() < f64::EPSILON);
     }
@@ -870,7 +947,7 @@ mod version_check_tests {
             .await;
 
         // Cache should still have original content (not overwritten)
-        let cached = cache.get(&cache_key).await.expect("should have entry");
+        let cached = some(cache.get(&cache_key).await, "should have entry");
         assert_eq!(cached.version, 5);
         assert!((cached.position - 200.0).abs() < f64::EPSILON);
     }
@@ -908,7 +985,7 @@ mod version_check_tests {
         }
 
         // Cache should have version 7 (the highest)
-        let cached = cache.get(&cache_key).await.expect("should have entry");
+        let cached = some(cache.get(&cache_key).await, "should have entry");
         assert_eq!(cached.version, 7);
         assert!((cached.position - 70.0).abs() < f64::EPSILON);
     }
@@ -953,11 +1030,11 @@ mod version_check_tests {
 
         // Wait for all tasks to complete
         for handle in handles {
-            handle.await.expect("task should complete");
+            joined(handle.await, "task should complete");
         }
 
         // Cache should have version 10 (the highest)
-        let cached = cache.get(&*cache_key).await.expect("should have entry");
+        let cached = some(cache.get(&*cache_key).await, "should have entry");
         assert_eq!(cached.version, 10);
         assert!((cached.position - 100.0).abs() < f64::EPSILON);
     }

@@ -1,6 +1,4 @@
 //! Unit tests for pure model logic (no Docker/database needed)
-//!
-#![allow(clippy::unwrap_used)]
 
 use synctv_core::models::room::RoomSettingsJson;
 use synctv_core::models::user::{SignupMethod, User, UserRole, UserStatus};
@@ -8,6 +6,13 @@ use synctv_core::models::{
     RoomAdminPermissionBits, RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomRole,
     RoomStatus,
 };
+
+fn ok<T, E: std::fmt::Debug>(result: Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error:?}")),
+    }
+}
 
 #[test]
 fn test_user_role_can_manage() {
@@ -33,9 +38,12 @@ fn test_user_role_is_admin_or_above() {
 
 #[test]
 fn test_user_role_from_str_case_insensitive() {
-    assert_eq!("ROOT".parse::<UserRole>().unwrap(), UserRole::Root);
-    assert_eq!("Admin".parse::<UserRole>().unwrap(), UserRole::Admin);
-    assert_eq!("USER".parse::<UserRole>().unwrap(), UserRole::User);
+    assert_eq!(ok("ROOT".parse::<UserRole>(), "ROOT role"), UserRole::Root);
+    assert_eq!(
+        ok("Admin".parse::<UserRole>(), "Admin role"),
+        UserRole::Admin
+    );
+    assert_eq!(ok("USER".parse::<UserRole>(), "USER role"), UserRole::User);
     assert!("unknown".parse::<UserRole>().is_err());
 }
 
@@ -61,8 +69,14 @@ fn test_user_status_predicates() {
 
 #[test]
 fn test_user_status_from_str_accepts_canonical_values_case_insensitively() {
-    assert_eq!("active".parse::<UserStatus>().unwrap(), UserStatus::Active);
-    assert_eq!("BANNED".parse::<UserStatus>().unwrap(), UserStatus::Banned);
+    assert_eq!(
+        ok("active".parse::<UserStatus>(), "active status"),
+        UserStatus::Active
+    );
+    assert_eq!(
+        ok("BANNED".parse::<UserStatus>(), "BANNED status"),
+        UserStatus::Banned
+    );
     assert!("invalid".parse::<UserStatus>().is_err());
 }
 
@@ -223,10 +237,22 @@ fn test_room_role_permissions_hierarchy() {
 
 #[test]
 fn test_room_role_from_str_accepts_canonical_values_case_insensitively() {
-    assert_eq!("creator".parse::<RoomRole>().unwrap(), RoomRole::Creator);
-    assert_eq!("ADMIN".parse::<RoomRole>().unwrap(), RoomRole::Admin);
-    assert_eq!("member".parse::<RoomRole>().unwrap(), RoomRole::Member);
-    assert_eq!("Guest".parse::<RoomRole>().unwrap(), RoomRole::Guest);
+    assert_eq!(
+        ok("creator".parse::<RoomRole>(), "creator room role"),
+        RoomRole::Creator
+    );
+    assert_eq!(
+        ok("ADMIN".parse::<RoomRole>(), "ADMIN room role"),
+        RoomRole::Admin
+    );
+    assert_eq!(
+        ok("member".parse::<RoomRole>(), "member room role"),
+        RoomRole::Member
+    );
+    assert_eq!(
+        ok("Guest".parse::<RoomRole>(), "Guest room role"),
+        RoomRole::Guest
+    );
     assert!("invalid_role".parse::<RoomRole>().is_err());
 }
 

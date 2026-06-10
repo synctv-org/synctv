@@ -4,6 +4,5 @@ pub mod bits_writer;
 pub mod bytes_errors;
 pub mod bytes_reader;
 pub mod bytes_writer;
-#[allow(clippy::module_inception)]
-pub mod bytesio;
 pub mod bytesio_errors;
+pub mod net_io;

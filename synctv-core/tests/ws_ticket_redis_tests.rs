@@ -7,16 +7,17 @@
 //! - cluster mode with Redis should work correctly
 //! - cluster mode without Redis should return an error (tested in unit tests)
 //!
-#![allow(clippy::unwrap_used)]
 
 use redis::AsyncCommands;
 use std::sync::Arc;
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::service::{
-    ws_ticket::RedisTicketStore, UserValidationResult, UserValidator, WsTicketService,
+    RedisTicketStore, UserValidationResult, UserValidator, WsTicketService,
 };
 use synctv_core::{Error, Result};
-use synctv_core_testing::{start_redis_handle as start_test_redis_handle, test_redis_key_prefix};
+use synctv_core_testing::{
+    ok, some, start_redis_handle as start_test_redis_handle, test_redis_key_prefix,
+};
 use tokio::sync::RwLock;
 
 async fn start_redis() -> (
@@ -35,7 +36,10 @@ fn redis_ticket_service(
     ticket_ttl_secs: Option<u64>,
 ) -> WsTicketService {
     WsTicketService::from_store(
-        Arc::new(RedisTicketStore::new(conn, prefix)),
+        Arc::new(RedisTicketStore::from_runtime(
+            synctv_core::shared_runtime(conn),
+            prefix,
+        )),
         ticket_ttl_secs,
     )
 }
@@ -70,11 +74,20 @@ async fn test_redis_ticket_create_and_validate_roundtrip() {
     let uid = user_id(1001);
     let rid = room_id(2001);
 
-    let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&uid, &rid, 0).await,
+        "Redis ticket should be created",
+    );
     assert!(!ticket.is_empty());
 
-    let validated = service.validate_and_consume(&ticket, &rid).await.unwrap();
-    assert_eq!(validated.user_id().expect("user ticket"), uid);
+    let validated = ok(
+        service.validate_and_consume(&ticket, &rid).await,
+        "Redis ticket should validate",
+    );
+    assert_eq!(
+        some(validated.user_id(), "ticket should contain user id"),
+        uid
+    );
     assert_eq!(validated.password_version(), Some(0));
 }
 
@@ -87,7 +100,10 @@ async fn test_redis_ticket_one_time_use() {
     let uid = user_id(1002);
     let rid = room_id(2002);
 
-    let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&uid, &rid, 0).await,
+        "Redis ticket should be created",
+    );
 
     // First consume succeeds
     let result1 = service.validate_and_consume(&ticket, &rid).await;
@@ -111,7 +127,10 @@ async fn test_redis_ticket_room_mismatch_rejected() {
     let room_a = room_id(2003);
     let room_b = room_id(2004);
 
-    let ticket = service.create_ticket(&uid, &room_a, 0).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&uid, &room_a, 0).await,
+        "Redis ticket should be created",
+    );
 
     // Try to consume with wrong room
     let result = service.validate_and_consume(&ticket, &room_b).await;
@@ -137,7 +156,10 @@ async fn test_redis_ticket_ttl_expiry() {
     let uid = user_id(1004);
     let rid = room_id(2005);
 
-    let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&uid, &rid, 0).await,
+        "Redis ticket should be created",
+    );
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
@@ -154,7 +176,10 @@ async fn test_redis_ticket_concurrent_consumption() {
     let uid = user_id(1005);
     let rid = room_id(2006);
 
-    let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&uid, &rid, 0).await,
+        "Redis ticket should be created",
+    );
 
     // Spawn 10 tasks that all try to consume the same ticket concurrently
     let mut handles = Vec::new();
@@ -170,7 +195,7 @@ async fn test_redis_ticket_concurrent_consumption() {
     let results: Vec<_> = futures::future::join_all(handles)
         .await
         .into_iter()
-        .map(|r| r.unwrap())
+        .map(|r| ok(r, "concurrent ticket validation task should join"))
         .collect();
 
     let successes = results.iter().filter(|r| r.is_ok()).count();
@@ -191,7 +216,10 @@ async fn test_redis_ticket_user_validation_failure_does_not_consume_ticket() {
 
     let uid = user_id(1006);
     let rid = room_id(2007);
-    let ticket = service.create_ticket(&uid, &rid, 9).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&uid, &rid, 9).await,
+        "Redis ticket should be created",
+    );
 
     let rejecting_validator = StaticUserValidator {
         result: Err("banned"),
@@ -227,7 +255,10 @@ async fn test_redis_ticket_checked_validation_is_still_one_time_use() {
 
     let uid = user_id(1007);
     let rid = room_id(2008);
-    let ticket = service.create_ticket(&uid, &rid, 3).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&uid, &rid, 3).await,
+        "Redis ticket should be created",
+    );
 
     let allow_validator = StaticUserValidator {
         result: Ok(UserValidationResult {
@@ -280,11 +311,20 @@ async fn test_cluster_mode_with_redis_roundtrip() {
     let uid = user_id(1008);
     let rid = room_id(2009);
 
-    let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&uid, &rid, 0).await,
+        "Redis ticket should be created",
+    );
     assert!(!ticket.is_empty());
 
-    let validated = service.validate_and_consume(&ticket, &rid).await.unwrap();
-    assert_eq!(validated.user_id().expect("user ticket"), uid);
+    let validated = ok(
+        service.validate_and_consume(&ticket, &rid).await,
+        "Redis ticket should validate",
+    );
+    assert_eq!(
+        some(validated.user_id(), "ticket should contain user id"),
+        uid
+    );
     assert_eq!(validated.password_version(), Some(0));
 }
 
@@ -327,13 +367,22 @@ async fn test_cluster_mode_simulated_multi_replica_roundtrip() {
     let uid = user_id(1009);
     let rid = room_id(2010);
 
-    let ticket = service_a.create_ticket(&uid, &rid, 0).await.unwrap();
+    let ticket = ok(
+        service_a.create_ticket(&uid, &rid, 0).await,
+        "replica A should create Redis ticket",
+    );
 
     // "Replica B" (different service instance, same Redis) validates the ticket
     let service_b = redis_ticket_service(conn_clone, &prefix, Some(30));
 
-    let validated = service_b.validate_and_consume(&ticket, &rid).await.unwrap();
-    assert_eq!(validated.user_id().expect("user ticket"), uid);
+    let validated = ok(
+        service_b.validate_and_consume(&ticket, &rid).await,
+        "replica B should validate Redis ticket",
+    );
+    assert_eq!(
+        some(validated.user_id(), "ticket should contain user id"),
+        uid
+    );
 
     // Ticket should be consumed (one-time use)
     let result = service_a.validate_and_consume(&ticket, &rid).await;
@@ -348,22 +397,25 @@ async fn test_redis_ticket_uses_configured_key_prefix() {
 
     let uid = user_id(1010);
     let rid = room_id(2011);
-    let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&uid, &rid, 0).await,
+        "Redis ticket should be created",
+    );
 
     let mut redis_conn = conn.read().await.clone();
-    let payload: Option<String> = redis_conn
-        .get(format!("tenant-a:ws_ticket:{ticket}"))
-        .await
-        .unwrap();
+    let payload: Option<String> = ok(
+        redis_conn.get(format!("tenant-a:ws_ticket:{ticket}")).await,
+        "configured prefix ticket payload lookup should succeed",
+    );
     assert!(
         payload.is_some(),
         "ticket must be stored under configured prefix"
     );
 
-    let old_key_payload: Option<String> = redis_conn
-        .get(format!("synctv:ws_ticket:{ticket}"))
-        .await
-        .unwrap();
+    let old_key_payload: Option<String> = ok(
+        redis_conn.get(format!("synctv:ws_ticket:{ticket}")).await,
+        "default prefix ticket payload lookup should succeed",
+    );
     assert!(
         old_key_payload.is_none(),
         "ticket must not leak into hard-coded default prefix"

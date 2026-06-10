@@ -203,6 +203,7 @@ pub fn google_factory_with_ssrf_guard(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::TestResultExt;
 
     #[test]
     fn test_create_provider_valid_config() {
@@ -224,8 +225,8 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(Error::InvalidInput(msg)) => assert!(msg.contains("redirect URL")),
-            Ok(_) => panic!("Expected error but got Ok"),
-            Err(e) => panic!("Expected InvalidInput error, got: {e}"),
+            Ok(_) => std::panic::panic_any("Expected error but got Ok"),
+            Err(e) => std::panic::panic_any(format!("Expected InvalidInput error, got: {e}")),
         }
     }
 
@@ -253,7 +254,7 @@ mod tests {
             "secret".to_string(),
             "https://example.com/cb".to_string(),
         )
-        .unwrap();
+        .checked("operation should succeed");
         assert_eq!(provider.provider_type(), "google");
     }
 
@@ -264,10 +265,13 @@ mod tests {
             "test_secret".to_string(),
             "https://example.com/callback".to_string(),
         )
-        .unwrap();
+        .checked("operation should succeed");
 
         let state = "google_state_123";
-        let auth = provider.new_auth_url(state, None).await.unwrap();
+        let auth = provider
+            .new_auth_url(state, None)
+            .await
+            .checked("operation should succeed");
         let auth_url = auth.auth_url;
         let pkce_verifier = auth.pkce_verifier;
 
@@ -296,10 +300,16 @@ mod tests {
             "secret".to_string(),
             "https://example.com/cb".to_string(),
         )
-        .unwrap();
+        .checked("operation should succeed");
 
-        let auth1 = provider.new_auth_url("state_a", None).await.unwrap();
-        let auth2 = provider.new_auth_url("state_b", None).await.unwrap();
+        let auth1 = provider
+            .new_auth_url("state_a", None)
+            .await
+            .checked("operation should succeed");
+        let auth2 = provider
+            .new_auth_url("state_b", None)
+            .await
+            .checked("operation should succeed");
 
         assert_ne!(auth1.auth_url, auth2.auth_url);
         assert_ne!(auth1.pkce_verifier, auth2.pkce_verifier);
@@ -314,7 +324,10 @@ mod tests {
         });
         let provider = google_factory(&config);
         assert!(provider.is_ok());
-        assert_eq!(provider.unwrap().provider_type(), "google");
+        assert_eq!(
+            provider.checked("operation should succeed").provider_type(),
+            "google"
+        );
     }
 
     #[test]
@@ -366,7 +379,7 @@ mod tests {
             "client_secret": "goog_def",
             "redirect_url": "https://example.com/cb"
         });
-        let config: GoogleConfig = serde_json::from_value(json).unwrap();
+        let config: GoogleConfig = serde_json::from_value(json).checked("operation should succeed");
         assert_eq!(config.client_id, "goog_abc");
         assert_eq!(config.client_secret, "goog_def");
         assert_eq!(config.redirect_url, "https://example.com/cb");

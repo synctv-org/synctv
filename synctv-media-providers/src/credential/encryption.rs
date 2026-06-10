@@ -18,9 +18,6 @@ const NONCE_SIZE: usize = 12;
 /// Prefix for encrypted data to distinguish from plaintext
 const ENCRYPTED_PREFIX: &str = "enc:";
 
-/// Key version byte prepended to encrypted payloads for future key rotation support.
-const KEY_VERSION: u8 = 0x01;
-
 /// Error type for encryption operations
 #[derive(Debug, thiserror::Error)]
 pub enum EncryptionError {
@@ -94,7 +91,7 @@ impl FieldEncryption {
 
     /// Encrypt a plaintext string
     ///
-    /// Returns a string in the format "enc:<base64(version + nonce + ciphertext)>"
+    /// Returns a string in the format "enc:<base64(nonce + ciphertext)>"
     pub fn encrypt(&self, plaintext: &str) -> EncryptionResult<String> {
         // Generate random nonce
         let mut nonce_bytes = [0u8; NONCE_SIZE];
@@ -107,9 +104,7 @@ impl FieldEncryption {
             .encrypt(nonce, plaintext.as_bytes())
             .map_err(|e| EncryptionError::EncryptionFailed(e.to_string()))?;
 
-        // Prepend version byte + nonce to ciphertext and encode as base64
-        let mut combined = Vec::with_capacity(1 + NONCE_SIZE + ciphertext.len());
-        combined.push(KEY_VERSION);
+        let mut combined = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
         combined.extend_from_slice(&nonce_bytes);
         combined.extend_from_slice(&ciphertext);
 
@@ -119,7 +114,7 @@ impl FieldEncryption {
 
     /// Decrypt an encrypted string
     ///
-    /// Only accepts encrypted format: "enc:<base64(version + nonce + ciphertext)>"
+    /// Only accepts encrypted format: "enc:<base64(nonce + ciphertext)>"
     /// Plaintext credentials are no longer supported.
     pub fn decrypt(&self, stored: &str) -> EncryptionResult<String> {
         let Some(encoded) = stored.strip_prefix(ENCRYPTED_PREFIX) else {
@@ -134,20 +129,13 @@ impl FieldEncryption {
         let combined = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
             .map_err(|e| EncryptionError::InvalidFormat(format!("Invalid base64: {e}")))?;
 
-        if combined.len() < 1 + NONCE_SIZE {
+        if combined.len() < NONCE_SIZE {
             return Err(EncryptionError::InvalidFormat(
                 "Encrypted data too short".to_string(),
             ));
         }
 
-        let version = combined[0];
-        if version != KEY_VERSION {
-            return Err(EncryptionError::InvalidFormat(format!(
-                "Unsupported encryption version: {version} (expected {KEY_VERSION})"
-            )));
-        }
-
-        let (nonce_bytes, ciphertext) = combined[1..].split_at(NONCE_SIZE);
+        let (nonce_bytes, ciphertext) = combined.split_at(NONCE_SIZE);
         let nonce = Nonce::from_slice(nonce_bytes);
 
         let plaintext = self
@@ -170,6 +158,8 @@ impl FieldEncryption {
 mod tests {
     use super::*;
 
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
     fn test_key() -> Vec<u8> {
         vec![
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
@@ -179,54 +169,55 @@ mod tests {
     }
 
     #[test]
-    fn test_encrypt_decrypt_round_trip() {
-        let enc = FieldEncryption::new(&test_key()).unwrap();
+    fn test_encrypt_decrypt_round_trip() -> TestResult {
+        let enc = FieldEncryption::new(&test_key())?;
         let original = "my_secret_password_123";
 
-        let encrypted = enc.encrypt(original).unwrap();
+        let encrypted = enc.encrypt(original)?;
         assert!(encrypted.starts_with("enc:"));
         assert_ne!(encrypted, original);
 
-        let decrypted = enc.decrypt(&encrypted).unwrap();
+        let decrypted = enc.decrypt(&encrypted)?;
         assert_eq!(original, decrypted);
+        Ok(())
     }
 
     #[test]
-    fn test_decrypt_plaintext_returns_error() {
-        let enc = FieldEncryption::new(&test_key()).unwrap();
+    fn test_decrypt_plaintext_returns_error() -> TestResult {
+        let enc = FieldEncryption::new(&test_key())?;
         let plaintext = "plaintext_password";
 
-        // Plaintext should be rejected
         let result = enc.decrypt(plaintext);
         assert!(result.is_err(), "Plaintext credentials should be rejected");
+        Ok(())
     }
 
     #[test]
-    fn test_each_encryption_unique() {
-        let enc = FieldEncryption::new(&test_key()).unwrap();
+    fn test_each_encryption_unique() -> TestResult {
+        let enc = FieldEncryption::new(&test_key())?;
         let plaintext = "same_password";
 
-        let enc1 = enc.encrypt(plaintext).unwrap();
-        let enc2 = enc.encrypt(plaintext).unwrap();
+        let enc1 = enc.encrypt(plaintext)?;
+        let enc2 = enc.encrypt(plaintext)?;
 
-        // Different nonces produce different ciphertext
         assert_ne!(enc1, enc2);
 
-        // Both decrypt correctly
-        assert_eq!(enc.decrypt(&enc1).unwrap(), plaintext);
-        assert_eq!(enc.decrypt(&enc2).unwrap(), plaintext);
+        assert_eq!(enc.decrypt(&enc1)?, plaintext);
+        assert_eq!(enc.decrypt(&enc2)?, plaintext);
+        Ok(())
     }
 
     #[test]
-    fn test_wrong_key_fails() {
-        let enc1 = FieldEncryption::new(&test_key()).unwrap();
-        let encrypted = enc1.encrypt("secret").unwrap();
+    fn test_wrong_key_fails() -> TestResult {
+        let enc1 = FieldEncryption::new(&test_key())?;
+        let encrypted = enc1.encrypt("secret")?;
 
         let wrong_key = vec![0xffu8; 32];
-        let enc2 = FieldEncryption::new(&wrong_key).unwrap();
+        let enc2 = FieldEncryption::new(&wrong_key)?;
 
         let result = enc2.decrypt(&encrypted);
         assert!(result.is_err());
+        Ok(())
     }
 
     #[test]
@@ -245,13 +236,14 @@ mod tests {
     }
 
     #[test]
-    fn test_from_hex_key() {
+    fn test_from_hex_key() -> TestResult {
         let hex_key = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
-        let enc = FieldEncryption::from_hex_key(hex_key).unwrap();
+        let enc = FieldEncryption::from_hex_key(hex_key)?;
         let plaintext = "test_password";
 
-        let encrypted = enc.encrypt(plaintext).unwrap();
-        let decrypted = enc.decrypt(&encrypted).unwrap();
+        let encrypted = enc.encrypt(plaintext)?;
+        let decrypted = enc.decrypt(&encrypted)?;
         assert_eq!(plaintext, decrypted);
+        Ok(())
     }
 }

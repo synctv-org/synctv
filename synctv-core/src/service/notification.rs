@@ -240,10 +240,17 @@ impl NotificationService {
             room_id
         );
 
-        let subscriber_count = self
-            .event_tx
-            .send((*room_id, event.clone()))
-            .unwrap_or_default();
+        let subscriber_count = match self.event_tx.send((*room_id, event.clone())) {
+            Ok(count) => count,
+            Err(error) => {
+                tracing::trace!(
+                    "Local room event {} for room {} has no active subscribers: {error}",
+                    event.event_type(),
+                    room_id
+                );
+                0
+            }
+        };
 
         tracing::debug!(
             subscriber_count,
@@ -488,6 +495,13 @@ impl Default for NotificationService {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[tokio::test]
     async fn test_notification_service_creation() {
         let service = NotificationService::default();
@@ -514,11 +528,11 @@ mod tests {
         assert_eq!(service.broadcast_to_room(&room_id, &event), 1);
 
         // Receive event
-        let (received_room_id, received_event) =
-            tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
+        let received = ok(
+            tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv()).await,
+            "room event should arrive",
+        );
+        let (received_room_id, received_event) = ok(received, "broadcast channel should stay open");
 
         assert_eq!(received_room_id, room_id);
         assert!(
@@ -545,11 +559,11 @@ mod tests {
             1
         );
 
-        let (received_room_id, received_event) =
-            tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv())
-                .await
-                .expect("local-only event should arrive")
-                .expect("broadcast channel should stay open");
+        let received = ok(
+            tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv()).await,
+            "local-only event should arrive",
+        );
+        let (received_room_id, received_event) = ok(received, "broadcast channel should stay open");
 
         assert_eq!(received_room_id, room_id);
         assert!(matches!(
@@ -656,7 +670,7 @@ mod tests {
         ];
 
         for event in events {
-            let json = event.to_json().unwrap();
+            let json = ok(event.to_json(), "room event should serialize");
             assert!(!json.is_empty());
         }
     }

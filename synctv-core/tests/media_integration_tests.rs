@@ -1,8 +1,6 @@
 //! Media CRUD integration tests
 //! Tests media item creation, unique constraints, deletion, and playlist association.
 //!
-#![allow(clippy::unwrap_used)]
-
 use chrono::Utc;
 use serde_json::json;
 use sqlx::PgPool;
@@ -13,7 +11,7 @@ use synctv_core::{
     },
     repository::{MediaRepository, PlaylistRepository, RoomRepository, UserRepository},
 };
-use synctv_core_testing::{create_test_pool, TestContainer};
+use synctv_core_testing::{create_test_pool, TestContainer, TestOptionExt, TestResultExt};
 
 fn assert_f64_eq(actual: f64, expected: f64) {
     assert!(
@@ -63,7 +61,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
     let owner = user_repo
         .create(&make_user(&format!("media_owner_{suffix}")))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&{
             let now = Utc::now();
@@ -84,7 +82,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
             }
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let root_playlist = playlist_repo
         .create(&Playlist {
@@ -104,7 +102,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     TestContext {
         _container: container,
@@ -160,7 +158,10 @@ async fn test_create_media_basic() {
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     let media = make_media(&ctx.root_playlist.id, &ctx.room.id, "test_video.mp4", 0);
-    let created = media_repo.create(&media).await.unwrap();
+    let created = media_repo
+        .create(&media)
+        .await
+        .checked("test operation should succeed");
 
     assert_eq!(created.name, "test_video.mp4");
     assert_f64_eq(created.position, 0.0);
@@ -176,11 +177,17 @@ async fn test_media_get_by_id() {
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     let media = make_media(&ctx.root_playlist.id, &ctx.room.id, "get_me.mp4", 0);
-    let created = media_repo.create(&media).await.unwrap();
+    let created = media_repo
+        .create(&media)
+        .await
+        .checked("test operation should succeed");
 
-    let fetched = media_repo.get_by_id(&created.id).await.unwrap();
+    let fetched = media_repo
+        .get_by_id(&created.id)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched.is_some());
-    let fetched = fetched.unwrap();
+    let fetched = fetched.checked("test operation should succeed");
     assert_eq!(fetched.id, created.id);
     assert_eq!(fetched.name, "get_me.mp4");
 }
@@ -192,11 +199,17 @@ async fn test_media_update() {
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     let media = make_media(&ctx.root_playlist.id, &ctx.room.id, "original.mp4", 0);
-    let created = media_repo.create(&media).await.unwrap();
+    let created = media_repo
+        .create(&media)
+        .await
+        .checked("test operation should succeed");
 
     let mut updated_media = created.clone();
     updated_media.name = "renamed.mp4".to_string();
-    let updated = media_repo.update(&updated_media).await.unwrap();
+    let updated = media_repo
+        .update(&updated_media)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(updated.name, "renamed.mp4");
 }
 
@@ -207,16 +220,28 @@ async fn test_media_delete() {
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     let media = make_media(&ctx.root_playlist.id, &ctx.room.id, "delete_me.mp4", 0);
-    let created = media_repo.create(&media).await.unwrap();
+    let created = media_repo
+        .create(&media)
+        .await
+        .checked("test operation should succeed");
 
-    let deleted = media_repo.delete(&created.id).await.unwrap();
+    let deleted = media_repo
+        .delete(&created.id)
+        .await
+        .checked("test operation should succeed");
     assert!(deleted);
 
-    let fetched = media_repo.get_by_id(&created.id).await.unwrap();
+    let fetched = media_repo
+        .get_by_id(&created.id)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched.is_none());
 
     // Double delete returns false
-    let deleted_again = media_repo.delete(&created.id).await.unwrap();
+    let deleted_again = media_repo
+        .delete(&created.id)
+        .await
+        .checked("test operation should succeed");
     assert!(!deleted_again);
 }
 
@@ -234,10 +259,13 @@ async fn test_duplicate_media_names_are_allowed_in_same_playlist() {
             0,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let duplicate = make_media(&ctx.root_playlist.id, &ctx.room.id, "same_name.mp4", 1);
-    let created = media_repo.create(&duplicate).await.unwrap();
+    let created = media_repo
+        .create(&duplicate)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(created.name, "same_name.mp4");
 }
 
@@ -255,16 +283,19 @@ async fn test_duplicate_media_positions_are_allowed() {
             0,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Duplicate floating positions are allowed; ordering falls back to the
     // secondary sort key and move operations rebalance only when needed.
     let duplicate = make_media(&ctx.root_playlist.id, &ctx.room.id, "second.mp4", 0);
-    let result = media_repo.create(&duplicate).await.unwrap();
+    let result = media_repo
+        .create(&duplicate)
+        .await
+        .checked("test operation should succeed");
     let items = media_repo
         .get_by_playlist(&ctx.root_playlist.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(result.name, "second.mp4");
     assert_eq!(items.len(), 2);
 }
@@ -278,20 +309,20 @@ async fn test_media_get_by_playlist() {
     media_repo
         .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "a.mp4", 0))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     media_repo
         .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "b.mp4", 1))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     media_repo
         .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "c.mp4", 2))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let items = media_repo
         .get_by_playlist(&ctx.root_playlist.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(items.len(), 3);
     assert_eq!(items[0].name, "a.mp4");
     assert_eq!(items[1].name, "b.mp4");
@@ -309,7 +340,7 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
     let owner = user_repo
         .create(&make_user("media_root_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&{
             let now = Utc::now();
@@ -330,7 +361,7 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
             }
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media_id = MediaId::new();
     sqlx::query(
@@ -349,12 +380,19 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
     .bind(Option::<String>::None)
     .execute(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
 
-    let fetched = media_repo.get_by_id(&media_id).await.unwrap().unwrap();
+    let fetched = media_repo
+        .get_by_id(&media_id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert!(fetched.playlist_id.is_none());
 
-    let items = media_repo.get_room_root(&room.id).await.unwrap();
+    let items = media_repo
+        .get_room_root(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].id, media_id);
 }
@@ -384,7 +422,7 @@ async fn test_media_cascade_delete_with_playlist() {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add media to child playlist
     let media = media_repo
@@ -395,12 +433,18 @@ async fn test_media_cascade_delete_with_playlist() {
             0,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Delete the child playlist - nested media should be explicitly deleted too.
-    playlist_repo.delete(&child_playlist.id).await.unwrap();
+    playlist_repo
+        .delete(&child_playlist.id)
+        .await
+        .checked("test operation should succeed");
 
-    let fetched = media_repo.get_by_id(&media.id).await.unwrap();
+    let fetched = media_repo
+        .get_by_id(&media.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         fetched.is_none(),
         "Media should be deleted when its playlist subtree is deleted"
@@ -421,7 +465,7 @@ async fn test_media_move_with_tx_reorders_scope() {
             1024,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let m2 = media_repo
         .create(&make_media(
             &ctx.root_playlist.id,
@@ -430,17 +474,29 @@ async fn test_media_move_with_tx_reorders_scope() {
             2048,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let mut tx = ctx.pool.begin().await.unwrap();
+    let mut tx = ctx
+        .pool
+        .begin()
+        .await
+        .checked("test operation should succeed");
     media_repo
         .move_with_tx(&ctx.room.id, &m2.id, Some(&m1.id), None, &mut tx)
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .checked("test operation should succeed");
+    tx.commit().await.checked("test operation should succeed");
 
-    let updated_m1 = media_repo.get_by_id(&m1.id).await.unwrap().unwrap();
-    let updated_m2 = media_repo.get_by_id(&m2.id).await.unwrap().unwrap();
+    let updated_m1 = media_repo
+        .get_by_id(&m1.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
+    let updated_m2 = media_repo
+        .get_by_id(&m2.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
 
     assert!(updated_m2.position < updated_m1.position);
 }
@@ -455,24 +511,24 @@ async fn test_media_count_by_playlist() {
         media_repo
             .count_by_playlist(&ctx.root_playlist.id)
             .await
-            .unwrap(),
+            .checked("test operation should succeed"),
         0
     );
 
     media_repo
         .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "a.mp4", 0))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     media_repo
         .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "b.mp4", 1))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(
         media_repo
             .count_by_playlist(&ctx.root_playlist.id)
             .await
-            .unwrap(),
+            .checked("test operation should succeed"),
         2
     );
 }
@@ -486,24 +542,39 @@ async fn test_media_batch_delete() {
     let m1 = media_repo
         .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "a.mp4", 0))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let m2 = media_repo
         .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "b.mp4", 1))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let m3 = media_repo
         .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "c.mp4", 2))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Batch delete first two
-    let deleted_count = media_repo.delete_batch(&[m1.id, m2.id]).await.unwrap();
+    let deleted_count = media_repo
+        .delete_batch(&[m1.id, m2.id])
+        .await
+        .checked("test operation should succeed");
     assert_eq!(deleted_count, 2);
 
     // Only m3 should remain
-    assert!(media_repo.get_by_id(&m1.id).await.unwrap().is_none());
-    assert!(media_repo.get_by_id(&m2.id).await.unwrap().is_none());
-    assert!(media_repo.get_by_id(&m3.id).await.unwrap().is_some());
+    assert!(media_repo
+        .get_by_id(&m1.id)
+        .await
+        .checked("test operation should succeed")
+        .is_none());
+    assert!(media_repo
+        .get_by_id(&m2.id)
+        .await
+        .checked("test operation should succeed")
+        .is_none());
+    assert!(media_repo
+        .get_by_id(&m3.id)
+        .await
+        .checked("test operation should succeed")
+        .is_some());
 }
 
 // Append-position helper tests
@@ -514,12 +585,16 @@ async fn test_get_next_append_position_with_tx_empty_playlist_returns_order_step
     let ctx = setup_test_context("next_pos_empty").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    let mut tx = ctx.pool.begin().await.unwrap();
+    let mut tx = ctx
+        .pool
+        .begin()
+        .await
+        .checked("test operation should succeed");
     let next_pos = media_repo
         .get_next_append_position_with_tx(&ctx.room.id, Some(&ctx.root_playlist.id), &mut tx)
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .checked("test operation should succeed");
+    tx.commit().await.checked("test operation should succeed");
 
     assert_f64_eq(next_pos, 1024.0);
 }
@@ -533,7 +608,7 @@ async fn test_get_next_append_position_with_tx_existing_items() {
     media_repo
         .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "a.mp4", 0))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     media_repo
         .create(&make_media(
             &ctx.root_playlist.id,
@@ -542,7 +617,7 @@ async fn test_get_next_append_position_with_tx_existing_items() {
             2048,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     media_repo
         .create(&make_media(
             &ctx.root_playlist.id,
@@ -551,14 +626,18 @@ async fn test_get_next_append_position_with_tx_existing_items() {
             4096,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let mut tx = ctx.pool.begin().await.unwrap();
+    let mut tx = ctx
+        .pool
+        .begin()
+        .await
+        .checked("test operation should succeed");
     let next_pos = media_repo
         .get_next_append_position_with_tx(&ctx.room.id, Some(&ctx.root_playlist.id), &mut tx)
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .checked("test operation should succeed");
+    tx.commit().await.checked("test operation should succeed");
 
     assert_f64_eq(next_pos, 5120.0);
 }
@@ -582,13 +661,16 @@ async fn test_create_batch_chunked_inserts_all() {
         })
         .collect();
 
-    let results = media_repo.create_batch(&items).await.unwrap();
+    let results = media_repo
+        .create_batch(&items)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(results.len(), 5);
 
     let playlist_items = media_repo
         .get_by_playlist(&ctx.root_playlist.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(playlist_items.len(), 5);
     for (i, item) in playlist_items.iter().enumerate() {
         assert_f64_eq(item.position, usize_to_f64(i));
@@ -622,7 +704,7 @@ async fn test_count_by_playlists_batch_multiple_playlists() {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add 3 items to root, 2 to pl2
     for i in 0..3 {
@@ -634,7 +716,7 @@ async fn test_count_by_playlists_batch_multiple_playlists() {
                 i,
             ))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     }
     for i in 0..2 {
         media_repo
@@ -645,13 +727,13 @@ async fn test_count_by_playlists_batch_multiple_playlists() {
                 i,
             ))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     }
 
     let counts = media_repo
         .count_by_playlists_batch(&[ctx.root_playlist.id, pl2.id])
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(
         counts.get(&ctx.root_playlist.id),
@@ -671,7 +753,10 @@ async fn test_count_by_playlists_batch_empty_input() {
     let ctx = setup_test_context("batch_count_empty").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    let counts = media_repo.count_by_playlists_batch(&[]).await.unwrap();
+    let counts = media_repo
+        .count_by_playlists_batch(&[])
+        .await
+        .checked("test operation should succeed");
     assert!(counts.is_empty(), "Empty input should return empty map");
 }
 
@@ -691,7 +776,7 @@ async fn test_get_by_ids_partial_returns_subset() {
             0,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let m2 = media_repo
         .create(&make_media(
             &ctx.root_playlist.id,
@@ -700,7 +785,7 @@ async fn test_get_by_ids_partial_returns_subset() {
             1,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let _m3 = media_repo
         .create(&make_media(
             &ctx.root_playlist.id,
@@ -709,14 +794,14 @@ async fn test_get_by_ids_partial_returns_subset() {
             2,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Ask for only m1 and m2 (not m3), plus a nonexistent ID
     let nonexistent = MediaId::new();
     let results = media_repo
         .get_by_ids(&[m1.id, m2.id, nonexistent])
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(results.len(), 2, "Should return only the 2 existing items");
     let result_ids: std::collections::HashSet<MediaId> = results.iter().map(|m| m.id).collect();
@@ -740,7 +825,7 @@ async fn test_delete_by_playlist_removes_all() {
             0,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     media_repo
         .create(&make_media(
             &ctx.root_playlist.id,
@@ -749,7 +834,7 @@ async fn test_delete_by_playlist_removes_all() {
             1,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     media_repo
         .create(&make_media(
             &ctx.root_playlist.id,
@@ -758,27 +843,27 @@ async fn test_delete_by_playlist_removes_all() {
             2,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(
         media_repo
             .count_by_playlist(&ctx.root_playlist.id)
             .await
-            .unwrap(),
+            .checked("test operation should succeed"),
         3
     );
 
     let deleted = media_repo
         .delete_playlist(&ctx.root_playlist.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(deleted, 3);
 
     assert_eq!(
         media_repo
             .count_by_playlist(&ctx.root_playlist.id)
             .await
-            .unwrap(),
+            .checked("test operation should succeed"),
         0
     );
 }
@@ -794,7 +879,7 @@ async fn test_delete_room_root_only_removes_target_room_media() {
     let other_owner = user_repo
         .create(&make_user("media_owner_del_root_other"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let other_room = room_repo
         .create(&{
             let now = Utc::now();
@@ -815,16 +900,16 @@ async fn test_delete_room_root_only_removes_target_room_media() {
             }
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     media_repo
         .create(&make_room_root_media(&ctx.room.id, "room-a-root-1.mp4", 0))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     media_repo
         .create(&make_room_root_media(&ctx.room.id, "room-a-root-2.mp4", 1))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     media_repo
         .create(&make_room_root_media(
             &other_room.id,
@@ -832,16 +917,43 @@ async fn test_delete_room_root_only_removes_target_room_media() {
             0,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    assert_eq!(media_repo.count_room_root(&ctx.room.id).await.unwrap(), 2);
-    assert_eq!(media_repo.count_room_root(&other_room.id).await.unwrap(), 1);
+    assert_eq!(
+        media_repo
+            .count_room_root(&ctx.room.id)
+            .await
+            .checked("test operation should succeed"),
+        2
+    );
+    assert_eq!(
+        media_repo
+            .count_room_root(&other_room.id)
+            .await
+            .checked("test operation should succeed"),
+        1
+    );
 
-    let deleted = media_repo.delete_room_root(&ctx.room.id).await.unwrap();
+    let deleted = media_repo
+        .delete_room_root(&ctx.room.id)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(deleted, 2);
 
-    assert_eq!(media_repo.count_room_root(&ctx.room.id).await.unwrap(), 0);
-    assert_eq!(media_repo.count_room_root(&other_room.id).await.unwrap(), 1);
+    assert_eq!(
+        media_repo
+            .count_room_root(&ctx.room.id)
+            .await
+            .checked("test operation should succeed"),
+        0
+    );
+    assert_eq!(
+        media_repo
+            .count_room_root(&other_room.id)
+            .await
+            .checked("test operation should succeed"),
+        1
+    );
 }
 
 // Concurrent append-position assignment tests
@@ -863,12 +975,12 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
         let media_repo = media_repo.clone();
 
         let handle = tokio::spawn(async move {
-            let mut tx = pool.begin().await.expect("Failed to begin transaction");
+            let mut tx = pool.begin().await.checked("Failed to begin transaction");
 
             let position = media_repo
                 .get_next_append_position_with_tx(&room_id, Some(&playlist_id), &mut tx)
                 .await
-                .expect("Failed to get next position");
+                .checked("Failed to get next position");
 
             let media = Media {
                 id: MediaId::new(),
@@ -889,11 +1001,7 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
 
             let result = media_repo.create_with_executor(&media, &mut *tx).await;
 
-            if let Err(ref e) = result {
-                eprintln!("Task {i} failed to create media: {e:?}");
-            }
-
-            tx.commit().await.expect("Failed to commit transaction");
+            tx.commit().await.checked("Failed to commit transaction");
 
             result.map(|m| m.position)
         });
@@ -901,16 +1009,11 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
         handles.push(handle);
     }
 
-    let results: Vec<_> = futures::future::join_all(handles)
+    let successful_positions: Vec<f64> = futures::future::join_all(handles)
         .await
         .into_iter()
-        .map(|r| r.expect("Task panicked"))
-        .collect();
-
-    // All tasks should succeed (no UNIQUE constraint violations)
-    let successful_positions: Vec<f64> = results
-        .into_iter()
-        .filter_map(std::result::Result::ok)
+        .map(|r| r.checked("Task panicked"))
+        .map(|r| r.checked("concurrent media insert should succeed"))
         .collect();
 
     assert_eq!(
@@ -960,7 +1063,7 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
                 i,
             ))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     }
 
     let num_concurrent = 5;
@@ -974,12 +1077,12 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
         let media_repo = media_repo.clone();
 
         let handle = tokio::spawn(async move {
-            let mut tx = pool.begin().await.expect("Failed to begin transaction");
+            let mut tx = pool.begin().await.checked("Failed to begin transaction");
 
             let position = media_repo
                 .get_next_append_position_with_tx(&room_id, Some(&playlist_id), &mut tx)
                 .await
-                .expect("Failed to get next position");
+                .checked("Failed to get next position");
 
             let media = Media {
                 id: MediaId::new(),
@@ -999,7 +1102,7 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
             };
 
             let result = media_repo.create_with_executor(&media, &mut *tx).await;
-            tx.commit().await.expect("Failed to commit transaction");
+            tx.commit().await.checked("Failed to commit transaction");
 
             result.map(|m| m.position)
         });
@@ -1007,15 +1110,11 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
         handles.push(handle);
     }
 
-    let results: Vec<_> = futures::future::join_all(handles)
+    let successful_positions: Vec<f64> = futures::future::join_all(handles)
         .await
         .into_iter()
-        .map(|r| r.expect("Task panicked"))
-        .collect();
-
-    let successful_positions: Vec<f64> = results
-        .into_iter()
-        .filter_map(std::result::Result::ok)
+        .map(|r| r.checked("Task panicked"))
+        .map(|r| r.checked("concurrent media insert should succeed"))
         .collect();
 
     assert_eq!(
@@ -1048,7 +1147,7 @@ async fn test_media_rejects_cross_room_playlist_reference() {
     let owner = user_repo
         .create(&make_user("cross_room_media_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let room_a = room_repo
         .create(&{
@@ -1070,7 +1169,7 @@ async fn test_media_rejects_cross_room_playlist_reference() {
             }
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room_b = room_repo
         .create(&{
             let now = Utc::now();
@@ -1091,7 +1190,7 @@ async fn test_media_rejects_cross_room_playlist_reference() {
             }
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist_b = playlist_repo
         .create(&Playlist {
@@ -1111,7 +1210,7 @@ async fn test_media_rejects_cross_room_playlist_reference() {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = media_repo
         .create(&Media {

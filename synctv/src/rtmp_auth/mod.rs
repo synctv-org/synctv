@@ -29,11 +29,9 @@ use synctv_core::{
     service::{RoomService, StreamingPublishKeyService, UserService},
     RedisConnectionRuntime, SharedStateMode, SharedStateProfile,
 };
-use synctv_livestream::api::StreamTracker;
-use synctv_livestream::relay::StreamRegistryTrait;
-use synctv_livestream::AuthCallback;
+use synctv_livestream::{StreamRegistryTrait, StreamTracker, PUBLISHER_TTL_SECS};
 // TTL for the per-user rtmp:user_stream:{user_id} Redis key, matching the publisher TTL.
-use synctv_livestream::relay::registry::PUBLISHER_TTL_SECS;
+use synctv_xiu::rtmp::auth::{AuthCallback, AuthPublishRewrite};
 
 const STREAMHUB_RESTARTING_MESSAGE: &str = "StreamHub is restarting, please retry in a few seconds";
 
@@ -145,7 +143,7 @@ impl UserStreamIndex for SharedUserStreamIndex {
     }
 }
 
-pub fn user_stream_index_from_shared_state_profile(
+pub(crate) fn user_stream_index_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> synctv_core::Result<Arc<dyn UserStreamIndex>> {
     match profile.state_mode() {
@@ -572,8 +570,6 @@ impl PublisherCleanupRuntime {
             validated.user_id.to_string(),
             validated.room_id.to_string(),
             validated.media_id.to_string(),
-            &validated.room_id.to_string(),
-            &validated.media_id.to_string(),
         );
 
         if let Some(ref tx) = self.stream_event_tx {
@@ -716,10 +712,7 @@ impl AuthCallback for SyncTvRtmpAuth {
         app_name: &str,
         stream_name: &str,
         query: Option<&str>,
-    ) -> Result<
-        Option<synctv_livestream::rtmp_auth::AuthPublishRewrite>,
-        Box<dyn std::error::Error + Send + Sync>,
-    > {
+    ) -> Result<Option<AuthPublishRewrite>, Box<dyn std::error::Error + Send + Sync>> {
         if streamhub_restart_in_progress(self.is_restarting.as_ref()) {
             tracing::warn!(
                 room_id = %app_name,
@@ -740,7 +733,7 @@ impl AuthCallback for SyncTvRtmpAuth {
 
         // Phase 3: Return rewrite so StreamHub uses canonical (room_id, media_id)
         // instead of the raw RTMP identifiers (room_id, JWT_TOKEN).
-        Ok(Some(synctv_livestream::rtmp_auth::AuthPublishRewrite {
+        Ok(Some(AuthPublishRewrite {
             app_name: validated.room_id.to_string(),
             stream_name: validated.media_id.to_string(),
         }))
@@ -1030,9 +1023,9 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
-    use synctv_livestream::relay::registry_trait::PublisherRefreshOutcome;
-    use synctv_livestream::relay::{
-        local_stream_registry, ActivePublisherEntry, PublisherInfo, StreamRegistryTrait,
+    use synctv_livestream::{
+        local_stream_registry, ActivePublisherEntry, PublisherInfo, PublisherRefreshOutcome,
+        StreamRegistryTrait,
     };
 
     struct FlakyUnregisterRegistry {
@@ -1056,19 +1049,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl StreamRegistryTrait for FlakyUnregisterRegistry {
-        async fn register_publisher(
-            &self,
-            room_id: &str,
-            media_id: &str,
-            node_id: &str,
-            app_name: &str,
-            api_address: &str,
-        ) -> anyhow::Result<bool> {
-            self.inner
-                .register_publisher(room_id, media_id, node_id, app_name, api_address)
-                .await
-        }
-
         async fn try_register_publisher(
             &self,
             room_id: &str,
@@ -1137,10 +1117,6 @@ mod tests {
             self.inner.list_active_publishers().await
         }
 
-        async fn list_active_streams(&self) -> anyhow::Result<Vec<(String, String)>> {
-            self.inner.list_active_streams().await
-        }
-
         async fn list_streams_for_room(&self, room_id: &str) -> anyhow::Result<Vec<String>> {
             self.inner.list_streams_for_room(room_id).await
         }
@@ -1152,8 +1128,14 @@ mod tests {
             self.inner.get_user_publishers(user_id).await
         }
 
-        async fn unregister_all_user_publishers(&self, user_id: &str) -> anyhow::Result<()> {
-            self.inner.unregister_all_user_publishers(user_id).await
+        async fn get_user_publishers_for_room(
+            &self,
+            room_id: &str,
+            user_id: &str,
+        ) -> anyhow::Result<Vec<(String, String)>> {
+            self.inner
+                .get_user_publishers_for_room(room_id, user_id)
+                .await
         }
 
         async fn validate_epoch(
@@ -1323,7 +1305,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delayed_unpublish_does_not_remove_newer_registration() {
-        let registry = synctv_livestream::relay::local_stream_registry();
+        let registry = synctv_livestream::local_stream_registry();
         let runtime = make_publisher_cleanup_runtime(registry.clone());
 
         let room_id = "101";
@@ -1371,7 +1353,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delayed_unpublish_preserves_newer_rollback_fence() {
-        let registry = synctv_livestream::relay::local_stream_registry();
+        let registry = synctv_livestream::local_stream_registry();
         let runtime = make_publisher_cleanup_runtime(registry.clone());
 
         let room_id = "102";
@@ -1413,7 +1395,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delayed_rollback_does_not_remove_newer_registration() {
-        let registry = synctv_livestream::relay::local_stream_registry();
+        let registry = synctv_livestream::local_stream_registry();
         let runtime = make_publisher_cleanup_runtime(registry.clone());
 
         let room_id = "103";
@@ -1522,7 +1504,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unpublish_without_in_memory_fence_does_not_guess_cleanup_target() {
-        let registry = synctv_livestream::relay::local_stream_registry();
+        let registry = synctv_livestream::local_stream_registry();
         let runtime = make_publisher_cleanup_runtime(registry.clone());
         let restarted_runtime = make_publisher_cleanup_runtime(registry.clone());
 
@@ -1550,7 +1532,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_rollback_without_in_memory_fence_does_not_guess_cleanup_target() {
-        let registry = synctv_livestream::relay::local_stream_registry();
+        let registry = synctv_livestream::local_stream_registry();
         let runtime = make_publisher_cleanup_runtime(registry.clone());
         let restarted_runtime = make_publisher_cleanup_runtime(registry.clone());
 
@@ -1578,7 +1560,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_restarted_unpublish_does_not_remove_replacement_publisher() {
-        let registry = synctv_livestream::relay::local_stream_registry();
+        let registry = synctv_livestream::local_stream_registry();
         let runtime = make_publisher_cleanup_runtime(registry.clone());
         let restarted_runtime = make_publisher_cleanup_runtime(registry.clone());
 
@@ -1705,7 +1687,7 @@ mod tests {
 
     #[test]
     fn test_user_stream_index_factory_uses_local_backend_without_shared_runtime() {
-        let profile = SharedStateProfile::from_runtime(None, "test:", false);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "test:", false);
 
         let index = user_stream_index_from_shared_state_profile(&profile)
             .expect("local-only profile should build local RTMP index");
@@ -1729,7 +1711,7 @@ mod tests {
 
     #[test]
     fn test_user_stream_index_factory_requires_shared_runtime_in_cluster_mode() {
-        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
 
         let Err(error) = user_stream_index_from_shared_state_profile(&profile) else {
             panic!("cluster profile without runtime must be rejected");

@@ -152,15 +152,3 @@ impl ChunkInfo {
         }
     }
 }
-
-// impl Chunk {
-//     pub fn chunk_read(&mut self, bytes: &[u8]) -> Result {
-//         self.buffer.extend_from_slice(bytes);
-//     }
-
-//     pub fn read_basic_header(&mut self, bytes: &[u8]) -> Result<UnpackResult, ChunkUnpackError> {
-//         if self.buffer.len() < 1 {
-//             return Ok(UnpackResult::NotEnoughBytes);
-//         }
-//     }
-// }

@@ -649,7 +649,7 @@ async fn test_proxy_with_cache_head_request_returns_content_length() {
     let provider_headers = HashMap::new();
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
 
-    let total = synctv_proxy::slice_cache::filter::head_content_length(
+    let total = synctv_proxy::slice_cache::head_content_length(
         &client,
         &ssrf_guard,
         &url,
@@ -1040,7 +1040,7 @@ async fn test_head_content_length_falls_back_to_range_get_when_head_is_not_suppo
         .mount(&mock_server)
         .await;
 
-    let total = synctv_proxy::slice_cache::filter::head_content_length(
+    let total = synctv_proxy::slice_cache::head_content_length(
         &client,
         &synctv_common::ssrf::SsrfGuard::disabled(),
         &mock_public_url(&mock_server, "/head-405.mp4"),
@@ -1076,7 +1076,7 @@ async fn test_head_content_length_falls_back_when_head_omits_content_length() {
         .mount(&mock_server)
         .await;
 
-    let total = synctv_proxy::slice_cache::filter::head_content_length(
+    let total = synctv_proxy::slice_cache::head_content_length(
         &client,
         &synctv_common::ssrf::SsrfGuard::disabled(),
         &mock_public_url(&mock_server, "/head-no-cl.mp4"),
@@ -1094,7 +1094,7 @@ async fn test_head_content_length_loopback_without_listener_fails_with_disabled_
     let cache = SliceCache::new(config).expect("slice cache should build");
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
 
-    let err = synctv_proxy::slice_cache::filter::head_content_length(
+    let err = synctv_proxy::slice_cache::head_content_length(
         cache.client(),
         &ssrf_guard,
         "http://127.0.0.1:12345/private",
@@ -1129,7 +1129,7 @@ async fn test_head_content_length_redirect_to_loopback_without_listener_fails_wi
     let cache = SliceCache::new(config).expect("slice cache should build");
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
 
-    let err = synctv_proxy::slice_cache::filter::head_content_length(
+    let err = synctv_proxy::slice_cache::head_content_length(
         cache.client(),
         &ssrf_guard,
         &format!("{}/start", mock_server.uri()),
@@ -3450,7 +3450,7 @@ async fn test_last_modified_tracked_in_metadata() {
 async fn test_file_backend_via_try_new() {
     let tmp = tempfile::tempdir().unwrap();
     let config = SliceCacheConfig {
-        backend: synctv_proxy::slice_cache::config::CacheBackendConfig::File {
+        backend: synctv_proxy::slice_cache::CacheBackendConfig::File {
             cache_dir: tmp.path().to_path_buf(),
             dir_levels: (2, 2),
         },
@@ -3582,7 +3582,7 @@ async fn test_proxy_with_cache_disabled_redirect_to_loopback_is_blocked_on_bypas
 #[test]
 fn test_new_returns_error_for_file_backend() {
     let config = SliceCacheConfig {
-        backend: synctv_proxy::slice_cache::config::CacheBackendConfig::File {
+        backend: synctv_proxy::slice_cache::CacheBackendConfig::File {
             cache_dir: std::path::PathBuf::from("/tmp/test-panic"),
             dir_levels: (2, 2),
         },
@@ -3623,7 +3623,7 @@ async fn test_file_backend_slice_cache_integration() {
 
     let config = SliceCacheConfig {
         slice_size: 1024,
-        backend: synctv_proxy::slice_cache::config::CacheBackendConfig::File {
+        backend: synctv_proxy::slice_cache::CacheBackendConfig::File {
             cache_dir: tmp.path().to_path_buf(),
             dir_levels: (2, 2),
         },
@@ -4307,7 +4307,7 @@ async fn test_file_backend_rejects_corrupt_header_len() {
     let tmp = tempfile::tempdir().unwrap();
     let config = SliceCacheConfig {
         slice_size: 1024,
-        backend: synctv_proxy::slice_cache::config::CacheBackendConfig::File {
+        backend: synctv_proxy::slice_cache::CacheBackendConfig::File {
             cache_dir: tmp.path().to_path_buf(),
             dir_levels: (2, 2),
         },

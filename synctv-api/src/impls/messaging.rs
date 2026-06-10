@@ -25,7 +25,6 @@ use synctv_core::{
 };
 use synctv_realtime::sync::ConnectionId;
 use synctv_realtime::sync::RealtimeEvent;
-use tokio::sync::Semaphore;
 
 use crate::chat_event_dispatcher::ChatEventDispatcher;
 
@@ -36,15 +35,6 @@ pub const MAX_SDP_SIZE: usize = 10_000;
 /// Maximum size of a WebRTC ICE candidate payload in bytes.
 /// Individual ICE candidates are small (typically under 200 bytes).
 pub const MAX_ICE_CANDIDATE_SIZE: usize = 500;
-
-const USER_LEFT_RETRY_MAX_RETRIES: u32 = 5;
-const USER_LEFT_RETRY_INITIAL_DELAY_MS: u64 = 100;
-const USER_LEFT_RETRY_MAX_DELAY_MS: u64 = 5_000;
-
-/// Maximum number of concurrent UserLeft retry tasks across the process.
-/// Prevents unbounded task spawning during mass disconnects with Redis down.
-static USER_LEFT_RETRY_SEMAPHORE: std::sync::LazyLock<Arc<Semaphore>> =
-    std::sync::LazyLock::new(|| Arc::new(Semaphore::new(100)));
 
 fn is_private_ice_candidate_ip(ip: std::net::IpAddr) -> bool {
     match ip {
@@ -63,22 +53,21 @@ fn is_private_ice_candidate_ip(ip: std::net::IpAddr) -> bool {
 use crate::impls::playback::PlaybackService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
 use crate::impls::room_members_snapshot::RoomMembersSnapshotService;
-use crate::impls::room_settings_snapshot::{
-    default_room_settings_snapshot_service, RoomSettingsSnapshotService,
-};
-use crate::playback_fanout::{default_playback_fanout_service, PlaybackFanoutService};
+use crate::impls::room_settings_snapshot::RoomSettingsSnapshotService;
+#[cfg(test)]
+use crate::playback_fanout::default_playback_fanout_service;
+use crate::playback_fanout::PlaybackFanoutService;
 #[cfg(test)]
 use crate::resource_change::ResourceInvalidation;
-use crate::runtime::{
-    RealtimeConnectionService, RealtimeDeliveryRequirement, RealtimeEventService,
-};
+use crate::runtime::RealtimeEventService;
 use synctv_proto::client::{ClientMessage, ServerMessage};
+use synctv_realtime::sync::ConnectionRuntime;
 
 mod resource_observer;
 use resource_observer::{ResourceObserver, ResourceObserverParams};
 
 mod concurrency;
-pub use concurrency::{MessageConcurrencyConfig, DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING};
+pub use concurrency::MessageConcurrencyConfig;
 mod heartbeat;
 pub use heartbeat::HeartbeatSchedule;
 mod observed_playback;
@@ -113,8 +102,7 @@ pub(crate) use codec::{
 mod event_policy;
 pub(crate) use event_policy::{
     admin_event_requires_skip_cleanup, disconnect_signal_requires_skip_cleanup,
-    rebuild_leave_event_for_retry, should_broadcast_user_left, should_transition_webrtc_membership,
-    UserLeftDeliveryPlan,
+    should_broadcast_user_left, should_transition_webrtc_membership,
 };
 #[cfg(test)]
 pub(crate) use event_policy::{watch_admin_event_matches, watch_disconnect_signal_matches};
@@ -196,15 +184,15 @@ pub struct StreamMessageHandler {
     /// When set, the handler subscribes to notification events and pushes them
     /// without depending on the gRPC notification-to-realtime bridge.
     notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
-    connection_service: Arc<dyn RealtimeConnectionService>,
+    connection_service: Arc<dyn ConnectionRuntime>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
-    public_id_codec: Arc<crate::PublicIdCodec>,
+    public_id_codec: Arc<synctv_core::PublicIdCodec>,
     sender: Arc<dyn MessageSender>,
-    playback_service: Option<Arc<dyn PlaybackService>>,
-    playlist_items_snapshot_service: Option<Arc<dyn PlaylistItemsSnapshotService>>,
-    room_members_snapshot_service: Option<Arc<dyn RoomMembersSnapshotService>>,
+    playback_service: Arc<dyn PlaybackService>,
+    playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
+    room_members_snapshot_service: Arc<dyn RoomMembersSnapshotService>,
     room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
     resource_observer: Arc<ResourceObserver>,
     /// Global per-connection WebSocket message rate limit (messages per second)
@@ -250,38 +238,42 @@ pub struct StreamMessageHandlerConfig {
     pub room_service: Arc<RoomService>,
     pub chat_service: Arc<ChatService>,
     pub event_service: Arc<dyn RealtimeEventService>,
-    pub connection_service: Arc<dyn RealtimeConnectionService>,
+    pub connection_service: Arc<dyn ConnectionRuntime>,
     pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     pub rate_limit_config: Arc<RateLimitConfig>,
     pub content_filter: Arc<ContentFilter>,
-    pub public_id_codec: Arc<crate::PublicIdCodec>,
+    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
     pub sender: Arc<dyn MessageSender>,
     pub concurrency_config: Arc<MessageConcurrencyConfig>,
 }
 
 #[derive(Clone)]
 pub struct StreamMessageHandlerRuntime {
-    pub playback_service: Option<Arc<dyn PlaybackService>>,
-    pub playlist_items_snapshot_service: Option<Arc<dyn PlaylistItemsSnapshotService>>,
-    pub room_members_snapshot_service: Option<Arc<dyn RoomMembersSnapshotService>>,
-    pub room_settings_snapshot_service: Option<Arc<dyn RoomSettingsSnapshotService>>,
+    pub playback_service: Arc<dyn PlaybackService>,
+    pub playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
+    pub room_members_snapshot_service: Arc<dyn RoomMembersSnapshotService>,
+    pub room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
     pub playback_fanout: Arc<dyn PlaybackFanoutService>,
     pub chat_event_dispatcher: Arc<dyn ChatEventDispatcher>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
-    pub ws_message_rate_limit: Option<u32>,
-    pub heartbeat_schedule: Option<HeartbeatSchedule>,
+    pub ws_message_rate_limit: u32,
+    pub heartbeat_schedule: HeartbeatSchedule,
     pub filter_private_ice_candidates: bool,
 }
 
 impl StreamMessageHandlerRuntime {
     #[must_use]
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn local(event_service: Arc<dyn RealtimeEventService>) -> Self {
+    #[cfg(test)]
+    pub fn local(event_service: &Arc<dyn RealtimeEventService>) -> Self {
         Self {
-            playback_service: None,
-            playlist_items_snapshot_service: None,
-            room_members_snapshot_service: None,
-            room_settings_snapshot_service: None,
+            playback_service: Arc::new(tests::UnconfiguredPlaybackService),
+            playlist_items_snapshot_service: Arc::new(
+                tests::UnconfiguredPlaylistItemsSnapshotService,
+            ),
+            room_members_snapshot_service: Arc::new(tests::UnconfiguredRoomMembersSnapshotService),
+            room_settings_snapshot_service: Arc::new(
+                tests::UnconfiguredRoomSettingsSnapshotService,
+            ),
             playback_fanout: default_playback_fanout_service(
                 crate::realtime_fanout::local_realtime_fanout_service(event_service.clone()),
             ),
@@ -289,8 +281,8 @@ impl StreamMessageHandlerRuntime {
                 event_service.clone(),
             ),
             notification_service: None,
-            ws_message_rate_limit: None,
-            heartbeat_schedule: None,
+            ws_message_rate_limit: 50,
+            heartbeat_schedule: HeartbeatSchedule::production(),
             filter_private_ice_candidates: true,
         }
     }
@@ -350,8 +342,9 @@ impl StreamMessageHandler {
         }
     }
 
+    #[cfg(test)]
     pub fn new(config: StreamMessageHandlerConfig) -> Self {
-        let runtime = StreamMessageHandlerRuntime::local(config.event_service.clone());
+        let runtime = StreamMessageHandlerRuntime::local(&config.event_service);
         Self::new_with_runtime(config, runtime)
     }
 
@@ -378,17 +371,13 @@ impl StreamMessageHandler {
             connection_id.map_or_else(Self::generate_connection_id, ConnectionId::new);
         let user_id = principal.connection_user_id();
         let username = principal.username().to_string();
-        let heartbeat_schedule = runtime
-            .heartbeat_schedule
-            .unwrap_or_else(HeartbeatSchedule::production);
+        let heartbeat_schedule = runtime.heartbeat_schedule;
         let membership_cache = Arc::new(
             moka::sync::Cache::builder()
                 .time_to_live(heartbeat_schedule.membership_cache_ttl())
                 .build(),
         );
-        let room_settings_snapshot_service = runtime
-            .room_settings_snapshot_service
-            .unwrap_or_else(|| default_room_settings_snapshot_service(Arc::clone(&room_service)));
+        let room_settings_snapshot_service = Arc::clone(&runtime.room_settings_snapshot_service);
         let room_actor = principal.room_actor(room_id);
         let chat_event_dispatcher = runtime.chat_event_dispatcher;
         let playback_fanout = runtime.playback_fanout;
@@ -400,9 +389,9 @@ impl StreamMessageHandler {
             room_service: Arc::clone(&room_service),
             public_id_codec: Arc::clone(&public_id_codec),
             sender: Arc::clone(&sender),
-            playback_service: runtime.playback_service.clone(),
-            playlist_items_snapshot_service: runtime.playlist_items_snapshot_service.clone(),
-            room_members_snapshot_service: runtime.room_members_snapshot_service.clone(),
+            playback_service: Arc::clone(&runtime.playback_service),
+            playlist_items_snapshot_service: Arc::clone(&runtime.playlist_items_snapshot_service),
+            room_members_snapshot_service: Arc::clone(&runtime.room_members_snapshot_service),
             room_settings_snapshot_service: Arc::clone(&room_settings_snapshot_service),
         }));
 
@@ -429,7 +418,7 @@ impl StreamMessageHandler {
             room_members_snapshot_service: runtime.room_members_snapshot_service,
             room_settings_snapshot_service,
             resource_observer,
-            ws_message_rate_limit: runtime.ws_message_rate_limit.unwrap_or(50),
+            ws_message_rate_limit: runtime.ws_message_rate_limit,
             has_webrtc_session: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             skip_cleanup_user_left: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             membership_cache,
@@ -1807,7 +1796,7 @@ impl StreamMessageHandler {
                         .is_some_and(|rid| rid == &self.room_id)
             });
 
-        let user_left_delivery_plan = match self
+        let should_broadcast_left = match self
             .connection_service
             .has_other_connection_for_user_in_room_distributed(
                 &self.user_id,
@@ -1869,113 +1858,28 @@ impl StreamMessageHandler {
                 timestamp: chrono::Utc::now(),
             }
         };
-        let retry_event_template = event.clone();
-        let result = match user_left_delivery_plan {
-            UserLeftDeliveryPlan::Skip => {
-                tracing::debug!(
-                    user = %self.username,
-                    room = %room_id,
-                    connection = %self.connection_id,
-                    "Skipping UserLeft broadcast in cleanup because another connection for the same user remains in the room"
-                );
-                None
-            }
-            UserLeftDeliveryPlan::LocalAndRedis => {
-                Some(self.event_service.broadcast_outcome(event))
-            }
+        let result = if should_broadcast_left {
+            Some(self.event_service.broadcast_outcome(event))
+        } else {
+            tracing::debug!(
+                user = %self.username,
+                room = %room_id,
+                connection = %self.connection_id,
+                "Skipping UserLeft broadcast in cleanup because another connection for the same user remains in the room"
+            );
+            None
         };
 
         if let Some(outcome) = result {
-            if user_left_delivery_plan == UserLeftDeliveryPlan::LocalAndRedis
-                && outcome.distributed_delivery_missed()
-            {
-                // Retry only when distributed delivery was expected but did not happen.
-                // A room with zero remaining subscribers on a single node is not an error.
-                // Spawn a background task to retry the broadcast with exponential backoff.
-                // Use a global semaphore to limit concurrent retry tasks. During mass
-                // disconnects with Redis down, thousands of connections may all try to
-                // spawn retry tasks simultaneously. Without this bound, we'd exhaust
-                // memory and CPU on unbounded task spawning.
-                let event_service = self.event_service.clone();
-                let username = self.username.clone();
-                let connection_id = self.connection_id.clone();
-                let room_label = room_id.to_string();
-                let retry_event_template = retry_event_template.clone();
-
-                let semaphore = Arc::clone(&USER_LEFT_RETRY_SEMAPHORE);
-                let permit = semaphore.try_acquire_owned();
-
-                match permit {
-                    Ok(permit) => {
-                        tracing::warn!(
-                            user = %username,
-                            room = %room_label,
-                            connection = %connection_id,
-                            "UserLeft distributed publish missed; starting retry task"
-                        );
-
-                        spawn_monitored("userleft_retry", async move {
-                            let _permit = permit; // Hold permit for duration of retry task
-
-                            let mut delay_ms = USER_LEFT_RETRY_INITIAL_DELAY_MS;
-
-                            for attempt in 1..=USER_LEFT_RETRY_MAX_RETRIES {
-                                tokio::time::sleep(std::time::Duration::from_millis(delay_ms))
-                                    .await;
-
-                                let retry_event =
-                                    rebuild_leave_event_for_retry(&retry_event_template);
-
-                                let retry_outcome =
-                                    event_service.retry_broadcast_outcome(retry_event);
-
-                                if retry_outcome.satisfies(
-                                    RealtimeDeliveryRequirement::DistributedWhenAvailable,
-                                ) {
-                                    tracing::info!(
-                                        user = %username,
-                                        room = %room_label,
-                                        connection = %connection_id,
-                                        attempt = attempt,
-                                        local_delivered = retry_outcome.local_delivered(),
-                                        distributed_delivered = retry_outcome.distributed_delivered(),
-                                        "UserLeft retry succeeded"
-                                    );
-                                    return;
-                                }
-
-                                tracing::warn!(
-                                    user = %username,
-                                    room = %room_label,
-                                    connection = %connection_id,
-                                    attempt = attempt,
-                                    max_retries = USER_LEFT_RETRY_MAX_RETRIES,
-                                    "UserLeft retry attempt failed"
-                                );
-
-                                // Exponential backoff with cap
-                                delay_ms =
-                                    std::cmp::min(delay_ms * 2, USER_LEFT_RETRY_MAX_DELAY_MS);
-                            }
-
-                            tracing::error!(
-                                user = %username,
-                                room = %room_label,
-                                connection = %connection_id,
-                                "UserLeft event permanently lost after {} retry attempts; other replicas may have stale user state",
-                                USER_LEFT_RETRY_MAX_RETRIES
-                            );
-                        });
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            user = %username,
-                            room = %room_label,
-                            connection = %connection_id,
-                            "UserLeft retry task limit reached (max 100 concurrent); event may be lost"
-                        );
-                    }
-                }
+            if outcome.distributed_delivery_missed() {
+                tracing::warn!(
+                    user = %self.username,
+                    room = %room_id,
+                    connection = %self.connection_id,
+                    local_delivered = outcome.local_delivered(),
+                    distributed_available = outcome.distributed_available(),
+                    "UserLeft distributed publish missed during cleanup"
+                );
             }
         }
 

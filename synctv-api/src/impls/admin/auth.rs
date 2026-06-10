@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use futures::FutureExt;
 use synctv_core::models::{UserId, UserRole, UserStatus};
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{AuthorizedAdminActor, UserService};
@@ -81,10 +80,8 @@ pub async fn validate_admin_auth(
 }
 
 impl AdminApiImpl {
-    fn request_executor(&self) -> Result<&Arc<RequestExecutor>, ApiError> {
-        self.request_executor.as_ref().ok_or_else(|| {
-            ApiError::ServiceUnavailable("Request executor is not configured".to_string())
-        })
+    fn request_executor(&self) -> &Arc<RequestExecutor> {
+        &self.request_executor
     }
 
     pub fn execute_admin_endpoint<'a, T, F, Fut>(
@@ -111,26 +108,23 @@ impl AdminApiImpl {
         Fut: std::future::Future<Output = Result<T, ApiError>> + Send + 'a,
     {
         let user_service = Arc::clone(&self.user_service);
-        match self.request_executor() {
-            Ok(executor) => executor.execute_user_with_control(
-                metadata,
-                EndpointRateLimitCategory::Admin,
-                move |request_control, authenticated| async move {
-                    let validated = validate_admin_auth(
-                        user_service.as_ref(),
-                        authenticated.user_id,
-                        authenticated.claims.pv,
-                        authenticated.claims.iat,
-                    )
-                    .await?;
-                    if !validated.role.is_admin_or_above() {
-                        return Err(ApiError::Authorization("Admin role required".to_string()));
-                    }
-                    operation(request_control, validated).await
-                },
-            ),
-            Err(err) => async move { Err(err) }.boxed(),
-        }
+        self.request_executor().execute_user_with_control(
+            metadata,
+            EndpointRateLimitCategory::Admin,
+            move |request_control, authenticated| async move {
+                let validated = validate_admin_auth(
+                    user_service.as_ref(),
+                    authenticated.user_id,
+                    authenticated.claims.pv,
+                    authenticated.claims.iat,
+                )
+                .await?;
+                if !validated.role.is_admin_or_above() {
+                    return Err(ApiError::Authorization("Admin role required".to_string()));
+                }
+                operation(request_control, validated).await
+            },
+        )
     }
 
     pub fn execute_root_endpoint<'a, T, F, Fut>(

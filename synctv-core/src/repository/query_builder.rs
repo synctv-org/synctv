@@ -75,17 +75,6 @@ impl WhereClauseBuilder {
         self.conditions.push(Condition::Parameterized { template });
     }
 
-    /// The number of bound parameters this builder will consume.
-    pub fn param_count(&self) -> Result<u32> {
-        u32::try_from(
-            self.conditions
-                .iter()
-                .filter(|c| matches!(c, Condition::Parameterized { .. }))
-                .count(),
-        )
-        .map_err(|_| Error::Internal("WHERE clause parameter count exceeds u32::MAX".to_string()))
-    }
-
     /// Render the WHERE clause body (conditions joined with ` AND `).
     ///
     /// `start_idx` is the first `$N` index to use for parameterized conditions.
@@ -111,17 +100,6 @@ impl WhereClauseBuilder {
 
         Ok((parts.join(" AND "), idx))
     }
-
-    /// Convenience: build `WHERE <conditions>` string.  Returns empty string if
-    /// there are no conditions.
-    pub fn build_where(&self, start_idx: u32) -> Result<(String, u32)> {
-        let (body, next) = self.build(start_idx)?;
-        if body.is_empty() {
-            Ok((String::new(), next))
-        } else {
-            Ok((format!("WHERE {body}"), next))
-        }
-    }
 }
 
 /// Escape special characters in a search string for use with SQL ILIKE.
@@ -138,15 +116,22 @@ pub fn escape_ilike(search: &str) -> String {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn test_literal_only() {
         let mut wb = WhereClauseBuilder::new();
         wb.push_literal("deleted_at IS NULL");
         wb.push_literal("status = 1");
 
-        let (sql, next) = wb.build(1).expect("literal WHERE clause should build");
+        let (sql, next) = ok(wb.build(1), "literal WHERE clause should build");
         assert_eq!(sql, "deleted_at IS NULL AND status = 1");
-        assert_eq!(next, 1); // no params consumed
+        assert_eq!(next, 1);
     }
 
     #[test]
@@ -156,16 +141,14 @@ mod tests {
         wb.push_param("(name ILIKE ${idx} OR description ILIKE ${idx})");
         wb.push_param("status = ${idx}");
 
-        // Count query: start at $1
-        let (sql, next) = wb.build(1).expect("count WHERE clause should build");
+        let (sql, next) = ok(wb.build(1), "count WHERE clause should build");
         assert_eq!(
             sql,
             "deleted_at IS NULL AND (name ILIKE $1 OR description ILIKE $1) AND status = $2"
         );
         assert_eq!(next, 3);
 
-        // List query: start at $3
-        let (sql, next) = wb.build(3).expect("list WHERE clause should build");
+        let (sql, next) = ok(wb.build(3), "list WHERE clause should build");
         assert_eq!(
             sql,
             "deleted_at IS NULL AND (name ILIKE $3 OR description ILIKE $3) AND status = $4"
@@ -174,29 +157,21 @@ mod tests {
     }
 
     #[test]
-    fn test_param_count() {
+    fn test_build_tracks_consumed_parameters() {
         let mut wb = WhereClauseBuilder::new();
         wb.push_literal("deleted_at IS NULL");
         wb.push_param("name ILIKE ${idx}");
         wb.push_param("status = ${idx}");
         wb.push_literal("is_banned = FALSE");
 
-        assert_eq!(wb.param_count().expect("param count should fit u32"), 2);
-    }
-
-    #[test]
-    fn test_build_where() {
-        let mut wb = WhereClauseBuilder::new();
-        wb.push_literal("deleted_at IS NULL");
-
-        let (sql, _) = wb.build_where(1).expect("WHERE clause should build");
-        assert_eq!(sql, "WHERE deleted_at IS NULL");
+        let (_, next) = ok(wb.build(7), "WHERE clause should build");
+        assert_eq!(next, 9);
     }
 
     #[test]
     fn test_empty_builder() {
         let wb = WhereClauseBuilder::new();
-        let (sql, next) = wb.build_where(1).expect("empty WHERE clause should build");
+        let (sql, next) = ok(wb.build(1), "empty WHERE clause should build");
         assert_eq!(sql, "");
         assert_eq!(next, 1);
     }

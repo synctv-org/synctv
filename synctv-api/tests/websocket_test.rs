@@ -888,12 +888,16 @@ mod websocket_e2e {
         );
         let realtime_config = RealtimeConfig {
             distributed_transport_factory: Some(
-                synctv_realtime::build_realtime_message_transport_factory(
+                synctv_realtime::sync::build_realtime_message_transport_factory(
                     synctv_core::coordination_runtime_from_client(redis_client_for_cluster),
                 ),
             ),
-            message_runtime: synctv_realtime::build_room_message_runtime(
-                &SharedStateProfile::from_runtime(Some(shared_runtime), &redis_key_prefix, true),
+            message_runtime: synctv_realtime::sync::build_room_message_runtime(
+                &SharedStateProfile::for_cluster_runtime(
+                    Some(shared_runtime),
+                    &redis_key_prefix,
+                    true,
+                ),
             )
             .expect("shared message runtime should initialize"),
             distributed_enabled: true,
@@ -913,7 +917,7 @@ mod websocket_e2e {
         let connection_manager = Arc::new(
             build_connection_manager(
                 connection_limits,
-                &SharedStateProfile::from_runtime(
+                &SharedStateProfile::for_cluster_runtime(
                     Some(synctv_core::direct_runtime(redis_conn_for_connections)),
                     &redis_key_prefix,
                     true,
@@ -930,6 +934,10 @@ mod websocket_e2e {
 
         let provider_instance_manager =
             synctv_core_testing::create_empty_provider_instance_manager();
+        let providers_manager = Arc::new(
+            synctv_core::service::ProvidersManager::new(provider_instance_manager.clone())
+                .expect("providers manager should build"),
+        );
         let user_provider_credential_repo =
             Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
         let providers = synctv_core::provider::ProviderSet::new_with_ssrf_guard(
@@ -985,8 +993,15 @@ mod websocket_e2e {
             rate_limiter,
             ws_ticket_service: ws_ticket_service.clone(),
             redis_runtime: None,
-            shared_provider_stores: None,
-            shared_proxy_signing_key: None,
+            shared_provider_stores: Arc::new(
+                synctv_core::provider::store::ProviderStoreRegistry::local_only("test:provider:"),
+            ),
+            shared_proxy_signing_key: Arc::new(
+                synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+                    b"test-proxy-signing-key-minimum-32-bytes!!",
+                )
+                .expect("test proxy signing key should derive"),
+            ),
             builtin_stun_url: None,
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             credential_encryption: None,
@@ -1006,7 +1021,7 @@ mod websocket_e2e {
                 std::time::Duration::from_millis(400),
                 std::time::Duration::from_millis(100),
             ),
-            providers_manager: None,
+            providers_manager,
         };
 
         let state = synctv_api::http::create_app_state_from_config(router_config)
@@ -1076,31 +1091,31 @@ mod websocket_e2e {
             .create_room(room_name.to_string(), String::new(), *user_id, None, None)
             .await
             .expect("create room");
-        synctv_api::PublicIdCodec::plain()
+        synctv_core::PublicIdCodec::plain()
             .encode_room_id(room.id)
             .expect("room id should encode")
     }
 
     pub(super) fn decode_test_room_id(room_id: &str) -> synctv_core::models::RoomId {
-        synctv_api::PublicIdCodec::plain()
+        synctv_core::PublicIdCodec::plain()
             .decode_room_id(room_id)
             .expect("test room id should decode")
     }
 
     fn encode_test_user_id(user_id: &UserId) -> String {
-        synctv_api::PublicIdCodec::plain()
+        synctv_core::PublicIdCodec::plain()
             .encode_user_id(*user_id)
             .expect("test user id should encode")
     }
 
     fn encode_test_media_id(media_id: &synctv_core::models::MediaId) -> String {
-        synctv_api::PublicIdCodec::plain()
+        synctv_core::PublicIdCodec::plain()
             .encode_media_id(*media_id)
             .expect("test media id should encode")
     }
 
     fn encode_test_playlist_id(playlist_id: &synctv_core::models::PlaylistId) -> String {
-        synctv_api::PublicIdCodec::plain()
+        synctv_core::PublicIdCodec::plain()
             .encode_playlist_id(*playlist_id)
             .expect("test playlist id should encode")
     }

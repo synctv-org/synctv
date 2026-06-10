@@ -77,6 +77,23 @@ impl PendingRoomCreationRequestRow {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::settings_registry_unavailable_for_room_creation;
+    use crate::Error;
+
+    #[test]
+    fn room_creation_policy_unavailable_error_is_service_unavailable() {
+        let error = settings_registry_unavailable_for_room_creation();
+
+        assert!(matches!(
+            error,
+            Error::ServiceUnavailable(message)
+                if message.contains("Room creation policy")
+        ));
+    }
+}
+
 struct CreateRoomCommand {
     name: String,
     description: String,
@@ -92,6 +109,10 @@ pub(super) struct RoomCreationPolicy {
 
 fn initial_room_settings(settings: Option<RoomSettings>) -> RoomSettings {
     settings.unwrap_or_default()
+}
+
+fn settings_registry_unavailable_for_room_creation() -> Error {
+    Error::ServiceUnavailable("Room creation policy is temporarily unavailable".to_string())
 }
 
 const ROOM_NAME_POLICY_LOCK_NS: i32 = 20_260_420;
@@ -494,12 +515,15 @@ impl RoomService {
             ));
         }
 
-        let need_review = self
-            .settings_registry
-            .as_ref()
-            .map(|registry| registry.create_room_need_review.get())
-            .transpose()?
-            .unwrap_or(false);
+        let need_review = if enforce_creation_policy {
+            self.settings_registry
+                .as_ref()
+                .ok_or_else(settings_registry_unavailable_for_room_creation)?
+                .create_room_need_review
+                .get()?
+        } else {
+            false
+        };
 
         if need_review {
             tracing::info!(
@@ -540,8 +564,15 @@ impl RoomService {
                         sort_by: crate::models::UserListSortBy::CreatedAt,
                         sort_direction: crate::models::SortDirection::Desc,
                     };
-                    if let Ok((users, _)) = self.user_service.list_users(&query).await {
-                        all_admins.extend(users);
+                    match self.user_service.list_users(&query).await {
+                        Ok((users, _)) => all_admins.extend(users),
+                        Err(error) => {
+                            tracing::warn!(
+                                role = %role,
+                                error = %error,
+                                "Failed to load admins for pending room notification"
+                            );
+                        }
                     }
                 }
 
@@ -605,15 +636,12 @@ impl RoomService {
             .create_or_get_with_executor(&created_room.id, &mut tx)
             .await?;
 
-        if let Some(event) = outbox_event_factory
+        let outbox_event = outbox_event_factory
             .as_ref()
             .map(|factory| factory(&created_room))
-            .transpose()?
-        {
-            if let Some(outbox) = &self.realtime_outbox {
-                outbox.insert_with_executor(&event, &mut *tx).await?;
-            }
-        }
+            .transpose()?;
+        self.insert_realtime_outbox_tx(&mut tx, outbox_event.as_ref())
+            .await?;
 
         tx.commit().await?;
 

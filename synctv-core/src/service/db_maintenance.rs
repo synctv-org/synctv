@@ -648,6 +648,13 @@ fn record_file_cleanup_job_metric(action: &'static str, origin: &str, backend: &
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[tokio::test]
     async fn test_custom_cleanup_config_is_used_by_db_maintenance() {
         let config = CleanupConfig {
@@ -658,17 +665,24 @@ mod tests {
         };
 
         assert_eq!(
-            DatabaseMaintenanceService::notification_retention_days_from_config(&config).unwrap(),
+            ok(
+                DatabaseMaintenanceService::notification_retention_days_from_config(&config),
+                "notification retention days should fit i32",
+            ),
             14
         );
         assert_eq!(
-            DatabaseMaintenanceService::notification_max_retention_days_from_config(&config)
-                .unwrap(),
+            ok(
+                DatabaseMaintenanceService::notification_max_retention_days_from_config(&config),
+                "notification max retention days should fit i32",
+            ),
             45
         );
         assert_eq!(
-            DatabaseMaintenanceService::expired_credential_buffer_hours_from_config(&config)
-                .unwrap(),
+            ok(
+                DatabaseMaintenanceService::expired_credential_buffer_hours_from_config(&config),
+                "expired credential buffer hours should fit i32",
+            ),
             6
         );
     }

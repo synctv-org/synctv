@@ -322,6 +322,7 @@ impl std::fmt::Debug for RoomCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
 
     fn create_test_room_id(id: &str) -> RoomId {
         RoomId::expect_positive(match id {
@@ -362,16 +363,34 @@ mod tests {
         let room = create_test_room("room1", "Test Room", "user1");
 
         // Cache miss
-        assert!(cache.get(&room_id).await.unwrap().is_none());
+        assert!(cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
 
         // Set and get
-        cache.set(&room_id, room.clone()).await.unwrap();
-        let retrieved = cache.get(&room_id).await.unwrap().unwrap();
+        cache
+            .set(&room_id, room.clone())
+            .await
+            .checked("operation should succeed");
+        let retrieved = cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(retrieved.name(), "Test Room");
 
         // Invalidate
-        cache.invalidate(&room_id).await.unwrap();
-        assert!(cache.get(&room_id).await.unwrap().is_none());
+        cache
+            .invalidate(&room_id)
+            .await
+            .checked("operation should succeed");
+        assert!(cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[tokio::test]
@@ -407,14 +426,17 @@ mod tests {
         cache
             .set(&room1, create_test_room("room1", "Room 1", "user1"))
             .await
-            .unwrap();
+            .checked("operation should succeed");
         cache
             .set(&room3, create_test_room("room3", "Room 3", "user1"))
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         // Batch lookup
-        let result = cache.get_batch(&[room1, room2, room3]).await.unwrap();
+        let result = cache
+            .get_batch(&[room1, room2, room3])
+            .await
+            .checked("operation should succeed");
 
         assert_eq!(result.len(), 2);
         assert_eq!(
@@ -455,8 +477,15 @@ mod tests {
             updated_at: now,
         });
 
-        cache.set(&room_id, room).await.unwrap();
-        let retrieved = cache.get(&room_id).await.unwrap().unwrap();
+        cache
+            .set(&room_id, room)
+            .await
+            .checked("operation should succeed");
+        let retrieved = cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(retrieved.status(), RoomStatus::Closed);
         assert_eq!(retrieved.name(), "Closed Room");
     }
@@ -489,8 +518,15 @@ mod tests {
             updated_at: now,
         });
 
-        cache.set(&room_id, room).await.unwrap();
-        let retrieved = cache.get(&room_id).await.unwrap().unwrap();
+        cache
+            .set(&room_id, room)
+            .await
+            .checked("operation should succeed");
+        let retrieved = cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert!(
             retrieved.is_banned(),
             "CachedRoom must preserve is_banned=true"
@@ -525,14 +561,21 @@ mod tests {
             updated_at: now,
         });
 
-        cache.set(&room_id, room).await.unwrap();
-        let retrieved = cache.get(&room_id).await.unwrap().unwrap();
+        cache
+            .set(&room_id, room)
+            .await
+            .checked("operation should succeed");
+        let retrieved = cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert!(
             retrieved.deleted_at().is_some(),
             "CachedRoom must preserve deleted_at"
         );
         assert_eq!(
-            retrieved.deleted_at().unwrap(),
+            retrieved.deleted_at().checked("operation should succeed"),
             deleted_time,
             "CachedRoom must preserve exact deleted_at timestamp"
         );

@@ -2,7 +2,6 @@
 //!
 //! Tests the complete room lifecycle: create, read, update, soft delete, CASCADE behavior.
 //!
-#![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
 use synctv_core::{
@@ -13,6 +12,7 @@ use synctv_core::{
     repository::{PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository},
 };
 use synctv_core_testing::create_test_pool;
+use synctv_core_testing::TestResultExt;
 /// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -60,9 +60,15 @@ async fn test_create_room_basic() {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("room_owner_1")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("room_owner_1"))
+        .await
+        .checked("test operation should succeed");
     let room = make_room("Test Room", "A test room", &owner.id);
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("test operation should succeed");
 
     assert_eq!(created.name, "Test Room");
     assert_eq!(created.description, "A test room");
@@ -79,13 +85,19 @@ async fn test_create_room_description_length() {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("room_owner_2")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("room_owner_2"))
+        .await
+        .checked("test operation should succeed");
 
     // 500 characters should be fine (description is TEXT, no DB-level length constraint,
     // but application layer should enforce <= 500)
     let long_desc = "a".repeat(500);
     let room = make_room("Long Desc Room", &long_desc, &owner.id);
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(created.description.len(), 500);
 }
 
@@ -96,9 +108,15 @@ async fn test_update_room_settings() {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("room_owner_3")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("room_owner_3"))
+        .await
+        .checked("test operation should succeed");
     let room = make_room("Original Name", "original desc", &owner.id);
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("test operation should succeed");
 
     // Update name and description
     let mut updated_room = created.clone();
@@ -107,7 +125,7 @@ async fn test_update_room_settings() {
     let updated = room_repo
         .update(&updated_room, created.version)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(updated.name, "Updated Name");
     assert_eq!(updated.description, "updated desc");
@@ -122,15 +140,21 @@ async fn test_update_room_status() {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("room_owner_4")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("room_owner_4"))
+        .await
+        .checked("test operation should succeed");
     let room = make_room("Status Room", "", &owner.id);
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(created.status, RoomStatus::Active);
 
     let updated = room_repo
         .update_status(&created.id, RoomStatus::Closed)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(updated.status, RoomStatus::Closed);
 }
 
@@ -141,26 +165,47 @@ async fn test_soft_delete_room() {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("room_owner_5")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("room_owner_5"))
+        .await
+        .checked("test operation should succeed");
     let room = make_room("Delete Me", "", &owner.id);
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("test operation should succeed");
 
     // Room should exist before delete
-    assert!(room_repo.exists(&created.id).await.unwrap());
+    assert!(room_repo
+        .exists(&created.id)
+        .await
+        .checked("test operation should succeed"));
 
     // Soft delete
-    let deleted = room_repo.delete(&created.id).await.unwrap();
+    let deleted = room_repo
+        .delete(&created.id)
+        .await
+        .checked("test operation should succeed");
     assert!(deleted);
 
     // Room should not be found by get_by_id (which filters deleted_at IS NULL)
-    let fetched = room_repo.get_by_id(&created.id).await.unwrap();
+    let fetched = room_repo
+        .get_by_id(&created.id)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched.is_none());
 
     // exists should return false
-    assert!(!room_repo.exists(&created.id).await.unwrap());
+    assert!(!room_repo
+        .exists(&created.id)
+        .await
+        .checked("test operation should succeed"));
 
     // Double delete should return false (already deleted)
-    let deleted_again = room_repo.delete(&created.id).await.unwrap();
+    let deleted_again = room_repo
+        .delete(&created.id)
+        .await
+        .checked("test operation should succeed");
     assert!(!deleted_again);
 }
 
@@ -174,19 +219,28 @@ async fn test_cascade_delete_user_deletes_rooms() {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("cascade_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("cascade_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let room1 = room_repo
         .create(&make_room("Room 1", "", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room2 = room_repo
         .create(&make_room("Room 2", "", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    assert!(room_repo.exists(&room1.id).await.unwrap());
-    assert!(room_repo.exists(&room2.id).await.unwrap());
+    assert!(room_repo
+        .exists(&room1.id)
+        .await
+        .checked("test operation should succeed"));
+    assert!(room_repo
+        .exists(&room2.id)
+        .await
+        .checked("test operation should succeed"));
 
     // Attempting to delete the user while rooms still exist should fail
     // because of ON DELETE RESTRICT on rooms.created_by.
@@ -200,8 +254,14 @@ async fn test_cascade_delete_user_deletes_rooms() {
     );
 
     // Delete rooms first, then the user should succeed.
-    room_repo.delete(&room1.id).await.unwrap();
-    room_repo.delete(&room2.id).await.unwrap();
+    room_repo
+        .delete(&room1.id)
+        .await
+        .checked("test operation should succeed");
+    room_repo
+        .delete(&room2.id)
+        .await
+        .checked("test operation should succeed");
 
     // Now that rooms are soft-deleted, hard-delete the rows so the FK is clear.
     sqlx::query("DELETE FROM rooms WHERE id = $1 OR id = $2")
@@ -209,20 +269,20 @@ async fn test_cascade_delete_user_deletes_rooms() {
         .bind(room2.id)
         .execute(&pool)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(owner.id)
         .execute(&pool)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // User should be gone
     let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = $1")
         .bind(owner.id)
         .fetch_one(&pool)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(
         user_count, 0,
         "User should be deleted after rooms are removed"
@@ -241,15 +301,15 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
     let owner = user_repo
         .create(&make_user("cascade_room_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member_user = user_repo
         .create(&make_user("cascade_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Cascade Room", "", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add a member
     let rm = RoomMember {
@@ -264,7 +324,10 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
         joined_at: Utc::now(),
         version: 0,
     };
-    member_repo.add(&rm).await.unwrap();
+    member_repo
+        .add(&rm)
+        .await
+        .checked("test operation should succeed");
 
     let root_playlist = Playlist {
         id: PlaylistId::new(),
@@ -282,10 +345,16 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
         updated_at: Utc::now(),
         version: 0,
     };
-    playlist_repo.create(&root_playlist).await.unwrap();
+    playlist_repo
+        .create(&root_playlist)
+        .await
+        .checked("test operation should succeed");
 
     // Hard delete the room through the explicit cleanup path.
-    let deleted = room_repo.hard_delete(&room.id).await.unwrap();
+    let deleted = room_repo
+        .hard_delete(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(deleted);
 
     // Check members are gone
@@ -294,7 +363,7 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(member_count, 0, "Room members should be explicitly deleted");
 
     // Check playlists are gone
@@ -303,7 +372,7 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
             .bind(room.id)
             .fetch_one(&pool)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     assert_eq!(playlist_count, 0, "Playlists should be explicitly deleted");
 }
 
@@ -319,7 +388,7 @@ async fn test_concurrent_room_creation_unique_ids() {
     let owner = user_repo
         .create(&make_user("concurrent_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let owner_id = owner.id;
 
     // Spawn 10 concurrent room creations
@@ -339,7 +408,9 @@ async fn test_concurrent_room_creation_unique_ids() {
     // All should succeed since each room gets a unique base62 ID
     let mut created_ids = std::collections::HashSet::new();
     for result in results {
-        let room = result.unwrap().unwrap();
+        let room = result
+            .checked("test operation should succeed")
+            .checked("test operation should succeed");
         assert!(
             created_ids.insert(room.id.to_string()),
             "Room IDs should be unique"
@@ -355,26 +426,44 @@ async fn test_room_ban_status() {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("ban_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("ban_owner"))
+        .await
+        .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("Ban Room", "", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(!room.is_banned);
-    assert!(room_repo.is_accessible(&room.id).await.unwrap());
+    assert!(room_repo
+        .is_accessible(&room.id)
+        .await
+        .checked("test operation should succeed"));
 
     // Ban the room
-    let banned = room_repo.update_ban_status(&room.id, true).await.unwrap();
+    let banned = room_repo
+        .update_ban_status(&room.id, true)
+        .await
+        .checked("test operation should succeed");
     assert!(banned.is_banned);
 
     // Banned room should not be accessible
-    assert!(!room_repo.is_accessible(&room.id).await.unwrap());
+    assert!(!room_repo
+        .is_accessible(&room.id)
+        .await
+        .checked("test operation should succeed"));
 
     // Unban the room
-    let unbanned = room_repo.update_ban_status(&room.id, false).await.unwrap();
+    let unbanned = room_repo
+        .update_ban_status(&room.id, false)
+        .await
+        .checked("test operation should succeed");
     assert!(!unbanned.is_banned);
-    assert!(room_repo.is_accessible(&room.id).await.unwrap());
+    assert!(room_repo
+        .is_accessible(&room.id)
+        .await
+        .checked("test operation should succeed"));
 }
 
 #[tokio::test]
@@ -387,9 +476,12 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     let owner = user_repo
         .create(&make_user("optimistic_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let room = make_room("Optimistic Room", "original", &owner.id);
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("test operation should succeed");
     let original_version = created.version;
 
     // First update succeeds
@@ -399,7 +491,7 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     let v1 = room_repo
         .update(&updated_room, original_version)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(v1.version, original_version + 1);
     assert_eq!(v1.name, "Updated Name V1");
 
@@ -410,7 +502,7 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     let err = room_repo
         .update(&stale_room, original_version)
         .await
-        .unwrap_err();
+        .failed("operation should fail");
     assert!(
         matches!(err, synctv_core::Error::OptimisticLockConflict),
         "Expected OptimisticLockConflict, got: {err:?}"
@@ -424,19 +516,31 @@ async fn test_update_soft_deleted_room_returns_not_found() {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("softdel_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("softdel_owner"))
+        .await
+        .checked("test operation should succeed");
     let room = make_room("Soft Delete Room", "", &owner.id);
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("test operation should succeed");
     let version = created.version;
 
     // Soft delete the room
-    let deleted = room_repo.delete(&created.id).await.unwrap();
+    let deleted = room_repo
+        .delete(&created.id)
+        .await
+        .checked("test operation should succeed");
     assert!(deleted);
 
     // Trying to update the deleted room should return NotFound (not OptimisticLockConflict)
     let mut updated = created.clone();
     updated.name = "Updated Soft Deleted".to_string();
-    let err = room_repo.update(&updated, version).await.unwrap_err();
+    let err = room_repo
+        .update(&updated, version)
+        .await
+        .failed("operation should fail");
     assert!(
         matches!(err, synctv_core::Error::NotFound(_)),
         "Expected NotFound for soft-deleted room, got: {err:?}"
@@ -453,12 +557,15 @@ async fn test_update_nonexistent_room_returns_not_found() {
     let owner = user_repo
         .create(&make_user("nonexistent_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let room = make_room("Nonexistent Room", "", &owner.id);
 
     // Trying to update should return NotFound
-    let err = room_repo.update(&room, 0).await.unwrap_err();
+    let err = room_repo
+        .update(&room, 0)
+        .await
+        .failed("operation should fail");
     assert!(
         matches!(err, synctv_core::Error::NotFound(_)),
         "Expected NotFound for nonexistent room, got: {err:?}"

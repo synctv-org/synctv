@@ -1,6 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
+use synctv_xiu::hls::StreamRegistry as HlsStreamRegistry;
 use synctv_xiu::streamhub::{
     define::{NotifyInfo, StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo},
     errors::StreamHubErrorValue,
@@ -19,7 +20,6 @@ use super::proto::{
     GetHlsSegmentRequest, GetHlsSegmentResponse, PullRtmpStreamRequest, RtmpPacket,
 };
 use crate::livestream::SegmentManager;
-use crate::protocols::hls::{PublisherActivityCallback, StreamRegistry as HlsStreamRegistry};
 use crate::relay::StreamRegistryTrait;
 use crate::util::{
     validate_hls_segment_name, validate_hls_segment_url_base, validate_hls_segment_url_suffix,
@@ -34,8 +34,11 @@ const STREAM_HUB_SUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::f
 
 fn map_streamhub_enqueue_error(error: synctv_xiu::streamhub::errors::StreamHubError) -> Status {
     match error.value {
-        StreamHubErrorValue::SendError => {
-            Status::internal("StreamHub subscribe queue is unavailable")
+        StreamHubErrorValue::EventSendTimeout => {
+            Status::resource_exhausted("StreamHub subscribe queue is saturated")
+        }
+        StreamHubErrorValue::EventChannelClosed | StreamHubErrorValue::SendError => {
+            Status::unavailable("StreamHub subscribe queue is unavailable")
         }
         other => {
             tracing::error!("failed to enqueue StreamHub subscribe event: {other:?}");
@@ -78,12 +81,8 @@ async fn forward_rtmp_packets(
     mut frame_receiver: synctv_xiu::streamhub::define::FrameDataReceiver,
     tx: mpsc::Sender<Result<RtmpPacket, Status>>,
     cancel_token: CancellationToken,
-    room_id: &str,
-    media_id: &str,
-    activity_callback: Option<PublisherActivityCallback>,
 ) {
     info!("Streaming live data to puller");
-    let mut frame_count: u64 = 0;
 
     loop {
         let frame_data = tokio::select! {
@@ -130,13 +129,6 @@ async fn forward_rtmp_packets(
             warn!("Client disconnected during live streaming");
             break;
         }
-
-        frame_count += 1;
-        if frame_count % 100 == 1 {
-            if let Some(ref callback) = activity_callback {
-                callback(room_id, media_id);
-            }
-        }
     }
 }
 
@@ -158,16 +150,11 @@ pub struct StreamRelayServiceImpl {
     segment_manager: Option<Arc<SegmentManager>>,
     /// HLS stream registry for M3U8 generation (optional, only on HLS-enabled nodes)
     hls_stream_registry: Option<HlsStreamRegistry>,
-    /// Optional callback to record publisher activity when forwarding frames.
-    /// This extends silent publisher detection (LS-5) to the gRPC relay path,
-    /// preventing false timeouts when a publisher has remote viewers via gRPC
-    /// but no local HLS consumers.
-    activity_callback: Option<PublisherActivityCallback>,
 }
 
 impl StreamRelayServiceImpl {
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         registry: Arc<dyn StreamRegistryTrait>,
         node_id: String,
         stream_hub_event_sender: StreamHubEventSender,
@@ -181,36 +168,30 @@ impl StreamRelayServiceImpl {
             cancel_token,
             segment_manager: None,
             hls_stream_registry: None,
-            activity_callback: None,
         }
-    }
-
-    /// Set a callback to record publisher activity when forwarding frames.
-    /// This extends LS-5 silent publisher detection to the FLV/gRPC relay path.
-    #[must_use]
-    pub fn with_activity_callback(mut self, callback: PublisherActivityCallback) -> Self {
-        self.activity_callback = Some(callback);
-        self
     }
 
     /// Set the cluster authentication secret.
     /// When set, all incoming requests must include this secret in metadata.
     #[must_use]
-    pub fn with_cluster_secret(mut self, secret: impl Into<Vec<u8>>) -> Self {
+    pub(crate) fn with_cluster_secret(mut self, secret: impl Into<Vec<u8>>) -> Self {
         self.cluster_secret = Some(secret.into());
         self
     }
 
     /// Set the HLS segment manager for serving TS segments via gRPC proxy.
     #[must_use]
-    pub fn with_segment_manager(mut self, segment_manager: Arc<SegmentManager>) -> Self {
+    pub(crate) fn with_segment_manager(mut self, segment_manager: Arc<SegmentManager>) -> Self {
         self.segment_manager = Some(segment_manager);
         self
     }
 
     /// Set the HLS stream registry for generating M3U8 playlists via gRPC proxy.
     #[must_use]
-    pub fn with_hls_stream_registry(mut self, hls_stream_registry: HlsStreamRegistry) -> Self {
+    pub(crate) fn with_hls_stream_registry(
+        mut self,
+        hls_stream_registry: HlsStreamRegistry,
+    ) -> Self {
         self.hls_stream_registry = Some(hls_stream_registry);
         self
     }
@@ -218,7 +199,7 @@ impl StreamRelayServiceImpl {
     /// Authenticate a gRPC request using the cluster shared secret.
     /// Uses constant-time comparison to prevent timing attacks.
     #[allow(clippy::result_large_err)]
-    pub fn authenticate<T>(&self, request: &Request<T>) -> Result<(), Status> {
+    fn authenticate<T>(&self, request: &Request<T>) -> Result<(), Status> {
         let Some(expected) = &self.cluster_secret else {
             return Err(Status::unauthenticated(
                 "cluster authentication secret is not configured",
@@ -330,15 +311,7 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         // Send subscribe event (mpsc::Sender is Clone + Send + Sync, no Mutex needed)
         send_event_with_backpressure_timeout(&self.stream_hub_event_sender, subscribe_event)
             .await
-            .map_err(|error| {
-                if matches!(error.value, StreamHubErrorValue::SendError)
-                    && !self.stream_hub_event_sender.is_closed()
-                {
-                    Status::resource_exhausted("StreamHub subscribe queue is saturated")
-                } else {
-                    map_streamhub_enqueue_error(error)
-                }
-            })?;
+            .map_err(map_streamhub_enqueue_error)?;
 
         // Wait for subscription result
         let subscribe_result =
@@ -369,17 +342,8 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         let media_id_clone = req.media_id.clone();
         let event_sender_clone = self.stream_hub_event_sender.clone();
         let child_token = self.cancel_token.child_token();
-        let activity_cb = self.activity_callback.clone();
         tokio::spawn(async move {
-            forward_rtmp_packets(
-                frame_receiver,
-                tx,
-                child_token,
-                &room_id_clone,
-                &media_id_clone,
-                activity_cb,
-            )
-            .await;
+            forward_rtmp_packets(frame_receiver, tx, child_token).await;
 
             info!("Stream ended, unsubscribing");
             Self::unsubscribe_from_hub(
@@ -483,10 +447,22 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
                 data, // Zero-copy: storage returns Bytes, proto field is now Bytes
                 found: true,
             })),
-            Err(_) => Ok(Response::new(GetHlsSegmentResponse {
-                data: bytes::Bytes::new(),
-                found: false,
-            })),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Response::new(GetHlsSegmentResponse {
+                    data: bytes::Bytes::new(),
+                    found: false,
+                }))
+            }
+            Err(err) => {
+                tracing::error!(
+                    room_id = req.room_id,
+                    media_id = req.media_id,
+                    segment_name = req.segment_name,
+                    error = %err,
+                    "failed to read HLS segment for relay"
+                );
+                Err(Status::internal("Failed to read HLS segment"))
+            }
         }
     }
 }
@@ -539,6 +515,47 @@ mod tests {
     use synctv_xiu::streamhub::stream::StreamIdentifier;
     use tokio::time::{timeout, Duration};
 
+    type TestResult = anyhow::Result<()>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn attach_test_auth<T>(request: &mut Request<T>) -> anyhow::Result<()> {
+        request
+            .metadata_mut()
+            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse()?);
+        Ok(())
+    }
+
+    async fn register_test_publisher(
+        registry: &Arc<dyn crate::relay::StreamRegistryTrait>,
+    ) -> anyhow::Result<()> {
+        registry
+            .try_register_publisher("room1", "media1", "test-node", "", "127.0.0.1:50051")
+            .await?;
+        Ok(())
+    }
+
+    async fn recv_event(
+        event_rx: &mut tokio::sync::mpsc::Receiver<StreamHubEvent>,
+        message: &'static str,
+    ) -> anyhow::Result<StreamHubEvent> {
+        timeout(Duration::from_secs(1), event_rx.recv())
+            .await?
+            .ok_or_else(|| test_error(message))
+    }
+
+    fn expect_status<T>(
+        result: Result<T, tonic::Status>,
+        message: &'static str,
+    ) -> anyhow::Result<tonic::Status> {
+        match result {
+            Ok(_) => Err(test_error(message)),
+            Err(status) => Ok(status),
+        }
+    }
+
     #[tokio::test]
     async fn test_service_creation() {
         let (_event_sender, _) =
@@ -559,7 +576,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_forward_rtmp_packets_cancels_while_backpressured() {
+    async fn test_forward_rtmp_packets_cancels_while_backpressured() -> TestResult {
         let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(1);
         let (packet_tx, mut packet_rx) = mpsc::channel(1);
         let cancel = CancellationToken::new();
@@ -570,47 +587,40 @@ mod tests {
                 timestamp: 0,
                 frame_type: FrameType::Video as i32,
             }))
-            .await
-            .expect("prefill output channel");
+            .await?;
         frame_tx
             .send(synctv_xiu::streamhub::define::FrameData::Video {
                 timestamp: 1,
                 data: Bytes::from_static(b"video"),
             })
-            .await
-            .expect("send frame");
+            .await?;
         drop(frame_tx);
 
         let handle = tokio::spawn(forward_rtmp_packets(
             synctv_xiu::streamhub::define::FrameDataReceiver::bounded(frame_rx),
             packet_tx,
             cancel.clone(),
-            "room1",
-            "media1",
-            None,
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         cancel.cancel();
 
-        timeout(Duration::from_secs(1), handle)
-            .await
-            .expect("forwarder should exit after cancellation")
-            .expect("forwarder task should not panic");
+        timeout(Duration::from_secs(1), handle).await??;
 
         let retained = packet_rx
             .recv()
             .await
-            .expect("prefilled packet still present");
-        assert_eq!(retained.unwrap().data, Bytes::from_static(b"prefill"));
+            .ok_or_else(|| test_error("prefilled packet still present"))??;
+        assert_eq!(retained.data, Bytes::from_static(b"prefill"));
         assert!(
             packet_rx.try_recv().is_err(),
             "cancelled forwarder must not enqueue extra packets after backpressure cancellation"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_unsubscribe_sent_after_backpressure_cancellation() {
+    async fn test_unsubscribe_sent_after_backpressure_cancellation() -> TestResult {
         let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(1);
         let (packet_tx, _packet_rx) = mpsc::channel(1);
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
@@ -623,15 +633,13 @@ mod tests {
                 timestamp: 0,
                 frame_type: FrameType::Video as i32,
             }))
-            .await
-            .expect("prefill output channel");
+            .await?;
         frame_tx
             .send(synctv_xiu::streamhub::define::FrameData::Video {
                 timestamp: 1,
                 data: Bytes::from_static(b"video"),
             })
-            .await
-            .expect("send frame");
+            .await?;
         drop(frame_tx);
 
         let cancel_for_task = cancel.clone();
@@ -640,9 +648,6 @@ mod tests {
                 synctv_xiu::streamhub::define::FrameDataReceiver::bounded(frame_rx),
                 packet_tx,
                 cancel_for_task,
-                "room1",
-                "media1",
-                None,
             )
             .await;
             StreamRelayServiceImpl::unsubscribe_from_hub(
@@ -657,15 +662,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         cancel.cancel();
 
-        timeout(Duration::from_secs(1), handle)
-            .await
-            .expect("wrapper should exit after cancellation")
-            .expect("wrapper task should not panic");
+        timeout(Duration::from_secs(1), handle).await??;
 
-        let event = timeout(Duration::from_secs(1), event_rx.recv())
-            .await
-            .expect("unsubscribe should be emitted")
-            .expect("event channel should receive unsubscribe");
+        let event = recv_event(&mut event_rx, "event channel should receive unsubscribe").await?;
 
         match event {
             StreamHubEvent::UnSubscribe { identifier, .. } => {
@@ -677,17 +676,20 @@ mod tests {
                     }
                 );
             }
-            other => panic!("expected unsubscribe event, got {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "expected unsubscribe event, got {other:?}"
+                )))
+            }
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_pull_rtmp_stream_times_out_when_streamhub_subscription_never_completes() {
+    async fn test_pull_rtmp_stream_times_out_when_streamhub_subscription_never_completes(
+    ) -> TestResult {
         let registry = crate::relay::local_stream_registry();
-        registry
-            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
-            .await
-            .expect("register publisher");
+        register_test_publisher(&registry).await?;
 
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
         let service = StreamRelayServiceImpl::new(
@@ -698,44 +700,38 @@ mod tests {
         )
         .with_cluster_secret("cluster-secret");
 
-        let service_task = tokio::spawn(async move {
-            let mut request = Request::new(PullRtmpStreamRequest {
-                room_id: "room1".to_string(),
-                media_id: "media1".to_string(),
-                is_reconnect: false,
-                expected_epoch: 1,
-            });
-            request
-                .metadata_mut()
-                .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
-            service.pull_rtmp_stream(request).await
+        let mut request = Request::new(PullRtmpStreamRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            is_reconnect: false,
+            expected_epoch: 1,
         });
+        attach_test_auth(&mut request)?;
+        let service_task = tokio::spawn(async move { service.pull_rtmp_stream(request).await });
 
-        let event = timeout(Duration::from_secs(1), event_rx.recv())
-            .await
-            .expect("subscribe event should be emitted")
-            .expect("event channel should receive subscribe request");
+        let event = recv_event(
+            &mut event_rx,
+            "event channel should receive subscribe request",
+        )
+        .await?;
         let StreamHubEvent::Subscribe { .. } = event else {
-            panic!("expected subscribe event");
+            return Err(test_error("expected subscribe event"));
         };
 
         let result = timeout(
             STREAM_HUB_SUBSCRIBE_TIMEOUT + Duration::from_secs(1),
             service_task,
         )
-        .await
-        .expect("service call should time out instead of hanging forever")
-        .expect("service task should complete");
-        let Err(status) = result else {
-            panic!("streamhub subscription stall must fail");
-        };
+        .await??;
+        let status = expect_status(result, "streamhub subscription stall must fail")?;
 
         assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
         assert!(status.message().contains("Timed out"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_relay_rejects_invalid_stream_ids_before_backend_work() {
+    async fn test_relay_rejects_invalid_stream_ids_before_backend_work() -> TestResult {
         let registry = crate::relay::local_stream_registry();
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let service = StreamRelayServiceImpl::new(
@@ -752,18 +748,18 @@ mod tests {
             is_reconnect: false,
             expected_epoch: 1,
         });
-        request
-            .metadata_mut()
-            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+        attach_test_auth(&mut request)?;
 
-        let Err(status) = service.pull_rtmp_stream(request).await else {
-            panic!("invalid stream identifiers must be rejected");
-        };
+        let status = expect_status(
+            service.pull_rtmp_stream(request).await,
+            "invalid stream identifiers must be rejected",
+        )?;
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_relay_rejects_invalid_hls_playlist_base() {
+    async fn test_relay_rejects_invalid_hls_playlist_base() -> TestResult {
         let registry = crate::relay::local_stream_registry();
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let service = StreamRelayServiceImpl::new(
@@ -782,18 +778,18 @@ mod tests {
             segment_url_suffix: ".ts".to_string(),
             expected_epoch: 1,
         });
-        request
-            .metadata_mut()
-            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+        attach_test_auth(&mut request)?;
 
-        let Err(status) = service.get_hls_playlist(request).await else {
-            panic!("invalid HLS segment URL base must be rejected");
-        };
+        let status = expect_status(
+            service.get_hls_playlist(request).await,
+            "invalid HLS segment URL base must be rejected",
+        )?;
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_relay_rejects_invalid_hls_playlist_suffix() {
+    async fn test_relay_rejects_invalid_hls_playlist_suffix() -> TestResult {
         let registry = crate::relay::local_stream_registry();
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let service = StreamRelayServiceImpl::new(
@@ -812,23 +808,20 @@ mod tests {
             segment_url_suffix: ".ts\n#EXT-X-ENDLIST".to_string(),
             expected_epoch: 1,
         });
-        request
-            .metadata_mut()
-            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+        attach_test_auth(&mut request)?;
 
-        let Err(status) = service.get_hls_playlist(request).await else {
-            panic!("invalid HLS segment URL suffix must be rejected");
-        };
+        let status = expect_status(
+            service.get_hls_playlist(request).await,
+            "invalid HLS segment URL suffix must be rejected",
+        )?;
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_relay_preserves_hls_playlist_segment_url_suffix() {
+    async fn test_relay_preserves_hls_playlist_segment_url_suffix() -> TestResult {
         let registry = crate::relay::local_stream_registry();
-        registry
-            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
-            .await
-            .expect("register publisher");
+        register_test_publisher(&registry).await?;
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let hls_registry = Arc::new(dashmap::DashMap::new());
         let mut segments = std::collections::VecDeque::new();
@@ -869,15 +862,9 @@ mod tests {
             segment_url_suffix: ".png?sig=abc&rid=room1".to_string(),
             expected_epoch: 1,
         });
-        request
-            .metadata_mut()
-            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+        attach_test_auth(&mut request)?;
 
-        let response = service
-            .get_hls_playlist(request)
-            .await
-            .expect("valid relay playlist request should succeed")
-            .into_inner();
+        let response = service.get_hls_playlist(request).await?.into_inner();
 
         assert!(response.found);
         assert!(
@@ -887,10 +874,11 @@ mod tests {
             "playlist must preserve signed query and disguised extension: {}",
             response.playlist
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_relay_rejects_invalid_hls_segment_name() {
+    async fn test_relay_rejects_invalid_hls_segment_name() -> TestResult {
         let registry = crate::relay::local_stream_registry();
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let segment_manager = Arc::new(SegmentManager::new(
@@ -912,23 +900,20 @@ mod tests {
             segment_name: "../secret".to_string(),
             expected_epoch: 1,
         });
-        request
-            .metadata_mut()
-            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+        attach_test_auth(&mut request)?;
 
-        let Err(status) = service.get_hls_segment(request).await else {
-            panic!("invalid HLS segment name must be rejected");
-        };
+        let status = expect_status(
+            service.get_hls_segment(request).await,
+            "invalid HLS segment name must be rejected",
+        )?;
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_relay_rejects_stale_expected_epoch_before_streamhub_work() {
+    async fn test_relay_rejects_stale_expected_epoch_before_streamhub_work() -> TestResult {
         let registry = crate::relay::local_stream_registry();
-        registry
-            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
-            .await
-            .expect("register publisher");
+        register_test_publisher(&registry).await?;
 
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
         let service = StreamRelayServiceImpl::new(
@@ -945,27 +930,24 @@ mod tests {
             is_reconnect: false,
             expected_epoch: 999,
         });
-        request
-            .metadata_mut()
-            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+        attach_test_auth(&mut request)?;
 
-        let Err(status) = service.pull_rtmp_stream(request).await else {
-            panic!("stale epoch must fail closed");
-        };
+        let status = expect_status(
+            service.pull_rtmp_stream(request).await,
+            "stale epoch must fail closed",
+        )?;
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
         assert!(
             event_rx.try_recv().is_err(),
             "stale epoch must be rejected before StreamHub subscription"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_hls_playlist_rejects_stale_expected_epoch_before_registry_read() {
+    async fn test_hls_playlist_rejects_stale_expected_epoch_before_registry_read() -> TestResult {
         let registry = crate::relay::local_stream_registry();
-        registry
-            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
-            .await
-            .expect("register publisher");
+        register_test_publisher(&registry).await?;
 
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let hls_registry = Arc::new(dashmap::DashMap::new());
@@ -999,23 +981,20 @@ mod tests {
             segment_url_suffix: ".ts".to_string(),
             expected_epoch: 999,
         });
-        request
-            .metadata_mut()
-            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+        attach_test_auth(&mut request)?;
 
-        let Err(status) = service.get_hls_playlist(request).await else {
-            panic!("stale epoch must fail closed");
-        };
+        let status = expect_status(
+            service.get_hls_playlist(request).await,
+            "stale epoch must fail closed",
+        )?;
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_pull_rtmp_stream_waits_for_temporarily_full_streamhub_queue() {
+    async fn test_pull_rtmp_stream_waits_for_temporarily_full_streamhub_queue() -> TestResult {
         let registry = crate::relay::local_stream_registry();
-        registry
-            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
-            .await
-            .expect("register publisher");
+        register_test_publisher(&registry).await?;
 
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
         event_tx
@@ -1025,82 +1004,7 @@ mod tests {
                     stream_name: "prefill".to_string(),
                 },
             })
-            .expect("prefill event channel");
-
-        let service = StreamRelayServiceImpl::new(
-            registry,
-            "test-node".to_string(),
-            event_tx,
-            CancellationToken::new(),
-        )
-        .with_cluster_secret("cluster-secret");
-
-        let service_task = tokio::spawn(async move {
-            let mut request = Request::new(PullRtmpStreamRequest {
-                room_id: "room1".to_string(),
-                media_id: "media1".to_string(),
-                is_reconnect: false,
-                expected_epoch: 1,
-            });
-            request
-                .metadata_mut()
-                .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
-            service.pull_rtmp_stream(request).await
-        });
-
-        let blocked = event_rx
-            .recv()
-            .await
-            .expect("prefill event should be present");
-        assert!(matches!(blocked, StreamHubEvent::UnPublish { .. }));
-
-        let event = timeout(Duration::from_secs(1), event_rx.recv())
-            .await
-            .expect("subscribe event should be emitted once queue capacity is freed")
-            .expect("event channel should receive subscribe request");
-        let StreamHubEvent::Subscribe { result_sender, .. } = event else {
-            panic!("expected subscribe event");
-        };
-
-        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(8);
-        drop(frame_tx);
-        result_sender
-            .send(Ok((
-                DataReceiver {
-                    frame_receiver: Some(
-                        synctv_xiu::streamhub::define::FrameDataReceiver::bounded(frame_rx),
-                    ),
-                    packet_receiver: None,
-                },
-                None,
-            )))
-            .expect("subscription response should be delivered");
-
-        let response = timeout(Duration::from_secs(1), service_task)
-            .await
-            .expect("service call should complete once StreamHub queue drains")
-            .expect("service task should complete")
-            .expect("pull_rtmp_stream should succeed");
-        drop(response);
-    }
-
-    #[tokio::test]
-    async fn test_pull_rtmp_stream_maps_full_streamhub_queue_to_resource_exhausted() {
-        let registry = crate::relay::local_stream_registry();
-        registry
-            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
-            .await
-            .expect("register publisher");
-
-        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
-        event_tx
-            .try_send(StreamHubEvent::UnPublish {
-                identifier: StreamIdentifier::Rtmp {
-                    app_name: "prefill".to_string(),
-                    stream_name: "prefill".to_string(),
-                },
-            })
-            .expect("prefill event channel");
+            .map_err(|_| test_error("prefill event channel"))?;
 
         let service = StreamRelayServiceImpl::new(
             registry,
@@ -1116,23 +1020,86 @@ mod tests {
             is_reconnect: false,
             expected_epoch: 1,
         });
-        request
-            .metadata_mut()
-            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+        attach_test_auth(&mut request)?;
+        let service_task = tokio::spawn(async move { service.pull_rtmp_stream(request).await });
 
-        let Err(status) = service.pull_rtmp_stream(request).await else {
-            panic!("persistently full queue must fail");
+        let blocked = event_rx
+            .recv()
+            .await
+            .ok_or_else(|| test_error("prefill event should be present"))?;
+        assert!(matches!(blocked, StreamHubEvent::UnPublish { .. }));
+
+        let event = recv_event(
+            &mut event_rx,
+            "event channel should receive subscribe request",
+        )
+        .await?;
+        let StreamHubEvent::Subscribe { result_sender, .. } = event else {
+            return Err(test_error("expected subscribe event"));
         };
-        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+
+        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(8);
+        drop(frame_tx);
+        result_sender
+            .send(Ok((
+                DataReceiver {
+                    frame_receiver: Some(
+                        synctv_xiu::streamhub::define::FrameDataReceiver::bounded(frame_rx),
+                    ),
+                    packet_receiver: None,
+                },
+                None,
+            )))
+            .map_err(|_| test_error("subscription response should be delivered"))?;
+
+        let response = timeout(Duration::from_secs(1), service_task).await???;
+        drop(response);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_pull_rtmp_stream_maps_closed_streamhub_queue_to_internal() {
+    async fn test_pull_rtmp_stream_maps_full_streamhub_queue_to_resource_exhausted() -> TestResult {
         let registry = crate::relay::local_stream_registry();
-        registry
-            .register_publisher("room1", "media1", "test-node", "room1", "127.0.0.1:50051")
-            .await
-            .expect("register publisher");
+        register_test_publisher(&registry).await?;
+
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        event_tx
+            .try_send(StreamHubEvent::UnPublish {
+                identifier: StreamIdentifier::Rtmp {
+                    app_name: "prefill".to_string(),
+                    stream_name: "prefill".to_string(),
+                },
+            })
+            .map_err(|_| test_error("prefill event channel"))?;
+
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret");
+
+        let mut request = Request::new(PullRtmpStreamRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            is_reconnect: false,
+            expected_epoch: 1,
+        });
+        attach_test_auth(&mut request)?;
+
+        let status = expect_status(
+            service.pull_rtmp_stream(request).await,
+            "persistently full queue must fail",
+        )?;
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_pull_rtmp_stream_maps_closed_streamhub_queue_to_unavailable() -> TestResult {
+        let registry = crate::relay::local_stream_registry();
+        register_test_publisher(&registry).await?;
 
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(1);
         drop(event_rx);
@@ -1151,18 +1118,18 @@ mod tests {
             is_reconnect: false,
             expected_epoch: 1,
         });
-        request
-            .metadata_mut()
-            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+        attach_test_auth(&mut request)?;
 
-        let Err(status) = service.pull_rtmp_stream(request).await else {
-            panic!("closed streamhub queue must fail");
-        };
-        assert_eq!(status.code(), tonic::Code::Internal);
+        let status = expect_status(
+            service.pull_rtmp_stream(request).await,
+            "closed streamhub queue must fail",
+        )?;
+        assert_eq!(status.code(), tonic::Code::Unavailable);
         assert!(
             status.message().contains("unavailable"),
             "closed streamhub queue should report backend unavailability, got: {}",
             status.message()
         );
+        Ok(())
     }
 }

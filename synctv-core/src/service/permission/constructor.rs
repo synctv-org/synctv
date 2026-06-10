@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::{
-    cache::{ConsistencyCoordinator, MemberPermissionCache, NoopCacheL2, RoomSettingsCache},
+    cache::{ConsistencyCoordinator, MemberPermissionCache, RoomSettingsCache},
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
     service::permission::{
         PermissionInvalidationRuntime, PermissionService, PermissionServiceRuntime,
@@ -14,10 +14,7 @@ use crate::{
 impl PermissionService {
     fn build_member_permission_cache(runtime: &PermissionServiceRuntime) -> MemberPermissionCache {
         MemberPermissionCache::new(
-            runtime
-                .member_permission_l2_cache
-                .clone()
-                .unwrap_or_else(|| Arc::new(NoopCacheL2)),
+            runtime.member_permission_l2_cache.clone(),
             runtime.cache_size,
             runtime.cache_ttl_secs,
             runtime.cache_ttl_secs,
@@ -27,10 +24,7 @@ impl PermissionService {
 
     fn build_room_settings_cache(runtime: &PermissionServiceRuntime) -> RoomSettingsCache {
         RoomSettingsCache::new(
-            runtime
-                .room_settings_l2_cache
-                .clone()
-                .unwrap_or_else(|| Arc::new(NoopCacheL2)),
+            runtime.room_settings_l2_cache.clone(),
             runtime.cache_size,
             runtime.cache_ttl_secs,
             runtime.cache_ttl_secs,
@@ -54,7 +48,7 @@ impl PermissionService {
                 cache_size,
                 cache_ttl_secs,
                 room_settings_repo: Some(room_settings_repo),
-                ..PermissionServiceRuntime::default()
+                ..PermissionServiceRuntime::local_only()
             },
         )
     }
@@ -64,10 +58,6 @@ impl PermissionService {
         room_repo: RoomRepository,
         runtime: PermissionServiceRuntime,
     ) -> Result<Self> {
-        let version_fence = runtime
-            .version_fence
-            .clone()
-            .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
         let member_permission_cache = Self::build_member_permission_cache(&runtime);
         let room_settings_cache = Self::build_room_settings_cache(&runtime);
 
@@ -89,7 +79,7 @@ impl PermissionService {
             )),
             degradation_started: Arc::new(parking_lot::Mutex::new(None)),
             invalidation_runtime: Arc::new(PermissionInvalidationRuntime::new()),
-            consistency: ConsistencyCoordinator::new(version_fence),
+            consistency: ConsistencyCoordinator::new(runtime.version_fence),
         })
     }
 
@@ -97,10 +87,6 @@ impl PermissionService {
     pub(crate) fn new_without_repositories_for_tests(
         runtime: PermissionServiceRuntime,
     ) -> Result<Self> {
-        let version_fence = runtime
-            .version_fence
-            .clone()
-            .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
         let member_permission_cache = Self::build_member_permission_cache(&runtime);
         let room_settings_cache = Self::build_room_settings_cache(&runtime);
 
@@ -122,7 +108,7 @@ impl PermissionService {
             )),
             degradation_started: Arc::new(parking_lot::Mutex::new(None)),
             invalidation_runtime: Arc::new(PermissionInvalidationRuntime::new()),
-            consistency: ConsistencyCoordinator::new(version_fence),
+            consistency: ConsistencyCoordinator::new(runtime.version_fence),
         })
     }
 
@@ -140,7 +126,7 @@ impl PermissionService {
                 cache_size: 1,
                 cache_ttl_secs: 1,
                 room_settings_repo: Some(room_settings_repo),
-                ..PermissionServiceRuntime::default()
+                ..PermissionServiceRuntime::local_only()
             },
         )
     }

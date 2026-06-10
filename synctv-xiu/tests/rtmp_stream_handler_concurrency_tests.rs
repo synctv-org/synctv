@@ -31,6 +31,24 @@ fn usize_to_u32(value: usize) -> u32 {
     u32::try_from(value).expect("test value should fit in u32")
 }
 
+fn expect_metadata_frame(frame: Option<FrameData>) -> (u32, bytes::Bytes) {
+    match frame {
+        Some(FrameData::MetaData { timestamp, data }) => (timestamp, data),
+        other => panic!("expected metadata frame, got {other:?}"),
+    }
+}
+
+fn touch_sim_cache_reads(cache: &SplitCacheSim) {
+    drop(cache.get_video());
+    drop(cache.get_audio());
+}
+
+fn touch_split_cache_reads(cache: &SplitCache) {
+    drop(cache.get_metadata());
+    drop(cache.get_video_seq());
+    drop(cache.get_audio_seq());
+}
+
 // Simulated Split Lock Architecture (for performance baseline)
 
 /// Simulated split cache structure for benchmarking
@@ -127,9 +145,7 @@ fn test_no_deadlock_under_contention() {
                     cache.save_video(&data, ts);
                     cache.save_audio(&data, ts);
                     cache.save_metadata(&data, ts);
-                    // Also do reads
-                    let _ = cache.get_video();
-                    let _ = cache.get_audio();
+                    touch_sim_cache_reads(&cache);
                 }
             })
         })
@@ -260,16 +276,8 @@ fn test_split_cache_metadata() {
     cache.save_metadata(&data, 1000);
 
     // Retrieve metadata
-    let meta = cache.get_metadata();
-    assert!(
-        meta.is_some(),
-        "Metadata should be saved for valid onMetaData"
-    );
-    if let Some(FrameData::MetaData { timestamp, .. }) = meta {
-        assert_eq!(timestamp, 1000);
-    } else {
-        panic!("Expected MetaData frame");
-    }
+    let (timestamp, _) = expect_metadata_frame(cache.get_metadata());
+    assert_eq!(timestamp, 1000);
 }
 
 /// Test SplitCache video sequence header operations
@@ -282,7 +290,10 @@ fn test_split_cache_video_seq() {
 
     // Note: This is a minimal test - real H264 sequence headers are more complex
     let data = BytesMut::new();
-    cache.save_video_data(&data, 0).ok(); // Empty data, should be ok
+    assert!(
+        cache.save_video_data(&data, 0).is_err(),
+        "empty video data should fail header parsing"
+    );
 
     // After saving video data, video_seq should still be None for non-sequence data
     assert!(cache.get_video_seq().is_none());
@@ -297,7 +308,10 @@ fn test_split_cache_audio_seq() {
     assert!(cache.get_audio_seq().is_none());
 
     let data = BytesMut::new();
-    cache.save_audio_data(&data, 0).ok(); // Empty data, should be ok
+    assert!(
+        cache.save_audio_data(&data, 0).is_err(),
+        "empty audio data should fail header parsing"
+    );
 
     // After saving audio data, audio_seq should still be None for non-sequence data
     assert!(cache.get_audio_seq().is_none());
@@ -328,7 +342,7 @@ fn test_split_cache_concurrent_saves() {
         for i in 0..SPLIT_CACHE_CONCURRENT_SAVES_ITERATIONS {
             let mut data = BytesMut::new();
             data.extend_from_slice(&[usize_to_u8(i); 64]);
-            cache_video.save_video_data(&data, usize_to_u32(i)).ok();
+            let _result = cache_video.save_video_data(&data, usize_to_u32(i));
         }
     });
 
@@ -337,7 +351,7 @@ fn test_split_cache_concurrent_saves() {
         for i in 0..SPLIT_CACHE_CONCURRENT_SAVES_ITERATIONS {
             let mut data = BytesMut::new();
             data.extend_from_slice(&[usize_to_u8(i); 64]);
-            cache_audio.save_audio_data(&data, usize_to_u32(i)).ok();
+            let _result = cache_audio.save_audio_data(&data, usize_to_u32(i));
         }
     });
 
@@ -345,10 +359,7 @@ fn test_split_cache_concurrent_saves() {
     let cache_reader = Arc::clone(&cache);
     let h3 = thread::spawn(move || {
         for _ in 0..SPLIT_CACHE_CONCURRENT_SAVES_ITERATIONS {
-            // These reads should not block the writers significantly
-            let _ = cache_reader.get_metadata();
-            let _ = cache_reader.get_video_seq();
-            let _ = cache_reader.get_audio_seq();
+            touch_split_cache_reads(&cache_reader);
         }
     });
 
@@ -382,12 +393,12 @@ fn test_split_cache_high_contention() {
                     data.extend_from_slice(&[usize_to_u8(tid), usize_to_u8(i)]);
                     let ts = usize_to_u32(i);
 
-                    match tid % 3 {
-                        0 => cache.save_video_data(&data, ts).ok(),
-                        1 => cache.save_audio_data(&data, ts).ok(),
+                    let _result = match tid % 3 {
+                        0 => cache.save_video_data(&data, ts),
+                        1 => cache.save_audio_data(&data, ts),
                         _ => {
                             cache.save_metadata(&data, ts);
-                            Some(())
+                            Ok(())
                         }
                     };
                 }
@@ -410,10 +421,7 @@ fn test_split_cache_high_contention() {
         h.join().unwrap();
     }
 
-    // Verify cache is in a consistent state
-    let _ = cache.get_metadata();
-    let _ = cache.get_video_seq();
-    let _ = cache.get_audio_seq();
+    touch_split_cache_reads(&cache);
     let gops = cache.get_gops_data();
     assert!(gops.is_some());
 }

@@ -14,7 +14,6 @@
 //! # Requirements
 //!
 //! - Docker for testcontainers (`PostgreSQL`)
-#![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
 use sqlx::PgPool;
@@ -28,7 +27,9 @@ use synctv_core::{
     service::{member::MemberService, permission::PermissionService, NotificationService},
     Error,
 };
-use synctv_core_testing::{create_test_database_with_options_and_label, TestDatabase};
+use synctv_core_testing::{
+    create_test_database_with_options_and_label, some, TestDatabase, TestResultExt,
+};
 use tokio::sync::Barrier;
 // Test Infrastructure
 
@@ -96,12 +97,12 @@ async fn setup_test_room(
     let owner = user_repo
         .create(&make_user("room_owner"))
         .await
-        .expect("Failed to create owner");
+        .checked("owner should be created");
 
     let room = room_repo
         .create(&make_room(room_name, "Test room", &owner.id))
         .await
-        .expect("Failed to create room");
+        .checked("room should be created");
 
     let settings = RoomSettings {
         max_members: MaxMembers(max_members),
@@ -110,7 +111,7 @@ async fn setup_test_room(
     room_settings_repo
         .set_settings(&room.id, &settings)
         .await
-        .expect("Failed to create room settings");
+        .checked("room settings should be created");
 
     // Add owner as member (Creator)
     let member_repo = RoomMemberRepository::new(pool.clone());
@@ -118,7 +119,7 @@ async fn setup_test_room(
     member_repo
         .add(&owner_member)
         .await
-        .expect("Failed to add owner as member");
+        .checked("owner member should be added");
 
     (owner, room, settings)
 }
@@ -129,12 +130,12 @@ async fn get_creator_user_id(pool: &PgPool, room_id: &RoomId) -> UserId {
     let members = member_repo
         .list_by_room_all(room_id)
         .await
-        .expect("Failed to list members");
-    members
-        .iter()
-        .find(|m| m.role == RoomRole::Creator)
-        .expect("Creator should exist")
-        .user_id
+        .checked("members should be listed");
+    some(
+        members.iter().find(|m| m.role == RoomRole::Creator),
+        "creator should exist",
+    )
+    .user_id
 }
 
 /// Test concurrent join operations respect `max_members` limit.
@@ -164,7 +165,7 @@ async fn test_concurrent_join_respects_max_members() {
         let user = user_repo
             .create(&make_user(&format!("joiner_{i}")))
             .await
-            .expect("Failed to create user");
+            .checked("user should be created");
         users.push(user);
     }
 
@@ -174,7 +175,7 @@ async fn test_concurrent_join_respects_max_members() {
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
     let permission_service =
         PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300)
-            .expect("permission service should build");
+            .checked("permission service should build");
     let member_service = MemberService::new_with_runtime(
         member_repo.clone(),
         room_repo.clone(),
@@ -212,13 +213,13 @@ async fn test_concurrent_join_respects_max_members() {
     let mut limit_reached_count = 0;
 
     for handle in handles {
-        match handle.await.expect("Task panicked") {
+        match handle.await.checked("task should complete") {
             Ok(_) => success_count += 1,
             Err(Error::InvalidInput(msg)) if msg.contains("Room is full") => {
                 limit_reached_count += 1;
             }
             Err(e) => {
-                panic!("Unexpected error: {e:?}");
+                std::panic::panic_any(format!("unexpected join error: {e:?}"));
             }
         }
     }
@@ -236,7 +237,7 @@ async fn test_concurrent_join_respects_max_members() {
             .bind(room.id)
             .fetch_one(pool)
             .await
-            .expect("Failed to count members");
+            .checked("members should be counted");
 
     assert_eq!(member_count, 10, "Final member count should be 10");
 }
@@ -264,12 +265,12 @@ async fn test_concurrent_role_update_member_to_admin() {
         let user = user_repo
             .create(&make_user(&format!("member_{i}")))
             .await
-            .expect("Failed to create user");
+            .checked("user should be created");
         let member = RoomMember::new(room.id, user.id, RoomRole::Member);
         member_repo
             .add(&member)
             .await
-            .expect("Failed to add member");
+            .checked("member should be added");
         member_users.push(user);
     }
 
@@ -278,7 +279,7 @@ async fn test_concurrent_role_update_member_to_admin() {
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
     let permission_service =
         PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300)
-            .expect("permission service should build");
+            .checked("permission service should build");
     let member_service = MemberService::new_with_runtime(
         member_repo.clone(),
         room_repo.clone(),
@@ -314,7 +315,7 @@ async fn test_concurrent_role_update_member_to_admin() {
     // Collect results
     let mut success_count = 0;
     for handle in handles {
-        match handle.await.expect("Task panicked") {
+        match handle.await.checked("task should complete") {
             Ok(_) => success_count += 1,
             Err(e) => tracing::warn!("Role update failed: {:?}", e),
         }
@@ -328,7 +329,7 @@ async fn test_concurrent_role_update_member_to_admin() {
     for member in member_repo
         .list_by_room_all(&room.id)
         .await
-        .expect("Failed to list members")
+        .checked("members should be listed")
     {
         if member.user_id != operator_id {
             assert_eq!(
@@ -361,29 +362,29 @@ async fn test_concurrent_role_update_equal_role_rejected() {
     let admin1 = user_repo
         .create(&make_user("admin1"))
         .await
-        .expect("Failed to create admin1");
+        .checked("admin1 should be created");
     let admin1_member = RoomMember::new(room.id, admin1.id, RoomRole::Admin);
     member_repo
         .add(&admin1_member)
         .await
-        .expect("Failed to add admin1");
+        .checked("admin1 member should be added");
 
     let admin2 = user_repo
         .create(&make_user("admin2"))
         .await
-        .expect("Failed to create admin2");
+        .checked("admin2 should be created");
     let admin2_member = RoomMember::new(room.id, admin2.id, RoomRole::Admin);
     member_repo
         .add(&admin2_member)
         .await
-        .expect("Failed to add admin2");
+        .checked("admin2 member should be added");
 
     // Setup services
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
     let permission_service =
         PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300)
-            .expect("permission service should build");
+            .checked("permission service should build");
     let member_service = MemberService::new_with_runtime(
         member_repo.clone(),
         room_repo.clone(),
@@ -431,12 +432,12 @@ async fn test_concurrent_permission_grant() {
         let user = user_repo
             .create(&make_user(&format!("perm_member_{i}")))
             .await
-            .expect("Failed to create user");
+            .checked("user should be created");
         let member = RoomMember::new(room.id, user.id, RoomRole::Member);
         member_repo
             .add(&member)
             .await
-            .expect("Failed to add member");
+            .checked("member should be added");
         member_users.push(user);
     }
 
@@ -445,7 +446,7 @@ async fn test_concurrent_permission_grant() {
     let _room_settings_repo = RoomSettingsRepository::new(pool.clone());
     let permission_service =
         PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300)
-            .expect("permission service should build");
+            .checked("permission service should build");
     let member_service = Arc::new(MemberService::new(
         member_repo.clone(),
         room_repo.clone(),
@@ -486,7 +487,7 @@ async fn test_concurrent_permission_grant() {
     // Collect results
     let mut success_count = 0;
     for handle in handles {
-        match handle.await.expect("Task panicked") {
+        match handle.await.checked("task should complete") {
             Ok(_) => success_count += 1,
             Err(e) => tracing::warn!("Permission grant failed: {:?}", e),
         }
@@ -520,18 +521,18 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
     let target_user = user_repo
         .create(&make_user("target_member"))
         .await
-        .expect("Failed to create target");
+        .checked("target user should be created");
     let target_member = RoomMember::new(room.id, target_user.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
-        .expect("Failed to add member");
+        .checked("member should be added");
 
     // Setup services
     let room_repo = RoomRepository::new(pool.clone());
     let permission_service =
         PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300)
-            .expect("permission service should build");
+            .checked("permission service should build");
     let member_service = Arc::new(MemberService::new(
         member_repo.clone(),
         room_repo.clone(),
@@ -584,7 +585,7 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
     let mut unexpected_errors = Vec::new();
 
     for handle in handles {
-        match handle.await.expect("Task panicked") {
+        match handle.await.checked("task should complete") {
             Ok(_) => success_count += 1,
             Err(Error::Internal(msg)) if msg.contains("retry") || msg.contains("maximum") => {
                 retry_exhausted += 1;
@@ -626,35 +627,36 @@ async fn test_optimistic_lock_conflict_on_role_update() {
     let target_user = user_repo
         .create(&make_user("role_target"))
         .await
-        .expect("Failed to create target");
+        .checked("target user should be created");
     let target_member = RoomMember::new(room.id, target_user.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
-        .expect("Failed to add member");
+        .checked("member should be added");
 
     // Get owner user ID
     let operator_id = get_creator_user_id(pool, &room.id).await;
 
     // Concurrently update the same member's role (Creator -> Admin, then Admin -> Member)
     // Use a version bumper to simulate conflicts
-    let room_id_str = room.id.to_string();
-    let target_id_str = target_user.id.to_string();
+    let room_id = room.id;
+    let target_id = target_user.id;
     let pool_clone = pool.clone();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
 
     let bumper = tokio::spawn(async move {
         while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-            let _ = sqlx::query(
+            sqlx::query(
                 "UPDATE room_members SET version = version + 1 WHERE room_id = $1 AND user_id = $2",
             )
-            .bind(&room_id_str)
-            .bind(&target_id_str)
+            .bind(room_id)
+            .bind(target_id)
             .execute(&pool_clone)
-            .await;
+            .await?;
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
+        Ok::<_, sqlx::Error>(())
     });
 
     // Setup services
@@ -662,7 +664,7 @@ async fn test_optimistic_lock_conflict_on_role_update() {
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
     let permission_service =
         PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300)
-            .expect("permission service should build");
+            .checked("permission service should build");
     let member_service = MemberService::new_with_runtime(
         member_repo.clone(),
         room_repo.clone(),
@@ -678,7 +680,10 @@ async fn test_optimistic_lock_conflict_on_role_update() {
         .await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let _ = bumper.await;
+    bumper
+        .await
+        .checked("bumper task should not panic")
+        .checked("bumper task should update member versions");
 
     // Either succeeds (retry worked) or returns Internal (retry exhaustion)
     match result {
@@ -690,7 +695,7 @@ async fn test_optimistic_lock_conflict_on_role_update() {
             );
         }
         Err(other) => {
-            panic!("Unexpected error: {other:?}");
+            std::panic::panic_any(format!("unexpected role update error: {other:?}"));
         }
     }
 }
@@ -718,12 +723,12 @@ async fn test_concurrent_leave_and_rejoin() {
         let user = user_repo
             .create(&make_user(&format!("initial_{i}")))
             .await
-            .expect("Failed to create user");
+            .checked("user should be created");
         let member = RoomMember::new(room.id, user.id, RoomRole::Member);
         member_repo
             .add(&member)
             .await
-            .expect("Failed to add member");
+            .checked("member should be added");
         initial_members.push(user);
     }
 
@@ -732,7 +737,7 @@ async fn test_concurrent_leave_and_rejoin() {
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
     let permission_service =
         PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300)
-            .expect("permission service should build");
+            .checked("permission service should build");
     let member_service = MemberService::new_with_runtime(
         member_repo.clone(),
         room_repo.clone(),
@@ -748,7 +753,7 @@ async fn test_concurrent_leave_and_rejoin() {
         let user = user_repo
             .create(&make_user(&format!("new_joiner_{i}")))
             .await
-            .expect("Failed to create user");
+            .checked("user should be created");
         new_users.push(user);
     }
 
@@ -794,14 +799,14 @@ async fn test_concurrent_leave_and_rejoin() {
     let mut join_success = 0;
 
     for handle in leave_handles {
-        match handle.await.expect("Leave task panicked") {
+        match handle.await.checked("leave task should complete") {
             Ok(_) => leave_success += 1,
             Err(e) => tracing::warn!("Leave operation failed: {:?}", e),
         }
     }
 
     for handle in join_handles {
-        match handle.await.expect("Join task panicked") {
+        match handle.await.checked("join task should complete") {
             Ok(_) => join_success += 1,
             Err(e) => tracing::warn!("Join operation failed: {:?}", e),
         }
@@ -817,7 +822,7 @@ async fn test_concurrent_leave_and_rejoin() {
             .bind(room.id)
             .fetch_one(pool)
             .await
-            .expect("Failed to count members");
+            .checked("members should be counted");
 
     assert_eq!(
         final_count, 11,

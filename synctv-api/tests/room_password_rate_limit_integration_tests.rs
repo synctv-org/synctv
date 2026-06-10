@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
+mod support;
+
 use chrono::Utc;
 use opaque_ke::argon2::Argon2 as OpaqueArgon2Ksf;
 use opaque_ke::ciphersuite::CipherSuite;
@@ -195,10 +197,8 @@ async fn finish_opaque_room_login(
 fn make_client_api(
     user_service: Arc<UserService>,
     room_service: Arc<RoomService>,
-    rate_limiter: Option<Arc<dyn synctv_core::service::RequestRateLimiterService>>,
 ) -> synctv_api::impls::ClientApiImpl {
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-    connection_manager.start();
 
     synctv_api::impls::ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
@@ -209,19 +209,16 @@ fn make_client_api(
             publish_key_service: None,
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
-            providers_manager: None,
             settings_registry: None,
-            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
             chat_service: None,
-            credential_encryption: None,
-            provider_stores: None,
+            provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
+                "test:provider:",
+            )),
             email_api: None,
             passkey_service: None,
         },
-        synctv_api::impls::ClientApiRuntime {
-            rate_limiter,
-            ..synctv_api::impls::ClientApiRuntime::test_disabled()
-        },
+        support::client_api_runtime(),
     )
 }
 
@@ -307,8 +304,8 @@ async fn test_finish_room_password_registration_rejects_session_for_different_ro
         .await
         .unwrap();
 
-    let client_api = make_client_api(user_service, room_service.clone(), None);
-    let codec = synctv_api::PublicIdCodec::plain();
+    let client_api = make_client_api(user_service, room_service.clone());
+    let codec = synctv_core::PublicIdCodec::plain();
     let room_a_public_id = codec.encode_room_id(room_a.id).unwrap();
     let room_b_public_id = codec.encode_room_id(room_b.id).unwrap();
     let (_session_id, finish_req) = opaque_room_password_registration_upload(
@@ -385,8 +382,8 @@ async fn test_finish_room_password_login_rejects_session_for_different_room_befo
         .await
         .unwrap();
 
-    let client_api = make_client_api(user_service, room_service.clone(), None);
-    let codec = synctv_api::PublicIdCodec::plain();
+    let client_api = make_client_api(user_service, room_service.clone());
+    let codec = synctv_core::PublicIdCodec::plain();
     let room_a_public_id = codec.encode_room_id(room_a.id).unwrap();
     let room_b_public_id = codec.encode_room_id(room_b.id).unwrap();
 
@@ -467,7 +464,7 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
             brute_force_service: Some(Arc::new(BruteForceProtection::in_memory(
                 "test:room-password".to_string(),
             ))),
-            ..RoomServiceOptions::test_defaults()
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
     .expect("room service should build");
@@ -486,17 +483,9 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
         .await
         .unwrap();
 
-    let client_api = make_client_api(
-        user_service,
-        room_service.clone(),
-        Some(Arc::new(
-            synctv_core::service::rate_limit::RateLimiter::local_only(
-                "api:room-password:".to_string(),
-            ),
-        )),
-    );
+    let client_api = make_client_api(user_service, room_service.clone());
 
-    let room_public_id = synctv_api::PublicIdCodec::plain()
+    let room_public_id = synctv_core::PublicIdCodec::plain()
         .encode_room_id(room.id)
         .unwrap();
 
@@ -560,7 +549,7 @@ async fn test_preissued_room_password_opaque_sessions_cannot_bypass_finish_locko
             brute_force_service: Some(Arc::new(BruteForceProtection::in_memory(
                 "test:room-password-preissued".to_string(),
             ))),
-            ..RoomServiceOptions::test_defaults()
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
     .expect("room service should build");
@@ -585,16 +574,8 @@ async fn test_preissued_room_password_opaque_sessions_cannot_bypass_finish_locko
         .await
         .unwrap();
 
-    let client_api = make_client_api(
-        user_service,
-        room_service.clone(),
-        Some(Arc::new(
-            synctv_core::service::rate_limit::RateLimiter::local_only(
-                "api:room-password-preissued:".to_string(),
-            ),
-        )),
-    );
-    let room_public_id = synctv_api::PublicIdCodec::plain()
+    let client_api = make_client_api(user_service, room_service.clone());
+    let room_public_id = synctv_core::PublicIdCodec::plain()
         .encode_room_id(room.id)
         .unwrap();
     let client_ip = "192.168.1.102";

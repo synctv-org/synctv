@@ -20,10 +20,6 @@ use synctv_xiu::streamhub::define::{StreamHubEvent, StreamHubEventSender};
 use synctv_xiu::streamhub::stream::StreamIdentifier;
 use tracing::{debug, error, info, warn};
 
-/// Default maximum number of concurrent external pull-to-publish streams.
-///
-/// Unlimited pull streams would exhaust memory on a heavily-loaded node.
-/// This default can be overridden via `ExternalPublishManager::with_max_streams()`.
 const DEFAULT_MAX_CONCURRENT_STREAMS: usize = 100;
 const START_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -60,7 +56,7 @@ async fn await_start_confirmation(
 /// deduplicates concurrent requests (one puller per `room_id:media_id`),
 /// registers the stream as a publisher in Redis, and automatically stops +
 /// unregisters after 5 minutes with no subscribers.
-pub struct ExternalPublishManager {
+pub(crate) struct ExternalPublishManager {
     pool: StreamPool<ExternalPublishStream>,
     registry: Arc<dyn StreamRegistryTrait>,
     local_node_id: String,
@@ -77,11 +73,12 @@ pub struct ExternalPublishManager {
     /// Maximum number of concurrent pull streams.
     /// Prevents memory exhaustion from unlimited stream creation.
     max_concurrent_streams: usize,
+    creation_capacity_lock: tokio::sync::Mutex<()>,
     max_flv_tag_size_bytes: usize,
 }
 
 impl ExternalPublishManager {
-    pub fn new(
+    pub(crate) fn new(
         registry: Arc<dyn StreamRegistryTrait>,
         local_node_id: String,
         stream_hub_event_sender: StreamHubEventSender,
@@ -98,44 +95,13 @@ impl ExternalPublishManager {
         )
     }
 
-    /// Set the advertised shared API address used when registering external publishers in Redis.
-    ///
-    /// Other cluster nodes use this address to relay streams via gRPC.
-    /// Should be called before the first `get_or_create` invocation.
     #[must_use]
-    pub fn with_api_address(mut self, api_address: String) -> Self {
-        self.local_api_address = api_address;
-        self
-    }
-
-    /// Set the maximum number of concurrent pull streams.
-    ///
-    /// When this limit is reached, `get_or_create` returns an error instead of
-    /// creating a new stream, preventing memory exhaustion from unlimited stream creation.
-    ///
-    /// Default: `DEFAULT_MAX_CONCURRENT_STREAMS` (100).
-    #[must_use]
-    pub const fn with_max_streams(mut self, max: usize) -> Self {
-        self.max_concurrent_streams = max;
-        self
-    }
-
-    #[must_use]
-    pub const fn with_max_flv_tag_size_bytes(mut self, max: usize) -> Self {
+    pub(crate) const fn with_max_flv_tag_size_bytes(mut self, max: usize) -> Self {
         self.max_flv_tag_size_bytes = max;
         self
     }
 
-    /// Start the background cleanup task for stale creation locks.
-    ///
-    /// Should be called once after creating the manager to prevent memory leaks
-    /// from failed stream creation attempts.
-    #[must_use]
-    pub fn start_cleanup_task(&self) -> tokio::task::JoinHandle<()> {
-        self.pool.start_creation_lock_cleanup()
-    }
-
-    pub fn with_timeouts(
+    pub(crate) fn with_timeouts(
         registry: Arc<dyn StreamRegistryTrait>,
         local_node_id: String,
         local_api_address: String,
@@ -173,6 +139,7 @@ impl ExternalPublishManager {
             http_client,
             ssrf_guard,
             max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS,
+            creation_capacity_lock: tokio::sync::Mutex::new(()),
             max_flv_tag_size_bytes: ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
         })
     }
@@ -215,7 +182,7 @@ impl ExternalPublishManager {
     ///
     /// - **Fast path / post-lock reuse**: `pool.get_existing()` increments.
     /// - **Creation path**: explicit `increment_subscriber_count()`.
-    pub async fn get_or_create(
+    pub(crate) async fn get_or_create(
         &self,
         room_id: &str,
         media_id: &str,
@@ -226,21 +193,6 @@ impl ExternalPublishManager {
         // Fast path: reuse healthy stream. get_existing() increments subscriber count.
         if let Some(stream) = self.pool.get_existing(&stream_key).await {
             return Ok(stream);
-        }
-
-        // Pre-check max concurrent streams BEFORE acquiring creation lock.
-        // This provides fast rejection when the limit is already reached, avoiding
-        // unnecessary lock contention. The check is repeated inside the lock for correctness.
-        if self.pool.streams.len() >= self.max_concurrent_streams {
-            warn!(
-                "Max concurrent pull streams ({}) reached for {}/{}. \
-                 Rejecting new stream request to prevent memory exhaustion (pre-check).",
-                self.max_concurrent_streams, room_id, media_id
-            );
-            return Err(crate::error::StreamError::ResourceExhausted(format!(
-                "Max concurrent pull streams ({}) reached. Try again later.",
-                self.max_concurrent_streams
-            )));
         }
 
         // Acquire per-key creation lock
@@ -255,15 +207,12 @@ impl ExternalPublishManager {
             return Ok(stream);
         }
 
-        // Second check inside the lock to prevent race condition.
-        // Multiple requests for DIFFERENT streams may have passed the pre-check
-        // concurrently, but only one can create at a time per-key. Re-check here
-        // ensures we don't exceed the limit when multiple creations race.
+        let _capacity_guard = self.creation_capacity_lock.lock().await;
         let current_count = self.pool.streams.len();
         if current_count >= self.max_concurrent_streams {
             warn!(
                 "Max concurrent pull streams ({}) reached for {}/{}. \
-                 Rejecting new stream request to prevent memory exhaustion (lock-internal check).",
+                 Rejecting new stream request to prevent memory exhaustion.",
                 self.max_concurrent_streams, room_id, media_id
             );
             return Err(crate::error::StreamError::ResourceExhausted(format!(
@@ -359,7 +308,14 @@ impl ExternalPublishManager {
             Ok(false) => {
                 // Another publisher already registered for this stream.
                 // Stop the local stream to avoid a duplicate publisher.
-                let _ = stream.stop().await;
+                if let Err(stop_error) = stream.stop().await {
+                    warn!(
+                        room_id,
+                        media_id,
+                        error = %stop_error,
+                        "Failed to stop duplicate external publish stream after registry conflict"
+                    );
+                }
                 return Err(crate::error::StreamError::InvalidState(
                     "Another publisher already registered".into(),
                 ));
@@ -367,7 +323,14 @@ impl ExternalPublishManager {
             Err(e) => {
                 error!("Failed to register external publisher in Redis after stream start, stopping stream: {e}");
                 // Roll back: stop the stream since we can't register it
-                let _ = stream.stop().await;
+                if let Err(stop_error) = stream.stop().await {
+                    warn!(
+                        room_id,
+                        media_id,
+                        error = %stop_error,
+                        "Failed to stop external publish stream after registry registration error"
+                    );
+                }
                 return Err(e);
             }
         }
@@ -390,27 +353,30 @@ impl ExternalPublishManager {
                 let hub_sender = hub_sender.clone();
                 let stream_key = stream_key.to_string();
                 Box::pin(async move {
- // Unregister from Redis FIRST so other nodes stop routing
+                    // Unregister from Redis first so other nodes stop routing.
                     if let Some((room_id, media_id)) = stream_key.split_once(':') {
                         match registry.get_publisher(room_id, media_id).await {
                             Ok(Some(info)) if info.node_id == local_node_id => {
-                                if let Err(e) = registry.unregister_publisher(room_id, media_id).await {
+                                if let Err(e) = registry.unregister_publisher(room_id, media_id).await
+                                {
                                     warn!("Failed to unregister external publisher from Redis: {e}");
                                 }
                             }
                             Ok(Some(_)) => {
-                                info!("Skipping Redis unregister for {} — publisher owned by another node", stream_key);
+                                info!(
+                                    "Skipping Redis unregister for {} because publisher is owned by another node",
+                                    stream_key
+                                );
                             }
                             _ => {}
                         }
 
- // Send UnPublish to StreamHub (use send().await to avoid
- // silently dropping the event if the channel is momentarily full)
                         let identifier = StreamIdentifier::Rtmp {
                             app_name: room_id.to_string(),
                             stream_name: media_id.to_string(),
                         };
-                        if let Err(e) = hub_sender.send(StreamHubEvent::UnPublish { identifier }).await {
+                        if let Err(e) = hub_sender.send(StreamHubEvent::UnPublish { identifier }).await
+                        {
                             warn!("Failed to send UnPublish for {}: {}", stream_key, e);
                         }
                     }
@@ -426,7 +392,7 @@ impl ExternalPublishManager {
 ///
 /// Pulls from an external RTMP or HTTP-FLV source and publishes frames into
 /// the local `StreamHub` under `live/{room_id}/{media_id}`.
-pub struct ExternalPublishStream {
+pub(crate) struct ExternalPublishStream {
     room_id: String,
     media_id: String,
     source_url: String,
@@ -446,10 +412,6 @@ impl ManagedStream for ExternalPublishStream {
         &self.lifecycle
     }
 
-    fn stream_key(&self) -> String {
-        format!("{}:{}", self.room_id, self.media_id)
-    }
-
     async fn stop_managed(&self) {
         if let Err(error) = self.stop().await {
             warn!(
@@ -464,7 +426,7 @@ impl ManagedStream for ExternalPublishStream {
 
 impl ExternalPublishStream {
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         room_id: String,
         media_id: String,
         source_url: String,
@@ -491,7 +453,7 @@ impl ExternalPublishStream {
     /// Spawns the puller in a background task and waits for it to confirm that
     /// the connection was established before returning. This prevents the caller
     /// from registering the stream in Redis before the source is actually reachable.
-    pub async fn start(&self) -> StreamResult<()> {
+    async fn start(&self) -> StreamResult<()> {
         self.lifecycle.set_running();
         self.lifecycle.update_last_active_time();
 
@@ -528,7 +490,13 @@ impl ExternalPublishStream {
                 Err(e) => {
                     let msg = format!("Failed to create puller for {room_id}/{media_id}: {e}");
                     error!("{}", msg);
-                    let _ = confirm_tx.send(Err(msg));
+                    if confirm_tx.send(Err(msg)).is_err() {
+                        debug!(
+                            room_id,
+                            media_id,
+                            "external publish startup receiver dropped before puller creation failure"
+                        );
+                    }
                     is_running_flag.store(false, Ordering::SeqCst);
                     return Err(e);
                 }
@@ -568,7 +536,7 @@ impl ExternalPublishStream {
     ///
     /// Sends `UnPublish` to the local `StreamHub` BEFORE aborting, since the
     /// puller's own cleanup path won't run on abort.
-    pub async fn stop(&self) -> StreamResult<()> {
+    async fn stop(&self) -> StreamResult<()> {
         self.lifecycle.mark_stopping();
 
         // Only send UnPublish once (prevents duplicate when Drop also runs)
@@ -579,33 +547,14 @@ impl ExternalPublishStream {
             };
             let room_id = self.room_id.clone();
             let media_id = self.media_id.clone();
-            match self
+            if let Err(e) = self
                 .stream_hub_event_sender
                 .try_send(StreamHubEvent::UnPublish { identifier })
             {
-                Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                    // Channel full -- spawn async task to retry so UnPublish is not silently lost.
-                    let sender = self.stream_hub_event_sender.clone();
-                    warn!(
-                        "ExternalPublishStream stop: channel full, spawning async UnPublish for {}/{}",
-                        room_id, media_id
-                    );
-                    tokio::spawn(async move {
-                        if let Err(e) = sender.send(event).await {
-                            warn!(
-                                "ExternalPublishStream stop: async UnPublish failed for {}/{}: {}",
-                                room_id, media_id, e
-                            );
-                        }
-                    });
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to send UnPublish for {}/{}: {}",
-                        room_id, media_id, e
-                    );
-                }
+                warn!(
+                    "Failed to send UnPublish for {}/{}: {}",
+                    room_id, media_id, e
+                );
             }
         }
 
@@ -617,29 +566,8 @@ impl ExternalPublishStream {
         Ok(())
     }
 
-    pub async fn is_healthy(&self) -> bool {
-        self.lifecycle.is_healthy().await
-    }
-
-    #[must_use]
-    pub fn subscriber_count(&self) -> usize {
-        self.lifecycle.subscriber_count()
-    }
-
-    pub fn increment_subscriber_count(&self) {
-        self.lifecycle.increment_subscriber_count();
-    }
-
-    pub fn decrement_subscriber_count(&self) {
+    pub(crate) fn decrement_subscriber_count(&self) {
         self.lifecycle.decrement_subscriber_count();
-    }
-
-    pub fn last_active_elapsed_secs(&self) -> u64 {
-        self.lifecycle.last_active_elapsed_secs()
-    }
-
-    pub fn update_last_active_time(&self) {
-        self.lifecycle.update_last_active_time();
     }
 }
 
@@ -663,40 +591,15 @@ impl Drop for ExternalPublishStream {
                         room_id, media_id
                     );
                 }
-                Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                    // Channel full — spawn an async task to await capacity so the
-                    // UnPublish is not silently dropped, leaving the stream registered.
-                    let sender = self.stream_hub_event_sender.clone();
-                    let room_id_for_task = room_id.clone();
-                    let media_id_for_task = media_id.clone();
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                     warn!(
-                        "ExternalPublishStream drop: channel full, spawning async UnPublish for {}/{}",
+                        "ExternalPublishStream drop: channel full, skipped UnPublish for {}/{}",
                         room_id, media_id
                     );
-                    if crate::util::try_spawn(async move {
-                        if let Err(e) = sender.send(event).await {
-                            warn!(
-                                "ExternalPublishStream drop: async UnPublish failed for {}/{}: {} \
-                                 (best-effort cleanup; Redis TTL will expire stale entry)",
-                                room_id_for_task, media_id_for_task, e
-                            );
-                        }
-                    })
-                    .is_none()
-                    {
-                        warn!(
-                            "ExternalPublishStream drop: no Tokio runtime available, skipping async UnPublish for {}/{}",
-                            room_id, media_id
-                        );
-                    }
                 }
                 Err(e) => {
-                    // During runtime shutdown, the channel may already be closed.
-                    // This is best-effort cleanup; Redis TTL will eventually expire the
-                    // publisher entry if this UnPublish is lost.
                     warn!(
-                        "ExternalPublishStream drop: failed to send UnPublish for {}/{}: {} \
-                         (best-effort cleanup; Redis TTL will expire stale entry)",
+                        "ExternalPublishStream drop: failed to send UnPublish for {}/{}: {}",
                         room_id, media_id, e
                     );
                 }
@@ -718,23 +621,14 @@ mod tests {
     use crate::relay::TestStreamRegistry;
     use std::future::pending;
 
-    #[tokio::test]
-    async fn test_external_publish_manager_creation() {
-        let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
-        let (sender, _) = tokio::sync::mpsc::channel(64);
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
-        let manager = ExternalPublishManager::new(
-            registry,
-            "node-1".to_string(),
-            sender,
-            SsrfGuard::disabled(),
-        )
-        .unwrap();
-        assert_eq!(manager.pool.streams.len(), 0);
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
     }
 
     #[tokio::test]
-    async fn test_external_publish_manager_shared_http_client_disables_inherited_read_timeout() {
+    async fn test_external_publish_manager_creation() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
@@ -743,13 +637,56 @@ mod tests {
             "node-1".to_string(),
             sender,
             SsrfGuard::disabled(),
-        )
-        .unwrap();
+        )?;
+        assert_eq!(manager.pool.streams.len(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_external_publish_manager_rejects_when_capacity_full() -> TestResult {
+        let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
+        let (sender, _) = tokio::sync::mpsc::channel(64);
+
+        let mut manager = ExternalPublishManager::new(
+            registry,
+            "node-1".to_string(),
+            sender,
+            SsrfGuard::disabled(),
+        )?;
+        manager.max_concurrent_streams = 0;
+
+        let Err(error) = manager
+            .get_or_create("room1", "media1", "http://127.0.0.1:8080/live.flv")
+            .await
+        else {
+            return Err(test_error(
+                "capacity limit should reject before starting puller",
+            ));
+        };
+
+        assert!(
+            matches!(error, crate::error::StreamError::ResourceExhausted(_)),
+            "expected ResourceExhausted, got {error:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_external_publish_manager_shared_http_client_disables_inherited_read_timeout(
+    ) -> TestResult {
+        let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
+        let (sender, _) = tokio::sync::mpsc::channel(64);
+
+        let manager = ExternalPublishManager::new(
+            registry,
+            "node-1".to_string(),
+            sender,
+            SsrfGuard::disabled(),
+        )?;
         let request = manager
             .http_client
             .get("http://192.168.1.10:8080/stream.flv")
-            .build()
-            .expect("request should build");
+            .build()?;
 
         assert_eq!(
             request.timeout(),
@@ -762,6 +699,7 @@ mod tests {
             !debug_repr.contains("read_timeout: Some(30s)"),
             "shared HTTP-FLV client must not inherit the proxy preset read timeout: {debug_repr}"
         );
+        Ok(())
     }
 
     #[tokio::test]
@@ -777,19 +715,18 @@ mod tests {
             ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
         );
 
-        assert_eq!(stream.subscriber_count(), 0);
-        stream.increment_subscriber_count();
-        assert_eq!(stream.subscriber_count(), 1);
+        assert_eq!(stream.lifecycle().subscriber_count(), 0);
+        stream.lifecycle().increment_subscriber_count();
+        assert_eq!(stream.lifecycle().subscriber_count(), 1);
         stream.decrement_subscriber_count();
-        assert_eq!(stream.subscriber_count(), 0);
+        assert_eq!(stream.lifecycle().subscriber_count(), 0);
     }
 
     #[tokio::test]
-    async fn test_await_start_confirmation_aborts_task_on_error_signal() {
+    async fn test_await_start_confirmation_aborts_task_on_error_signal() -> TestResult {
         let handle = tokio::spawn(async { pending::<anyhow::Result<()>>().await });
         let (tx, rx) = tokio::sync::oneshot::channel();
-        tx.send(Err("startup failed".to_string()))
-            .expect("sender should still be open");
+        assert!(tx.send(Err("startup failed".to_string())).is_ok());
 
         let result = await_start_confirmation(rx, &handle, Duration::from_secs(1)).await;
 
@@ -805,6 +742,7 @@ mod tests {
             join.is_cancelled(),
             "task should be aborted on startup failure"
         );
+        Ok(())
     }
 
     #[tokio::test]
@@ -824,15 +762,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_await_start_confirmation_succeeds_without_aborting_task() {
+    async fn test_await_start_confirmation_succeeds_without_aborting_task() -> TestResult {
         let handle = tokio::spawn(async { Ok(()) });
         let (tx, rx) = tokio::sync::oneshot::channel();
-        tx.send(Ok(())).expect("sender should still be open");
+        assert!(tx.send(Ok(())).is_ok());
 
         let result = await_start_confirmation(rx, &handle, Duration::from_secs(1)).await;
 
         assert!(result.is_ok(), "successful confirmation should pass");
-        let join = handle.await.expect("join should succeed");
+        let join = handle.await?;
         assert!(join.is_ok(), "task should continue normally after success");
+        Ok(())
     }
 }

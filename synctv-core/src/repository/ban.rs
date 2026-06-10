@@ -159,6 +159,7 @@ mod tests {
     use crate::{
         models::{SignupMethod, User, UserRole, UserStatus},
         repository::UserRepository,
+        test_helpers::ok,
     };
 
     fn make_user(username: &str, role: UserRole) -> User {
@@ -186,41 +187,49 @@ mod tests {
     async fn list_returns_active_user_ban_records() {
         let (_postgres, pool) = create_test_pool().await;
         let user_repository = UserRepository::new(pool.clone());
-        let admin = user_repository
-            .create(&make_user("ban_list_admin", UserRole::Admin))
-            .await
-            .expect("admin user should be created");
-        let target = user_repository
-            .create(&make_user("ban_list_target", UserRole::User))
-            .await
-            .expect("target user should be created");
+        let admin = ok(
+            user_repository
+                .create(&make_user("ban_list_admin", UserRole::Admin))
+                .await,
+            "admin user should be created",
+        );
+        let target = ok(
+            user_repository
+                .create(&make_user("ban_list_target", UserRole::User))
+                .await,
+            "target user should be created",
+        );
         let now = Utc::now();
-        sqlx::query!(
-            r#"
+        ok(
+            sqlx::query!(
+                r#"
             INSERT INTO user_bans (user_id, banned_by, reason, starts_at)
             VALUES ($1, $2, $3, $4)
             "#,
-            target.id.as_i64(),
-            admin.id.as_i64(),
-            "policy",
-            now
-        )
-        .execute(&pool)
-        .await
-        .expect("user ban should be inserted");
+                target.id.as_i64(),
+                admin.id.as_i64(),
+                "policy",
+                now
+            )
+            .execute(&pool)
+            .await,
+            "user ban should be inserted",
+        );
 
         let repository = BanRecordRepository::new(pool.clone());
-        let page = repository
-            .list(&BanRecordListQuery {
-                target_type: Some(BanRecordTargetType::User),
-                active: Some(true),
-                user_id: Some(target.id),
-                room_id: None,
-                limit: 10,
-                offset: 0,
-            })
-            .await
-            .expect("active user ban list should load");
+        let page = ok(
+            repository
+                .list(&BanRecordListQuery {
+                    target_type: Some(BanRecordTargetType::User),
+                    active: Some(true),
+                    user_id: Some(target.id),
+                    room_id: None,
+                    limit: 10,
+                    offset: 0,
+                })
+                .await,
+            "active user ban list should load",
+        );
 
         assert_eq!(page.total, 1);
         assert_eq!(page.rows.len(), 1);
@@ -233,17 +242,19 @@ mod tests {
         assert_eq!(row.reason, "policy");
         assert!(row.is_active);
 
-        let inactive = repository
-            .list(&BanRecordListQuery {
-                target_type: Some(BanRecordTargetType::User),
-                active: Some(false),
-                user_id: Some(target.id),
-                room_id: None,
-                limit: 10,
-                offset: 0,
-            })
-            .await
-            .expect("inactive user ban list should load");
+        let inactive = ok(
+            repository
+                .list(&BanRecordListQuery {
+                    target_type: Some(BanRecordTargetType::User),
+                    active: Some(false),
+                    user_id: Some(target.id),
+                    room_id: None,
+                    limit: 10,
+                    offset: 0,
+                })
+                .await,
+            "inactive user ban list should load",
+        );
         assert_eq!(inactive.total, 0);
         assert!(inactive.rows.is_empty());
     }

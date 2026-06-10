@@ -13,7 +13,7 @@ use crate::{
 
 use super::session_types::{
     AuthFactorMethod, AuthenticatedLogin, MfaChallenge, MfaSession, TokenIssueContext,
-    MFA_SESSION_TTL_SECS, TWO_FACTOR_REQUIRED_MESSAGE,
+    MFA_SESSION_TTL_SECS, MFA_SESSION_TTL_SECS_I64, TWO_FACTOR_REQUIRED_MESSAGE,
 };
 
 mod sensitive;
@@ -43,6 +43,7 @@ impl UserService {
                 .await
             {
                 tracing::warn!(error = %bf_err, "Failed to record login failure for brute-force tracking");
+                return Err(bf_err);
             }
             return Err(error);
         }
@@ -63,8 +64,7 @@ impl UserService {
                 ));
             }
             let session_id = synctv_common::snanoid!(48);
-            let expires_at =
-                chrono::Utc::now().timestamp() + i64::try_from(MFA_SESSION_TTL_SECS).unwrap_or(300);
+            let expires_at = chrono::Utc::now().timestamp() + MFA_SESSION_TTL_SECS_I64;
             let session = MfaSession {
                 user_id: user.id,
                 first_factor,
@@ -85,7 +85,7 @@ impl UserService {
                 &session,
                 email.as_deref(),
                 available_methods,
-            );
+            )?;
             return Ok(AuthenticatedLogin::MfaRequired {
                 user,
                 email,
@@ -140,17 +140,33 @@ impl UserService {
         session: &MfaSession,
         email: Option<&str>,
         available_methods: Vec<AuthFactorMethod>,
-    ) -> MfaChallenge {
-        let masked_email = available_methods
-            .contains(&AuthFactorMethod::Email)
-            .then(|| email.map(crate::service::mask_email))
-            .flatten();
-        MfaChallenge {
+    ) -> Result<MfaChallenge> {
+        let masked_email = Self::masked_email_for_mfa_methods(&available_methods, email)?;
+        Ok(MfaChallenge {
             session_id: session_id.to_string(),
             available_methods,
             masked_email,
             expires_at: session.expires_at,
+        })
+    }
+
+    fn masked_email_for_mfa_methods(
+        available_methods: &[AuthFactorMethod],
+        email: Option<&str>,
+    ) -> Result<Option<String>> {
+        if available_methods.contains(&AuthFactorMethod::Email) {
+            return email
+                .map(crate::service::mask_email)
+                .map(Some)
+                .ok_or_else(|| {
+                    Error::Internal(
+                        "MFA challenge includes email verification without a user email"
+                            .to_string(),
+                    )
+                });
         }
+
+        Ok(None)
     }
 
     pub(super) async fn issue_tokens_after_successful_authentication(
@@ -256,12 +272,7 @@ impl UserService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
         let email = self.user_email_repository.get_email(&user.id).await?;
-        Ok(Self::mfa_challenge_from_session(
-            session_id,
-            &session,
-            email.as_deref(),
-            available_methods,
-        ))
+        Self::mfa_challenge_from_session(session_id, &session, email.as_deref(), available_methods)
     }
 
     pub async fn get_mfa_session_user_for_method(
@@ -360,5 +371,31 @@ impl UserService {
             access_token,
             refresh_token,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn masked_email_for_mfa_methods_requires_email_when_method_available() {
+        let error = UserService::masked_email_for_mfa_methods(&[AuthFactorMethod::Email], None)
+            .expect_err("email MFA method requires a masked email source");
+
+        assert!(
+            matches!(error, Error::Internal(message) if message.contains("email verification"))
+        );
+    }
+
+    #[test]
+    fn masked_email_for_mfa_methods_omits_email_for_other_methods() {
+        let masked = UserService::masked_email_for_mfa_methods(
+            &[AuthFactorMethod::WebAuthn],
+            Some("user@example.com"),
+        )
+        .expect("non-email MFA challenge should build");
+
+        assert_eq!(masked, None);
     }
 }

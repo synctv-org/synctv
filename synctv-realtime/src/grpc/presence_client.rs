@@ -366,24 +366,26 @@ mod tests {
 
     use super::*;
 
-    fn test_client(cluster_secret: String) -> RealtimePresenceClient {
-        let registry = Arc::new(
-            NodeRegistry::new_local_only("node-a".to_string(), 30, "presence-client-test:")
-                .expect("local registry should initialize"),
-        );
-        RealtimePresenceClient::new(
+    fn test_client(cluster_secret: String) -> synctv_cluster::Result<RealtimePresenceClient> {
+        let registry = Arc::new(NodeRegistry::new_local_only(
+            "node-a".to_string(),
+            30,
+            "presence-client-test:",
+        )?);
+        Ok(RealtimePresenceClient::new(
             registry,
             RealtimePresenceClientConfig {
                 cluster_secret,
                 self_node_id: "node-a".to_string(),
                 ..RealtimePresenceClientConfig::default()
             },
-        )
+        ))
     }
 
     #[test]
-    fn attach_secret_rejects_empty_cluster_secret() {
-        let client = test_client(String::new());
+    fn attach_secret_rejects_empty_cluster_secret(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let client = test_client(String::new())?;
         let mut request = tonic::Request::new(GetUserOnlineStatusRequest { user_ids: vec![1] });
 
         let error = client
@@ -394,16 +396,16 @@ mod tests {
             error.to_string().contains("cluster secret is required"),
             "unexpected error: {error}"
         );
+        Ok(())
     }
 
     #[test]
-    fn attach_secret_sets_cluster_secret_metadata() {
-        let client = test_client("cluster-secret".to_string());
+    fn attach_secret_sets_cluster_secret_metadata(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let client = test_client("cluster-secret".to_string())?;
         let mut request = tonic::Request::new(GetUserOnlineStatusRequest { user_ids: vec![1] });
 
-        client
-            .attach_secret(&mut request)
-            .expect("valid cluster secret should attach");
+        client.attach_secret(&mut request)?;
 
         assert_eq!(
             request
@@ -412,5 +414,6 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("cluster-secret")
         );
+        Ok(())
     }
 }

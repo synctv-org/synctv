@@ -17,8 +17,8 @@ pub enum EventMessagesErrorValue {
     BytesWriteError(BytesWriteError),
     #[error("bytes read error: {0}")]
     BytesReadError(BytesReadError),
-    #[error("unknow event message type")]
-    UnknowEventMessageType,
+    #[error("unknown user control event message type")]
+    UnknownEventMessageType,
 }
 
 impl From<Amf0WriteError> for EventMessagesError {

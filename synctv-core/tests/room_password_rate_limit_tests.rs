@@ -3,17 +3,6 @@
 //! Tests that room password verification is protected against brute-force attacks
 //! via rate limiting based on `room_id + client_ip` combination.
 //!
-//! ## Test Cases
-//!
-//! 1. Password verification failure triggers rate limiting
-//! 2. Rate limiting is based on `room_id + client_ip` (not just `room_id`)
-//! 3. After lockout expires, verification is allowed again
-//! 4. Successful password verification resets failure counter
-//! 5. Rate limiting works without IP (room-only mode)
-//! 6. Reset failure is logged to audit log
-//!
-#![allow(clippy::unwrap_used)]
-
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
@@ -29,10 +18,13 @@ use synctv_core::{
         InMemoryTokenBlacklistStore, RoomService, UserService,
     },
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, err, ok};
 fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = ok(
+        JwtService::new(secret),
+        "test JWT service should initialize",
+    );
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -48,19 +40,21 @@ fn make_user_service(pool: &PgPool) -> UserService {
     )
 }
 
-fn make_room_service(pool: PgPool) -> RoomService {
-    let user_service = make_user_service(&pool);
+fn make_room_service(pool: &PgPool) -> RoomService {
+    let user_service = make_user_service(pool);
 
     let brute_force = BruteForceProtection::in_memory("test_room_password".to_string());
-    RoomService::new_with_options(
-        pool,
-        user_service,
-        RoomServiceOptions {
-            brute_force_service: Some(Arc::new(brute_force)),
-            ..RoomServiceOptions::test_defaults()
-        },
+    ok(
+        RoomService::new_with_options(
+            pool.clone(),
+            user_service,
+            RoomServiceOptions {
+                brute_force_service: Some(Arc::new(brute_force)),
+                ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
+            },
+        ),
+        "room service should build",
     )
-    .expect("room service should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -83,8 +77,6 @@ fn make_user(username: &str) -> User {
     }
 }
 
-/// Test 1: Password verification failure should trigger rate limiting
-///
 /// After multiple failed password attempts, further attempts should be blocked
 /// with a rate limit error rather than allowing continued guessing.
 #[tokio::test]
@@ -92,19 +84,24 @@ fn make_user(username: &str) -> User {
 async fn test_room_password_verification_failure_triggers_rate_limit() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
-    let owner = user_repo.create(&make_user("room_owner")).await.unwrap();
-    let (room, _member) = room_service
-        .create_room(
-            "Protected Room".to_string(),
-            "A password-protected room".to_string(),
-            owner.id,
-            Some("CorrectPassword123".to_string()),
-            None,
-        )
-        .await
-        .unwrap();
+    let owner = ok(
+        user_repo.create(&make_user("room_owner")).await,
+        "room owner should be created",
+    );
+    let (room, _member) = ok(
+        room_service
+            .create_room(
+                "Protected Room".to_string(),
+                "A password-protected room".to_string(),
+                owner.id,
+                Some("CorrectPassword123".to_string()),
+                None,
+            )
+            .await,
+        "password-protected room should be created",
+    );
 
     let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
 
@@ -123,7 +120,7 @@ async fn test_room_password_verification_failure_triggers_rate_limit() {
                 i + 1
             );
             assert!(
-                !result.unwrap(),
+                !ok(result, "wrong password check should succeed"),
                 "Attempt {}: wrong password should return false",
                 i + 1
             );
@@ -134,7 +131,10 @@ async fn test_room_password_verification_failure_triggers_rate_limit() {
                 "Attempt {}: should be rate limited after 5 failures",
                 i + 1
             );
-            let err = result.unwrap_err();
+            let err = err(
+                result,
+                "sixth wrong password attempt should be rate limited",
+            );
             let msg = err.to_string();
             assert!(
                 msg.contains("Too many failed")
@@ -146,8 +146,6 @@ async fn test_room_password_verification_failure_triggers_rate_limit() {
     }
 }
 
-/// Test 2: Rate limiting is based on `room_id + client_ip` combination
-///
 /// Different IPs should have independent rate limit counters for the same room.
 /// The same IP should have independent counters for different rooms.
 #[tokio::test]
@@ -155,31 +153,38 @@ async fn test_room_password_verification_failure_triggers_rate_limit() {
 async fn test_room_password_rate_limit_is_per_room_per_ip() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
-    let owner = user_repo.create(&make_user("per_ip_owner")).await.unwrap();
+    let owner = ok(
+        user_repo.create(&make_user("per_ip_owner")).await,
+        "per-IP rate limit owner should be created",
+    );
 
-    let (room1, _) = room_service
-        .create_room(
-            "Room One".to_string(),
-            "First room".to_string(),
-            owner.id,
-            Some("Password1".to_string()),
-            None,
-        )
-        .await
-        .unwrap();
+    let (room1, _) = ok(
+        room_service
+            .create_room(
+                "Room One".to_string(),
+                "First room".to_string(),
+                owner.id,
+                Some("Password1".to_string()),
+                None,
+            )
+            .await,
+        "first protected room should be created",
+    );
 
-    let (room2, _) = room_service
-        .create_room(
-            "Room Two".to_string(),
-            "Second room".to_string(),
-            owner.id,
-            Some("Password2".to_string()),
-            None,
-        )
-        .await
-        .unwrap();
+    let (room2, _) = ok(
+        room_service
+            .create_room(
+                "Room Two".to_string(),
+                "Second room".to_string(),
+                owner.id,
+                Some("Password2".to_string()),
+                None,
+            )
+            .await,
+        "second protected room should be created",
+    );
 
     let ip1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
     let ip2 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 101));
@@ -216,27 +221,30 @@ async fn test_room_password_rate_limit_is_per_room_per_ip() {
     );
 }
 
-/// Test 3: Rate limit expires after lockout duration
-///
 /// After the lockout period expires, the user should be able to verify passwords again.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_password_rate_limit_expires_after_lockout() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
-    let owner = user_repo.create(&make_user("expire_owner")).await.unwrap();
-    let (room, _) = room_service
-        .create_room(
-            "Expiry Test Room".to_string(),
-            "Testing lockout expiry".to_string(),
-            owner.id,
-            Some("CorrectPassword123".to_string()),
-            None,
-        )
-        .await
-        .unwrap();
+    let owner = ok(
+        user_repo.create(&make_user("expire_owner")).await,
+        "expiry test owner should be created",
+    );
+    let (room, _) = ok(
+        room_service
+            .create_room(
+                "Expiry Test Room".to_string(),
+                "Testing lockout expiry".to_string(),
+                owner.id,
+                Some("CorrectPassword123".to_string()),
+                None,
+            )
+            .await,
+        "expiry test room should be created",
+    );
 
     let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 200));
 
@@ -258,10 +266,12 @@ async fn test_room_password_rate_limit_expires_after_lockout() {
 
     // Use internal method to reset the rate limit counter to simulate time passing
     // In production, this would be handled by the TTL-based expiry in Redis/moka
-    room_service
-        .reset_room_password_rate_limit(&room.id, client_ip)
-        .await
-        .expect("Reset should succeed");
+    ok(
+        room_service
+            .reset_room_password_rate_limit(&room.id, client_ip)
+            .await,
+        "room password rate limit reset should succeed",
+    );
 
     // After reset, should be able to verify again
     let result = room_service
@@ -272,13 +282,11 @@ async fn test_room_password_rate_limit_expires_after_lockout() {
         "Should be able to verify password after rate limit reset"
     );
     assert!(
-        result.unwrap(),
+        ok(result, "correct password check after reset should succeed"),
         "Correct password should return true after reset"
     );
 }
 
-/// Test 4: Successful password verification resets the failure counter
-///
 /// When a user successfully verifies the password, any previous failure count
 /// should be reset so they don't get locked out from accumulated old failures.
 #[tokio::test]
@@ -286,19 +294,24 @@ async fn test_room_password_rate_limit_expires_after_lockout() {
 async fn test_successful_password_verification_resets_failure_counter() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
-    let owner = user_repo.create(&make_user("reset_owner")).await.unwrap();
-    let (room, _) = room_service
-        .create_room(
-            "Reset Test Room".to_string(),
-            "Testing counter reset".to_string(),
-            owner.id,
-            Some("CorrectPassword123".to_string()),
-            None,
-        )
-        .await
-        .unwrap();
+    let owner = ok(
+        user_repo.create(&make_user("reset_owner")).await,
+        "reset test owner should be created",
+    );
+    let (room, _) = ok(
+        room_service
+            .create_room(
+                "Reset Test Room".to_string(),
+                "Testing counter reset".to_string(),
+                owner.id,
+                Some("CorrectPassword123".to_string()),
+                None,
+            )
+            .await,
+        "reset test room should be created",
+    );
 
     let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
 
@@ -307,7 +320,10 @@ async fn test_successful_password_verification_resets_failure_counter() {
         let result = room_service
             .check_room_password_with_rate_limit(&room.id, "WrongPassword", Some(client_ip))
             .await;
-        assert!(result.is_ok() && !result.unwrap());
+        assert!(!ok(
+            result,
+            "wrong password check before successful reset should succeed"
+        ));
     }
 
     // Now provide correct password - should succeed
@@ -315,7 +331,10 @@ async fn test_successful_password_verification_resets_failure_counter() {
         .check_room_password_with_rate_limit(&room.id, "CorrectPassword123", Some(client_ip))
         .await;
     assert!(result.is_ok(), "Correct password should not error");
-    assert!(result.unwrap(), "Correct password should return true");
+    assert!(
+        ok(result, "correct password check should succeed"),
+        "Correct password should return true"
+    );
 
     // After successful verification, we should have more attempts available
     // (counter was reset, so we can fail 5 more times before lockout on 6th)
@@ -340,27 +359,30 @@ async fn test_successful_password_verification_resets_failure_counter() {
     }
 }
 
-/// Test 5: Rate limiting works without IP (room-only mode)
-///
-/// When client IP is not available, rate limiting should still work based on `room_id` only.
+/// When client IP is unavailable, rate limiting still works based on `room_id`.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_password_rate_limit_without_ip() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(&pool);
 
-    let owner = user_repo.create(&make_user("no_ip_owner")).await.unwrap();
-    let (room, _) = room_service
-        .create_room(
-            "No IP Room".to_string(),
-            "Testing room-only rate limit".to_string(),
-            owner.id,
-            Some("CorrectPassword123".to_string()),
-            None,
-        )
-        .await
-        .unwrap();
+    let owner = ok(
+        user_repo.create(&make_user("no_ip_owner")).await,
+        "no-IP rate limit owner should be created",
+    );
+    let (room, _) = ok(
+        room_service
+            .create_room(
+                "No IP Room".to_string(),
+                "Testing room-only rate limit".to_string(),
+                owner.id,
+                Some("CorrectPassword123".to_string()),
+                None,
+            )
+            .await,
+        "no-IP protected room should be created",
+    );
 
     // Make 6 failed password attempts without IP (5 allowed, 6th rate limited)
     for i in 0..6 {
@@ -370,7 +392,7 @@ async fn test_room_password_rate_limit_without_ip() {
 
         if i < 5 {
             assert!(
-                result.is_ok() && !result.unwrap(),
+                !ok(result, "wrong password check without IP should succeed"),
                 "Attempt {}: should be Ok(false)",
                 i + 1
             );
@@ -380,8 +402,6 @@ async fn test_room_password_rate_limit_without_ip() {
     }
 }
 
-/// Test 7: Verification succeeds even when reset fails (fallback mode)
-///
 /// When brute-force protection is in fallback mode (not fail-closed),
 /// a successful password verification should still return true even if
 /// the rate limit counter reset fails. This ensures users can authenticate
@@ -395,30 +415,34 @@ async fn test_password_verification_succeeds_when_reset_fails_in_fallback_mode()
 
     let user_service = make_user_service(&pool);
     let brute_force = BruteForceProtection::in_memory("test_fallback_mode".to_string());
-    let room_service = RoomService::new_with_options(
-        pool.clone(),
-        user_service,
-        RoomServiceOptions {
-            brute_force_service: Some(Arc::new(brute_force)),
-            ..RoomServiceOptions::test_defaults()
-        },
-    )
-    .expect("room service should build");
+    let room_service = ok(
+        RoomService::new_with_options(
+            pool.clone(),
+            user_service,
+            RoomServiceOptions {
+                brute_force_service: Some(Arc::new(brute_force)),
+                ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
+            },
+        ),
+        "room service should build",
+    );
 
-    let owner = user_repo
-        .create(&make_user("fallback_owner"))
-        .await
-        .unwrap();
-    let (room, _) = room_service
-        .create_room(
-            "Fallback Test Room".to_string(),
-            "Testing fallback mode behavior".to_string(),
-            owner.id,
-            Some("CorrectPassword123".to_string()),
-            None,
-        )
-        .await
-        .unwrap();
+    let owner = ok(
+        user_repo.create(&make_user("fallback_owner")).await,
+        "fallback test owner should be created",
+    );
+    let (room, _) = ok(
+        room_service
+            .create_room(
+                "Fallback Test Room".to_string(),
+                "Testing fallback mode behavior".to_string(),
+                owner.id,
+                Some("CorrectPassword123".to_string()),
+                None,
+            )
+            .await,
+        "fallback test room should be created",
+    );
 
     let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 88));
 
@@ -438,7 +462,13 @@ async fn test_password_verification_succeeds_when_reset_fails_in_fallback_mode()
 
     // The key assertion: verification succeeded
     assert!(result.is_ok(), "Password verification should succeed");
-    assert!(result.unwrap(), "Correct password should return true");
+    assert!(
+        ok(
+            result,
+            "correct password check in fallback mode should succeed"
+        ),
+        "Correct password should return true"
+    );
 
     // After successful verification, counter should be reset
     // We can verify by making more wrong attempts - should have full quota again

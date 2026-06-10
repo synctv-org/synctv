@@ -138,6 +138,5 @@ impl proxy_slice_cache_service_server::ProxySliceCacheService for ProxySliceCach
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 #[path = "slice_cache_service_tests.rs"]
 mod tests;

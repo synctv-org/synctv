@@ -1274,6 +1274,13 @@ pub fn gather_metrics() -> String {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn test_metrics_registration() {
         // Verify all metrics are registered
@@ -1288,8 +1295,11 @@ mod tests {
         let encoder = TextEncoder::new();
         let metric_families = REGISTRY.gather();
         let mut buffer = Vec::new();
-        encoder.encode(&metric_families, &mut buffer).unwrap();
-        let output = String::from_utf8(buffer).unwrap();
+        ok(
+            encoder.encode(&metric_families, &mut buffer),
+            "metrics should encode",
+        );
+        let output = ok(String::from_utf8(buffer), "metrics should be valid UTF-8");
         assert!(output.contains("http_request_duration_seconds"));
     }
 

@@ -388,6 +388,13 @@ pub async fn ensure_notification_partitions_on_startup(pool: &PgPool) -> Result<
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     const _: () = assert!(
         !STARTUP_RUNS_RETENTION_CLEANUP,
         "per-replica startup initialization must avoid retention cleanup DDL"
@@ -425,7 +432,7 @@ mod tests {
         leader.0.store(true, Ordering::SeqCst);
         tokio::time::advance(std::time::Duration::from_secs(1)).await;
         assert!(
-            wait_task.await.expect("wait task should complete"),
+            ok(wait_task.await, "wait task should complete"),
             "leader election should trigger the initial maintenance wait to finish"
         );
     }
@@ -440,7 +447,8 @@ mod tests {
             "health_status": "healthy"
         }"#;
 
-        let health: NotificationPartitionHealth = serde_json::from_str(json).unwrap();
+        let health: NotificationPartitionHealth =
+            ok(serde_json::from_str(json), "health JSON should deserialize");
         assert_eq!(health.total_partitions, 4);
         assert_eq!(health.missing_count, 0);
         assert_eq!(health.health_status, "healthy");
@@ -456,7 +464,10 @@ mod tests {
             "health_status": "warning"
         }"#;
 
-        let health: NotificationPartitionHealth = serde_json::from_str(json).unwrap();
+        let health: NotificationPartitionHealth = ok(
+            serde_json::from_str(json),
+            "warning health JSON should deserialize",
+        );
         assert_eq!(health.total_partitions, 3);
         assert_eq!(health.missing_count, 1);
         assert_eq!(health.health_status, "warning");

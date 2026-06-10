@@ -18,11 +18,6 @@ const NONCE_SIZE: usize = 12;
 /// Prefix for encrypted data to distinguish from plaintext
 const ENCRYPTED_PREFIX: &str = "enc:";
 
-/// Key version byte prepended to encrypted payloads for future key rotation support.
-/// When rotating keys, increment this version and use it to select the correct
-/// decryption key.
-const KEY_VERSION: u8 = 0x01;
-
 /// Credential encryption service
 ///
 /// Encrypts and decrypts credential data using AES-256-GCM.
@@ -76,8 +71,7 @@ impl CredentialEncryption {
 
     /// Encrypt JSON credential data
     ///
-    /// Returns a string in the format "enc:<base64(version + nonce + ciphertext)>"
-    /// A version byte is prepended for future key rotation support.
+    /// Returns a string in the format "enc:<base64(nonce + ciphertext)>"
     pub fn encrypt(&self, plaintext: &serde_json::Value) -> Result<String> {
         let plaintext_bytes = serde_json::to_vec(plaintext)
             .internal_with_err("Failed to serialize credential data")?;
@@ -93,9 +87,7 @@ impl CredentialEncryption {
             .encrypt(nonce, plaintext_bytes.as_ref())
             .internal_with_err("Credential encryption failed")?;
 
-        // Prepend version byte + nonce to ciphertext and encode as base64
-        let mut combined = Vec::with_capacity(1 + NONCE_SIZE + ciphertext.len());
-        combined.push(KEY_VERSION);
+        let mut combined = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
         combined.extend_from_slice(&nonce_bytes);
         combined.extend_from_slice(&ciphertext);
 
@@ -113,20 +105,13 @@ impl CredentialEncryption {
         let combined = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
             .internal_with_err("Invalid base64 in encrypted credential")?;
 
-        if combined.len() < 1 + NONCE_SIZE {
+        if combined.len() < NONCE_SIZE {
             return Err(Error::Internal(
                 "Encrypted credential data too short".to_string(),
             ));
         }
 
-        let version = combined[0];
-        if version != KEY_VERSION {
-            return Err(Error::Internal(format!(
-                "Unsupported credential encryption version: {version} (expected {KEY_VERSION})"
-            )));
-        }
-
-        let (nonce_bytes, ciphertext) = combined[1..].split_at(NONCE_SIZE);
+        let (nonce_bytes, ciphertext) = combined.split_at(NONCE_SIZE);
         let nonce = Nonce::from_slice(nonce_bytes);
 
         let plaintext = self.cipher.decrypt(nonce, ciphertext).map_err(|_| {
@@ -160,8 +145,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn ok<T>(result: Result<T>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     fn test_key() -> Vec<u8> {
-        // 32 bytes for AES-256
         vec![
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
             0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
@@ -171,7 +162,10 @@ mod tests {
 
     #[test]
     fn test_encrypt_decrypt_round_trip() {
-        let enc = CredentialEncryption::new(&test_key()).unwrap();
+        let enc = ok(
+            CredentialEncryption::new(&test_key()),
+            "encryption should build",
+        );
         let original = json!({
             "type": "alist",
             "host": "https://alist.example.com",
@@ -179,16 +173,19 @@ mod tests {
             "password": "secret_password"
         });
 
-        let encrypted = enc.encrypt(&original).unwrap();
+        let encrypted = ok(enc.encrypt(&original), "credential should encrypt");
         assert!(encrypted.starts_with("enc:"));
 
-        let decrypted = enc.decrypt(&encrypted).unwrap();
+        let decrypted = ok(enc.decrypt(&encrypted), "credential should decrypt");
         assert_eq!(original, decrypted);
     }
 
     #[test]
     fn test_decrypt_plaintext_returns_error() {
-        let enc = CredentialEncryption::new(&test_key()).unwrap();
+        let enc = ok(
+            CredentialEncryption::new(&test_key()),
+            "encryption should build",
+        );
         let plaintext = r#"{"type":"bilibili","cookies":{"SESSDATA":"test"}}"#;
 
         let result = enc.decrypt(plaintext);
@@ -197,21 +194,33 @@ mod tests {
 
     #[test]
     fn test_decrypt_value_encrypted() {
-        let enc = CredentialEncryption::new(&test_key()).unwrap();
+        let enc = ok(
+            CredentialEncryption::new(&test_key()),
+            "encryption should build",
+        );
         let original = json!({"api_key": "secret123"});
 
-        let encrypted_value = enc.encrypt_to_value(&original).unwrap();
+        let encrypted_value = ok(
+            enc.encrypt_to_value(&original),
+            "credential value should encrypt",
+        );
         assert!(encrypted_value
             .as_str()
             .is_some_and(|s| s.starts_with("enc:")));
 
-        let decrypted = enc.decrypt_value(&encrypted_value).unwrap();
+        let decrypted = ok(
+            enc.decrypt_value(&encrypted_value),
+            "credential value should decrypt",
+        );
         assert_eq!(original, decrypted);
     }
 
     #[test]
     fn test_decrypt_value_plaintext_returns_error() {
-        let enc = CredentialEncryption::new(&test_key()).unwrap();
+        let enc = ok(
+            CredentialEncryption::new(&test_key()),
+            "encryption should build",
+        );
         let plaintext = json!({"cookies": {"SESSDATA": "test"}});
 
         let result = enc.decrypt_value(&plaintext);
@@ -220,12 +229,18 @@ mod tests {
 
     #[test]
     fn test_wrong_key_fails() {
-        let enc1 = CredentialEncryption::new(&test_key()).unwrap();
+        let enc1 = ok(
+            CredentialEncryption::new(&test_key()),
+            "encryption should build",
+        );
         let original = json!({"secret": "data"});
-        let encrypted = enc1.encrypt(&original).unwrap();
+        let encrypted = ok(enc1.encrypt(&original), "credential should encrypt");
 
         let wrong_key = vec![0xffu8; 32];
-        let enc2 = CredentialEncryption::new(&wrong_key).unwrap();
+        let enc2 = ok(
+            CredentialEncryption::new(&wrong_key),
+            "wrong-key encryption should build",
+        );
 
         let result = enc2.decrypt(&encrypted);
         assert!(result.is_err());
@@ -240,27 +255,37 @@ mod tests {
     #[test]
     fn test_from_hex_key() {
         let hex_key = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
-        let enc = CredentialEncryption::from_hex_key(hex_key).unwrap();
+        let enc = ok(
+            CredentialEncryption::from_hex_key(hex_key),
+            "hex key should build encryption",
+        );
         let original = json!({"test": true});
 
-        let encrypted = enc.encrypt(&original).unwrap();
-        let decrypted = enc.decrypt(&encrypted).unwrap();
+        let encrypted = ok(enc.encrypt(&original), "credential should encrypt");
+        let decrypted = ok(enc.decrypt(&encrypted), "credential should decrypt");
         assert_eq!(original, decrypted);
     }
 
     #[test]
     fn test_each_encryption_produces_different_ciphertext() {
-        let enc = CredentialEncryption::new(&test_key()).unwrap();
+        let enc = ok(
+            CredentialEncryption::new(&test_key()),
+            "encryption should build",
+        );
         let original = json!({"same": "data"});
 
-        let encrypted1 = enc.encrypt(&original).unwrap();
-        let encrypted2 = enc.encrypt(&original).unwrap();
+        let encrypted1 = ok(enc.encrypt(&original), "first credential should encrypt");
+        let encrypted2 = ok(enc.encrypt(&original), "second credential should encrypt");
 
-        // Different nonces produce different ciphertext
         assert_ne!(encrypted1, encrypted2);
 
-        // Both decrypt to the same value
-        assert_eq!(enc.decrypt(&encrypted1).unwrap(), original);
-        assert_eq!(enc.decrypt(&encrypted2).unwrap(), original);
+        assert_eq!(
+            ok(enc.decrypt(&encrypted1), "first credential should decrypt"),
+            original
+        );
+        assert_eq!(
+            ok(enc.decrypt(&encrypted2), "second credential should decrypt"),
+            original
+        );
     }
 }

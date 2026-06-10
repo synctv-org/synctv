@@ -80,7 +80,7 @@ fn least_connections_score(node: &NodeInfo, now_timestamp: i64) -> usize {
 
     let age_secs = now_timestamp.saturating_sub(registered_at);
     if age_secs < WARMUP_PERIOD_SECS {
-        let age_secs = usize::try_from(age_secs).unwrap_or(0);
+        let age_secs = usize::try_from(age_secs).unwrap_or(usize::MAX);
         let remaining_warmup = WARMUP_PERIOD_SECS_USIZE.saturating_sub(age_secs);
         let penalty = WARMUP_PENALTY.saturating_mul(remaining_warmup) / WARMUP_PERIOD_SECS_USIZE;
         tracing::trace!(
@@ -236,9 +236,43 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    /// Helper: create a NodeRegistry (redis::Client::open succeeds without a running server)
-    fn make_registry() -> Arc<NodeRegistry> {
-        Arc::new(NodeRegistry::new_local_only("self".to_string(), 30, "test:").unwrap())
+    fn make_registry() -> Result<Arc<NodeRegistry>> {
+        Ok(Arc::new(NodeRegistry::new_local_only(
+            "self".to_string(),
+            30,
+            "test:",
+        )?))
+    }
+
+    fn make_redis_registry(prefix: &str) -> Result<Arc<NodeRegistry>> {
+        let client = redis::Client::open("redis://127.0.0.1:1")
+            .map_err(|error| Error::Redis(error.to_string()))?;
+        Ok(Arc::new(NodeRegistry::new(
+            synctv_core::coordination_runtime_from_client(client),
+            "self".to_string(),
+            30,
+            prefix,
+        )?))
+    }
+
+    fn node_mut<'a>(
+        nodes: &'a mut std::collections::HashMap<String, NodeInfo>,
+        node_id: &str,
+    ) -> Result<&'a mut NodeInfo> {
+        nodes
+            .get_mut(node_id)
+            .ok_or_else(|| Error::NotFound(format!("test node {node_id} not registered")))
+    }
+
+    fn unix_now_secs_for_test() -> Result<u64> {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .map_err(|error| {
+                Error::Internal(anyhow::anyhow!(
+                    "system clock is before UNIX_EPOCH: {error}"
+                ))
+            })
     }
 
     /// Helper: populate N nodes directly into the local cache (no Redis required)
@@ -260,47 +294,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_balancer_new() {
-        let registry = make_registry();
+    async fn test_load_balancer_new() -> Result<()> {
+        let registry = make_registry()?;
         let _lb = LoadBalancer::new(registry, LoadBalancingStrategy::Random);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_load_balancer_with_health_monitor() {
-        let registry = make_registry();
+    async fn test_load_balancer_with_health_monitor() -> Result<()> {
+        let registry = make_registry()?;
         let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
         let _lb =
             LoadBalancer::new(registry, LoadBalancingStrategy::Random).with_health_monitor(monitor);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_empty_cluster() {
-        let registry = make_registry();
+    async fn test_select_node_empty_cluster() -> Result<()> {
+        let registry = make_registry()?;
         let lb = LoadBalancer::new(registry, LoadBalancingStrategy::Random);
         let result = lb.select_node().await;
         assert!(result.is_err(), "Empty cluster should return error");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_random_single() {
-        let registry = make_registry();
+    async fn test_select_node_random_single() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 1).await;
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
 
-        let node = lb.select_node().await.unwrap();
+        let node = lb.select_node().await?;
         assert_eq!(node, "self");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_random_multiple() {
-        let registry = make_registry();
+    async fn test_select_node_random_multiple() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 5).await;
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
 
         // Run many selections and verify we get a reasonable distribution
         let mut selected: HashSet<String> = HashSet::new();
         for _ in 0..100 {
-            let node = lb.select_node().await.unwrap();
+            let node = lb.select_node().await?;
             selected.insert(node);
         }
 
@@ -309,18 +347,19 @@ mod tests {
             selected.len() >= 2,
             "Random selection should hit multiple nodes, got: {selected:?}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_round_robin() {
-        let registry = make_registry();
+    async fn test_select_node_round_robin() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 3).await;
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::RoundRobin);
 
         // Collect one full cycle
         let mut cycle = Vec::new();
         for _ in 0..3 {
-            cycle.push(lb.select_node().await.unwrap());
+            cycle.push(lb.select_node().await?);
         }
 
         // Should get all 3 unique nodes in one cycle
@@ -334,51 +373,40 @@ mod tests {
         // Next cycle should repeat the same order (sorted by node_id)
         let mut second_cycle = Vec::new();
         for _ in 0..3 {
-            second_cycle.push(lb.select_node().await.unwrap());
+            second_cycle.push(lb.select_node().await?);
         }
         assert_eq!(cycle, second_cycle, "Round-robin should be deterministic");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_least_connections() {
-        let registry = make_registry();
+    async fn test_select_node_least_connections() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 3).await;
 
         // Set connection counts via metadata
         {
             let mut nodes = registry.local_nodes.write().await;
             // "self" = 10 connections
-            nodes
-                .get_mut("self")
-                .unwrap()
+            node_mut(&mut nodes, "self")?
                 .metadata
                 .insert("connections".to_string(), "10".to_string());
             // Ensure past warmup by setting registered_at far in the past
-            nodes
-                .get_mut("self")
-                .unwrap()
+            node_mut(&mut nodes, "self")?
                 .metadata
                 .insert("registered_at".to_string(), "0".to_string());
             // "node-1" = 5 connections (fewest)
-            nodes
-                .get_mut("node-1")
-                .unwrap()
+            node_mut(&mut nodes, "node-1")?
                 .metadata
                 .insert("connections".to_string(), "5".to_string());
-            nodes
-                .get_mut("node-1")
-                .unwrap()
+            node_mut(&mut nodes, "node-1")?
                 .metadata
                 .insert("registered_at".to_string(), "0".to_string());
             // "node-2" = 20 connections
-            nodes
-                .get_mut("node-2")
-                .unwrap()
+            node_mut(&mut nodes, "node-2")?
                 .metadata
                 .insert("connections".to_string(), "20".to_string());
-            nodes
-                .get_mut("node-2")
-                .unwrap()
+            node_mut(&mut nodes, "node-2")?
                 .metadata
                 .insert("registered_at".to_string(), "0".to_string());
         }
@@ -387,34 +415,29 @@ mod tests {
             Arc::clone(&registry),
             LoadBalancingStrategy::LeastConnections,
         );
-        let node = lb.select_node().await.unwrap();
+        let node = lb.select_node().await?;
         assert_eq!(node, "node-1", "Should select node with fewest connections");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_least_connections_warmup_penalty() {
-        let registry = make_registry();
+    async fn test_select_node_least_connections_warmup_penalty() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 2).await;
 
         // "self" has 5 connections, established node
         // "node-1" has no connection metadata and was just registered
         {
             let mut nodes = registry.local_nodes.write().await;
-            nodes
-                .get_mut("self")
-                .unwrap()
+            node_mut(&mut nodes, "self")?
                 .metadata
                 .insert("connections".to_string(), "5".to_string());
-            nodes
-                .get_mut("self")
-                .unwrap()
+            node_mut(&mut nodes, "self")?
                 .metadata
                 .insert("registered_at".to_string(), "0".to_string());
             // node-1: recently registered (current time), no connections reported
             let now = chrono::Utc::now().timestamp().to_string();
-            nodes
-                .get_mut("node-1")
-                .unwrap()
+            node_mut(&mut nodes, "node-1")?
                 .metadata
                 .insert("registered_at".to_string(), now);
         }
@@ -423,34 +446,37 @@ mod tests {
             Arc::clone(&registry),
             LoadBalancingStrategy::LeastConnections,
         );
-        let node = lb.select_node().await.unwrap();
+        let node = lb.select_node().await?;
         // node-1 is in warmup period with penalty > 5, so "self" should be selected
         assert_eq!(node, "self", "Warmup node should be penalized");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_by_id_found() {
-        let registry = make_registry();
+    async fn test_select_node_by_id_found() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 3).await;
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
 
-        let node = lb.select_node_by_id("node-1").await.unwrap();
+        let node = lb.select_node_by_id("node-1").await?;
         assert_eq!(node, "node-1");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_by_id_not_found() {
-        let registry = make_registry();
+    async fn test_select_node_by_id_not_found() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 1).await;
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
 
         let result = lb.select_node_by_id("nonexistent").await;
         assert!(result.is_err());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_by_id_filters_unhealthy_nodes() {
-        let registry = make_registry();
+    async fn test_select_node_by_id_filters_unhealthy_nodes() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 3).await;
 
         let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
@@ -470,21 +496,12 @@ mod tests {
             err.to_string().contains("not available"),
             "error should explain that unhealthy nodes are not routable: {err}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_by_id_fails_closed_when_degraded_cache_is_stale() {
-        let registry = Arc::new(
-            NodeRegistry::new(
-                synctv_core::coordination_runtime_from_client(
-                    redis::Client::open("redis://127.0.0.1:1").unwrap(),
-                ),
-                "self".to_string(),
-                30,
-                "test-stale-select:",
-            )
-            .unwrap(),
-        );
+    async fn test_select_node_by_id_fails_closed_when_degraded_cache_is_stale() -> Result<()> {
+        let registry = make_redis_registry("test-stale-select:")?;
         register_nodes(&registry, 2).await;
         registry.test_set_cluster_mode(super::super::node_registry::ClusterMode::Degraded);
         registry.test_set_last_refreshed_at(1);
@@ -498,61 +515,51 @@ mod tests {
             err.to_string().contains("stale"),
             "error should preserve the stale-topology fail-closed reason: {err}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_get_available_nodes() {
-        let registry = make_registry();
+    async fn test_get_available_nodes() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 3).await;
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
 
-        let available = lb.get_available_nodes().await.unwrap();
+        let available = lb.get_available_nodes().await?;
         assert_eq!(available.len(), 3);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_available_count() {
-        let registry = make_registry();
+    async fn test_available_count() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 4).await;
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
 
-        let count = lb.available_count().await.unwrap();
+        let count = lb.available_count().await?;
         assert_eq!(count, 4);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_uses_routable_nodes_in_degraded_mode_when_fresh_enough() {
-        let registry = make_registry();
+    async fn test_select_node_uses_routable_nodes_in_degraded_mode_when_fresh_enough() -> Result<()>
+    {
+        let registry = make_registry()?;
         register_nodes(&registry, 2).await;
         registry.test_set_cluster_mode(super::super::node_registry::ClusterMode::Degraded);
-        registry.test_set_last_refreshed_at(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        );
+        registry.test_set_last_refreshed_at(unix_now_secs_for_test()?);
 
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
-        let selected = lb.select_node().await.unwrap();
+        let selected = lb.select_node().await?;
         assert!(
             selected == "self" || selected == "node-1",
             "degraded mode should still route while the cached topology is fresh enough"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_fails_closed_when_degraded_cache_is_stale() {
-        let registry = Arc::new(
-            NodeRegistry::new(
-                synctv_core::coordination_runtime_from_client(
-                    redis::Client::open("redis://127.0.0.1:1").unwrap(),
-                ),
-                "self".to_string(),
-                30,
-                "test-stale:",
-            )
-            .unwrap(),
-        );
+    async fn test_select_node_fails_closed_when_degraded_cache_is_stale() -> Result<()> {
+        let registry = make_redis_registry("test-stale:")?;
         register_nodes(&registry, 2).await;
         registry.test_set_cluster_mode(super::super::node_registry::ClusterMode::Degraded);
         registry.test_set_last_refreshed_at(1);
@@ -566,11 +573,12 @@ mod tests {
             err.to_string().contains("stale"),
             "error should explain the fail-closed stale topology guard: {err}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_filters_unhealthy() {
-        let registry = make_registry();
+    async fn test_select_node_filters_unhealthy() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 3).await;
 
         let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
@@ -587,7 +595,7 @@ mod tests {
         // Should never select node-1
         let mut selected: HashSet<String> = HashSet::new();
         for _ in 0..20 {
-            selected.insert(lb.select_node().await.unwrap());
+            selected.insert(lb.select_node().await?);
         }
 
         assert!(
@@ -595,11 +603,12 @@ mod tests {
             "Unhealthy node should be excluded"
         );
         assert!(selected.contains("self") || selected.contains("node-2"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_returns_error_when_all_unhealthy() {
-        let registry = make_registry();
+    async fn test_select_node_returns_error_when_all_unhealthy() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 2).await;
 
         let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
@@ -619,11 +628,12 @@ mod tests {
             node.is_err(),
             "Must fail closed when all nodes are unhealthy"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_fails_closed_when_health_snapshot_is_stale() {
-        let registry = make_registry();
+    async fn test_select_node_fails_closed_when_health_snapshot_is_stale() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 2).await;
 
         let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 1));
@@ -632,13 +642,7 @@ mod tests {
             status.insert("self".to_string(), NodeHealth::Healthy);
             status.insert("node-1".to_string(), NodeHealth::Healthy);
         }
-        monitor.test_set_last_successful_refresh_at(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                .saturating_sub(2),
-        );
+        monitor.test_set_last_successful_refresh_at(unix_now_secs_for_test()?.saturating_sub(2));
 
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
             .with_health_monitor(monitor);
@@ -651,30 +655,29 @@ mod tests {
             err.to_string().contains("stale"),
             "error should preserve the stale health snapshot reason: {err}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_select_node_allows_routing_before_first_health_refresh() {
-        let registry = make_registry();
+    async fn test_select_node_allows_routing_before_first_health_refresh() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 2).await;
 
         let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
             .with_health_monitor(monitor);
 
-        let selected = lb
-            .select_node()
-            .await
-            .expect("routing should still work before the first successful health refresh");
+        let selected = lb.select_node().await?;
         assert!(
             selected == "self" || selected == "node-1",
             "selection should come from currently routable nodes: {selected}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_degraded_nodes_are_not_excluded() {
-        let registry = make_registry();
+    async fn test_degraded_nodes_are_not_excluded() -> Result<()> {
+        let registry = make_registry()?;
         register_nodes(&registry, 2).await;
 
         let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
@@ -690,12 +693,13 @@ mod tests {
 
         let mut selected: HashSet<String> = HashSet::new();
         for _ in 0..20 {
-            selected.insert(lb.select_node().await.unwrap());
+            selected.insert(lb.select_node().await?);
         }
 
         assert!(
             selected.contains("node-1"),
             "Degraded nodes should still be included"
         );
+        Ok(())
     }
 }

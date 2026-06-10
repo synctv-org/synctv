@@ -189,41 +189,6 @@ enum ReliableDeliveryOutcome {
     Delivered,
     Closed,
     TimedOut,
-    Unavailable,
-    Deferred,
-}
-
-fn block_on_reliable_delivery(
-    sender: mpsc::Sender<RealtimeEvent>,
-    event: RealtimeEvent,
-    room_id: RoomId,
-    connection_id: ConnectionId,
-) -> ReliableDeliveryOutcome {
-    let delivery = deliver_reliable_event(sender, event, room_id, connection_id);
-
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => match handle.runtime_flavor() {
-            tokio::runtime::RuntimeFlavor::MultiThread =>
-            {
-                #[allow(clippy::disallowed_methods)]
-                tokio::task::block_in_place(|| handle.block_on(delivery))
-            }
-            tokio::runtime::RuntimeFlavor::CurrentThread => {
-                if try_spawn(delivery).is_some() {
-                    ReliableDeliveryOutcome::Deferred
-                } else {
-                    ReliableDeliveryOutcome::Unavailable
-                }
-            }
-            _ => ReliableDeliveryOutcome::Unavailable,
-        },
-        Err(_) => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_or(ReliableDeliveryOutcome::Unavailable, |runtime| {
-                runtime.block_on(delivery)
-            }),
-    }
 }
 
 fn try_spawn<F>(future: F) -> Option<JoinHandle<F::Output>>
@@ -305,23 +270,9 @@ pub struct RoomMessageHub {
     /// Cancelled on `shutdown()` to stop the task gracefully.
     ttl_refresh_cancel: Arc<tokio_util::sync::CancellationToken>,
 
-    /// Cancellation token for the auto-spawned stale subscription cleanup task.
-    /// Cancelled on `shutdown()` to stop the task gracefully.
-    stale_cleanup_cancel: Arc<tokio_util::sync::CancellationToken>,
-
-    /// Local retry queue for Redis subscription cleanup operations that failed
-    /// during `unsubscribe()`.
-    ///
-    /// This only tracks subscriptions that were previously owned by this hub
-    /// instance. It must never be reconstructed by scanning Redis globally,
-    /// because replicas share the same key prefix and would otherwise delete
-    /// each other's still-active subscriptions.
-    pending_redis_cleanup: Arc<DashMap<ConnectionId, RoomId>>,
-
     /// Guards idempotent startup of Redis-backed background tasks.
     background_tasks_started: Arc<AtomicBool>,
     ttl_refresh_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
-    stale_cleanup_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl std::fmt::Debug for RoomMessageHub {
@@ -429,11 +380,8 @@ impl RoomMessageHub {
             redis_key_prefix: String::new(),
             redis_key_ttl_secs: 180, // 3 minutes default
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
-            stale_cleanup_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
-            pending_redis_cleanup: Arc::new(DashMap::new()),
             background_tasks_started: Arc::new(AtomicBool::new(false)),
             ttl_refresh_handle: Arc::new(Mutex::new(None)),
-            stale_cleanup_handle: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -458,13 +406,9 @@ impl RoomMessageHub {
     /// for cross-replica visibility and recovery after restarts. Local DashMaps
     /// remain as a fast cache for message routing.
     ///
-    /// Automatically spawns two background tasks:
-    /// 1. **TTL refresh** (at 40% of `redis_key_ttl_secs` interval) to prevent
-    ///    active subscription keys from expiring.
-    /// 2. **Stale subscription cleanup** (every 60 seconds) to remove orphaned
-    ///    Redis entries left by failed fire-and-forget cleanup in `unsubscribe()`.
-    ///
-    /// Both tasks are cancelled when `shutdown()` is called.
+    /// Automatically spawns a TTL refresh task at 40% of
+    /// `redis_key_ttl_secs` to prevent active subscription keys from expiring.
+    /// The task is cancelled when `shutdown()` is called.
     #[must_use]
     pub(crate) fn new_with_redis_runtime(
         conn: Arc<dyn RedisConnectionRuntime>,
@@ -510,6 +454,160 @@ impl RoomMessageHub {
         run_room_hub_redis_op(self.redis_operation_timeout(), operation, future).await
     }
 
+    fn log_redis_rollback_failure(operation: &'static str, error: &str) {
+        warn!(
+            operation,
+            error, "Redis subscription rollback failed after subscribe error"
+        );
+    }
+
+    async fn rollback_redis_room_subscription(
+        &self,
+        conn: &mut redis::aio::ConnectionManager,
+        room_key: &str,
+        connection_id: &str,
+        operation: &'static str,
+    ) {
+        if let Err(error) = self
+            .redis_op(operation, conn.hdel::<_, _, ()>(room_key, connection_id))
+            .await
+        {
+            Self::log_redis_rollback_failure(operation, &error);
+        }
+    }
+
+    async fn rollback_redis_room_index_membership(
+        &self,
+        conn: &mut redis::aio::ConnectionManager,
+        room_index_directory_key: &str,
+        room_key: &str,
+    ) {
+        const OPERATION: &str = "rollback room index directory membership";
+        if let Err(error) = self
+            .redis_op(
+                OPERATION,
+                conn.srem::<_, _, ()>(room_index_directory_key, room_key),
+            )
+            .await
+        {
+            Self::log_redis_rollback_failure(OPERATION, &error);
+        }
+    }
+
+    async fn persist_redis_subscription(
+        &self,
+        room_id: &RoomId,
+        user_id: UserId,
+        connection_id: &ConnectionId,
+    ) -> Result<(), String> {
+        let Some(mut conn_clone) = self.redis_conn_clone("persist room subscription").await? else {
+            return Ok(());
+        };
+
+        let room_key = self.room_key(room_id);
+        let conn_key = self.conn_key(connection_id.as_str());
+        let room_index_directory_key = self.room_index_directory_key();
+        let ttl_secs = self.redis_key_ttl_secs;
+
+        if let Err(e) = self
+            .redis_op(
+                "persist room subscription",
+                conn_clone.hset::<_, _, _, ()>(&room_key, connection_id.as_str(), user_id.get()),
+            )
+            .await
+        {
+            return Err(format!("Failed to persist room subscription to Redis: {e}"));
+        }
+
+        if let Err(e) = self
+            .redis_op(
+                "refresh room subscription TTL",
+                conn_clone.expire::<_, ()>(&room_key, ttl_secs),
+            )
+            .await
+        {
+            self.rollback_redis_room_subscription(
+                &mut conn_clone,
+                &room_key,
+                connection_id.as_str(),
+                "rollback room subscription after TTL failure",
+            )
+            .await;
+            return Err(format!(
+                "Failed to refresh room subscription TTL in Redis: {e}"
+            ));
+        }
+
+        if let Err(e) = self
+            .redis_op(
+                "persist room index directory membership",
+                conn_clone.sadd::<_, _, ()>(&room_index_directory_key, &room_key),
+            )
+            .await
+        {
+            self.rollback_redis_room_subscription(
+                &mut conn_clone,
+                &room_key,
+                connection_id.as_str(),
+                "rollback room subscription after index failure",
+            )
+            .await;
+            return Err(format!(
+                "Failed to persist room index directory membership to Redis: {e}"
+            ));
+        }
+
+        if let Err(e) = self
+            .redis_op(
+                "refresh room index directory TTL",
+                conn_clone.expire::<_, ()>(&room_index_directory_key, ttl_secs),
+            )
+            .await
+        {
+            self.rollback_redis_room_subscription(
+                &mut conn_clone,
+                &room_key,
+                connection_id.as_str(),
+                "rollback room subscription after index TTL failure",
+            )
+            .await;
+            self.rollback_redis_room_index_membership(
+                &mut conn_clone,
+                &room_index_directory_key,
+                &room_key,
+            )
+            .await;
+            return Err(format!(
+                "Failed to refresh room index directory TTL in Redis: {e}"
+            ));
+        }
+
+        if let Err(e) = self
+            .redis_op(
+                "persist connection room mapping",
+                conn_clone.set_ex::<_, _, ()>(
+                    &conn_key,
+                    room_id.get(),
+                    ttl_secs_unsigned(ttl_secs),
+                ),
+            )
+            .await
+        {
+            self.rollback_redis_room_subscription(
+                &mut conn_clone,
+                &room_key,
+                connection_id.as_str(),
+                "rollback room subscription after connection mapping failure",
+            )
+            .await;
+            return Err(format!(
+                "Failed to persist connection mapping to Redis: {e}"
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Start Redis-backed background tasks if Redis is configured and a Tokio runtime exists.
     ///
     /// Safe to call multiple times. When called without a Tokio runtime, no
@@ -536,7 +634,6 @@ impl RoomMessageHub {
         let ttl_cancel = (*self.ttl_refresh_cancel).clone();
         // Use 40% of TTL as the refresh interval (at most 120s, at least 30s)
         let refresh_interval_secs = ttl_refresh_interval_secs(self.redis_key_ttl_secs);
-        let stale_cancel = (*self.stale_cleanup_cancel).clone();
         let Some(ttl_handle) =
             self.spawn_ttl_refresh_task(Duration::from_secs(refresh_interval_secs), ttl_cancel)
         else {
@@ -547,42 +644,19 @@ impl RoomMessageHub {
             );
             return;
         };
-        let Some(cleanup_handle) =
-            self.spawn_stale_subscription_cleanup_task(Duration::from_mins(1), stale_cancel)
-        else {
-            ttl_handle.abort();
-            self.background_tasks_started
-                .store(false, Ordering::Release);
-            warn!(
-                "RoomMessageHub stale subscription cleanup task spawn failed; background tasks were not started"
-            );
-            return;
-        };
 
         *self.ttl_refresh_handle.lock() = Some(ttl_handle);
-        *self.stale_cleanup_handle.lock() = Some(cleanup_handle);
     }
 
-    /// Cancel the auto-spawned background tasks (TTL refresh and stale cleanup)
-    /// and wait for them to exit.
+    /// Cancel the auto-spawned TTL refresh task and wait for it to exit.
     pub async fn shutdown(&self) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         self.ttl_refresh_cancel.cancel();
-        self.stale_cleanup_cancel.cancel();
 
         let ttl_handle = self.ttl_refresh_handle.lock().take();
         if let Some(handle) = ttl_handle {
             Self::await_shutdown_handle(
                 "ttl refresh",
-                Self::remaining_shutdown_budget(deadline),
-                handle,
-            )
-            .await;
-        }
-        let stale_cleanup_handle = self.stale_cleanup_handle.lock().take();
-        if let Some(handle) = stale_cleanup_handle {
-            Self::await_shutdown_handle(
-                "stale cleanup",
                 Self::remaining_shutdown_budget(deadline),
                 handle,
             )
@@ -594,7 +668,7 @@ impl RoomMessageHub {
 
     #[cfg(test)]
     pub(crate) fn background_shutdown_requested(&self) -> bool {
-        self.ttl_refresh_cancel.is_cancelled() && self.stale_cleanup_cancel.is_cancelled()
+        self.ttl_refresh_cancel.is_cancelled()
     }
 
     /// Set the TTL for Redis subscription keys (crash-safety mechanism).
@@ -612,6 +686,18 @@ impl RoomMessageHub {
     #[must_use]
     pub fn subscribe_lifecycle(&self) -> broadcast::Receiver<RoomLifecycleEvent> {
         self.lifecycle_tx.subscribe()
+    }
+
+    fn publish_lifecycle_event(&self, event: &RoomLifecycleEvent) {
+        match self.lifecycle_tx.send(event.clone()) {
+            Ok(_) => {}
+            Err(_) => {
+                debug!(
+                    event = ?event,
+                    "room lifecycle event published with no active subscribers"
+                );
+            }
+        }
     }
 
     /// Subscribe a client to room events.
@@ -637,11 +723,6 @@ impl RoomMessageHub {
             consecutive_drops: Arc::new(AtomicU32::new(0)),
         };
 
-        // A reused connection ID must never inherit a failed cleanup retry from
-        // an older subscription lifecycle. Clear any stale local retry entry
-        // before making the new subscription visible.
-        self.pending_redis_cleanup.remove(&connection_id);
-
         // Atomically check-and-insert using DashMap's entry API.
         // This avoids the TOCTOU race between `contains_key` + `entry().or_default()`
         // where two concurrent subscribes could both see the room as new.
@@ -662,127 +743,16 @@ impl RoomMessageHub {
         self.connections
             .insert(connection_id.clone(), (room_id, user_id));
 
-        // Persist to Redis for cross-replica visibility.
-        // In Redis-backed mode this is part of the subscription contract: if the
-        // distributed state cannot be written, the local subscription must be
-        // rolled back so callers do not observe a false-success join.
-        if let Some(mut conn_clone) = self
-            .redis_conn_clone("persist room subscription")
+        if let Err(e) = self
+            .persist_redis_subscription(&room_id, user_id, &connection_id)
             .await
-            .map_err(crate::error::Error::Redis)?
         {
-            let room_key = self.room_key(&room_id);
-            let conn_key = self.conn_key(connection_id.as_str());
-            let room_index_directory_key = self.room_index_directory_key();
-            let ttl_secs = self.redis_key_ttl_secs;
-
-            // Store room -> {connection_id: user_id} mapping
-            if let Err(e) = self
-                .redis_op(
-                    "persist room subscription",
-                    conn_clone.hset::<_, _, _, ()>(
-                        &room_key,
-                        connection_id.as_str(),
-                        user_id.get(),
-                    ),
-                )
-                .await
-            {
-                self.rollback_local_subscription(&room_id, &connection_id);
-                return Err(crate::error::Error::Redis(format!(
-                    "Failed to persist room subscription to Redis: {e}"
-                )));
-            }
-            if let Err(e) = self
-                .redis_op(
-                    "refresh room subscription TTL",
-                    conn_clone.expire::<_, ()>(&room_key, ttl_secs),
-                )
-                .await
-            {
-                let _ = self
-                    .redis_op(
-                        "rollback room subscription after TTL failure",
-                        conn_clone.hdel::<_, _, ()>(&room_key, connection_id.as_str()),
-                    )
-                    .await;
-                self.rollback_local_subscription(&room_id, &connection_id);
-                return Err(crate::error::Error::Redis(format!(
-                    "Failed to refresh room subscription TTL in Redis: {e}"
-                )));
-            }
-            if let Err(e) = self
-                .redis_op(
-                    "persist room index directory membership",
-                    conn_clone.sadd::<_, _, ()>(&room_index_directory_key, &room_key),
-                )
-                .await
-            {
-                let _ = self
-                    .redis_op(
-                        "rollback room subscription after index failure",
-                        conn_clone.hdel::<_, _, ()>(&room_key, connection_id.as_str()),
-                    )
-                    .await;
-                self.rollback_local_subscription(&room_id, &connection_id);
-                return Err(crate::error::Error::Redis(format!(
-                    "Failed to persist room index directory membership to Redis: {e}"
-                )));
-            }
-            if let Err(e) = self
-                .redis_op(
-                    "refresh room index directory TTL",
-                    conn_clone.expire::<_, ()>(&room_index_directory_key, ttl_secs),
-                )
-                .await
-            {
-                let _ = self
-                    .redis_op(
-                        "rollback room subscription after index TTL failure",
-                        conn_clone.hdel::<_, _, ()>(&room_key, connection_id.as_str()),
-                    )
-                    .await;
-                let _ = self
-                    .redis_op(
-                        "rollback room index directory membership",
-                        conn_clone.srem::<_, _, ()>(&room_index_directory_key, &room_key),
-                    )
-                    .await;
-                self.rollback_local_subscription(&room_id, &connection_id);
-                return Err(crate::error::Error::Redis(format!(
-                    "Failed to refresh room index directory TTL in Redis: {e}"
-                )));
-            }
-
-            if let Err(e) = self
-                .redis_op(
-                    "persist connection room mapping",
-                    conn_clone.set_ex::<_, _, ()>(
-                        &conn_key,
-                        room_id.get(),
-                        ttl_secs_unsigned(ttl_secs),
-                    ),
-                )
-                .await
-            {
-                let _ = self
-                    .redis_op(
-                        "rollback room subscription after connection mapping failure",
-                        conn_clone.hdel::<_, _, ()>(&room_key, connection_id.as_str()),
-                    )
-                    .await;
-                self.rollback_local_subscription(&room_id, &connection_id);
-                return Err(crate::error::Error::Redis(format!(
-                    "Failed to persist connection mapping to Redis: {e}"
-                )));
-            }
+            self.rollback_local_subscription(&room_id, &connection_id);
+            return Err(crate::error::Error::Redis(e));
         }
 
-        // Emit lifecycle event if this is the first subscriber for the room
         if is_new_room {
-            let _ = self
-                .lifecycle_tx
-                .send(RoomLifecycleEvent::RoomActivated(room_id));
+            self.publish_lifecycle_event(&RoomLifecycleEvent::RoomActivated(room_id));
         }
 
         info!(
@@ -796,7 +766,6 @@ impl RoomMessageHub {
     }
 
     fn rollback_local_subscription(&self, room_id: &RoomId, connection_id: &str) {
-        self.pending_redis_cleanup.remove(connection_id);
         self.connections.remove(connection_id);
         if let Some(mut subscribers) = self.rooms.get_mut(room_id) {
             subscribers.remove(connection_id);
@@ -835,133 +804,10 @@ impl RoomMessageHub {
                 debug!(room_id = %room_id, "Room has no more subscribers, removed");
             }
 
-            // Remove from Redis (best-effort, don't block unsubscribe path).
-            // SAFETY: Fire-and-forget cleanup. If the node crashes before the
-            // Redis delete completes, the stale keys will be cleaned up by their
-            // TTL (set during subscribe). No manual intervention is needed.
-            if let Some(redis_conn) = self.redis_conn.clone() {
-                let room_key = self.room_key(&room_id);
-                let conn_key = self.conn_key(connection_id);
-                let room_index_directory_key = self.room_index_directory_key();
-                let room_id_for_retry = room_id;
-                let pending_redis_cleanup = Arc::clone(&self.pending_redis_cleanup);
-                let connection_id_for_log = removed_connection_id.clone();
-                let room_id_for_log = room_id_for_retry;
-                let cleanup_connection_id = removed_connection_id.clone();
-                let cleanup_room_id = room_id_for_retry;
-                let cleanup_pending_redis_cleanup = Arc::clone(&pending_redis_cleanup);
+            self.schedule_redis_cleanup(&removed_connection_id, room_id);
 
-                let cleanup_fut = async move {
-                    let timeout = redis_conn.operation_timeout();
-                    let mut conn_clone =
-                        match tokio::time::timeout(timeout, redis_conn.snapshot()).await {
-                            Ok(Ok(conn)) => conn,
-                            Ok(Err(error)) => {
-                                cleanup_pending_redis_cleanup
-                                    .insert(cleanup_connection_id, cleanup_room_id);
-                                warn!(
-                                    error = %error,
-                                    "Failed to acquire Redis connection for unsubscribe cleanup"
-                                );
-                                return;
-                            }
-                            Err(_) => {
-                                cleanup_pending_redis_cleanup
-                                    .insert(cleanup_connection_id, cleanup_room_id);
-                                warn!(
-                                    timeout_ms = timeout.as_millis(),
-                                    "Timed out acquiring Redis connection for unsubscribe cleanup"
-                                );
-                                return;
-                            }
-                        };
-                    let mut cleanup_failed = false;
-
-                    // Remove connection from room's subscriber hash
-                    if let Err(e) = run_room_hub_redis_op(
-                        timeout,
-                        "remove room subscription",
-                        conn_clone.hdel::<_, _, ()>(&room_key, cleanup_connection_id.as_str()),
-                    )
-                    .await
-                    {
-                        cleanup_failed = true;
-                        warn!("Failed to remove room subscription from Redis: {e}");
-                    }
-                    match run_room_hub_redis_op(
-                        timeout,
-                        "inspect room subscription hash cardinality",
-                        conn_clone.hlen::<_, usize>(&room_key),
-                    )
-                    .await
-                    {
-                        Ok(0) => {
-                            if let Err(e) = run_room_hub_redis_op(
-                                timeout,
-                                "delete empty room subscription hash",
-                                conn_clone.del::<_, ()>(&room_key),
-                            )
-                            .await
-                            {
-                                cleanup_failed = true;
-                                warn!(
-                                    "Failed to delete empty room subscription hash from Redis: {e}"
-                                );
-                            }
-                            if let Err(e) = run_room_hub_redis_op(
-                                timeout,
-                                "remove empty room from room index directory",
-                                conn_clone.srem::<_, _, ()>(&room_index_directory_key, &room_key),
-                            )
-                            .await
-                            {
-                                cleanup_failed = true;
-                                warn!("Failed to remove empty room from room index directory: {e}");
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            cleanup_failed = true;
-                            warn!(
-                                "Failed to inspect room subscription hash cardinality in Redis: {e}"
-                            );
-                        }
-                    }
-                    // Remove connection mapping
-                    if let Err(e) = run_room_hub_redis_op(
-                        timeout,
-                        "remove connection mapping",
-                        conn_clone.del::<_, ()>(&conn_key),
-                    )
-                    .await
-                    {
-                        cleanup_failed = true;
-                        warn!("Failed to remove connection mapping from Redis: {e}");
-                    }
-
-                    if cleanup_failed {
-                        cleanup_pending_redis_cleanup
-                            .insert(cleanup_connection_id, cleanup_room_id);
-                    } else {
-                        cleanup_pending_redis_cleanup.remove(&cleanup_connection_id);
-                    }
-                };
-
-                if try_spawn(cleanup_fut).is_none() {
-                    pending_redis_cleanup.insert(removed_connection_id, room_id_for_retry);
-                    warn!(
-                        connection_id = %connection_id_for_log,
-                        room_id = %room_id_for_log,
-                        "No Tokio runtime available for Redis unsubscribe cleanup; deferred to retry loop/TTL"
-                    );
-                }
-            }
-
-            // Emit lifecycle event if the last subscriber left
             if room_deactivated {
-                let _ = self
-                    .lifecycle_tx
-                    .send(RoomLifecycleEvent::RoomDeactivated(room_id));
+                self.publish_lifecycle_event(&RoomLifecycleEvent::RoomDeactivated(room_id));
             }
 
             info!(
@@ -984,16 +830,12 @@ impl RoomMessageHub {
     /// consecutive broadcasts are automatically disconnected to prevent
     /// unbounded backpressure from a single slow client.
     ///
-    /// **Critical event guarantee**: Events where `is_critical()` returns true
-    /// (KickUserFromRoom, RoomDeleted, KickPublisher, KickUser, PermissionChanged,
-    /// UserLeft) bypass the slow-consumer drop logic entirely. For critical events,
-    /// a blocking send (via `try_reserve` fallback) is attempted, and slow
-    /// subscribers are still disconnected *after* the critical message is queued.
-    /// This prevents administrative actions (bans, kicks) from being silently lost.
+    /// This synchronous path is non-blocking. Call [`Self::broadcast_reliably`]
+    /// for critical events that must wait for subscriber queue space before
+    /// destructive follow-up work continues.
     pub fn broadcast(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize {
         let mut sent_count = 0;
         let mut failed_connections = Vec::new();
-        let is_critical = event.is_critical();
 
         // LOCK ORDERING: Acquire `rooms` read guard in a scoped block. The guard
         // MUST be dropped before calling `unsubscribe()`, which acquires write
@@ -1018,47 +860,27 @@ impl RoomMessageHub {
                             );
                         }
                         Err(mpsc::error::TrySendError::Full(_)) => {
-                            if is_critical {
-                                match block_on_reliable_delivery(
-                                    subscriber.sender.clone(),
-                                    event.clone(),
-                                    *room_id,
-                                    subscriber.connection_id.clone(),
-                                ) {
-                                    ReliableDeliveryOutcome::Delivered
-                                    | ReliableDeliveryOutcome::Deferred => {
-                                        sent_count += 1;
-                                    }
-                                    ReliableDeliveryOutcome::Closed
-                                    | ReliableDeliveryOutcome::TimedOut => {
-                                        failed_connections.push(subscriber.connection_id.clone());
-                                    }
-                                    ReliableDeliveryOutcome::Unavailable => {}
-                                }
+                            let drops =
+                                subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
+                            if drops >= MAX_CONSECUTIVE_DROPS {
+                                warn!(
+                                    room_id = %room_id,
+                                    user_id = %subscriber.user_id,
+                                    connection_id = %subscriber.connection_id,
+                                    consecutive_drops = drops,
+                                    "Disconnecting persistently slow subscriber after {} consecutive drops",
+                                    MAX_CONSECUTIVE_DROPS
+                                );
+                                failed_connections.push(subscriber.connection_id.clone());
                             } else {
-                                let drops =
-                                    subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed)
-                                        + 1;
-                                if drops >= MAX_CONSECUTIVE_DROPS {
-                                    warn!(
-                                        room_id = %room_id,
-                                        user_id = %subscriber.user_id,
-                                        connection_id = %subscriber.connection_id,
-                                        consecutive_drops = drops,
-                                        "Disconnecting persistently slow subscriber after {} consecutive drops",
-                                        MAX_CONSECUTIVE_DROPS
-                                    );
-                                    failed_connections.push(subscriber.connection_id.clone());
-                                } else {
-                                    warn!(
-                                        room_id = %room_id,
-                                        user_id = %subscriber.user_id,
-                                        connection_id = %subscriber.connection_id,
-                                        event_type = %event.event_type(),
-                                        consecutive_drops = drops,
-                                        "Subscriber channel full, dropping event for slow consumer"
-                                    );
-                                }
+                                warn!(
+                                    room_id = %room_id,
+                                    user_id = %subscriber.user_id,
+                                    connection_id = %subscriber.connection_id,
+                                    event_type = %event.event_type(),
+                                    consecutive_drops = drops,
+                                    "Subscriber channel full, dropping event for slow consumer"
+                                );
                             }
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -1152,112 +974,9 @@ impl RoomMessageHub {
                 ReliableDeliveryOutcome::Closed | ReliableDeliveryOutcome::TimedOut => {
                     failed_connections.push(connection_id);
                 }
-                ReliableDeliveryOutcome::Unavailable | ReliableDeliveryOutcome::Deferred => {}
             }
         }
 
-        for conn_id in failed_connections {
-            self.unsubscribe(&conn_id);
-        }
-
-        sent_count
-    }
-
-    /// Broadcast an event to a specific user in a room.
-    ///
-    /// Like `broadcast()`, critical events bypass the slow-consumer drop logic
-    /// and use a bounded timeout to ensure reliable delivery.
-    pub fn broadcast_to_user(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        event: &RealtimeEvent,
-    ) -> usize {
-        let mut sent_count = 0;
-        let mut failed_connections = Vec::new();
-        let is_critical = event.is_critical();
-
-        // LOCK ORDERING: Same pattern as broadcast() -- scoped read guard on
-        // `rooms` must be dropped before calling `unsubscribe()`.
-        {
-            let subscribers_guard = self.rooms.get(room_id);
-            if let Some(subscribers) = &subscribers_guard {
-                for subscriber in subscribers.values() {
-                    if subscriber.user_id == *user_id {
-                        match subscriber.sender.try_send(event.clone()) {
-                            Ok(()) => {
-                                subscriber.consecutive_drops.store(0, Ordering::Relaxed);
-                                sent_count += 1;
-                                debug!(
-                                    room_id = %room_id,
-                                    user_id = %subscriber.user_id,
-                                    connection_id = %subscriber.connection_id,
-                                    event_type = %event.event_type(),
-                                    "Event sent to specific user"
-                                );
-                            }
-                            Err(mpsc::error::TrySendError::Full(_)) => {
-                                if is_critical {
-                                    match block_on_reliable_delivery(
-                                        subscriber.sender.clone(),
-                                        event.clone(),
-                                        *room_id,
-                                        subscriber.connection_id.clone(),
-                                    ) {
-                                        ReliableDeliveryOutcome::Delivered
-                                        | ReliableDeliveryOutcome::Deferred => {
-                                            sent_count += 1;
-                                        }
-                                        ReliableDeliveryOutcome::Closed
-                                        | ReliableDeliveryOutcome::TimedOut => {
-                                            failed_connections
-                                                .push(subscriber.connection_id.clone());
-                                        }
-                                        ReliableDeliveryOutcome::Unavailable => {}
-                                    }
-                                } else {
-                                    let drops = subscriber
-                                        .consecutive_drops
-                                        .fetch_add(1, Ordering::Relaxed)
-                                        + 1;
-                                    if drops >= MAX_CONSECUTIVE_DROPS {
-                                        warn!(
-                                            room_id = %room_id,
-                                            user_id = %subscriber.user_id,
-                                            connection_id = %subscriber.connection_id,
-                                            consecutive_drops = drops,
-                                            "Disconnecting persistently slow subscriber after {} consecutive drops (targeted)",
-                                            MAX_CONSECUTIVE_DROPS
-                                        );
-                                        failed_connections.push(subscriber.connection_id.clone());
-                                    } else {
-                                        warn!(
-                                            room_id = %room_id,
-                                            user_id = %subscriber.user_id,
-                                            connection_id = %subscriber.connection_id,
-                                            event_type = %event.event_type(),
-                                            consecutive_drops = drops,
-                                            "Subscriber channel full, dropping event for slow consumer"
-                                        );
-                                    }
-                                }
-                            }
-                            Err(mpsc::error::TrySendError::Closed(_)) => {
-                                warn!(
-                                    room_id = %room_id,
-                                    user_id = %subscriber.user_id,
-                                    connection_id = %subscriber.connection_id,
-                                    "Subscriber channel closed, marking for cleanup"
-                                );
-                                failed_connections.push(subscriber.connection_id.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Clean up failed connections (rooms read guard already dropped above)
         for conn_id in failed_connections {
             self.unsubscribe(&conn_id);
         }
@@ -1342,7 +1061,6 @@ impl RoomMessageHub {
                         self.unsubscribe(connection_id.as_str());
                         0
                     }
-                    ReliableDeliveryOutcome::Unavailable | ReliableDeliveryOutcome::Deferred => 0,
                 }
             }
         }
@@ -1390,12 +1108,9 @@ impl RoomMessageHub {
                 .collect();
 
             for (connection_id, room_id) in &removed_subscribers {
-                self.schedule_redis_cleanup(connection_id.clone(), *room_id);
+                self.schedule_redis_cleanup(connection_id, *room_id);
             }
-            // Emit lifecycle event since the room is no longer active
-            let _ = self
-                .lifecycle_tx
-                .send(RoomLifecycleEvent::RoomDeactivated(*room_id));
+            self.publish_lifecycle_event(&RoomLifecycleEvent::RoomDeactivated(*room_id));
             info!(
                 room_id = %room_id,
                 removed_connections = subscribers.len(),
@@ -1404,7 +1119,7 @@ impl RoomMessageHub {
         }
     }
 
-    fn schedule_redis_cleanup(&self, connection_id: ConnectionId, room_id: RoomId) {
+    fn schedule_redis_cleanup(&self, connection_id: &ConnectionId, room_id: RoomId) {
         let Some(redis_conn) = self.redis_conn.clone() else {
             return;
         };
@@ -1412,19 +1127,16 @@ impl RoomMessageHub {
         let room_key = self.room_key(&room_id);
         let conn_key = self.conn_key(connection_id.as_str());
         let room_index_directory_key = self.room_index_directory_key();
-        let pending_redis_cleanup = Arc::clone(&self.pending_redis_cleanup);
         let connection_id_for_log = connection_id.clone();
         let room_id_for_log = room_id;
+        let redis_key_ttl_secs = self.redis_key_ttl_secs;
         let cleanup_connection_id = connection_id.clone();
-        let cleanup_room_id = room_id;
-        let cleanup_pending_redis_cleanup = Arc::clone(&pending_redis_cleanup);
 
         let cleanup_fut = async move {
             let timeout = redis_conn.operation_timeout();
             let mut conn_clone = match tokio::time::timeout(timeout, redis_conn.snapshot()).await {
                 Ok(Ok(conn)) => conn,
                 Ok(Err(error)) => {
-                    cleanup_pending_redis_cleanup.insert(cleanup_connection_id, cleanup_room_id);
                     warn!(
                         error = %error,
                         "Failed to acquire Redis connection for scheduled room cleanup"
@@ -1432,7 +1144,6 @@ impl RoomMessageHub {
                     return;
                 }
                 Err(_) => {
-                    cleanup_pending_redis_cleanup.insert(cleanup_connection_id, cleanup_room_id);
                     warn!(
                         timeout_ms = timeout.as_millis(),
                         "Timed out acquiring Redis connection for scheduled room cleanup"
@@ -1499,18 +1210,20 @@ impl RoomMessageHub {
             }
 
             if cleanup_failed {
-                cleanup_pending_redis_cleanup.insert(cleanup_connection_id, cleanup_room_id);
-            } else {
-                cleanup_pending_redis_cleanup.remove(&cleanup_connection_id);
+                warn!(
+                    connection_id = %cleanup_connection_id,
+                    room_id = %room_id_for_log,
+                    ttl_secs = redis_key_ttl_secs,
+                    "Redis room cleanup was incomplete; subscription keys will expire by TTL"
+                );
             }
         };
 
         if try_spawn(cleanup_fut).is_none() {
-            pending_redis_cleanup.insert(connection_id, room_id);
             warn!(
                 connection_id = %connection_id_for_log,
                 room_id = %room_id_for_log,
-                "No Tokio runtime available for Redis room cleanup; deferred to retry loop/TTL"
+                "No Tokio runtime available for Redis room cleanup; subscription keys will expire by TTL"
             );
         }
     }
@@ -1842,125 +1555,6 @@ impl RoomMessageHub {
         }
     }
 
-    /// Clean up orphaned Redis subscription entries that no longer have
-    /// corresponding local subscribers.
-    ///
-    /// This handles cases where `unsubscribe()` fire-and-forget Redis cleanup
-    /// failed (e.g., Redis was slow or temporarily unavailable). Without this
-    /// retry loop, stale entries would accumulate until their TTL expires.
-    ///
-    /// Only locally-owned failed cleanups are retried here. Global Redis scans
-    /// are intentionally avoided because replicas share a key namespace and one
-    /// node cannot reliably distinguish its own stale entries from another
-    /// replica's still-active subscriptions.
-    async fn cleanup_orphaned_redis_subscriptions(&self) {
-        let mut conn = match self
-            .redis_conn_clone("cleanup orphaned room subscriptions")
-            .await
-        {
-            Ok(Some(conn)) => conn,
-            Ok(None) => return,
-            Err(error) => {
-                warn!(
-                    error = %error,
-                    "Failed to acquire Redis connection for orphaned room subscription cleanup"
-                );
-                return;
-            }
-        };
-        let mut cleaned = 0u64;
-        let mut errors = 0u64;
-
-        let pending: Vec<(ConnectionId, RoomId)> = self
-            .pending_redis_cleanup
-            .iter()
-            .map(|entry| (entry.key().clone(), *entry.value()))
-            .collect();
-
-        for (connection_id, room_id) in pending {
-            if self.connections.contains_key(&connection_id) {
-                continue;
-            }
-
-            let room_key = self.room_key(&room_id);
-            let conn_key = self.conn_key(connection_id.as_str());
-
-            let mut pipe = redis::pipe();
-            pipe.hdel(&room_key, connection_id.as_str()).ignore();
-            pipe.del(&conn_key).ignore();
-
-            match self
-                .redis_op(
-                    "retry failed Redis subscription cleanup",
-                    pipe.query_async::<()>(&mut conn),
-                )
-                .await
-            {
-                Ok(()) => {
-                    cleaned += 1;
-                    self.pending_redis_cleanup.remove(&connection_id);
-                    debug!(
-                        connection_id = %connection_id,
-                        room_id = %room_id,
-                        "Retried failed Redis subscription cleanup"
-                    );
-                }
-                Err(e) => {
-                    errors += 1;
-                    warn!(
-                        connection_id = %connection_id,
-                        room_id = %room_id,
-                        error = %e,
-                        "Failed to retry Redis subscription cleanup"
-                    );
-                }
-            }
-        }
-
-        if cleaned > 0 || errors > 0 {
-            info!(
-                cleanup_retried = cleaned,
-                cleanup_errors = errors,
-                pending_cleanup = self.pending_redis_cleanup.len(),
-                "Retried failed Redis subscription cleanup entries"
-            );
-        }
-    }
-
-    /// Spawn a background task that periodically scans for and removes orphaned
-    /// Redis subscription entries.
-    ///
-    /// Orphaned entries occur when the fire-and-forget Redis cleanup in
-    /// `unsubscribe()` fails due to Redis being slow or temporarily unavailable.
-    /// This task ensures eventual cleanup by scanning every `interval`.
-    ///
-    /// The task is automatically cancelled when `shutdown()` is called via the
-    /// provided `cancel_token`.
-    #[must_use]
-    pub fn spawn_stale_subscription_cleanup_task(
-        &self,
-        interval: Duration,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let hub = self.clone();
-        try_spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            // Skip the first immediate tick
-            ticker.tick().await;
-            loop {
-                tokio::select! {
-                    () = cancel_token.cancelled() => {
-                        info!("Room hub stale subscription cleanup task shutting down");
-                        return;
-                    }
-                    _ = ticker.tick() => {
-                        hub.cleanup_orphaned_redis_subscriptions().await;
-                    }
-                }
-            }
-        })
-    }
-
     /// Spawn a background task that periodically refreshes TTLs on Redis
     /// subscription keys to prevent them from expiring while subscriptions
     /// are still active.
@@ -2064,14 +1658,6 @@ impl RoomMessageRuntime for RoomMessageHub {
 
     async fn audit_shared_subscriptions(&self) -> std::result::Result<usize, String> {
         RoomMessageHub::audit_redis_subscriptions(self).await
-    }
-
-    fn spawn_shared_subscription_cleanup_task(
-        &self,
-        cleanup_interval: Duration,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        RoomMessageHub::spawn_stale_subscription_cleanup_task(self, cleanup_interval, cancel_token)
     }
 
     async fn shutdown(&self) {

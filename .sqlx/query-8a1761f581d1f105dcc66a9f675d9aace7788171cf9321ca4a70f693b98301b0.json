@@ -6,72 +6,146 @@
       {
         "ordinal": 0,
         "name": "id!: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "username!",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "signup_method!: SignupMethod",
-        "type_info": "Int2"
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "signup_method"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "role!: UserRole",
-        "type_info": "Int2"
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "role"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "avatar_file_reference_id",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "avatar_file_reference_id"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "status!: UserStatus",
-        "type_info": "Int2"
+        "type_info": "Int2",
+        "origin": "Expression"
       },
       {
         "ordinal": 6,
         "name": "is_banned!",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": "Expression"
       },
       {
         "ordinal": 7,
         "name": "banned_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_bans",
+            "name": "starts_at"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "banned_by?: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_bans",
+            "name": "banned_by"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "banned_reason",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_bans",
+            "name": "reason"
+          }
+        }
       },
       {
         "ordinal": 10,
         "name": "created_at!",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "created_at"
+          }
+        }
       },
       {
         "ordinal": 11,
         "name": "updated_at!",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "updated_at"
+          }
+        }
       },
       {
         "ordinal": 12,
         "name": "version!",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "version"
+          }
+        }
       },
       {
         "ordinal": 13,
         "name": "deleted_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "deleted_at"
+          }
+        }
       }
     ],
     "parameters": {

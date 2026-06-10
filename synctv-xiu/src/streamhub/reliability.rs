@@ -14,7 +14,7 @@ pub async fn send_event_with_backpressure_timeout(
     match sender.try_send(event) {
         Ok(()) => Ok(()),
         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(StreamHubError {
-            value: StreamHubErrorValue::SendError,
+            value: StreamHubErrorValue::EventChannelClosed,
         }),
         Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
             let send_future = async {
@@ -24,7 +24,7 @@ pub async fn send_event_with_backpressure_timeout(
                         Ok(()) => return Ok(()),
                         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                             return Err(StreamHubError {
-                                value: StreamHubErrorValue::SendError,
+                                value: StreamHubErrorValue::EventChannelClosed,
                             });
                         }
                         Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
@@ -38,7 +38,7 @@ pub async fn send_event_with_backpressure_timeout(
             match tokio::time::timeout(EVENT_SEND_TIMEOUT, send_future).await {
                 Ok(result) => result,
                 Err(_) => Err(StreamHubError {
-                    value: StreamHubErrorValue::SendError,
+                    value: StreamHubErrorValue::EventSendTimeout,
                 }),
             }
         }
@@ -78,7 +78,7 @@ pub async fn subscribe_with_rollback_on_timeout(
     if let Ok(result) = tokio::time::timeout(timeout, result_receiver).await {
         result
             .map_err(|_| StreamHubError {
-                value: StreamHubErrorValue::SendError,
+                value: StreamHubErrorValue::ResultReceiverDropped,
             })?
             .map_err(SubscribeWithRollbackError::StreamHub)
     } else {

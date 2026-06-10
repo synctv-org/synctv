@@ -1,23 +1,17 @@
 use synctv_core::models::{RoomId, UserId};
 use synctv_realtime::sync::{DisconnectSignal, RealtimeEvent};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UserLeftDeliveryPlan {
-    Skip,
-    LocalAndRedis,
-}
-
 pub(crate) const fn should_broadcast_user_left(
     has_other_local_connection: bool,
     distributed_presence: Result<bool, ()>,
-) -> UserLeftDeliveryPlan {
+) -> bool {
     if has_other_local_connection {
-        return UserLeftDeliveryPlan::Skip;
+        return false;
     }
 
     match distributed_presence {
-        Ok(true) => UserLeftDeliveryPlan::Skip,
-        Ok(false) | Err(()) => UserLeftDeliveryPlan::LocalAndRedis,
+        Ok(true) => false,
+        Ok(false) | Err(()) => true,
     }
 }
 
@@ -28,36 +22,6 @@ pub(crate) const fn should_transition_webrtc_membership(
     match current_rtc_joined {
         Some(current) => Ok(current != target_joined),
         None => Err("Connection not found"),
-    }
-}
-
-pub(crate) fn rebuild_leave_event_for_retry(event: &RealtimeEvent) -> RealtimeEvent {
-    match event {
-        RealtimeEvent::UserLeft {
-            room_id,
-            user_id,
-            username,
-            ..
-        } => RealtimeEvent::UserLeft {
-            event_id: synctv_common::snanoid!(16),
-            room_id: *room_id,
-            user_id: *user_id,
-            username: username.clone(),
-            timestamp: chrono::Utc::now(),
-        },
-        RealtimeEvent::GuestLeft {
-            room_id,
-            guest_id,
-            username,
-            ..
-        } => RealtimeEvent::GuestLeft {
-            event_id: synctv_common::snanoid!(16),
-            room_id: *room_id,
-            guest_id: guest_id.clone(),
-            username: username.clone(),
-            timestamp: chrono::Utc::now(),
-        },
-        _ => event.clone(),
     }
 }
 

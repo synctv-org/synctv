@@ -1,9 +1,5 @@
-use rayon::prelude::*;
-
 use synctv_core::proxy_signature::SignedProxyUrlRequest;
 use synctv_core::service::room::ClientResourceAvailability;
-
-const PARALLEL_PROTO_MAP_THRESHOLD: usize = 128;
 
 fn proto_encode_error(kind: &str, error: &str) -> crate::impls::ApiError {
     crate::impls::ApiError::Internal(format!("Failed to encode {kind} public id: {error}"))
@@ -11,7 +7,7 @@ fn proto_encode_error(kind: &str, error: &str) -> crate::impls::ApiError {
 
 fn encode_room_id_for_proto(
     id: synctv_core::models::RoomId,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<String, crate::impls::ApiError> {
     public_id_codec
         .encode_room_id(id)
@@ -20,7 +16,7 @@ fn encode_room_id_for_proto(
 
 fn encode_media_id_for_proto(
     id: synctv_core::models::MediaId,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<String, crate::impls::ApiError> {
     public_id_codec
         .encode_media_id(id)
@@ -29,7 +25,7 @@ fn encode_media_id_for_proto(
 
 fn encode_playlist_id_for_proto(
     id: synctv_core::models::PlaylistId,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<String, crate::impls::ApiError> {
     public_id_codec
         .encode_playlist_id(id)
@@ -38,7 +34,7 @@ fn encode_playlist_id_for_proto(
 
 fn encode_user_id_for_proto(
     id: synctv_core::models::UserId,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<String, crate::impls::ApiError> {
     public_id_codec
         .encode_user_id(id)
@@ -93,35 +89,6 @@ fn checked_index_i32(
         )));
     }
     usize_to_i32(index, field)
-}
-
-pub(crate) fn map_slice_preserve_order<T, U, F>(items: &[T], map: F) -> Vec<U>
-where
-    T: Sync,
-    U: Send,
-    F: Fn(&T) -> U + Sync + Send,
-{
-    items
-        .par_iter()
-        .with_min_len(PARALLEL_PROTO_MAP_THRESHOLD)
-        .map(&map)
-        .collect()
-}
-
-pub(crate) fn try_map_slice_preserve_order<T, U, F>(
-    items: &[T],
-    map: F,
-) -> Result<Vec<U>, crate::impls::ApiError>
-where
-    T: Sync,
-    U: Send,
-    F: Fn(&T) -> Result<U, crate::impls::ApiError> + Sync + Send,
-{
-    items
-        .par_iter()
-        .with_min_len(PARALLEL_PROTO_MAP_THRESHOLD)
-        .map(&map)
-        .collect()
 }
 
 fn can_view_media_source_config(
@@ -399,13 +366,13 @@ pub(crate) fn playback_client_profile_from_proto(
     }))
 }
 
-pub fn proto_role_to_room_role(
+pub(crate) fn proto_role_to_room_role(
     role_i32: i32,
 ) -> Result<synctv_core::models::RoomRole, crate::impls::ApiError> {
     synctv_core::models::RoomRole::try_from(role_i32).map_err(crate::impls::ApiError::InvalidInput)
 }
 
-pub fn proto_role_to_assignable_room_role(
+pub(crate) fn proto_role_to_assignable_room_role(
     role_i32: i32,
 ) -> Result<synctv_core::models::RoomRole, crate::impls::ApiError> {
     let role = proto_role_to_room_role(role_i32)?;
@@ -418,7 +385,7 @@ pub fn proto_role_to_assignable_room_role(
     Ok(role)
 }
 
-pub fn proto_role_filter_to_room_role(
+pub(crate) fn proto_role_filter_to_room_role(
     role_i32: i32,
 ) -> Result<Option<synctv_core::models::RoomRole>, crate::impls::ApiError> {
     if role_i32 == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
@@ -429,21 +396,21 @@ pub fn proto_role_filter_to_room_role(
         .map_err(crate::impls::ApiError::InvalidInput)
 }
 
-pub fn proto_role_to_user_role(
+pub(crate) fn proto_role_to_user_role(
     role_i32: i32,
 ) -> Result<synctv_core::models::UserRole, crate::impls::ApiError> {
     synctv_core::models::UserRole::try_from(role_i32).map_err(crate::impls::ApiError::InvalidInput)
 }
 
 #[must_use]
-pub fn room_role_to_proto(role: synctv_core::models::RoomRole) -> i32 {
+pub(crate) fn room_role_to_proto(role: synctv_core::models::RoomRole) -> i32 {
     i32::from(role)
 }
 
 pub(crate) fn try_user_to_proto(
     user: &synctv_core::models::User,
     email: Option<&str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::User, crate::impls::ApiError> {
     Ok(synctv_proto::client::User {
         id: public_id_codec
@@ -464,7 +431,7 @@ pub(crate) fn try_room_to_proto_basic(
     room: &synctv_core::models::Room,
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Room, crate::impls::ApiError> {
     try_room_to_proto_with_availability(
         room,
@@ -481,7 +448,7 @@ pub(crate) fn try_room_to_proto_basic_with_cover(
     member_count: Option<i32>,
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_url: Option<&str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Room, crate::impls::ApiError> {
     let mut proto = try_room_to_proto_basic(room, settings, member_count, public_id_codec)?;
     proto.cover = cover
@@ -495,18 +462,29 @@ pub(crate) fn try_room_to_proto_with_availability(
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
     availability: ClientResourceAvailability,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Room, crate::impls::ApiError> {
-    let room_settings = settings.cloned().unwrap_or_default();
+    let room_settings = settings.ok_or_else(|| {
+        crate::impls::ApiError::Internal(format!(
+            "Missing room settings for client room {}",
+            room.id
+        ))
+    })?;
+    let member_count = member_count.ok_or_else(|| {
+        crate::impls::ApiError::Internal(format!(
+            "Missing member count for client room {}",
+            room.id
+        ))
+    })?;
     Ok(synctv_proto::client::Room {
         id: encode_room_id_for_proto(room.id, public_id_codec)?,
         name: room.name.clone(),
         description: room.description.clone(),
         created_by: encode_user_id_for_proto(room.created_by, public_id_codec)?,
         status: synctv_proto::common::RoomStatus::from(room.status) as i32,
-        settings: json_to_vec(&room_settings, "room settings")?,
+        settings: json_to_vec(room_settings, "room settings")?,
         created_at: room.created_at.timestamp(),
-        member_count: member_count.unwrap_or(0),
+        member_count,
         updated_at: room.updated_at.timestamp(),
         is_banned: room.is_banned,
         availability: resource_availability_enum_to_proto(availability),
@@ -522,7 +500,7 @@ pub(crate) fn try_room_to_proto_with_availability_and_cover(
     availability: ClientResourceAvailability,
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_url: Option<&str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Room, crate::impls::ApiError> {
     let mut proto = try_room_to_proto_with_availability(
         room,
@@ -543,7 +521,7 @@ pub(super) fn hot_room_to_proto(
     settings: Option<&synctv_core::models::RoomSettings>,
     online_count: i32,
     total_members: i32,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::RoomWithStats, crate::impls::ApiError> {
     Ok(synctv_proto::client::RoomWithStats {
         room: Some(try_room_to_proto_basic(
@@ -564,26 +542,26 @@ pub(crate) fn normalize_created_room_settings(
     settings.cloned().unwrap_or_default()
 }
 
-pub fn try_media_to_proto(
+pub(crate) fn try_media_to_proto(
     media: &synctv_core::models::Media,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
     try_media_to_proto_for_viewer(media, true, None, public_id_codec)
 }
 
-pub fn try_media_to_proto_with_availability(
+pub(crate) fn try_media_to_proto_with_availability(
     media: &synctv_core::models::Media,
     is_available: bool,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
     try_media_to_proto_for_viewer(media, is_available, None, public_id_codec)
 }
 
-pub fn try_media_to_proto_for_viewer(
+pub(crate) fn try_media_to_proto_for_viewer(
     media: &synctv_core::models::Media,
     is_available: bool,
     viewer_id: Option<synctv_core::models::UserId>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
     let metadata_bytes = if can_view_media_source_config(media, viewer_id) {
         media
@@ -618,13 +596,13 @@ pub fn try_media_to_proto_for_viewer(
     })
 }
 
-pub fn try_media_to_proto_for_viewer_with_cover(
+pub(crate) fn try_media_to_proto_for_viewer_with_cover(
     media: &synctv_core::models::Media,
     is_available: bool,
     viewer_id: Option<synctv_core::models::UserId>,
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_url: Option<&str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
     let mut proto = try_media_to_proto_for_viewer(media, is_available, viewer_id, public_id_codec)?;
     proto.cover = cover
@@ -636,7 +614,7 @@ pub fn try_media_to_proto_for_viewer_with_cover(
 pub(crate) fn try_playlist_to_proto(
     playlist: &synctv_core::models::Playlist,
     item_count: i32,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
     try_playlist_to_proto_with_availability(playlist, item_count, true, public_id_codec)
 }
@@ -645,7 +623,7 @@ pub(crate) fn try_playlist_to_proto_with_availability(
     playlist: &synctv_core::models::Playlist,
     item_count: i32,
     is_available: bool,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
     try_playlist_to_proto_for_viewer(playlist, item_count, is_available, None, public_id_codec)
 }
@@ -655,8 +633,15 @@ pub(crate) fn try_playlist_to_proto_for_viewer(
     item_count: i32,
     is_available: bool,
     viewer_id: Option<synctv_core::models::UserId>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
+    let source_provider = match playlist.source_provider.as_deref() {
+        Some(_) => dynamic_playlist_source_fields(playlist)?
+            .provider_name
+            .to_string(),
+        None => String::new(),
+    };
+
     Ok(synctv_proto::client::Playlist {
         id: encode_playlist_id_for_proto(playlist.id, public_id_codec)?,
         room_id: encode_room_id_for_proto(playlist.room_id, public_id_codec)?,
@@ -674,10 +659,50 @@ pub(crate) fn try_playlist_to_proto_for_viewer(
         availability: resource_availability_to_proto(is_available),
         version: i64::from(playlist.version),
         source_config: serialize_playlist_source_config_for_viewer(playlist, viewer_id)?,
-        source_provider: playlist.source_provider.clone().unwrap_or_default(),
+        source_provider,
         provider_instance_name: playlist.provider_instance_name.clone().unwrap_or_default(),
         description: playlist.description.clone(),
         cover: None,
+    })
+}
+
+pub(crate) struct DynamicPlaylistSourceFields<'a> {
+    pub provider_name: &'a str,
+    pub source_config: &'a serde_json::Value,
+    pub provider_instance_name: Option<&'a str>,
+}
+
+pub(crate) fn dynamic_playlist_source_fields(
+    playlist: &synctv_core::models::Playlist,
+) -> Result<DynamicPlaylistSourceFields<'_>, crate::impls::ApiError> {
+    let provider_name = playlist
+        .source_provider
+        .as_deref()
+        .ok_or_else(|| {
+            crate::impls::ApiError::Internal("Dynamic playlist missing provider".to_string())
+        })?
+        .trim();
+    if provider_name.is_empty() {
+        return Err(crate::impls::ApiError::Internal(format!(
+            "Dynamic playlist {} has empty source_provider",
+            playlist.id
+        )));
+    }
+    let source_config = playlist.source_config.as_ref().ok_or_else(|| {
+        crate::impls::ApiError::Internal(format!(
+            "Dynamic playlist {} missing source_config",
+            playlist.id
+        ))
+    })?;
+    let provider_instance_name = playlist.provider_instance_name.as_deref().and_then(|name| {
+        let trimmed = name.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    });
+
+    Ok(DynamicPlaylistSourceFields {
+        provider_name,
+        source_config,
+        provider_instance_name,
     })
 }
 
@@ -688,7 +713,7 @@ pub(crate) fn try_playlist_to_proto_for_viewer_with_cover(
     viewer_id: Option<synctv_core::models::UserId>,
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_url: Option<&str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
     let mut proto = try_playlist_to_proto_for_viewer(
         playlist,
@@ -705,7 +730,7 @@ pub(crate) fn try_playlist_to_proto_for_viewer_with_cover(
 
 pub(crate) fn try_playlist_path_node_to_proto(
     playlist: &synctv_core::models::Playlist,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::PlaylistBrowsePathNode, crate::impls::ApiError> {
     Ok(synctv_proto::client::PlaylistBrowsePathNode {
         playlist_id: encode_playlist_id_for_proto(playlist.id, public_id_codec)?,
@@ -716,7 +741,7 @@ pub(crate) fn try_playlist_path_node_to_proto(
 
 pub(crate) fn try_playback_state_to_proto(
     state: &synctv_core::models::RoomPlaybackState,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::PlaybackState, crate::impls::ApiError> {
     Ok(synctv_proto::client::PlaybackState {
         room_id: encode_room_id_for_proto(state.room_id, public_id_codec)?,
@@ -743,7 +768,7 @@ pub(crate) fn try_playback_state_to_proto(
 pub(crate) fn try_room_member_to_proto_with_permissions(
     member: &synctv_core::models::RoomMemberWithUser,
     permissions: synctv_core::models::RoomPermissionSet,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::common::RoomMember, crate::impls::ApiError> {
     Ok(synctv_proto::common::RoomMember {
         room_id: encode_room_id_for_proto(member.room_id, public_id_codec)?,
@@ -764,31 +789,16 @@ pub(crate) fn try_members_to_proto(
     members: &[synctv_core::models::RoomMemberWithUser],
     room_settings: &synctv_core::models::RoomSettings,
     permission_service: &synctv_core::service::PermissionService,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<Vec<synctv_proto::common::RoomMember>, crate::impls::ApiError> {
-    try_map_slice_preserve_order(members, |m| {
-        let permissions =
-            permission_service.effective_member_with_user_permissions(m, room_settings);
-        try_room_member_to_proto_with_permissions(m, permissions, public_id_codec)
-    })
-}
-
-pub(crate) fn try_media_list_to_proto(
-    media: &[synctv_core::models::Media],
-    public_id_codec: &crate::PublicIdCodec,
-) -> Result<Vec<synctv_proto::client::Media>, crate::impls::ApiError> {
-    try_map_slice_preserve_order(media, |media| try_media_to_proto(media, public_id_codec))
-}
-
-pub(crate) fn try_playlist_list_to_proto<T, F>(
-    items: &[T],
-    map: F,
-) -> Result<Vec<synctv_proto::client::Playlist>, crate::impls::ApiError>
-where
-    T: Sync,
-    F: Fn(&T) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> + Sync + Send,
-{
-    try_map_slice_preserve_order(items, map)
+    members
+        .iter()
+        .map(|m| {
+            let permissions =
+                permission_service.effective_member_with_user_permissions(m, room_settings);
+            try_room_member_to_proto_with_permissions(m, permissions, public_id_codec)
+        })
+        .collect()
 }
 
 /// Convert provider `PlaybackInfo` to models `PlaybackInfo`
@@ -798,30 +808,38 @@ pub(crate) fn provider_playback_info_to_model(
 ) -> synctv_core::models::media::PlaybackInfo {
     use synctv_core::models::media::{PlaybackInfo, PlaybackUrl, Subtitle, SubtitleUrl};
 
-    let urls = map_slice_preserve_order(&info.urls, |url| PlaybackUrl {
-        name: String::new(),
-        url: url.clone(),
-        headers: info.headers.clone(),
-        expire_at: info
-            .expires_at
-            .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0)),
-        metadata: None,
-    });
-
-    let subtitles = map_slice_preserve_order(&info.subtitles, |sub| {
-        let url = SubtitleUrl {
+    let urls = info
+        .urls
+        .iter()
+        .map(|url| PlaybackUrl {
             name: String::new(),
-            url: sub.url.clone(),
-            headers: sub.headers.clone(),
-            format: sub.format.clone(),
-        };
-        Subtitle {
-            name: sub.name.clone(),
-            language: sub.language.clone(),
-            urls: vec![url],
-            default_url_index: 0,
-        }
-    });
+            url: url.clone(),
+            headers: info.headers.clone(),
+            expire_at: info
+                .expires_at
+                .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0)),
+            metadata: None,
+        })
+        .collect();
+
+    let subtitles = info
+        .subtitles
+        .iter()
+        .map(|sub| {
+            let url = SubtitleUrl {
+                name: String::new(),
+                url: sub.url.clone(),
+                headers: sub.headers.clone(),
+                format: sub.format.clone(),
+            };
+            Subtitle {
+                name: sub.name.clone(),
+                language: sub.language.clone(),
+                urls: vec![url],
+                default_url_index: 0,
+            }
+        })
+        .collect();
 
     PlaybackInfo {
         urls,
@@ -836,13 +854,10 @@ pub(crate) fn provider_playback_info_to_model(
 pub(crate) fn try_bilibili_live_danmaku_for_static_media(
     media: &synctv_core::models::Media,
     user_id: &str,
-    public_id_codec: &crate::PublicIdCodec,
-    signing_key: Option<&synctv_core::proxy_signature::ProxySigningKey>,
+    public_id_codec: &synctv_core::PublicIdCodec,
+    signing_key: &synctv_core::proxy_signature::ProxySigningKey,
     expires_at: Option<i64>,
 ) -> Result<Option<synctv_core::models::media::Danmaku>, crate::impls::ApiError> {
-    let Some(signing_key) = signing_key else {
-        return Ok(None);
-    };
     if media.source_provider.trim() != synctv_core::provider::BilibiliProvider::NAME {
         return Ok(None);
     }
@@ -882,12 +897,9 @@ pub(crate) fn try_bilibili_live_danmaku_for_static_media(
 pub(crate) fn sign_local_bilibili_danmaku_urls(
     result: &mut synctv_core::models::media::PlaybackResult,
     user_id: &str,
-    signing_key: Option<&synctv_core::proxy_signature::ProxySigningKey>,
+    signing_key: &synctv_core::proxy_signature::ProxySigningKey,
     expires_at: Option<i64>,
 ) {
-    let Some(signing_key) = signing_key else {
-        return;
-    };
     let expires_at = expires_at.unwrap_or_else(|| {
         chrono::Utc::now().timestamp()
             + synctv_core::proxy_signature::ProxySigningKey::default_expiry_secs()
@@ -925,7 +937,7 @@ pub(crate) fn sign_local_bilibili_danmaku_urls(
 /// Convert models `PlaybackResult` to proto `Playback`
 pub(crate) fn try_playback_to_proto(
     result: &synctv_core::models::media::PlaybackResult,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Playback, crate::impls::ApiError> {
     validate_playback_result_shape(result)?;
 
@@ -1005,18 +1017,30 @@ fn playback_info_to_proto(
         ));
     }
     Ok(synctv_proto::client::PlaybackInfo {
-        urls: try_map_slice_preserve_order(&info.urls, playback_url_to_proto)?,
+        urls: info
+            .urls
+            .iter()
+            .map(playback_url_to_proto)
+            .collect::<Result<_, _>>()?,
         default_url_index: checked_index_i32(
             info.default_url_index,
             info.urls.len(),
             "default playback URL index",
         )?,
-        subtitles: try_map_slice_preserve_order(&info.subtitles, subtitle_to_proto)?,
+        subtitles: info
+            .subtitles
+            .iter()
+            .map(subtitle_to_proto)
+            .collect::<Result<_, _>>()?,
         default_subtitle_index: info
             .default_subtitle_index
             .map(|index| checked_index_i32(index, info.subtitles.len(), "default subtitle index"))
             .transpose()?,
-        danmakus: try_map_slice_preserve_order(&info.danmakus, danmaku_to_proto)?,
+        danmakus: info
+            .danmakus
+            .iter()
+            .map(danmaku_to_proto)
+            .collect::<Result<_, _>>()?,
         format: info.format.clone(),
     })
 }
@@ -1069,7 +1093,11 @@ fn subtitle_to_proto(
     Ok(synctv_proto::client::Subtitle {
         name: subtitle.name.clone(),
         language: subtitle.language.clone(),
-        urls: try_map_slice_preserve_order(&subtitle.urls, subtitle_url_to_proto)?,
+        urls: subtitle
+            .urls
+            .iter()
+            .map(subtitle_url_to_proto)
+            .collect::<Result<_, _>>()?,
         default_url_index: checked_index_i32(
             subtitle.default_url_index,
             subtitle.urls.len(),
@@ -1120,17 +1148,32 @@ fn is_provider_proxy_url(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_created_room_settings, playback_client_profile_from_proto,
-        proto_role_filter_to_room_role, provider_playback_info_to_model,
-        stored_file_reference_to_video_cover, try_bilibili_live_danmaku_for_static_media,
-        try_media_to_proto, try_media_to_proto_for_viewer, try_playback_to_proto,
-        try_playlist_to_proto, try_playlist_to_proto_for_viewer, try_room_to_proto_basic,
+        dynamic_playlist_source_fields, normalize_created_room_settings,
+        playback_client_profile_from_proto, proto_role_filter_to_room_role,
+        provider_playback_info_to_model, stored_file_reference_to_video_cover,
+        try_bilibili_live_danmaku_for_static_media, try_media_to_proto,
+        try_media_to_proto_for_viewer, try_playback_to_proto, try_playlist_to_proto,
+        try_playlist_to_proto_for_viewer, try_room_to_proto_basic,
     };
     use chrono::Utc;
     use std::collections::HashMap;
     use synctv_core::models::{
         Media, MediaId, PlaylistId, Room, RoomId, StoredFileReference, UserId,
     };
+
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn require_some<T>(value: Option<T>, message: &'static str) -> TestResult<T> {
+        value.ok_or_else(|| test_error(message))
+    }
+
+    fn api_ok<T>(result: Result<T, crate::impls::ApiError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("{error:?}")))
+    }
 
     fn stored_file_reference_with_metadata(metadata: serde_json::Value) -> StoredFileReference {
         StoredFileReference {
@@ -1147,20 +1190,20 @@ mod tests {
     }
 
     #[test]
-    fn video_cover_metadata_dimensions_convert_to_proto() {
+    fn video_cover_metadata_dimensions_convert_to_proto() -> TestResult {
         let file = stored_file_reference_with_metadata(serde_json::json!({
             "width": 1920,
             "height": 1080
         }));
 
-        let cover = stored_file_reference_to_video_cover(
+        let cover = api_ok(stored_file_reference_to_video_cover(
             &file,
             Some("https://cdn.example.com/covers/video.png"),
-        )
-        .expect("valid video cover should convert");
+        ))?;
 
         assert_eq!(cover.width, 1920);
         assert_eq!(cover.height, 1080);
+        Ok(())
     }
 
     #[test]
@@ -1180,6 +1223,23 @@ mod tests {
             error,
             crate::impls::ApiError::Internal(message)
                 if message.contains("video cover metadata field 'width'")
+        ));
+    }
+
+    #[test]
+    fn video_cover_rejects_missing_url() {
+        let file = stored_file_reference_with_metadata(serde_json::json!({
+            "width": 1920,
+            "height": 1080
+        }));
+
+        let error = stored_file_reference_to_video_cover(&file, None)
+            .expect_err("stored file response needs a cover URL");
+
+        assert!(matches!(
+            error,
+            crate::impls::ApiError::Internal(message)
+                if message.contains("video cover url is missing")
         ));
     }
 
@@ -1238,15 +1298,13 @@ mod tests {
     }
 
     #[test]
-    fn playback_client_profile_from_proto_returns_none_when_absent() {
-        assert_eq!(
-            playback_client_profile_from_proto(None).expect("absent profile should convert"),
-            None
-        );
+    fn playback_client_profile_from_proto_returns_none_when_absent() -> TestResult {
+        assert_eq!(api_ok(playback_client_profile_from_proto(None))?, None);
+        Ok(())
     }
 
     #[test]
-    fn playback_to_proto_clears_proxy_headers_but_preserves_raw_headers() {
+    fn playback_to_proto_clears_proxy_headers_but_preserves_raw_headers() -> TestResult {
         use synctv_core::models::media::{
             Danmaku, PlaybackInfo, PlaybackResult, PlaybackUrl, Subtitle, SubtitleUrl,
         };
@@ -1319,15 +1377,17 @@ mod tests {
             },
         )
         .build()
-        .expect("playback result should build");
+        .ok_or_else(|| test_error("playback result should build"))?;
 
-        let proto = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
-            .expect("playback should convert");
+        let proto = api_ok(try_playback_to_proto(
+            &result,
+            &synctv_core::PublicIdCodec::plain(),
+        ))?;
 
         let direct = proto
             .playback_infos
             .get("direct")
-            .expect("direct mode should be converted");
+            .ok_or_else(|| test_error("direct mode should be converted"))?;
 
         assert_eq!(
             direct.urls[0]
@@ -1350,10 +1410,11 @@ mod tests {
             Some("sid=secret")
         );
         assert!(direct.danmakus[1].headers.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn playback_to_proto_rejects_empty_playback_url() {
+    fn playback_to_proto_rejects_empty_playback_url() -> TestResult {
         use synctv_core::models::media::{PlaybackInfo, PlaybackResult, PlaybackUrl};
 
         let result = PlaybackResult::builder(
@@ -1375,9 +1436,9 @@ mod tests {
             },
         )
         .build()
-        .expect("playback result should build");
+        .ok_or_else(|| test_error("playback result should build"))?;
 
-        let error = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
+        let error = try_playback_to_proto(&result, &synctv_core::PublicIdCodec::plain())
             .expect_err("empty playback URL should fail");
 
         assert!(matches!(
@@ -1385,6 +1446,7 @@ mod tests {
             crate::impls::ApiError::Internal(message)
                 if message.contains("playback url is empty")
         ));
+        Ok(())
     }
 
     #[test]
@@ -1415,7 +1477,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let error = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
+        let error = try_playback_to_proto(&result, &synctv_core::PublicIdCodec::plain())
             .expect_err("missing default playback mode should fail");
 
         assert!(matches!(
@@ -1453,7 +1515,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let error = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
+        let error = try_playback_to_proto(&result, &synctv_core::PublicIdCodec::plain())
             .expect_err("empty default playback mode should fail");
 
         assert!(matches!(
@@ -1507,7 +1569,7 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let error = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
+        let error = try_playback_to_proto(&result, &synctv_core::PublicIdCodec::plain())
             .expect_err("empty playback mode name should fail");
 
         assert!(matches!(
@@ -1518,7 +1580,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_to_proto_rejects_default_url_index_out_of_range() {
+    fn playback_to_proto_rejects_default_url_index_out_of_range() -> TestResult {
         use synctv_core::models::media::{PlaybackInfo, PlaybackResult, PlaybackUrl};
 
         let result = PlaybackResult::builder(
@@ -1543,9 +1605,9 @@ mod tests {
             },
         )
         .build()
-        .expect("playback result should build");
+        .ok_or_else(|| test_error("playback result should build"))?;
 
-        let error = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
+        let error = try_playback_to_proto(&result, &synctv_core::PublicIdCodec::plain())
             .expect_err("out-of-range playback URL index should fail");
 
         assert!(matches!(
@@ -1553,10 +1615,11 @@ mod tests {
             crate::impls::ApiError::Internal(message)
                 if message.contains("default playback URL index")
         ));
+        Ok(())
     }
 
     #[test]
-    fn playback_to_proto_rejects_subtitle_default_url_index_out_of_range() {
+    fn playback_to_proto_rejects_subtitle_default_url_index_out_of_range() -> TestResult {
         use synctv_core::models::media::{
             PlaybackInfo, PlaybackResult, PlaybackUrl, Subtitle, SubtitleUrl,
         };
@@ -1593,9 +1656,9 @@ mod tests {
             },
         )
         .build()
-        .expect("playback result should build");
+        .ok_or_else(|| test_error("playback result should build"))?;
 
-        let error = try_playback_to_proto(&result, &crate::PublicIdCodec::plain())
+        let error = try_playback_to_proto(&result, &synctv_core::PublicIdCodec::plain())
             .expect_err("out-of-range subtitle URL index should fail");
 
         assert!(matches!(
@@ -1603,10 +1666,12 @@ mod tests {
             crate::impls::ApiError::Internal(message)
                 if message.contains("subtitle default URL index")
         ));
+        Ok(())
     }
 
     #[test]
-    fn playback_client_profile_from_proto_applies_defaults_for_omitted_repeated_capabilities() {
+    fn playback_client_profile_from_proto_applies_defaults_for_omitted_repeated_capabilities(
+    ) -> TestResult {
         let proto = synctv_proto::client::PlaybackClientProfile {
             delivery_preference: synctv_proto::client::PlaybackDeliveryPreference::Unspecified
                 as i32,
@@ -1619,9 +1684,10 @@ mod tests {
                 as i32,
         };
 
-        let converted = playback_client_profile_from_proto(Some(&proto))
-            .expect("present proto profile should convert")
-            .expect("present profile should be returned");
+        let converted = require_some(
+            api_ok(playback_client_profile_from_proto(Some(&proto)))?,
+            "present profile should be returned",
+        )?;
         let default_profile = synctv_core::provider::PlaybackClientProfile::default();
 
         assert_eq!(
@@ -1643,10 +1709,11 @@ mod tests {
             converted.subtitle_preference,
             synctv_core::provider::PlaybackSubtitlePreference::External
         );
+        Ok(())
     }
 
     #[test]
-    fn playback_client_profile_from_proto_maps_explicit_capabilities() {
+    fn playback_client_profile_from_proto_maps_explicit_capabilities() -> TestResult {
         let proto = synctv_proto::client::PlaybackClientProfile {
             delivery_preference: synctv_proto::client::PlaybackDeliveryPreference::DirectPlay
                 as i32,
@@ -1664,9 +1731,10 @@ mod tests {
             subtitle_preference: synctv_proto::client::PlaybackSubtitlePreference::None as i32,
         };
 
-        let converted = playback_client_profile_from_proto(Some(&proto))
-            .expect("present proto profile should convert")
-            .expect("present profile should be returned");
+        let converted = require_some(
+            api_ok(playback_client_profile_from_proto(Some(&proto)))?,
+            "present profile should be returned",
+        )?;
 
         assert_eq!(
             converted.delivery_preference,
@@ -1696,6 +1764,7 @@ mod tests {
             converted.subtitle_preference,
             synctv_core::provider::PlaybackSubtitlePreference::None
         );
+        Ok(())
     }
 
     #[test]
@@ -1770,7 +1839,7 @@ mod tests {
     }
 
     #[test]
-    fn bilibili_live_danmaku_for_static_media_builds_signed_proxy_url() {
+    fn bilibili_live_danmaku_for_static_media_builds_signed_proxy_url() -> TestResult {
         let media = Media {
             id: MediaId::expect_positive(1201),
             playlist_id: None,
@@ -1792,48 +1861,44 @@ mod tests {
         };
         let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
             b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-        )
-        .expect("test proxy signing key should derive");
+        )?;
 
         let expires_at = chrono::Utc::now().timestamp() + 600;
-        let public_id_codec = crate::PublicIdCodec::plain();
+        let public_id_codec = synctv_core::PublicIdCodec::plain();
         let public_room_id = public_id_codec
             .encode_room_id(media.room_id)
-            .expect("room id should encode");
+            .map_err(test_error)?;
         let public_user_id = public_id_codec
             .encode_user_id(UserId::expect_positive(301))
-            .expect("user id should encode");
-        let danmaku = try_bilibili_live_danmaku_for_static_media(
+            .map_err(test_error)?;
+        let danmaku = api_ok(try_bilibili_live_danmaku_for_static_media(
             &media,
             &public_user_id,
             &public_id_codec,
-            Some(&signing_key),
+            &signing_key,
             Some(expires_at),
-        )
-        .expect("bilibili live danmaku should encode")
-        .expect("bilibili live should expose danmaku");
+        ))?;
+        let danmaku = require_some(danmaku, "bilibili live should expose danmaku")?;
 
         assert_eq!(danmaku.name, "Bilibili Danmaku");
         assert_eq!(danmaku.format.as_deref(), Some("bilibili"));
         assert!(danmaku
             .url
             .starts_with(&format!("/api/providers/proxy/bilibili/{public_room_id}/")));
-        let query = danmaku
-            .url
-            .split('?')
-            .nth(1)
-            .expect("signed danmaku URL should include query");
-        let claims = signing_key
-            .parse_and_verify_query(query, "bilibili", &public_room_id)
-            .expect("signed danmaku query should verify");
+        let query = require_some(
+            danmaku.url.split('?').nth(1),
+            "signed danmaku URL should include query",
+        )?;
+        let claims = signing_key.parse_and_verify_query(query, "bilibili", &public_room_id)?;
         assert_eq!(claims.room_id, public_room_id);
         assert_eq!(claims.user_id, public_user_id);
         assert_eq!(claims.expires_at, expires_at);
+        Ok(())
     }
 
     #[test]
-    fn media_to_proto_includes_resource_version() {
-        let public_id_codec = crate::PublicIdCodec::plain();
+    fn media_to_proto_includes_resource_version() -> TestResult {
+        let public_id_codec = synctv_core::PublicIdCodec::plain();
         let media = Media {
             id: MediaId::expect_positive(101),
             playlist_id: None,
@@ -1851,14 +1916,14 @@ mod tests {
             version: 42,
         };
 
-        let proto =
-            try_media_to_proto(&media, &public_id_codec).expect("media proto should encode");
+        let proto = api_ok(try_media_to_proto(&media, &public_id_codec))?;
         assert_eq!(proto.version, 42);
+        Ok(())
     }
 
     #[test]
-    fn media_to_proto_only_includes_source_config_for_creator_viewer() {
-        let public_id_codec = crate::PublicIdCodec::plain();
+    fn media_to_proto_only_includes_source_config_for_creator_viewer() -> TestResult {
+        let public_id_codec = synctv_core::PublicIdCodec::plain();
         let creator_id = UserId::expect_positive(103);
         let media = Media {
             id: MediaId::expect_positive(104),
@@ -1893,8 +1958,7 @@ mod tests {
             version: 1,
         };
 
-        let proto =
-            try_media_to_proto(&media, &public_id_codec).expect("media proto should encode");
+        let proto = api_ok(try_media_to_proto(&media, &public_id_codec))?;
         assert!(
             proto.source_config.is_empty(),
             "default media conversion must not expose source_config"
@@ -1910,7 +1974,7 @@ mod tests {
             Some(UserId::expect_positive(999)),
             &public_id_codec,
         )
-        .expect("media proto should encode");
+        .map_err(|error| test_error(format!("{error:?}")))?;
         assert!(
             proto.source_config.is_empty(),
             "non-creator viewers must not receive source_config"
@@ -1922,8 +1986,12 @@ mod tests {
 
         let mut unowned_media = media.clone();
         unowned_media.creator_id = None;
-        let proto = try_media_to_proto_for_viewer(&unowned_media, true, None, &public_id_codec)
-            .expect("media proto should encode");
+        let proto = api_ok(try_media_to_proto_for_viewer(
+            &unowned_media,
+            true,
+            None,
+            &public_id_codec,
+        ))?;
         assert!(
             proto.source_config.is_empty(),
             "media without a creator must not expose source_config"
@@ -1933,12 +2001,14 @@ mod tests {
             "media without a creator must not expose metadata extracted from source_config"
         );
 
-        let proto = try_media_to_proto_for_viewer(&media, true, Some(creator_id), &public_id_codec)
-            .expect("media proto should encode");
-        let source_config: serde_json::Value = serde_json::from_slice(&proto.source_config)
-            .expect("proto source config should be JSON");
-        let metadata: serde_json::Value =
-            serde_json::from_slice(&proto.metadata).expect("proto metadata should be JSON");
+        let proto = api_ok(try_media_to_proto_for_viewer(
+            &media,
+            true,
+            Some(creator_id),
+            &public_id_codec,
+        ))?;
+        let source_config: serde_json::Value = serde_json::from_slice(&proto.source_config)?;
+        let metadata: serde_json::Value = serde_json::from_slice(&proto.metadata)?;
 
         assert_eq!(source_config["token"], serde_json::json!("top-level-token"));
         assert_eq!(
@@ -1955,11 +2025,12 @@ mod tests {
             serde_json::json!("Secret Media")
         );
         assert_eq!(metadata["title"], serde_json::json!("Secret Media"));
+        Ok(())
     }
 
     #[test]
-    fn playlist_to_proto_includes_resource_version() {
-        let public_id_codec = crate::PublicIdCodec::plain();
+    fn playlist_to_proto_includes_resource_version() -> TestResult {
+        let public_id_codec = synctv_core::PublicIdCodec::plain();
         let playlist = synctv_core::models::Playlist {
             id: PlaylistId::expect_positive(105),
             room_id: RoomId::expect_positive(102),
@@ -1977,34 +2048,35 @@ mod tests {
             version: 7,
         };
 
-        let proto = try_playlist_to_proto(&playlist, 3, &public_id_codec)
-            .expect("playlist proto should encode");
+        let proto = api_ok(try_playlist_to_proto(&playlist, 3, &public_id_codec))?;
         assert_eq!(proto.version, 7);
+        Ok(())
     }
 
     #[test]
-    fn proto_role_filter_rejects_unknown_values_and_preserves_unspecified_filter() {
+    fn proto_role_filter_rejects_unknown_values_and_preserves_unspecified_filter() -> TestResult {
         assert_eq!(
             proto_role_filter_to_room_role(
                 synctv_proto::common::RoomMemberRole::Unspecified as i32
             )
-            .expect("unspecified role filter should be accepted"),
+            .map_err(|error| test_error(format!("{error:?}")))?,
             None
         );
         assert_eq!(
             proto_role_filter_to_room_role(synctv_proto::common::RoomMemberRole::Admin as i32)
-                .expect("admin role filter should be accepted"),
+                .map_err(|error| test_error(format!("{error:?}")))?,
             Some(synctv_core::models::RoomRole::Admin)
         );
         assert!(matches!(
             proto_role_filter_to_room_role(99),
             Err(crate::impls::ApiError::InvalidInput(message)) if message.contains("room member role")
         ));
+        Ok(())
     }
 
     #[test]
-    fn playlist_to_proto_only_includes_source_config_for_creator_viewer() {
-        let public_id_codec = crate::PublicIdCodec::plain();
+    fn playlist_to_proto_only_includes_source_config_for_creator_viewer() -> TestResult {
+        let public_id_codec = synctv_core::PublicIdCodec::plain();
         let creator_id = UserId::expect_positive(103);
         let playlist = synctv_core::models::Playlist {
             id: PlaylistId::expect_positive(106),
@@ -2029,8 +2101,7 @@ mod tests {
             version: 1,
         };
 
-        let proto = try_playlist_to_proto(&playlist, 3, &public_id_codec)
-            .expect("playlist proto should encode");
+        let proto = api_ok(try_playlist_to_proto(&playlist, 3, &public_id_codec))?;
         assert!(
             proto.source_config.is_empty(),
             "default playlist conversion must not expose source_config"
@@ -2045,7 +2116,7 @@ mod tests {
             Some(UserId::expect_positive(999)),
             &public_id_codec,
         )
-        .expect("playlist proto should encode");
+        .map_err(|error| test_error(format!("{error:?}")))?;
         assert!(
             proto.source_config.is_empty(),
             "non-creator viewers must not receive playlist source_config"
@@ -2053,9 +2124,13 @@ mod tests {
 
         let mut unowned_playlist = playlist.clone();
         unowned_playlist.creator_id = None;
-        let proto =
-            try_playlist_to_proto_for_viewer(&unowned_playlist, 3, true, None, &public_id_codec)
-                .expect("playlist proto should encode");
+        let proto = api_ok(try_playlist_to_proto_for_viewer(
+            &unowned_playlist,
+            3,
+            true,
+            None,
+            &public_id_codec,
+        ))?;
         assert!(
             proto.source_config.is_empty(),
             "playlist without a creator must not expose source_config"
@@ -2068,19 +2143,83 @@ mod tests {
             Some(creator_id),
             &public_id_codec,
         )
-        .expect("playlist proto should encode");
-        let source_config: serde_json::Value = serde_json::from_slice(&proto.source_config)
-            .expect("proto source config should be JSON");
+        .map_err(|error| test_error(format!("{error:?}")))?;
+        let source_config: serde_json::Value = serde_json::from_slice(&proto.source_config)?;
         assert_eq!(source_config["token"], serde_json::json!("playlist-token"));
         assert_eq!(
             source_config["nested"]["password"],
             serde_json::json!("nested-password")
         );
+        Ok(())
     }
 
     #[test]
-    fn room_to_proto_includes_resource_version() {
-        let public_id_codec = crate::PublicIdCodec::plain();
+    fn dynamic_playlist_source_fields_normalizes_provider_binding() -> TestResult {
+        let playlist = synctv_core::models::Playlist {
+            id: PlaylistId::expect_positive(107),
+            room_id: RoomId::expect_positive(102),
+            creator_id: Some(UserId::expect_positive(103)),
+            name: "Dynamic Playlist".to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
+            parent_id: None,
+            position: 1.0,
+            source_provider: Some(" alist ".to_string()),
+            source_config: Some(serde_json::json!({ "path": "/secret" })),
+            provider_instance_name: Some(" alist-main ".to_string()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            version: 1,
+        };
+
+        let fields = api_ok(dynamic_playlist_source_fields(&playlist))?;
+
+        assert_eq!(fields.provider_name, "alist");
+        assert_eq!(fields.source_config["path"], serde_json::json!("/secret"));
+        assert_eq!(fields.provider_instance_name, Some("alist-main"));
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_playlist_source_fields_rejects_invalid_dynamic_shape() {
+        let mut playlist = synctv_core::models::Playlist {
+            id: PlaylistId::expect_positive(108),
+            room_id: RoomId::expect_positive(102),
+            creator_id: Some(UserId::expect_positive(103)),
+            name: "Dynamic Playlist".to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
+            parent_id: None,
+            position: 1.0,
+            source_provider: Some("   ".to_string()),
+            source_config: Some(serde_json::json!({ "path": "/secret" })),
+            provider_instance_name: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            version: 1,
+        };
+
+        assert!(matches!(
+            dynamic_playlist_source_fields(&playlist),
+            Err(crate::impls::ApiError::Internal(message))
+                if message.contains("Dynamic playlist")
+                    && message.contains("provider")
+        ));
+
+        playlist.source_provider = Some("alist".to_string());
+        playlist.source_config = None;
+
+        assert!(matches!(
+            dynamic_playlist_source_fields(&playlist),
+            Err(crate::impls::ApiError::Internal(message))
+                if message.contains("Dynamic playlist")
+                    && message.contains("source_config")
+        ));
+    }
+
+    #[test]
+    fn room_to_proto_includes_resource_version() -> TestResult {
+        let public_id_codec = synctv_core::PublicIdCodec::plain();
         let now = chrono::Utc::now();
         let room = Room {
             id: RoomId::expect_positive(102),
@@ -2098,8 +2237,14 @@ mod tests {
             last_activity_at: now,
         };
 
-        let proto = try_room_to_proto_basic(&room, None, Some(0), &public_id_codec)
-            .expect("room proto should encode");
+        let settings = synctv_core::models::RoomSettings::default();
+        let proto = api_ok(try_room_to_proto_basic(
+            &room,
+            Some(&settings),
+            Some(0),
+            &public_id_codec,
+        ))?;
         assert_eq!(proto.version, 9);
+        Ok(())
     }
 }

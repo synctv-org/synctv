@@ -5,8 +5,8 @@
 
 #![allow(clippy::unwrap_used)]
 use synctv_core::models::id::{RoomId, UserId};
-use synctv_realtime::sync::events::{RealtimeEvent, WebRTCSignalKind};
-use synctv_realtime::RoomMessageHub;
+use synctv_realtime::sync::RoomMessageHub;
+use synctv_realtime::sync::{RealtimeEvent, WebRTCSignalKind};
 
 fn stable_test_id(s: &str) -> i64 {
     s.bytes().fold(0_i64, |acc, byte| {
@@ -242,80 +242,12 @@ async fn test_broadcast_to_connection_keeps_current_thread_target_registered_whe
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn test_broadcast_to_user_current_thread_defers_reliable_delivery_when_channel_full() {
-    let hub = RoomMessageHub::new();
-    let room = rid("r1-user-current-thread");
-    let user = uid("u1");
-
-    let mut rx = hub
-        .subscribe(room, user, "conn-user".to_string().into())
-        .await
-        .expect("subscribe should succeed");
-
-    for _ in 0..512 {
-        let event = chat_event(&room, &uid("u2"));
-        let sent = hub.broadcast_to_user(&room, &user, &event);
-        assert_eq!(sent, 1, "prefill should saturate the subscriber channel");
-    }
-
-    let hub_for_task = hub.clone();
-    let room_for_task = room;
-    let user_for_task = user;
-    let event = RealtimeEvent::KickUserFromRoom {
-        event_id: synctv_common::snanoid!(16),
-        room_id: room,
-        user_id: user,
-        reason: "testing".to_string(),
-        timestamp: chrono::Utc::now(),
-    };
-    let notify = tokio::spawn(async move {
-        hub_for_task.broadcast_to_user(&room_for_task, &user_for_task, &event)
-    });
-
-    tokio::task::yield_now().await;
-
-    let sent = notify
-        .await
-        .expect("broadcast_to_user task should not panic");
-    assert_eq!(
-        sent, 1,
-        "current-thread runtimes should count deferred critical delivery as locally accepted"
-    );
-
-    assert_eq!(
-        hub.connection_count(),
-        1,
-        "deferred reliable delivery must not unsubscribe the subscriber"
-    );
-
-    let _drained = rx.recv().await.expect("prefill message should exist");
-    let mut delivered_kick = false;
-    for _ in 0..512 {
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-            .await
-            .expect(
-                "deferred reliable delivery should eventually enqueue once capacity is available",
-            )
-            .expect("channel should remain open");
-        if matches!(msg, RealtimeEvent::KickUserFromRoom { .. }) {
-            delivered_kick = true;
-            break;
-        }
-    }
-
-    assert!(
-        delivered_kick,
-        "current-thread fallback must still enqueue the critical event after capacity is freed"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn test_broadcast_current_thread_defers_reliable_delivery_when_channel_full() {
+async fn test_broadcast_current_thread_drops_when_channel_full() {
     let hub = RoomMessageHub::new();
     let room = rid("r1-broadcast-current-thread");
     let user = uid("u1");
 
-    let mut rx = hub
+    let _rx = hub
         .subscribe(room, user, "conn-broadcast".to_string().into())
         .await
         .expect("subscribe should succeed");
@@ -333,104 +265,15 @@ async fn test_broadcast_current_thread_defers_reliable_delivery_when_channel_ful
         timestamp: chrono::Utc::now(),
     };
 
-    let hub_for_task = hub.clone();
-    let room_for_task = room;
-    let notify = tokio::spawn(async move { hub_for_task.broadcast(&room_for_task, &event) });
-
-    tokio::task::yield_now().await;
-
-    let sent = notify.await.expect("broadcast task should not panic");
+    let sent = hub.broadcast(&room, &event);
     assert_eq!(
-        sent, 1,
-        "current-thread synchronous broadcast should count deferred critical delivery as local success"
+        sent, 0,
+        "non-blocking broadcast cannot queue a message when the subscriber channel is full"
     );
-
-    let _drained = rx.recv().await.expect("prefill message should exist");
-
-    let mut delivered_delete = false;
-    for _ in 0..512 {
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-            .await
-            .expect(
-                "deferred critical broadcast should eventually enqueue once capacity is available",
-            )
-            .expect("channel should remain open");
-        if matches!(msg, RealtimeEvent::RoomDeleted { .. }) {
-            delivered_delete = true;
-            break;
-        }
-    }
-
-    assert!(
-        delivered_delete,
-        "current-thread broadcast fallback must still enqueue the critical event after capacity is freed"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn test_broadcast_to_user_current_thread_deferred_delivery_keeps_connection_registered() {
-    let hub = RoomMessageHub::new();
-    let room = rid("r1-user-current-thread-registered");
-    let user = uid("u1");
-
-    let mut rx = hub
-        .subscribe(room, user, "conn-user".to_string().into())
-        .await
-        .expect("subscribe should succeed");
-
-    for _ in 0..512 {
-        let event = chat_event(&room, &uid("u2"));
-        let sent = hub.broadcast_to_user(&room, &user, &event);
-        assert_eq!(sent, 1, "prefill should saturate the subscriber channel");
-    }
-
-    let event = RealtimeEvent::KickUserFromRoom {
-        event_id: synctv_common::snanoid!(16),
-        room_id: room,
-        user_id: user,
-        reason: "testing".to_string(),
-        timestamp: chrono::Utc::now(),
-    };
-
-    let hub_for_task = hub.clone();
-    let room_for_task = room;
-    let user_for_task = user;
-    let notify = tokio::spawn(async move {
-        hub_for_task.broadcast_to_user(&room_for_task, &user_for_task, &event)
-    });
-
-    tokio::task::yield_now().await;
-
     assert_eq!(
         hub.connection_count(),
         1,
-        "deferred current-thread delivery must keep the subscriber registered while waiting for capacity"
-    );
-
-    let _drained = rx.recv().await.expect("prefill message should exist");
-
-    let sent = notify
-        .await
-        .expect("broadcast_to_user task should not panic");
-    assert_eq!(
-        sent, 1,
-        "deferred delivery should still count as local acceptance"
-    );
-
-    let mut delivered_kick = false;
-    for _ in 0..512 {
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-            .await
-            .expect("deferred reliable delivery should eventually enqueue")
-            .expect("channel should remain open");
-        if matches!(msg, RealtimeEvent::KickUserFromRoom { .. }) {
-            delivered_kick = true;
-            break;
-        }
-    }
-    assert!(
-        delivered_kick,
-        "deferred current-thread delivery must still enqueue the critical event"
+        "single dropped broadcast stays below slow-consumer disconnect threshold"
     );
 }
 
@@ -471,52 +314,7 @@ async fn test_broadcast_to_connection_unsubscribes_target_when_reliable_delivery
     );
 }
 
-// Test 2: broadcast_to_user delivers to all connections of that user
-
-#[tokio::test]
-async fn test_broadcast_to_user_multi_connection() {
-    let hub = RoomMessageHub::new();
-    let room = rid("r1");
-    let user = uid("u1");
-    let other = uid("u2");
-
-    // Same user with two connections
-    let mut rx1 = hub
-        .subscribe(room, user, "c1".to_string().into())
-        .await
-        .expect("subscribe should succeed");
-    let mut rx2 = hub
-        .subscribe(room, user, "c2".to_string().into())
-        .await
-        .expect("subscribe should succeed");
-    let mut rx3 = hub
-        .subscribe(room, other, "c3".to_string().into())
-        .await
-        .expect("subscribe should succeed");
-
-    let event = chat_event(&room, &user);
-    let sent = hub.broadcast_to_user(&room, &user, &event);
-    assert_eq!(sent, 2, "Both user connections should receive");
-
-    // Both user connections receive
-    let _m1 = tokio::time::timeout(std::time::Duration::from_millis(100), rx1.recv())
-        .await
-        .expect("c1 should receive")
-        .expect("channel not closed");
-    let _m2 = tokio::time::timeout(std::time::Duration::from_millis(100), rx2.recv())
-        .await
-        .expect("c2 should receive")
-        .expect("channel not closed");
-
-    // Other user does NOT receive
-    let r = tokio::time::timeout(std::time::Duration::from_millis(100), rx3.recv()).await;
-    assert!(
-        r.is_err(),
-        "other user should not receive the targeted message"
-    );
-}
-
-// Test 3: remove_room cleans up all state
+// Test 2: remove_room cleans up all state
 
 #[tokio::test]
 async fn test_remove_room_cleans_connections() {
@@ -572,7 +370,7 @@ async fn test_unsubscribe_unknown_safe() {
 /// receivers are active.
 #[tokio::test]
 async fn test_lifecycle_events_emitted_on_subscribe_unsubscribe() {
-    use synctv_realtime::sync::room_hub::RoomLifecycleEvent;
+    use synctv_realtime::sync::RoomLifecycleEvent;
 
     let hub = RoomMessageHub::new();
     let mut lifecycle_rx = hub.subscribe_lifecycle();
@@ -605,7 +403,7 @@ async fn test_lifecycle_events_emitted_on_subscribe_unsubscribe() {
 /// Lifecycle events are not lost when multiple rooms are created quickly.
 #[tokio::test]
 async fn test_lifecycle_events_not_lost_under_room_churn() {
-    use synctv_realtime::sync::room_hub::RoomLifecycleEvent;
+    use synctv_realtime::sync::RoomLifecycleEvent;
 
     let hub = RoomMessageHub::new();
     let mut lifecycle_rx = hub.subscribe_lifecycle();
@@ -647,7 +445,7 @@ async fn test_lifecycle_events_not_lost_under_room_churn() {
 /// room concurrently, the new subscriber must see a RoomActivated event.
 #[tokio::test]
 async fn test_unsubscribe_last_then_subscribe_emits_activated() {
-    use synctv_realtime::sync::room_hub::RoomLifecycleEvent;
+    use synctv_realtime::sync::RoomLifecycleEvent;
 
     let hub = RoomMessageHub::new();
     let mut lifecycle_rx = hub.subscribe_lifecycle();
@@ -692,7 +490,7 @@ async fn test_unsubscribe_last_then_subscribe_emits_activated() {
 /// remove_room emits a RoomDeactivated lifecycle event.
 #[tokio::test]
 async fn test_remove_room_emits_deactivated_event() {
-    use synctv_realtime::sync::room_hub::RoomLifecycleEvent;
+    use synctv_realtime::sync::RoomLifecycleEvent;
 
     let hub = RoomMessageHub::new();
     let mut lifecycle_rx = hub.subscribe_lifecycle();

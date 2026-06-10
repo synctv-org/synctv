@@ -41,18 +41,18 @@
 //! - **Refined cache status**: `HIT`, `MISS`, `BYPASS`, `EXPIRED`, `STALE`,
 //!   `UPDATING`, `REVALIDATED`.
 
-pub mod backend;
-pub mod config;
-pub mod etag;
-pub mod filter;
+mod backend;
+mod config;
+mod etag;
+mod filter;
 mod head;
 mod keys;
-pub mod lifecycle;
+mod lifecycle;
 mod maintenance;
 mod passthrough;
-pub mod range;
-pub mod status;
-pub mod store;
+mod range;
+mod status;
+mod store;
 mod types;
 
 // Public slice-cache API.
@@ -60,7 +60,8 @@ pub use backend::{CacheBackend, SliceCacheBackend};
 pub use config::{CacheBackendConfig, SliceCacheConfig};
 pub use etag::{CachedResourceMeta, StoredEntry};
 pub use filter::{
-    proxy_head_with_cache_enabled_with_control,
+    head_content_length, head_content_length_with_control,
+    head_content_length_with_control_and_timeout, proxy_head_with_cache_enabled_with_control,
     proxy_head_with_cache_enabled_with_control_and_timeout, proxy_with_cache,
     proxy_with_cache_enabled, proxy_with_cache_enabled_with_control,
     proxy_with_cache_enabled_with_control_and_timeout, proxy_with_cache_with_control,

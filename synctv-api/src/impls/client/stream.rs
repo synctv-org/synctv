@@ -42,7 +42,7 @@ pub(crate) fn build_room_streams_request(
 pub(crate) fn build_room_streams_response(
     media_ids: Vec<MediaId>,
     req: &ListRoomStreamsRequest,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<ListRoomStreamsResponse, ApiError> {
     let mut media_ids: Vec<String> = media_ids
         .into_iter()
@@ -88,16 +88,12 @@ pub(crate) fn live_streaming_unavailable_error() -> ApiError {
 }
 
 pub(crate) async fn fetch_stream_info(
-    infrastructure: &synctv_livestream::api::LiveStreamingInfrastructure,
-    public_id_codec: &crate::PublicIdCodec,
+    infrastructure: &synctv_livestream::LiveStreamingInfrastructure,
+    public_id_codec: &synctv_core::PublicIdCodec,
     room_id: &str,
     media_id: &str,
 ) -> Result<GetRoomStreamInfoResponse, ApiError> {
-    match infrastructure
-        .registry()
-        .get_publisher(room_id, media_id)
-        .await
-    {
+    match infrastructure.find_publisher(room_id, media_id).await {
         Ok(Some(pub_info)) => {
             let user_id = public_id_codec
                 .encode_user_id(pub_info.user_id.parse::<UserId>().map_err(|error| {
@@ -144,7 +140,6 @@ impl ClientApiImpl {
             .ok_or_else(live_streaming_unavailable_error)?;
 
         let media_ids = infrastructure
-            .registry
             .list_streams_for_room(&rid.to_string())
             .await
             .map_err(|error| Self::map_livestream_backend_error(&*error))?;
@@ -219,12 +214,9 @@ impl ClientApiImpl {
             .as_ref()
             .ok_or_else(live_streaming_unavailable_error)?;
         if !infrastructure
-            .registry()
             .is_stream_active(&rid.to_string(), &media_id.to_string())
             .await
-            .map_err(|error| {
-                ApiError::Internal(format!("Failed to check active stream: {error}"))
-            })?
+            .map_err(|error| ApiError::Internal(error.to_string()))?
         {
             return Err(ApiError::NotFound("Active stream not found".to_string()));
         }
@@ -240,16 +232,38 @@ mod tests {
     use super::{build_room_streams_request, build_room_streams_response};
     use crate::impls::ApiError;
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn api_ok<T>(result: Result<T, ApiError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("{error:?}")))
+    }
+
+    fn api_err<T>(result: Result<T, ApiError>) -> TestResult<ApiError> {
+        match result {
+            Ok(_) => Err(test_error("expected API error result")),
+            Err(error) => Ok(error),
+        }
+    }
+
+    fn codec_ok<T>(result: Result<T, String>) -> TestResult<T> {
+        result.map_err(test_error)
+    }
+
     #[test]
-    fn build_room_streams_request_rejects_invalid_proto_request() {
-        let error = build_room_streams_request(synctv_proto::client::ListRoomStreamsRequest {
-            page: -1,
-            page_size: 101,
-            search: "a".repeat(101),
-            sort_by: 0,
-            sort_direction: 0,
-        })
-        .expect_err("invalid proto request must be rejected");
+    fn build_room_streams_request_rejects_invalid_proto_request() -> TestResult {
+        let error = api_err(build_room_streams_request(
+            synctv_proto::client::ListRoomStreamsRequest {
+                page: -1,
+                page_size: 101,
+                search: "a".repeat(101),
+                sort_by: 0,
+                sort_direction: 0,
+            },
+        ))?;
 
         match error {
             ApiError::InvalidInput(message) => {
@@ -257,31 +271,34 @@ mod tests {
                 assert!(message.contains("page_size"), "{message}");
                 assert!(message.contains("search"), "{message}");
             }
-            other => panic!("expected invalid input, got {other:?}"),
+            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
         }
+        Ok(())
     }
 
     #[test]
-    fn build_room_streams_request_normalizes_defaults() {
-        let req = build_room_streams_request(synctv_proto::client::ListRoomStreamsRequest {
-            page: 0,
-            page_size: 0,
-            search: " beta ".to_string(),
-            sort_by: 1,
-            sort_direction: 2,
-        })
-        .expect("defaultable request must be accepted");
+    fn build_room_streams_request_normalizes_defaults() -> TestResult {
+        let req = api_ok(build_room_streams_request(
+            synctv_proto::client::ListRoomStreamsRequest {
+                page: 0,
+                page_size: 0,
+                search: " beta ".to_string(),
+                sort_by: 1,
+                sort_direction: 2,
+            },
+        ))?;
 
         assert_eq!(req.page, 1);
         assert_eq!(req.page_size, 50);
         assert_eq!(req.search, " beta ");
         assert_eq!(req.sort_by, 1);
         assert_eq!(req.sort_direction, 2);
+        Ok(())
     }
 
     #[test]
-    fn build_room_streams_response_applies_search_sort_and_pagination() {
-        let public_id_codec = crate::PublicIdCodec::plain();
+    fn build_room_streams_response_applies_search_sort_and_pagination() -> TestResult {
+        let public_id_codec = synctv_core::PublicIdCodec::plain();
         let media_ids = vec![
             synctv_core::models::MediaId::expect_positive(201),
             synctv_core::models::MediaId::expect_positive(202),
@@ -289,11 +306,11 @@ mod tests {
         ];
         let mut expected_ids = media_ids
             .iter()
-            .map(|media_id| public_id_codec.encode_media_id(*media_id).unwrap())
-            .collect::<Vec<_>>();
+            .map(|media_id| codec_ok(public_id_codec.encode_media_id(*media_id)))
+            .collect::<TestResult<Vec<_>>>()?;
         expected_ids.sort_unstable();
         expected_ids.reverse();
-        let response = build_room_streams_response(
+        let response = api_ok(build_room_streams_response(
             media_ids,
             &synctv_proto::client::ListRoomStreamsRequest {
                 page: 2,
@@ -303,12 +320,12 @@ mod tests {
                 sort_direction: synctv_proto::client::SortDirection::Desc as i32,
             },
             &public_id_codec,
-        )
-        .expect("valid stream ids should encode");
+        ))?;
 
         assert_eq!(response.total, 3);
         assert_eq!(response.streams.len(), 1);
         assert_eq!(response.streams[0].media_id, expected_ids[1]);
         assert!(response.streams[0].active);
+        Ok(())
     }
 }

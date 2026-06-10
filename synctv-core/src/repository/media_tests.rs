@@ -2,6 +2,7 @@ use super::*;
 use crate::models::id::{MediaId, PlaylistId, RoomId, UserId};
 use crate::models::{FromProviderParams, ProviderInstance};
 use crate::repository::ProviderInstanceRepository;
+use crate::test_helpers::{TestOptionExt, TestResultExt};
 use sqlx::Execute;
 use synctv_core_testing::create_test_pool;
 
@@ -24,7 +25,7 @@ async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str
     ProviderInstanceRepository::new(pool.clone())
         .create(&instance)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 }
 
 /// Unit test: Media builder pattern
@@ -60,7 +61,8 @@ fn test_push_media_scope_filters_treats_empty_provider_instance_as_default() {
     };
     let room_id = RoomId::expect_positive(123_456_678);
 
-    MediaRepository::push_media_scope_filters(&mut builder, &room_id, None, &query).unwrap();
+    MediaRepository::push_media_scope_filters(&mut builder, &room_id, None, &query)
+        .checked("operation should succeed");
 
     let built = builder.build();
     assert!(built
@@ -125,7 +127,7 @@ fn test_media_from_direct_single_mode() {
         playback_info,
         5.0,
     )
-    .expect("direct media should build");
+    .checked("direct media should build");
 
     assert_eq!(media.name, "Single Mode Video");
     assert!((media.position - 5.0).abs() < f64::EPSILON);
@@ -168,7 +170,7 @@ fn test_media_from_direct_multimode() {
         default_mode: "direct".to_string(),
         position: 10.0,
     })
-    .expect("direct multimode media should build");
+    .checked("direct multimode media should build");
 
     assert_eq!(media.name, "Multimode Video");
     assert!((media.position - 10.0).abs() < f64::EPSILON);
@@ -198,13 +200,19 @@ async fn test_create_and_get_media() {
 
     // Create owner and room
     let owner = UserFixture::new().with_username("media_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Media Test Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playlist hierarchy (root + child with name)
     let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
@@ -227,14 +235,20 @@ async fn test_create_and_get_media() {
         position: 0.0,
     });
 
-    let created = media_repo.create(&media).await.unwrap();
+    let created = media_repo
+        .create(&media)
+        .await
+        .checked("operation should succeed");
     assert_eq!(created.name, "Test Video");
     assert!((created.position - 0.0).abs() < f64::EPSILON);
 
     // Get by ID
-    let fetched = media_repo.get_by_id(&created.id).await.unwrap();
+    let fetched = media_repo
+        .get_by_id(&created.id)
+        .await
+        .checked("operation should succeed");
     assert!(fetched.is_some());
-    let fetched = fetched.unwrap();
+    let fetched = fetched.checked("operation should succeed");
     assert_eq!(fetched.name, "Test Video");
 }
 
@@ -257,13 +271,19 @@ async fn test_update_media() {
     let owner = UserFixture::new()
         .with_username("media_update_owner")
         .build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Media Update Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playlist hierarchy (root + child with name)
     let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
@@ -284,7 +304,10 @@ async fn test_update_media() {
         provider_instance_name: None,
         position: 0.0,
     });
-    let created = media_repo.create(&media).await.unwrap();
+    let created = media_repo
+        .create(&media)
+        .await
+        .checked("operation should succeed");
 
     // Update
     let mut updated = created.clone();
@@ -293,7 +316,10 @@ async fn test_update_media() {
     updated.source_config = serde_json::json!({"url": "https://example.com/changed.mp4"});
     updated.provider_instance_name = Some("changed-instance".to_string());
 
-    let result = media_repo.update(&updated).await.unwrap();
+    let result = media_repo
+        .update(&updated)
+        .await
+        .checked("operation should succeed");
     assert_eq!(result.name, "Updated Name");
     assert!((result.position - 5.0).abs() < f64::EPSILON);
     assert_eq!(result.source_config, created.source_config);
@@ -322,13 +348,19 @@ async fn test_delete_media() {
     let owner = UserFixture::new()
         .with_username("media_delete_owner")
         .build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Media Delete Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playlist hierarchy (root + child with name)
     let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
@@ -349,18 +381,30 @@ async fn test_delete_media() {
         provider_instance_name: None,
         position: 0.0,
     });
-    let created = media_repo.create(&media).await.unwrap();
+    let created = media_repo
+        .create(&media)
+        .await
+        .checked("operation should succeed");
 
     // Delete
-    let deleted = media_repo.delete(&created.id).await.unwrap();
+    let deleted = media_repo
+        .delete(&created.id)
+        .await
+        .checked("operation should succeed");
     assert!(deleted);
 
     // Verify deleted
-    let fetched = media_repo.get_by_id(&created.id).await.unwrap();
+    let fetched = media_repo
+        .get_by_id(&created.id)
+        .await
+        .checked("operation should succeed");
     assert!(fetched.is_none());
 
     // Delete non-existent returns false
-    let deleted_again = media_repo.delete(&created.id).await.unwrap();
+    let deleted_again = media_repo
+        .delete(&created.id)
+        .await
+        .checked("operation should succeed");
     assert!(!deleted_again);
 }
 
@@ -388,7 +432,7 @@ async fn test_list_filtered_by_scope_matches_default_provider_instance_name() {
                 .build(),
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let room = room_repo
         .create(
@@ -398,7 +442,7 @@ async fn test_list_filtered_by_scope_matches_default_provider_instance_name() {
                 .build(),
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
         &playlist_repo,
@@ -431,8 +475,14 @@ async fn test_list_filtered_by_scope_matches_default_provider_instance_name() {
     });
 
     insert_test_provider_instance(&pool, "direct_url_remote", "direct_url").await;
-    let created_default = media_repo.create(&default_media).await.unwrap();
-    media_repo.create(&explicit_media).await.unwrap();
+    let created_default = media_repo
+        .create(&default_media)
+        .await
+        .checked("operation should succeed");
+    media_repo
+        .create(&explicit_media)
+        .await
+        .checked("operation should succeed");
 
     let query = MediaListQuery {
         provider_instance_name: Some(String::new()),
@@ -443,13 +493,13 @@ async fn test_list_filtered_by_scope_matches_default_provider_instance_name() {
     let count = media_repo
         .count_filtered_by_scope(&room.id, Some(&playlist.id), &query)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(count, 1);
 
     let rows = media_repo
         .list_filtered_by_scope(&room.id, Some(&playlist.id), &query, 50, 0)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].media.id, created_default.id);
     assert!(rows[0].media.provider_instance_name.is_none());
@@ -472,13 +522,19 @@ async fn test_create_batch() {
 
     // Setup
     let owner = UserFixture::new().with_username("batch_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Batch Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playlist hierarchy (root + child with name)
     let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
@@ -505,18 +561,24 @@ async fn test_create_batch() {
         })
         .collect();
 
-    let created = media_repo.create_batch(&items).await.unwrap();
+    let created = media_repo
+        .create_batch(&items)
+        .await
+        .checked("operation should succeed");
     assert_eq!(created.len(), 5);
 
     // Verify all created
-    let fetched = media_repo.get_by_playlist(&playlist.id).await.unwrap();
+    let fetched = media_repo
+        .get_by_playlist(&playlist.id)
+        .await
+        .checked("operation should succeed");
     assert_eq!(fetched.len(), 5);
 }
 
 #[test]
 fn test_create_batch_chunk_too_large() {
     let err = MediaRepository::validate_create_batch_chunk_len(1001)
-        .expect_err("oversized chunks should be rejected before building a query");
+        .failed("oversized chunks should be rejected before building a query");
 
     match err {
         crate::Error::InvalidInput(message) => {
@@ -529,7 +591,7 @@ fn test_create_batch_chunk_too_large() {
                 "unexpected message: {message}"
             );
         }
-        other => panic!("expected invalid input error, got {other:?}"),
+        other => std::panic::panic_any(format!("expected invalid input error, got {other:?}")),
     }
 }
 
@@ -550,13 +612,19 @@ async fn test_move_with_tx_reorders_scope() {
 
     // Setup
     let owner = UserFixture::new().with_username("swap_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Swap Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playlist hierarchy (root + child with name)
     let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
@@ -590,22 +658,36 @@ async fn test_move_with_tx_reorders_scope() {
         position: 2048.0,
     });
 
-    let created1 = media_repo.create(&media1).await.unwrap();
-    let created2 = media_repo.create(&media2).await.unwrap();
+    let created1 = media_repo
+        .create(&media1)
+        .await
+        .checked("operation should succeed");
+    let created2 = media_repo
+        .create(&media2)
+        .await
+        .checked("operation should succeed");
 
     assert!((created1.position - 1024.0).abs() < f64::EPSILON);
     assert!((created2.position - 2048.0).abs() < f64::EPSILON);
 
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.begin().await.checked("operation should succeed");
     media_repo
         .move_with_tx(&room.id, &created2.id, Some(&created1.id), None, &mut tx)
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .checked("operation should succeed");
+    tx.commit().await.checked("operation should succeed");
 
     // Verify ordering changed and only the moved item crossed the anchor.
-    let fetched1 = media_repo.get_by_id(&created1.id).await.unwrap().unwrap();
-    let fetched2 = media_repo.get_by_id(&created2.id).await.unwrap().unwrap();
+    let fetched1 = media_repo
+        .get_by_id(&created1.id)
+        .await
+        .checked("operation should succeed")
+        .checked("operation should succeed");
+    let fetched2 = media_repo
+        .get_by_id(&created2.id)
+        .await
+        .checked("operation should succeed")
+        .checked("operation should succeed");
 
     assert!(fetched2.position < fetched1.position);
 }
@@ -627,13 +709,19 @@ async fn test_count_by_playlist() {
 
     // Setup
     let owner = UserFixture::new().with_username("count_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Count Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playlist hierarchy (root + child with name)
     let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
@@ -644,7 +732,10 @@ async fn test_count_by_playlist() {
     .await;
 
     // Initially empty
-    let count = media_repo.count_by_playlist(&playlist.id).await.unwrap();
+    let count = media_repo
+        .count_by_playlist(&playlist.id)
+        .await
+        .checked("operation should succeed");
     assert_eq!(count, 0);
 
     // Add 3 items
@@ -660,10 +751,16 @@ async fn test_count_by_playlist() {
             provider_instance_name: None,
             position: f64::from(i),
         });
-        media_repo.create(&media).await.unwrap();
+        media_repo
+            .create(&media)
+            .await
+            .checked("operation should succeed");
     }
 
-    let count = media_repo.count_by_playlist(&playlist.id).await.unwrap();
+    let count = media_repo
+        .count_by_playlist(&playlist.id)
+        .await
+        .checked("operation should succeed");
     assert_eq!(count, 3);
 }
 
@@ -684,13 +781,19 @@ async fn test_get_playlist_paginated() {
 
     // Setup
     let owner = UserFixture::new().with_username("paginate_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Paginate Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playlist hierarchy (root + child with name)
     let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
@@ -713,7 +816,10 @@ async fn test_get_playlist_paginated() {
             provider_instance_name: None,
             position: f64::from(i),
         });
-        media_repo.create(&media).await.unwrap();
+        media_repo
+            .create(&media)
+            .await
+            .checked("operation should succeed");
     }
 
     // Page 1 (limit 10, offset 0)
@@ -721,7 +827,7 @@ async fn test_get_playlist_paginated() {
     let (items, total) = media_repo
         .get_playlist_paginated(&playlist.id, page1)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(items.len(), 10);
     assert_eq!(total, 15);
 
@@ -730,7 +836,7 @@ async fn test_get_playlist_paginated() {
     let (items, total) = media_repo
         .get_playlist_paginated(&playlist.id, page2)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(items.len(), 5);
     assert_eq!(total, 15);
 }
@@ -754,13 +860,19 @@ async fn test_delete_batch() {
     let owner = UserFixture::new()
         .with_username("batch_delete_owner")
         .build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Batch Delete Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playlist hierarchy (root + child with name)
     let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
@@ -784,16 +896,25 @@ async fn test_delete_batch() {
             provider_instance_name: None,
             position: f64::from(i),
         });
-        let created = media_repo.create(&media).await.unwrap();
+        let created = media_repo
+            .create(&media)
+            .await
+            .checked("operation should succeed");
         ids.push(created.id);
     }
 
     // Delete 3 items
-    let deleted = media_repo.delete_batch(&ids[0..3]).await.unwrap();
+    let deleted = media_repo
+        .delete_batch(&ids[0..3])
+        .await
+        .checked("operation should succeed");
     assert_eq!(deleted, 3);
 
     // Verify remaining
-    let remaining = media_repo.get_by_playlist(&playlist.id).await.unwrap();
+    let remaining = media_repo
+        .get_by_playlist(&playlist.id)
+        .await
+        .checked("operation should succeed");
     assert_eq!(remaining.len(), 2);
 }
 
@@ -814,13 +935,19 @@ async fn test_get_by_ids() {
 
     // Setup
     let owner = UserFixture::new().with_username("get_ids_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Get IDs Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playlist hierarchy (root + child with name)
     let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
@@ -844,21 +971,33 @@ async fn test_get_by_ids() {
             provider_instance_name: None,
             position: f64::from(i),
         });
-        let created = media_repo.create(&media).await.unwrap();
+        let created = media_repo
+            .create(&media)
+            .await
+            .checked("operation should succeed");
         ids.push(created.id);
     }
 
     // Get by IDs
-    let fetched = media_repo.get_by_ids(&ids).await.unwrap();
+    let fetched = media_repo
+        .get_by_ids(&ids)
+        .await
+        .checked("operation should succeed");
     assert_eq!(fetched.len(), 3);
 
     // Get with non-existent ID
     let mut mixed_ids = ids.clone();
     mixed_ids.push(MediaId::new());
-    let fetched = media_repo.get_by_ids(&mixed_ids).await.unwrap();
+    let fetched = media_repo
+        .get_by_ids(&mixed_ids)
+        .await
+        .checked("operation should succeed");
     assert_eq!(fetched.len(), 3); // Only existing ones returned
 
     // Empty IDs returns empty
-    let fetched = media_repo.get_by_ids(&[]).await.unwrap();
+    let fetched = media_repo
+        .get_by_ids(&[])
+        .await
+        .checked("operation should succeed");
     assert!(fetched.is_empty());
 }

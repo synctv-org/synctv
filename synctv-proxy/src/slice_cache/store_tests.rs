@@ -1,12 +1,14 @@
 use super::*;
 
-fn test_cache() -> SliceCache {
-    SliceCache::new(SliceCacheConfig::default()).expect("test cache should build")
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+fn test_cache() -> anyhow::Result<SliceCache> {
+    SliceCache::new(SliceCacheConfig::default())
 }
 
 #[test]
-fn cleanup_stale_meta_evicts_oldest_entries() {
-    let cache = test_cache();
+fn cleanup_stale_meta_evicts_oldest_entries() -> TestResult {
+    let cache = test_cache()?;
     let now = std::time::SystemTime::now();
 
     for index in 0_u64..6 {
@@ -33,11 +35,12 @@ fn cleanup_stale_meta_evicts_oldest_entries() {
     assert!(!cache.meta.contains_key("meta-3"));
     assert!(cache.meta.contains_key("meta-4"));
     assert!(cache.meta.contains_key("meta-5"));
+    Ok(())
 }
 
 #[test]
-fn cleanup_stale_meta_skips_when_within_limit() {
-    let cache = test_cache();
+fn cleanup_stale_meta_skips_when_within_limit() -> TestResult {
+    let cache = test_cache()?;
     let now = std::time::SystemTime::now();
 
     for index in 0..4 {
@@ -58,19 +61,19 @@ fn cleanup_stale_meta_skips_when_within_limit() {
     cache.cleanup_stale_meta_with_limit(4);
 
     assert_eq!(cache.meta_count(), 4);
+    Ok(())
 }
 
 #[tokio::test]
-async fn stats_reports_backend_and_runtime_counters() {
-    let cache = test_cache();
+async fn stats_reports_backend_and_runtime_counters() -> TestResult {
+    let cache = test_cache()?;
     cache
         .backend
         .put(
             "slice-1",
             StoredEntry::new(Bytes::from_static(b"cached"), Duration::from_mins(1)),
         )
-        .await
-        .expect("entry should be cached");
+        .await?;
     cache.meta.insert(
         "meta-1".to_string(),
         CachedResourceMeta {
@@ -99,19 +102,19 @@ async fn stats_reports_backend_and_runtime_counters() {
     assert_eq!(stats.updating_entries, 1);
     assert_eq!(stats.lock_count, 1);
     assert!(stats.usage_ratio > 0.0);
+    Ok(())
 }
 
 #[tokio::test]
-async fn purge_all_removes_entries_and_runtime_metadata() {
-    let cache = test_cache();
+async fn purge_all_removes_entries_and_runtime_metadata() -> TestResult {
+    let cache = test_cache()?;
     cache
         .backend
         .put(
             "slice-1",
             StoredEntry::new(Bytes::from_static(b"cached"), Duration::from_mins(1)),
         )
-        .await
-        .expect("entry should be cached");
+        .await?;
     cache.meta.insert(
         "meta-1".to_string(),
         CachedResourceMeta {
@@ -137,22 +140,23 @@ async fn purge_all_removes_entries_and_runtime_metadata() {
     assert_eq!(cache.meta_count(), 0);
     assert!(cache.updating_keys.is_empty());
     assert!(cache.locks.is_empty());
+    Ok(())
 }
 
 #[tokio::test]
-async fn evict_expired_entries_removes_expired_backend_entries() {
-    let cache = test_cache();
+async fn evict_expired_entries_removes_expired_backend_entries() -> TestResult {
+    let cache = test_cache()?;
     cache
         .backend
         .put(
             "expired-slice",
             StoredEntry::new(Bytes::from_static(b"old"), Duration::ZERO),
         )
-        .await
-        .expect("entry should be cached");
+        .await?;
 
     let removed = cache.evict_expired_entries().await;
 
     assert_eq!(removed, 1);
     assert_eq!(cache.backend.entry_count(), 0);
+    Ok(())
 }

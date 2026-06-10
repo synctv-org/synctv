@@ -1,4 +1,3 @@
-use std::fmt::Write;
 use {
     super::{define::h264_nal_type, errors::Mpeg4AvcHevcError},
     crate::bytesio::{bytes_reader::BytesReader, bytes_writer::BytesWriter},
@@ -16,19 +15,43 @@ const MAX_PPS_COUNT: u8 = 16;
 
 fn usize_to_u8(value: usize) -> Result<u8, Mpeg4AvcHevcError> {
     u8::try_from(value).map_err(|_| Mpeg4AvcHevcError {
-        value: MpegErrorValue::ShouldNotComeHere,
+        value: MpegErrorValue::IntegerRange {
+            value: value as u128,
+            target: "u8",
+        },
     })
 }
 
 fn usize_to_u16(value: usize) -> Result<u16, Mpeg4AvcHevcError> {
     u16::try_from(value).map_err(|_| Mpeg4AvcHevcError {
-        value: MpegErrorValue::ShouldNotComeHere,
+        value: MpegErrorValue::IntegerRange {
+            value: value as u128,
+            target: "u16",
+        },
     })
+}
+
+fn validate_parameter_set_count(
+    kind: &'static str,
+    declared: u8,
+    available: usize,
+) -> Result<usize, Mpeg4AvcHevcError> {
+    let declared_usize = usize::from(declared);
+    if declared_usize > available {
+        return Err(Mpeg4AvcHevcError {
+            value: MpegErrorValue::ParameterSetCountMismatch {
+                kind,
+                declared,
+                available,
+            },
+        });
+    }
+
+    Ok(declared_usize)
 }
 
 #[derive(Clone, Default)]
 pub struct Sps {
-    // pub size: u16,
     pub data: BytesMut,
 }
 
@@ -36,7 +59,6 @@ impl Sps {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            // size: 0,
             data: BytesMut::new(),
         }
     }
@@ -53,7 +75,6 @@ impl Sps {
 
 #[derive(Clone, Default)]
 pub struct Pps {
-    // pub size: u16,
     pub data: BytesMut,
 }
 
@@ -61,7 +82,6 @@ impl Pps {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            // size: 0,
             data: BytesMut::new(),
         }
     }
@@ -90,33 +110,13 @@ pub struct Mpeg4Avc {
     pub sps: Vec<Sps>,
     pub pps: Vec<Pps>,
 
-    pub sps_annexb_data: BytesWriter, // pice together all the sps data
-    pub pps_annexb_data: BytesWriter, // pice together all the pps data
+    pub sps_annexb_data: BytesWriter,
+    pub pps_annexb_data: BytesWriter,
 
-    //extension
+    // AVCDecoderConfigurationRecord extension fields.
     pub chroma_format_idc: u8,
     pub bit_depth_luma_minus8: u8,
     pub bit_depth_chroma_minus8: u8,
-    // data: Vec<u8>, //[u8; 4 * 1024],
-    // off: i32,
-}
-
-pub fn print(data: BytesMut) {
-    tracing::trace!("==========={}", data.len());
-    let mut idx = 0;
-    let mut line = String::new();
-    for i in data {
-        let _ = write!(line, "{i:02X} ");
-        idx += 1;
-        if idx % 16 == 0 {
-            tracing::trace!("{}", line);
-            line.clear();
-        }
-    }
-    if !line.is_empty() {
-        tracing::trace!("{}", line);
-    }
-    tracing::trace!("===========");
 }
 
 impl Mpeg4Avc {
@@ -173,18 +173,12 @@ impl Mpeg4AvcProcessor {
         &mut self,
         bytes_reader: &mut BytesReader,
     ) -> Result<&mut Self, Mpeg4AvcHevcError> {
-        /*version */
         bytes_reader.read_u8()?;
-        /*avc profile*/
         self.mpeg4_avc.profile = bytes_reader.read_u8()?;
-        /*avc compatibility*/
         self.mpeg4_avc.compatibility = bytes_reader.read_u8()?;
-        /*avc level*/
         self.mpeg4_avc.level = bytes_reader.read_u8()?;
-        /*nalu length*/
         self.mpeg4_avc.nalu_length = (bytes_reader.read_u8()? & 0x03) + 1;
 
-        /*number of SPS NALUs */
         self.mpeg4_avc.nb_sps = bytes_reader.read_u8()? & 0x1F;
 
         // Validate SPS count: H.264 spec allows up to 31, but typical streams use 1-4
@@ -203,16 +197,12 @@ impl Mpeg4AvcProcessor {
         }
 
         for i in 0..usize::from(self.mpeg4_avc.nb_sps) {
-            /*SPS size*/
             let sps_data_size = bytes_reader.read_u16::<BigEndian>()?;
             let sps_data = Sps {
-                // size: sps_data_size,
-                /*SPS data*/
                 data: bytes_reader.read_bytes(usize::from(sps_data_size))?,
             };
 
             let mut sps_reader = BytesReader::new(sps_data.clone().data);
-            /*parse SPS data to get video resolution(widthxheight) */
             let nal_type = sps_reader.read_u8()?;
             if (nal_type & 0x1f) != h264_nal_type::H264_NAL_SPS {
                 return Err(Mpeg4AvcHevcError {
@@ -237,7 +227,6 @@ impl Mpeg4AvcProcessor {
                 .sps_annexb_data
                 .write(&self.mpeg4_avc.sps[i].data[..])?;
         }
-        /*number of PPS NALUs*/
         self.mpeg4_avc.nb_pps = bytes_reader.read_u8()?;
 
         // Validate PPS count: similar to SPS, limit to prevent memory exhaustion
@@ -257,7 +246,6 @@ impl Mpeg4AvcProcessor {
         for i in 0..usize::from(self.mpeg4_avc.nb_pps) {
             let pps_data_size = bytes_reader.read_u16::<BigEndian>()?;
             let pps_data = Pps {
-                // size: pps_data_size,
                 data: bytes_reader.read_bytes(usize::from(pps_data_size))?,
             };
 
@@ -267,12 +255,10 @@ impl Mpeg4AvcProcessor {
                 .pps_annexb_data
                 .write(&self.mpeg4_avc.pps[i].data[..])?;
         }
-        /*clear the left bytes*/
         bytes_reader.extract_remaining_bytes();
 
         Ok(self)
     }
-    //https://stackoverflow.com/questions/28678615/efficiently-insert-or-replace-multiple-elements-in-the-middle-or-at-the-beginnin
     pub fn h264_mp4toannexb(
         &mut self,
         bytes_reader: &mut BytesReader,
@@ -350,6 +336,10 @@ impl Mpeg4AvcProcessor {
 
     pub fn decoder_configuration_record_save(&mut self) -> Result<BytesMut, Mpeg4AvcHevcError> {
         let mut bytes_writer = BytesWriter::new();
+        let sps_count =
+            validate_parameter_set_count("SPS", self.mpeg4_avc.nb_sps, self.mpeg4_avc.sps.len())?;
+        let pps_count =
+            validate_parameter_set_count("PPS", self.mpeg4_avc.nb_pps, self.mpeg4_avc.pps.len())?;
 
         bytes_writer.write_u8(1)?;
         bytes_writer.write_u8(self.mpeg4_avc.profile)?;
@@ -359,16 +349,16 @@ impl Mpeg4AvcProcessor {
 
         //sps
         bytes_writer.write_u8(self.mpeg4_avc.nb_sps | 0xE0)?;
-        for i in 0..usize::from(self.mpeg4_avc.nb_sps) {
-            bytes_writer.write_u16::<BigEndian>(usize_to_u16(self.mpeg4_avc.sps[i].len())?)?;
-            bytes_writer.write(&self.mpeg4_avc.sps[i].data[..])?;
+        for sps in self.mpeg4_avc.sps.iter().take(sps_count) {
+            bytes_writer.write_u16::<BigEndian>(usize_to_u16(sps.len())?)?;
+            bytes_writer.write(&sps.data[..])?;
         }
 
         //pps
         bytes_writer.write_u8(self.mpeg4_avc.nb_pps)?;
-        for i in 0..usize::from(self.mpeg4_avc.nb_pps) {
-            bytes_writer.write_u16::<BigEndian>(usize_to_u16(self.mpeg4_avc.pps[i].len())?)?;
-            bytes_writer.write(&self.mpeg4_avc.pps[i].data[..])?;
+        for pps in self.mpeg4_avc.pps.iter().take(pps_count) {
+            bytes_writer.write_u16::<BigEndian>(usize_to_u16(pps.len())?)?;
+            bytes_writer.write(&pps.data[..])?;
         }
 
         match self.mpeg4_avc.profile {
@@ -387,6 +377,7 @@ impl Mpeg4AvcProcessor {
 
 #[cfg(test)]
 mod tests {
+    use super::{Mpeg4AvcProcessor, MpegErrorValue};
     use crate::bytesio::{bytes_reader::BytesReader, bytes_writer::BytesWriter};
     use bytes::BytesMut;
 
@@ -418,5 +409,25 @@ mod tests {
             &[0, 0, 3, 232],
             "Expected 1000 to encode as big-endian [0, 0, 3, 232]"
         );
+    }
+
+    #[test]
+    fn decoder_configuration_record_save_rejects_missing_sps() {
+        let mut processor = Mpeg4AvcProcessor::new();
+        processor.mpeg4_avc.nalu_length = 4;
+        processor.mpeg4_avc.nb_sps = 1;
+
+        let err = processor
+            .decoder_configuration_record_save()
+            .expect_err("missing SPS should return an error");
+
+        assert!(matches!(
+            err.value,
+            MpegErrorValue::ParameterSetCountMismatch {
+                kind: "SPS",
+                declared: 1,
+                available: 0
+            }
+        ));
     }
 }

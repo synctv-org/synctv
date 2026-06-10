@@ -131,22 +131,6 @@ pub trait StreamingPublishKeyService: Send + Sync {
     ) -> Result<UserId>;
 }
 
-/// Build a publish-key service behind the service abstraction.
-///
-/// Callers should depend on the returned trait object instead of selecting the
-/// concrete local or shared single-use backend directly.
-pub fn streaming_publish_key_service_from_shared_state_profile(
-    jwt_service: JwtService,
-    token_ttl_hours: i64,
-    profile: &SharedStateProfile,
-) -> Result<Arc<dyn StreamingPublishKeyService>> {
-    Ok(Arc::new(PublishKeyService::from_shared_state_profile(
-        jwt_service,
-        token_ttl_hours,
-        profile,
-    )?))
-}
-
 impl std::fmt::Debug for PublishKeyService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PublishKeyService")
@@ -276,7 +260,7 @@ impl PublishKeyService {
         Ok(Self::from_store(jwt_service, token_ttl_hours, store))
     }
 
-    pub fn from_shared_state_profile(
+    pub(crate) fn from_shared_state_profile(
         jwt_service: JwtService,
         token_ttl_hours: i64,
         profile: &SharedStateProfile,

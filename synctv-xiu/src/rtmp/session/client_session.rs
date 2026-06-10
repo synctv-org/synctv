@@ -9,7 +9,7 @@ use {
     },
     crate::bytesio::{
         bytes_writer::AsyncBytesWriter,
-        bytesio::{TNetIO, TcpIO},
+        net_io::{TNetIO, TcpIO},
     },
     crate::flv::amf0::Amf0ValueType,
     crate::rtmp::{
@@ -48,6 +48,17 @@ pub enum ClientSessionType {
     Pull,
     Push,
 }
+
+pub struct ClientSessionConfig {
+    pub client_type: ClientSessionType,
+    pub raw_domain_name: String,
+    pub app_name: String,
+    pub raw_stream_name: String,
+    pub event_producer: StreamHubEventSender,
+    pub gop_num: usize,
+    pub per_stream_max_bytes: Option<usize>,
+}
+
 pub struct ClientSession {
     io: Arc<Mutex<Box<dyn TNetIO + Send + Sync>>>,
     timeout: Option<Duration>,
@@ -64,7 +75,7 @@ pub struct ClientSession {
     client_type: ClientSessionType,
     sub_app_name: Option<String>,
     sub_stream_name: Option<String>,
-    /*configure how many gops will be cached.*/
+    /// Maximum number of GOPs cached for publisher prior data.
     gop_num: usize,
     /// Tracks whether this session has an active subscription to the `StreamHub`
     is_subscribed: bool,
@@ -75,21 +86,27 @@ pub struct ClientSession {
 }
 
 impl ClientSession {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        stream: TcpStream,
-        client_type: ClientSessionType,
-        raw_domain_name: String,
-        app_name: String,
-        raw_stream_name: String,
-        event_producer: StreamHubEventSender,
-        gop_num: usize,
-        per_stream_max_bytes: Option<usize>,
-    ) -> Self {
-        let remote_addr = stream.peer_addr().map_or(None, |addr| {
-            tracing::info!("server session: {addr}");
-            Some(addr)
-        });
+    pub fn new(stream: TcpStream, config: ClientSessionConfig) -> Self {
+        let ClientSessionConfig {
+            client_type,
+            raw_domain_name,
+            app_name,
+            raw_stream_name,
+            event_producer,
+            gop_num,
+            per_stream_max_bytes,
+        } = config;
+
+        let remote_addr = match stream.peer_addr() {
+            Ok(addr) => {
+                tracing::info!("client session peer: {addr}");
+                Some(addr)
+            }
+            Err(err) => {
+                tracing::warn!("failed to read RTMP client session peer address: {err}");
+                None
+            }
+        };
 
         let tcp_io: Box<dyn TNetIO + Send + Sync> = Box::new(TcpIO::new(stream));
         let net_io = Arc::new(Mutex::new(tcp_io));
@@ -297,15 +314,15 @@ impl ClientSession {
         timestamp: &u32,
     ) -> Result<(), SessionError> {
         match msg {
-            RtmpMessageData::Amf0Command {
-                command_name,
-                transaction_id,
-                command_object,
-                others,
-            } => {
+            RtmpMessageData::Amf0Command(command) => {
                 tracing::info!("[C <- S] on_amf0_command_message...");
-                self.on_amf0_command_message(command_name, transaction_id, command_object, others)
-                    .await?;
+                self.on_amf0_command_message(
+                    &command.command_name,
+                    &command.transaction_id,
+                    &command.command_object,
+                    &mut command.others,
+                )
+                .await?;
             }
             RtmpMessageData::SetPeerBandwidth { .. } => {
                 tracing::info!("[C <- S] on_set_peer_bandwidth...");
@@ -320,11 +337,11 @@ impl ClientSession {
             }
             RtmpMessageData::StreamBegin { stream_id } => {
                 tracing::info!("[C <- S] on_stream_begin...");
-                self.on_stream_begin(stream_id)?;
+                Self::on_stream_begin(stream_id)?;
             }
             RtmpMessageData::StreamIsRecorded { stream_id } => {
                 tracing::info!("[C <- S] on_stream_is_recorded...");
-                self.on_stream_is_recorded(stream_id)?;
+                Self::on_stream_is_recorded(stream_id)?;
             }
             RtmpMessageData::AudioData { data } => {
                 self.common.on_audio_data(data, timestamp)?;
@@ -341,11 +358,11 @@ impl ClientSession {
         Ok(())
     }
 
-    pub async fn on_amf0_command_message(
+    async fn on_amf0_command_message(
         &mut self,
         command_name: &Amf0ValueType,
         transaction_id: &Amf0ValueType,
-        command_object: &Amf0ValueType,
+        _command_object: &Amf0ValueType,
         others: &mut Vec<Amf0ValueType>,
     ) -> Result<(), SessionError> {
         tracing::info!("[C <- S] on_amf0_command_message...");
@@ -353,13 +370,6 @@ impl ClientSession {
         let cmd_name = match command_name {
             Amf0ValueType::UTF8String(str) => str,
             _ => empty_cmd_name,
-        };
-
-        let empty_cmd_obj: IndexMap<String, Amf0ValueType> = IndexMap::new();
-        let _ = match command_object {
-            Amf0ValueType::Object(obj) => obj,
-            // Amf0ValueType::Null =>
-            _ => &empty_cmd_obj,
         };
 
         let is_transaction_id =
@@ -382,19 +392,19 @@ impl ClientSession {
                 _ => {}
             },
             "_error" => {
-                self.on_error()?;
+                Self::on_error()?;
             }
             "onStatus" => {
                 if others.is_empty() {
                     return Err(SessionError {
-                        value: SessionErrorValue::Amf0ValueCountNotCorrect,
+                        value: SessionErrorValue::InvalidAmf0ValueCount,
                     });
                 }
                 match others.remove(0) {
                     Amf0ValueType::Object(obj) => self.on_status(&obj).await?,
                     _ => {
                         return Err(SessionError {
-                            value: SessionErrorValue::Amf0ValueCountNotCorrect,
+                            value: SessionErrorValue::InvalidAmf0ValueCount,
                         })
                     }
                 }
@@ -531,7 +541,7 @@ impl ClientSession {
         Ok(())
     }
 
-    pub async fn on_result_connect(&mut self) -> Result<(), SessionError> {
+    async fn on_result_connect(&mut self) -> Result<(), SessionError> {
         let mut controlmessage =
             ProtocolControlMessagesWriter::new(AsyncBytesWriter::new(self.io.clone()));
         controlmessage.write_acknowledgement(3107).await?;
@@ -555,7 +565,7 @@ impl ClientSession {
         Ok(())
     }
 
-    pub const fn on_result_create_stream(&mut self) -> Result<(), SessionError> {
+    const fn on_result_create_stream(&mut self) -> Result<(), SessionError> {
         match self.client_type {
             ClientSessionType::Pull => {
                 self.state = ClientSessionState::Play;
@@ -567,7 +577,7 @@ impl ClientSession {
         Ok(())
     }
 
-    pub fn on_set_chunk_size(&mut self, chunk_size: &mut u32) -> Result<(), SessionError> {
+    fn on_set_chunk_size(&mut self, chunk_size: &mut u32) -> Result<(), SessionError> {
         // Clamp chunk size to valid RTMP range [128, 65536] to prevent issues
         // from malformed or malicious server responses (e.g. chunk_size=0).
         let clamped = (*chunk_size).clamp(128, 65536);
@@ -582,27 +592,27 @@ impl ClientSession {
         Ok(())
     }
 
-    pub fn on_stream_is_recorded(&mut self, stream_id: &mut u32) -> Result<(), SessionError> {
+    fn on_stream_is_recorded(stream_id: &u32) -> Result<(), SessionError> {
         tracing::trace!("stream is recorded stream_id is {stream_id}");
         Ok(())
     }
 
-    pub fn on_stream_begin(&mut self, stream_id: &mut u32) -> Result<(), SessionError> {
+    fn on_stream_begin(stream_id: &u32) -> Result<(), SessionError> {
         tracing::trace!("stream is begin stream_id is {stream_id}");
         Ok(())
     }
 
-    pub async fn on_set_peer_bandwidth(&mut self) -> Result<(), SessionError> {
+    async fn on_set_peer_bandwidth(&mut self) -> Result<(), SessionError> {
         self.send_window_acknowledgement_size(5_000_000).await?;
 
         Ok(())
     }
 
-    pub const fn on_error(&mut self) -> Result<(), SessionError> {
+    const fn on_error() -> Result<(), SessionError> {
         Ok(())
     }
 
-    pub async fn on_status(
+    async fn on_status(
         &mut self,
         obj: &IndexMap<String, Amf0ValueType>,
     ) -> Result<(), SessionError> {

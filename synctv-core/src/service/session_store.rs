@@ -133,7 +133,7 @@ mod tests {
         #[async_trait::async_trait]
         impl RedisConnectionRuntime for NoopRuntime {
             async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
-                panic!("snapshot should not be needed for key formatting");
+                std::panic::panic_any("snapshot should not be needed for key formatting");
             }
         }
 
@@ -164,20 +164,26 @@ mod tests {
             user_id: u64,
         }
 
-        let decoded = RedisJsonSessionStore::decode_optional::<Session>(
+        let decoded = match RedisJsonSessionStore::decode_optional::<Session>(
             Some(r#"{"user_id":42}"#.to_string()),
             "decode session",
-        )
-        .expect("valid json should decode");
+        ) {
+            Ok(decoded) => decoded,
+            Err(error) => std::panic::panic_any(format!("valid json should decode: {error}")),
+        };
 
         assert_eq!(decoded, Some(Session { user_id: 42 }));
     }
 
     #[test]
     fn decode_optional_returns_none_without_value() {
-        let decoded =
-            RedisJsonSessionStore::decode_optional::<serde_json::Value>(None, "decode session")
-                .expect("missing value should not decode");
+        let decoded = match RedisJsonSessionStore::decode_optional::<serde_json::Value>(
+            None,
+            "decode session",
+        ) {
+            Ok(decoded) => decoded,
+            Err(error) => std::panic::panic_any(format!("missing value should decode: {error}")),
+        };
 
         assert_eq!(decoded, None);
     }

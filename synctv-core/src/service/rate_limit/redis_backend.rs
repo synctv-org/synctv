@@ -38,7 +38,7 @@ static REDIS_SLIDING_WINDOW_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
 ///
 /// Falls back to in-memory governor on Redis errors (graceful degradation).
 /// Accepts the shared `Arc<RwLock<ConnectionManager>>` to follow Sentinel failover.
-pub struct RedisRateLimitBackend {
+pub(super) struct RedisRateLimitBackend {
     pub(super) conn: Arc<dyn RedisConnectionRuntime>,
     key_prefix: String,
     /// In-memory fallback for when Redis is temporarily unavailable.
@@ -47,15 +47,7 @@ pub struct RedisRateLimitBackend {
 
 impl RedisRateLimitBackend {
     #[must_use]
-    pub fn new(
-        conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
-        key_prefix: String,
-    ) -> Self {
-        Self::from_runtime(crate::shared_runtime(conn), key_prefix)
-    }
-
-    #[must_use]
-    pub fn from_runtime(conn: Arc<dyn RedisConnectionRuntime>, key_prefix: String) -> Self {
+    pub(super) fn from_runtime(conn: Arc<dyn RedisConnectionRuntime>, key_prefix: String) -> Self {
         Self {
             conn,
             key_prefix,

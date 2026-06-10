@@ -3,7 +3,6 @@
 //! Tests member management including max members, kick hierarchy,
 //! and permission operations with real `PostgreSQL` via testcontainers.
 //!
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -23,6 +22,7 @@ use synctv_core::{
     Error,
 };
 use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{TestOptionExt, TestResultExt};
 
 async fn expire_kick_cooldown(pool: &PgPool, room_id: RoomId, user_id: UserId) {
     sqlx::query!(
@@ -34,12 +34,12 @@ async fn expire_kick_cooldown(pool: &PgPool, room_id: RoomId, user_id: UserId) {
     )
     .execute(pool)
     .await
-    .unwrap();
+    .checked("kick cooldown should expire");
 }
 
 fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = JwtService::new(secret).checked("JWT service should be created");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -58,7 +58,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+    RoomService::new_for_tests(pool, user_service).checked("room service should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -88,7 +88,10 @@ async fn test_add_member_respects_max_members() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("max_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("max_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let settings = synctv_core::models::RoomSettings {
         max_members: MaxMembers(2),
@@ -104,15 +107,21 @@ async fn test_add_member_respects_max_members() {
             Some(settings),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // First joiner should succeed (member count: 2)
-    let joiner1 = user_repo.create(&make_user("max_joiner1")).await.unwrap();
+    let joiner1 = user_repo
+        .create(&make_user("max_joiner1"))
+        .await
+        .checked("test operation should succeed");
     let result = room_service.join_room(room.id, joiner1.id, None).await;
     assert!(result.is_ok(), "First joiner should succeed");
 
     // Second joiner should fail (member count would be 3, exceeding max 2)
-    let joiner2 = user_repo.create(&make_user("max_joiner2")).await.unwrap();
+    let joiner2 = user_repo
+        .create(&make_user("max_joiner2"))
+        .await
+        .checked("test operation should succeed");
     let result = room_service.join_room(room.id, joiner2.id, None).await;
     assert!(result.is_err(), "Second joiner should be rejected");
 }
@@ -124,8 +133,14 @@ async fn test_kick_member_role_hierarchy() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("kick_creator")).await.unwrap();
-    let admin = user_repo.create(&make_user("kick_admin")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("kick_creator"))
+        .await
+        .checked("test operation should succeed");
+    let admin = user_repo
+        .create(&make_user("kick_admin"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -136,20 +151,20 @@ async fn test_kick_member_role_hierarchy() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Add admin as member first, then promote to admin
     room_service
         .join_room(room.id, admin.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Promote to admin role
     let member_service = room_service.member_service();
     member_service
         .set_member_role(room.id, creator.id, admin.id, RoomRole::Admin)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Admin trying to kick Creator should fail
     let result = room_service
@@ -157,14 +172,14 @@ async fn test_kick_member_role_hierarchy() {
         .await;
 
     assert!(result.is_err(), "Admin cannot kick Creator");
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::Authorization(msg) => {
             assert!(
                 msg.contains("cannot kick") || msg.contains("equal or higher"),
                 "Error should mention role hierarchy: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected Authorization error, got: {other:?}")),
     }
 }
 
@@ -179,8 +194,11 @@ async fn test_kick_member_creator_can_kick_admin() {
     let creator = user_repo
         .create(&make_user("kick_c_creator"))
         .await
-        .unwrap();
-    let admin = user_repo.create(&make_user("kick_c_admin")).await.unwrap();
+        .checked("test operation should succeed");
+    let admin = user_repo
+        .create(&make_user("kick_c_admin"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -191,19 +209,19 @@ async fn test_kick_member_creator_can_kick_admin() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, admin.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Promote to admin
     let member_service = room_service.member_service();
     member_service
         .set_member_role(room.id, creator.id, admin.id, RoomRole::Admin)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Creator should be able to kick admin
     let result = room_service
@@ -213,7 +231,10 @@ async fn test_kick_member_creator_can_kick_admin() {
     assert!(result.is_ok(), "Creator should be able to kick admin");
 
     // Admin should no longer be a member
-    assert!(!member_repo.is_member(&room.id, &admin.id).await.unwrap());
+    assert!(!member_repo
+        .is_member(&room.id, &admin.id)
+        .await
+        .checked("test operation should succeed"));
 }
 
 #[tokio::test]
@@ -226,11 +247,11 @@ async fn test_set_member_role_rejects_promoting_another_member_to_creator() {
     let creator = user_repo
         .create(&make_user("role_unique_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let target = user_repo
         .create(&make_user("role_unique_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -241,12 +262,12 @@ async fn test_set_member_role_rejects_promoting_another_member_to_creator() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .member_service()
@@ -270,7 +291,7 @@ async fn test_set_member_role_rejects_demoting_the_room_creator() {
     let creator = user_repo
         .create(&make_user("role_demote_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -281,7 +302,7 @@ async fn test_set_member_role_rejects_demoting_the_room_creator() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .member_service()
@@ -296,8 +317,8 @@ async fn test_set_member_role_rejects_demoting_the_room_creator() {
     let creator_member = member_repo
         .get(&room.id, &creator.id)
         .await
-        .unwrap()
-        .unwrap();
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert_eq!(
         creator_member.role,
         RoomRole::Creator,
@@ -312,8 +333,14 @@ async fn test_grant_permission_bitwise_or() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("grant_creator")).await.unwrap();
-    let target = user_repo.create(&make_user("grant_target")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("grant_creator"))
+        .await
+        .checked("test operation should succeed");
+    let target = user_repo
+        .create(&make_user("grant_target"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -324,12 +351,12 @@ async fn test_grant_permission_bitwise_or() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let member_service = room_service.member_service();
 
@@ -342,7 +369,7 @@ async fn test_grant_permission_bitwise_or() {
             RoomMemberPermissionBits::USE_WEBRTC,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(
         updated.added_permissions & RoomMemberPermissionBits::USE_WEBRTC != 0,
@@ -360,8 +387,11 @@ async fn test_revoke_permission() {
     let creator = user_repo
         .create(&make_user("revoke_creator"))
         .await
-        .unwrap();
-    let target = user_repo.create(&make_user("revoke_target")).await.unwrap();
+        .checked("test operation should succeed");
+    let target = user_repo
+        .create(&make_user("revoke_target"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -372,12 +402,12 @@ async fn test_revoke_permission() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let member_service = room_service.member_service();
 
@@ -390,7 +420,7 @@ async fn test_revoke_permission() {
             RoomMemberPermissionBits::CHAT,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(
         updated.removed_permissions & RoomMemberPermissionBits::CHAT != 0,
@@ -402,7 +432,7 @@ async fn test_revoke_permission() {
     let effective = perm_service
         .get_user_permissions_no_cache(&room.id, &target.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(
         !effective.has(RoomPermission::CHAT),
         "CHAT should be denied after revocation"
@@ -419,11 +449,11 @@ async fn test_kick_member_removes_active_membership() {
     let creator = user_repo
         .create(&make_user("kick_bc_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("kick_bc_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -434,22 +464,25 @@ async fn test_kick_member_removes_active_membership() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Kick the member
     room_service
         .kick_member(room.id, creator.id, member.id, 60)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Verify the member is no longer active
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let is_member = member_repo.is_member(&room.id, &member.id).await.unwrap();
+    let is_member = member_repo
+        .is_member(&room.id, &member.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         !is_member,
         "Kicked member should no longer be an active member"
@@ -467,11 +500,11 @@ async fn test_kick_member_cooldown_blocks_rejoin_until_expired() {
     let creator = user_repo
         .create(&make_user("kick_cd_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("kick_cd_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -482,23 +515,23 @@ async fn test_kick_member_cooldown_blocks_rejoin_until_expired() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .kick_member(room.id, creator.id, member.id, 3600)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(
         member_repo
             .is_in_kick_cooldown(&room.id, &member.id)
             .await
-            .unwrap(),
+            .checked("test operation should succeed"),
         "Kicked member should be in room kick cooldown"
     );
 
@@ -516,14 +549,17 @@ async fn test_kick_member_cooldown_blocks_rejoin_until_expired() {
         "Rejoin after kick cooldown expiry should succeed, got {rejoin_after_expiry:?}"
     );
     assert!(
-        member_repo.is_member(&room.id, &member.id).await.unwrap(),
+        member_repo
+            .is_member(&room.id, &member.id)
+            .await
+            .checked("test operation should succeed"),
         "Member should be active again after rejoin"
     );
     let rejoined_member = member_repo
         .get(&room.id, &member.id)
         .await
-        .unwrap()
-        .expect("rejoined member should be readable");
+        .checked("test operation should succeed")
+        .checked("rejoined member should be readable");
     assert!(
         rejoined_member.version >= 1,
         "rejoined member version must satisfy the permission fence advanced by the kick"
@@ -543,11 +579,11 @@ async fn test_delete_active_membership_returns_not_found_for_non_member() {
     let creator = user_repo
         .create(&make_user("delete_membership_nf_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let non_member = user_repo
         .create(&make_user("delete_membership_nf_non_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -558,7 +594,7 @@ async fn test_delete_active_membership_returns_not_found_for_non_member() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // non_member never joined, so delete_active_membership should return NotFound
     let member_service = room_service.member_service();
@@ -570,14 +606,14 @@ async fn test_delete_active_membership_returns_not_found_for_non_member() {
         result.is_err(),
         "delete_active_membership should fail for non-member"
     );
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::NotFound(msg) => {
             assert!(
                 msg.contains("Not a member") || msg.contains("not found"),
                 "Error should indicate member not found: {msg}"
             );
         }
-        other => panic!("Expected NotFound error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected NotFound error, got: {other:?}")),
     }
 }
 
@@ -594,11 +630,11 @@ async fn test_delete_active_membership_idempotent_not_found_after_deletion() {
     let creator = user_repo
         .create(&make_user("delete_membership_idem_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("delete_membership_idem_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -609,17 +645,20 @@ async fn test_delete_active_membership_idempotent_not_found_after_deletion() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Member joins
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Verify member exists
     assert!(
-        member_repo.is_member(&room.id, &member.id).await.unwrap(),
+        member_repo
+            .is_member(&room.id, &member.id)
+            .await
+            .checked("test operation should succeed"),
         "Member should exist before membership deletion"
     );
 
@@ -635,7 +674,10 @@ async fn test_delete_active_membership_idempotent_not_found_after_deletion() {
 
     // Verify membership is deleted
     assert!(
-        !member_repo.is_member(&room.id, &member.id).await.unwrap(),
+        !member_repo
+            .is_member(&room.id, &member.id)
+            .await
+            .checked("test operation should succeed"),
         "Member should not exist after membership deletion"
     );
 
@@ -647,14 +689,14 @@ async fn test_delete_active_membership_idempotent_not_found_after_deletion() {
         result.is_err(),
         "Second delete_active_membership should fail for already-removed member"
     );
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::NotFound(msg) => {
             assert!(
                 msg.contains("Not a member") || msg.contains("not found"),
                 "Error should indicate member not found: {msg}"
             );
         }
-        other => panic!("Expected NotFound error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected NotFound error, got: {other:?}")),
     }
 }
 
@@ -674,11 +716,11 @@ async fn test_delete_active_membership_concurrent_no_race() {
     let creator = user_repo
         .create(&make_user("delete_membership_conc_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("delete_membership_conc_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -689,13 +731,13 @@ async fn test_delete_active_membership_concurrent_no_race() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Member joins
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let member_service = room_service.member_service();
     let success_count = Arc::new(AtomicU32::new(0));
@@ -714,13 +756,13 @@ async fn test_delete_active_membership_concurrent_no_race() {
             match ms.delete_active_membership(room_id, user_id).await {
                 Ok(()) => sc.fetch_add(1, Ordering::SeqCst),
                 Err(Error::NotFound(_)) => nc.fetch_add(1, Ordering::SeqCst),
-                Err(e) => panic!("Unexpected error: {e:?}"),
+                Err(e) => std::panic::panic_any(format!("unexpected leave result: {e:?}")),
             }
         }));
     }
 
     for handle in handles {
-        handle.await.unwrap();
+        handle.await.checked("test operation should succeed");
     }
 
     // Exactly one should succeed, rest should get NotFound
@@ -735,7 +777,10 @@ async fn test_delete_active_membership_concurrent_no_race() {
 
     // Member should no longer exist
     assert!(
-        !member_repo.is_member(&room.id, &member.id).await.unwrap(),
+        !member_repo
+            .is_member(&room.id, &member.id)
+            .await
+            .checked("test operation should succeed"),
         "Member should be gone after concurrent membership deletion"
     );
 }

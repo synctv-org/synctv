@@ -5,6 +5,12 @@ use super::*;
 use synctv_core::models::UserId;
 use synctv_proto::client::{ClientMessage, ServerMessage};
 
+type TestResult<T = ()> = anyhow::Result<T>;
+
+fn test_error(message: impl Into<String>) -> anyhow::Error {
+    anyhow::anyhow!(message.into())
+}
+
 fn metadata_error_code(status: &Status) -> Option<&str> {
     status
         .metadata()
@@ -198,32 +204,35 @@ fn test_grpc_message_sender_send_success() {
 }
 
 #[test]
-fn test_grpc_message_sender_channel_closed() {
+fn test_grpc_message_sender_channel_closed() -> TestResult {
     let (tx, rx) = tokio::sync::mpsc::channel::<ServerMessage>(10);
     let sender = GrpcMessageSender::new(tx);
-    drop(rx); // Close receiver
+    drop(rx);
 
     let msg = ServerMessage::default();
     let result = MessageSender::send(&sender, msg);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("disconnected"));
+    match result {
+        Ok(()) => return Err(test_error("closed channel should fail")),
+        Err(error) => assert!(error.contains("disconnected")),
+    }
+    Ok(())
 }
 
 #[test]
-fn test_grpc_message_sender_channel_full() {
-    // Create a channel with capacity 1
+fn test_grpc_message_sender_channel_full() -> TestResult {
     let (tx, _rx) = tokio::sync::mpsc::channel::<ServerMessage>(1);
     let sender = GrpcMessageSender::new(tx);
 
-    // Fill the channel
     let msg1 = ServerMessage::default();
     assert!(MessageSender::send(&sender, msg1).is_ok());
 
-    // Second send should fail (channel full)
     let msg2 = ServerMessage::default();
     let result = MessageSender::send(&sender, msg2);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("full"));
+    match result {
+        Ok(()) => return Err(test_error("full channel should fail")),
+        Err(error) => assert!(error.contains("full")),
+    }
+    Ok(())
 }
 
 #[test]
@@ -257,7 +266,7 @@ async fn test_await_grpc_receive_or_response_close_notices_closed_response_strea
 }
 
 #[tokio::test]
-async fn test_await_grpc_receive_or_response_close_prefers_received_message() {
+async fn test_await_grpc_receive_or_response_close_prefers_received_message() -> TestResult {
     let (tx, _rx) = tokio::sync::mpsc::channel::<ServerMessage>(1);
     let expected = ClientMessage::default();
 
@@ -269,8 +278,13 @@ async fn test_await_grpc_receive_or_response_close_prefers_received_message() {
 
     match outcome {
         GrpcReceiveOutcome::Message(Ok(Some(actual))) => assert_eq!(actual, expected),
-        other => panic!("expected received message outcome, got {other:?}"),
+        other => {
+            return Err(test_error(format!(
+                "expected received message outcome, got {other:?}"
+            )));
+        }
     }
+    Ok(())
 }
 
 #[test]
@@ -335,23 +349,27 @@ fn test_map_message_stream_join_error_maps_invalid_watch_cursor() {
 }
 
 #[test]
-fn test_realtime_room_access_error_rejects_banned_room() {
+fn test_realtime_room_access_error_rejects_banned_room() -> TestResult {
     let mut room = Room::new("test-room".to_string(), UserId::new());
     room.ban();
 
-    let status = realtime_room_access_error(&room).expect("banned room must fail");
+    let status =
+        realtime_room_access_error(&room).ok_or_else(|| test_error("banned room must fail"))?;
     assert_eq!(status.code(), tonic::Code::PermissionDenied);
     assert!(status.message().contains("banned"));
+    Ok(())
 }
 
 #[test]
-fn test_realtime_room_access_error_rejects_closed_room() {
+fn test_realtime_room_access_error_rejects_closed_room() -> TestResult {
     let mut room = Room::new("test-room".to_string(), UserId::new());
     room.status = synctv_core::models::RoomStatus::Closed;
 
-    let status = realtime_room_access_error(&room).expect("closed room must fail");
+    let status =
+        realtime_room_access_error(&room).ok_or_else(|| test_error("closed room must fail"))?;
     assert_eq!(status.code(), tonic::Code::PermissionDenied);
     assert!(status.message().contains("not accepting new connections"));
+    Ok(())
 }
 
 #[test]

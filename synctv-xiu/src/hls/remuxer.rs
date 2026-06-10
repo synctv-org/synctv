@@ -30,7 +30,7 @@ use crate::streamhub::{
 use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
 use std::collections::VecDeque;
-use std::fmt::Write;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -39,16 +39,33 @@ const STREAM_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 const RECV_TIMEOUT_MS: u64 = 65000;
 const ACTIVITY_RECORD_INTERVAL: Duration = Duration::from_secs(10);
 const DTS_REGRESSION_THRESHOLD_MS: i64 = 1000;
+const DEFAULT_TARGET_DURATION_SECS: i64 = 10;
 
 fn duration_ms_to_secs_f64(duration_ms: i64) -> f64 {
-    Duration::from_millis(u64::try_from(duration_ms.max(0)).unwrap_or(u64::MAX)).as_secs_f64()
+    Duration::from_millis(duration_ms.max(0).cast_unsigned()).as_secs_f64()
+}
+
+fn playlist_target_duration_secs(segments: &VecDeque<SegmentInfo>) -> i64 {
+    match segments
+        .iter()
+        .map(|segment| segment.duration.max(0).saturating_add(999) / 1000)
+        .max()
+    {
+        Some(max_segment_duration_secs) => max_segment_duration_secs,
+        None => DEFAULT_TARGET_DURATION_SECS,
+    }
 }
 
 fn current_segment_minute_bucket() -> String {
-    let epoch_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let epoch_secs = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs(),
+        Err(err) => {
+            tracing::warn!(
+                "system clock is before UNIX_EPOCH while generating HLS segment bucket: {err}"
+            );
+            0
+        }
+    };
     (epoch_secs / 60).to_string()
 }
 
@@ -148,12 +165,7 @@ impl StreamProcessorState {
         m3u8_content.push_str("#EXT-X-VERSION:3\n");
 
         // Target duration (max segment duration in seconds, rounded up)
-        let max_duration_sec = self
-            .segments
-            .iter()
-            .map(|s| (s.duration + 999) / 1000)
-            .max()
-            .unwrap_or(10);
+        let max_duration_sec = playlist_target_duration_secs(&self.segments);
         let _ = writeln!(m3u8_content, "#EXT-X-TARGETDURATION:{max_duration_sec}");
 
         // Media sequence (first segment in playlist)
@@ -171,7 +183,8 @@ impl StreamProcessorState {
 
             // Use closure to generate segment URL (allows custom auth, CDN URLs, etc)
             let segment_url = gen_ts_url(&segment.ts_name);
-            let _ = writeln!(m3u8_content, "{segment_url}");
+            m3u8_content.push_str(&segment_url);
+            m3u8_content.push('\n');
         }
 
         if self.is_ended {
@@ -180,6 +193,15 @@ impl StreamProcessorState {
 
         m3u8_content
     }
+}
+
+fn mark_stream_state_for_cleanup(state: &mut StreamProcessorState) {
+    state.cleanup_segment_names = state
+        .segments
+        .iter()
+        .map(|segment| segment.ts_name.clone())
+        .collect();
+    state.marked_for_cleanup = true;
 }
 
 /// Callback invoked when media data is received from a publisher.
@@ -359,28 +381,27 @@ impl CustomHlsRemuxer {
                         continue;
                     }
 
-                    if let StreamIdentifier::Rtmp {
+                    let StreamIdentifier::Rtmp {
                         app_name,
                         stream_name,
-                    } = identifier
-                    {
-                        tracing::info!("HLS remuxer: new stream {}/{}", app_name, stream_name);
+                    } = identifier;
 
-                        let stream_handler = StreamHandler::new(
-                            app_name,
-                            stream_name,
-                            self.event_producer.clone(),
-                            Arc::clone(&self.segment_manager),
-                            self.stream_registry.clone(),
-                            self.activity_callback.clone(),
-                        );
+                    tracing::info!("HLS remuxer: new stream {}/{}", app_name, stream_name);
 
-                        self.handler_tasks.spawn(async move {
-                            if let Err(e) = stream_handler.run().await {
-                                tracing::error!("HLS stream handler error: {}", e);
-                            }
-                        });
-                    }
+                    let stream_handler = StreamHandler::new(
+                        app_name,
+                        stream_name,
+                        self.event_producer.clone(),
+                        Arc::clone(&self.segment_manager),
+                        self.stream_registry.clone(),
+                        self.activity_callback.clone(),
+                    );
+
+                    self.handler_tasks.spawn(async move {
+                        if let Err(e) = stream_handler.run().await {
+                            tracing::error!("HLS stream handler error: {}", e);
+                        }
+                    });
                 }
                 BroadcastEvent::UnPublish { .. } => {
                     tracing::trace!("HLS remuxer: stream unpublished");
@@ -567,8 +588,7 @@ impl StreamHandler {
         // room/media key while this handler is in its grace period.
         {
             let mut state_guard = state.write();
-            state_guard.cleanup_segment_names.clear();
-            state_guard.marked_for_cleanup = true;
+            mark_stream_state_for_cleanup(&mut state_guard);
         }
 
         // Remove from registry after some delay (allow clients to finish).
@@ -622,7 +642,7 @@ impl StreamHandler {
         .await
         .map_err(|err| match err {
             SubscribeWithRollbackError::Timeout => HlsRemuxerError::SubscribeTimeout,
-            SubscribeWithRollbackError::StreamHub(_) => HlsRemuxerError::SubscribeError,
+            SubscribeWithRollbackError::StreamHub(err) => HlsRemuxerError::SubscribeError(err),
         })?;
 
         let receiver = data_receiver
@@ -663,7 +683,7 @@ impl StreamHandler {
 
         send_event_with_backpressure_timeout(&self.event_producer, unsubscribe_event)
             .await
-            .map_err(|_| HlsRemuxerError::StreamHubEventSendError)?;
+            .map_err(HlsRemuxerError::StreamHubEventSendError)?;
 
         tracing::info!(
             "Unsubscribed from stream: {}/{}",
@@ -1086,11 +1106,11 @@ impl StreamProcessor {
 // Error types
 #[derive(Debug, thiserror::Error)]
 pub enum HlsRemuxerError {
-    #[error("StreamHub event send error")]
-    StreamHubEventSendError,
+    #[error("StreamHub event send error: {0}")]
+    StreamHubEventSendError(crate::streamhub::errors::StreamHubError),
 
-    #[error("Subscribe error")]
-    SubscribeError,
+    #[error("Subscribe error: {0}")]
+    SubscribeError(crate::streamhub::errors::StreamHubError),
 
     #[error("Subscribe timed out")]
     SubscribeTimeout,
@@ -1112,14 +1132,51 @@ pub enum HlsRemuxerError {
 }
 
 impl From<crate::streamhub::errors::StreamHubError> for HlsRemuxerError {
-    fn from(_: crate::streamhub::errors::StreamHubError) -> Self {
-        Self::SubscribeError
+    fn from(error: crate::streamhub::errors::StreamHubError) -> Self {
+        Self::SubscribeError(error)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_rtmp_identifier(
+        identifier: StreamIdentifier,
+        expected_app: &str,
+        expected_stream: &str,
+    ) {
+        let StreamIdentifier::Rtmp {
+            app_name,
+            stream_name,
+        } = identifier;
+        assert_eq!(app_name, expected_app);
+        assert_eq!(stream_name, expected_stream);
+    }
+
+    fn assert_unsubscribe_event(event: StreamHubEvent, expected_app: &str, expected_stream: &str) {
+        let StreamHubEvent::UnSubscribe { identifier, .. } = event else {
+            panic!("expected unsubscribe event, got {event:?}");
+        };
+        assert_rtmp_identifier(identifier, expected_app, expected_stream);
+    }
+
+    fn subscribe_result_sender(
+        event: StreamHubEvent,
+    ) -> tokio::sync::oneshot::Sender<
+        Result<
+            (
+                crate::streamhub::define::DataReceiver,
+                Option<crate::streamhub::define::StatisticDataSender>,
+            ),
+            crate::streamhub::errors::StreamHubError,
+        >,
+    > {
+        let StreamHubEvent::Subscribe { result_sender, .. } = event else {
+            panic!("expected subscribe event, got {event:?}");
+        };
+        result_sender
+    }
 
     #[test]
     fn test_segment_info_creation() {
@@ -1134,6 +1191,36 @@ mod tests {
         assert_eq!(segment.sequence, 1);
         assert_eq!(segment.duration, 10000);
         assert!(!segment.discontinuity);
+    }
+
+    #[test]
+    fn test_playlist_target_duration_defaults_for_empty_playlist() {
+        let segments = VecDeque::new();
+        assert_eq!(
+            playlist_target_duration_secs(&segments),
+            DEFAULT_TARGET_DURATION_SECS
+        );
+    }
+
+    #[test]
+    fn test_playlist_target_duration_uses_rounded_max_segment_duration() {
+        let mut segments = VecDeque::new();
+        segments.push_back(SegmentInfo {
+            sequence: 0,
+            duration: -500,
+            ts_name: "negative.ts".to_string(),
+            discontinuity: false,
+            created_at: Instant::now(),
+        });
+        segments.push_back(SegmentInfo {
+            sequence: 1,
+            duration: 10001,
+            ts_name: "long.ts".to_string(),
+            discontinuity: false,
+            created_at: Instant::now(),
+        });
+
+        assert_eq!(playlist_target_duration_secs(&segments), 11);
     }
 
     #[test]
@@ -1266,6 +1353,8 @@ mod tests {
 
     #[test]
     fn test_hls_remuxer_error_display() {
+        use crate::streamhub::errors::{StreamHubError, StreamHubErrorValue};
+
         let error = HlsRemuxerError::DemuxError("test error".to_string());
         assert_eq!(error.to_string(), "Demux error: test error");
 
@@ -1274,6 +1363,14 @@ mod tests {
 
         let error = HlsRemuxerError::SubscribeTimeout;
         assert_eq!(error.to_string(), "Subscribe timed out");
+
+        let error = HlsRemuxerError::StreamHubEventSendError(StreamHubError {
+            value: StreamHubErrorValue::EventChannelClosed,
+        });
+        assert_eq!(
+            error.to_string(),
+            "StreamHub event send error: streamhub event channel closed"
+        );
     }
 
     #[test]
@@ -1344,19 +1441,7 @@ mod tests {
             .recv()
             .await
             .expect("timed-out subscribe should emit rollback unsubscribe");
-        match rollback {
-            StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {
-                StreamIdentifier::Rtmp {
-                    app_name,
-                    stream_name,
-                } => {
-                    assert_eq!(app_name, "live");
-                    assert_eq!(stream_name, "room/stream");
-                }
-                other => panic!("unexpected stream identifier: {other:?}"),
-            },
-            other => panic!("expected rollback unsubscribe event, got {other:?}"),
-        }
+        assert_unsubscribe_event(rollback, "live", "room/stream");
     }
 
     #[tokio::test]
@@ -1382,9 +1467,7 @@ mod tests {
             .recv()
             .await
             .expect("subscribe event should be emitted");
-        let StreamHubEvent::Subscribe { result_sender, .. } = subscribe_event else {
-            panic!("expected subscribe event");
-        };
+        let result_sender = subscribe_result_sender(subscribe_event);
 
         let (frame_sender, frame_receiver) =
             tokio::sync::mpsc::channel(crate::streamhub::define::FRAME_DATA_CHANNEL_CAPACITY);
@@ -1412,7 +1495,7 @@ mod tests {
             .await
             .expect("stream handler task should join")
             .expect_err("unsubscribe should fail when the event channel is closed");
-        assert!(matches!(err, HlsRemuxerError::StreamHubEventSendError));
+        assert!(matches!(err, HlsRemuxerError::StreamHubEventSendError(_)));
         assert!(
             !registry.contains_key(&registry_key),
             "registry entry should still be cleaned up on unsubscribe error"
@@ -1511,9 +1594,7 @@ mod tests {
             created_at: Instant::now(),
         });
 
-        // Handler ends: capture segment names and mark for cleanup
-        state.cleanup_segment_names = state.segments.iter().map(|s| s.ts_name.clone()).collect();
-        state.marked_for_cleanup = true;
+        mark_stream_state_for_cleanup(&mut state);
 
         // Verify captured names match exactly what was in the segment list
         assert_eq!(state.cleanup_segment_names.len(), 2);
@@ -1649,8 +1730,7 @@ mod tests {
         // Mark for cleanup with captured segment names
         {
             let mut s = state.write();
-            s.cleanup_segment_names = s.segments.iter().map(|seg| seg.ts_name.clone()).collect();
-            s.marked_for_cleanup = true;
+            mark_stream_state_for_cleanup(&mut s);
         }
 
         // Meanwhile, a new handler starts and writes new segments
@@ -1676,7 +1756,10 @@ mod tests {
         // the new handler's "new_seg_0" is preserved.
         let old_cleanup_names: Vec<String> = state.read().cleanup_segment_names.clone();
         for name in &old_cleanup_names {
-            let _ = storage.delete("live", "stream1", name).await;
+            storage
+                .delete("live", "stream1", name)
+                .await
+                .expect("old segment cleanup should succeed");
         }
 
         // Verify: new segment is NOT deleted

@@ -1,5 +1,4 @@
-use std::io;
-// use tokio::time::Elapsed;
+use std::{io, net::AddrParseError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BytesIOErrorValue {
@@ -9,10 +8,18 @@ pub enum BytesIOErrorValue {
     EmptyStream,
     #[error("io error")]
     IOError(io::Error),
-    #[error("time out error")]
+    #[error("invalid socket address {address}: {source}")]
+    InvalidSocketAddress {
+        address: String,
+        #[source]
+        source: AddrParseError,
+    },
+    #[error("operation timed out")]
     TimeoutError(tokio::time::error::Elapsed),
-    #[error("none return")]
-    NoneReturn,
+    #[error("connection closed")]
+    ConnectionClosed,
+    #[error("no available UDP port pair")]
+    NoAvailableUdpPortPair,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -34,11 +41,3 @@ impl From<io::Error> for BytesIOError {
         }
     }
 }
-
-// impl From<Elapsed> for NetIOError {
-//     fn from(error: Elapsed) -> Self {
-//         NetIOError {
-//             value: NetIOErrorValue::TimeoutError(error),
-//         }
-//     }
-// }

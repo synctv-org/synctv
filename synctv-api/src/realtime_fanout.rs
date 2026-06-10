@@ -5,7 +5,7 @@ use std::sync::Arc;
 use synctv_core::repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository};
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
-use crate::runtime::{RealtimeDeliveryRequirement, RealtimeEventService};
+use crate::runtime::RealtimeEventService;
 
 #[async_trait]
 pub trait RealtimeFanoutService: Send + Sync {
@@ -46,7 +46,6 @@ pub struct PreparedRealtimeFanoutPlan {
     event: RealtimeEvent,
     outbox_event: NewRealtimeOutboxEvent,
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    delivery_requirement: RealtimeDeliveryRequirement,
 }
 
 impl PreparedRealtimeFanoutPlan {
@@ -54,14 +53,12 @@ impl PreparedRealtimeFanoutPlan {
     pub fn new(
         realtime_fanout: Arc<dyn RealtimeFanoutService>,
         event: RealtimeEvent,
-        delivery_requirement: RealtimeDeliveryRequirement,
     ) -> Result<Self, String> {
         let outbox_event = realtime_fanout.outbox_event(&event)?;
         Ok(Self {
             event,
             outbox_event,
             realtime_fanout,
-            delivery_requirement,
         })
     }
 
@@ -83,11 +80,6 @@ impl PreparedRealtimeFanoutPlan {
     #[must_use]
     pub fn cloned_outbox_event(&self) -> NewRealtimeOutboxEvent {
         self.outbox_event.clone()
-    }
-
-    #[must_use]
-    pub const fn delivery_requirement(&self) -> RealtimeDeliveryRequirement {
-        self.delivery_requirement
     }
 
     pub fn publish_after_outbox_commit(self) {
@@ -424,7 +416,15 @@ mod tests {
     use synctv_core::models::{MediaId, RoomId, RoomPlaybackState, UserId};
     use synctv_realtime::sync::{CacheTarget, PublishRequest, RealtimeEvent};
 
-    use crate::runtime::RealtimeDeliveryRequirement;
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn core_ok<T>(result: synctv_core::Result<T>) -> TestResult<T> {
+        result.map_err(|error| test_error(error.to_string()))
+    }
 
     #[tokio::test]
     async fn test_realtime_fanout_without_outbox_degrades_to_noop() {
@@ -470,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn test_prepared_outbox_fanout_builds_local_event_without_outbox_row() {
+    fn test_prepared_outbox_fanout_builds_local_event_without_outbox_row() -> TestResult {
         let event_service = std::sync::Arc::new(RecordingRealtimeEventService::default());
         let service = local_realtime_fanout_service(event_service.clone());
         let prepared = PreparedOutboxFanout::new(service, |room_id: &RoomId| {
@@ -486,12 +486,12 @@ mod tests {
         });
         let factory = prepared.outbox_factory();
 
-        let event = factory(&RoomId::expect_positive(10_000_161))
-            .expect("local fanout should prepare a durable resource event");
+        let event = core_ok(factory(&RoomId::expect_positive(10_000_161)))?;
         assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();
 
         assert_eq!(event_service.room_calls.load(Ordering::SeqCst), 1);
+        Ok(())
     }
 
     #[test]
@@ -538,31 +538,24 @@ mod tests {
     }
 
     #[test]
-    fn test_prepared_realtime_fanout_plan_captures_delivery_contract() {
+    fn test_prepared_realtime_fanout_plan_captures_delivery_contract() -> TestResult {
         let event = RealtimeEvent::RoomDeleted {
             event_id: "prepared-plan-room-deleted".to_string(),
             room_id: RoomId::expect_positive(10_000_154),
             deleted_by: synctv_core::models::UserId::expect_positive(10_000_155),
             timestamp: Utc::now(),
         };
-        let plan = PreparedRealtimeFanoutPlan::new(
-            disabled_realtime_fanout_service(),
-            event,
-            RealtimeDeliveryRequirement::DistributedIfAvailable,
-        )
-        .expect("prepared fanout plan should build");
+        let plan = PreparedRealtimeFanoutPlan::new(disabled_realtime_fanout_service(), event)
+            .map_err(test_error)?;
 
         let event = plan.outbox_event();
         assert!(!event.enqueue_outbox);
-        assert_eq!(
-            plan.delivery_requirement(),
-            RealtimeDeliveryRequirement::DistributedIfAvailable
-        );
         assert_eq!(plan.event().event_id(), "prepared-plan-room-deleted");
+        Ok(())
     }
 
     #[test]
-    fn test_playback_state_outbox_uses_playback_aggregate_metadata() {
+    fn test_playback_state_outbox_uses_playback_aggregate_metadata() -> TestResult {
         let room_id = RoomId::expect_positive(10_000_162);
         let state = RoomPlaybackState {
             room_id,
@@ -586,14 +579,14 @@ mod tests {
                 state,
                 timestamp: Utc::now(),
             },
-            RealtimeDeliveryRequirement::DistributedIfAvailable,
         )
-        .expect("prepared playback state fanout plan should build");
+        .map_err(test_error)?;
 
         let event = plan.outbox_event();
         assert_eq!(event.aggregate_type, "room_playback_state");
         assert_eq!(event.aggregate_id, room_id.to_string());
         assert_eq!(event.event_type, "playback_state_changed");
         assert_eq!(event.aggregate_version, Some(7));
+        Ok(())
     }
 }

@@ -72,7 +72,6 @@ struct MyRoomListRow {
     is_banned: bool,
     user_role: RoomRole,
     member_count: i32,
-    total_count: i64,
 }
 
 const ACCESSIBLE_ROOM_CREATOR_CONDITION: &str =
@@ -150,6 +149,10 @@ fn count_i64_to_u64(value: i64, field: &'static str) -> Result<u64> {
             "database returned negative count for {field}: {value}"
         ))
     })
+}
+
+fn required_count(value: Option<i64>, context: &'static str) -> Result<i64> {
+    value.ok_or_else(|| Error::Internal(format!("{context} query did not return a count")))
 }
 
 impl RoomMemberRepository {
@@ -326,6 +329,16 @@ impl RoomMemberRepository {
         qb: sqlx::query::QueryAs<'q, sqlx::Postgres, MyRoomListRow, sqlx::postgres::PgArguments>,
         search_pattern: Option<&'q str>,
     ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, MyRoomListRow, sqlx::postgres::PgArguments> {
+        match search_pattern {
+            Some(pattern) => qb.bind(pattern),
+            None => qb,
+        }
+    }
+
+    fn bind_my_room_count_filters<'q>(
+        qb: sqlx::query::QueryScalar<'q, sqlx::Postgres, i64, sqlx::postgres::PgArguments>,
+        search_pattern: Option<&'q str>,
+    ) -> sqlx::query::QueryScalar<'q, sqlx::Postgres, i64, sqlx::postgres::PgArguments> {
         match search_pattern {
             Some(pattern) => qb.bind(pattern),
             None => qb,
@@ -544,19 +557,19 @@ impl RoomMemberRepository {
                 .fetch_optional(&mut **tx)
                 .await?;
 
-                // Lock all member rows for this room to prevent concurrent inserts
-                // from seeing the same count value
-                let count = sqlx::query_scalar!(
-                    "SELECT COUNT(*) as count FROM (
+                let count = required_count(
+                    sqlx::query_scalar!(
+                        "SELECT COUNT(*) as count FROM (
                         SELECT 1 FROM room_members
                         WHERE room_id = $1
                         FOR UPDATE
                     ) sub",
-                    member.room_id as RoomId,
-                )
-                .fetch_one(&mut **tx)
-                .await?
-                .unwrap_or(0);
+                        member.room_id as RoomId,
+                    )
+                    .fetch_one(&mut **tx)
+                    .await?,
+                    "locked room member count",
+                )?;
                 let current_count = count_i64_to_u64(count, "room member count")?;
                 if current_count >= max_members {
                     tracing::warn!(
@@ -907,8 +920,8 @@ impl RoomMemberRepository {
 
     /// List active members in a room with database-level pagination
     ///
-    /// Uses `COUNT(*) OVER()` window function to atomically get total count and data
-    /// in a single query, avoiding the race condition of separate COUNT + SELECT queries.
+    /// Uses a separate count query so out-of-range pages still return the
+    /// number of matching members.
     ///
     /// Returns a tuple of (members, total_count) where:
     /// - `members`: Vec of `RoomMemberWithUser` for the current page
@@ -2319,10 +2332,22 @@ impl RoomMemberRepository {
         let limit = pagination.limit_i64()?;
         let offset = pagination.offset_i64()?;
 
-        // Single query using COUNT(*) OVER() window function for atomic count + fetch
+        let total_count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*)
+            FROM room_members rm
+            JOIN rooms r ON rm.room_id = r.id
+            WHERE rm.user_id = $1 AND r.deleted_at IS NULL
+            "#,
+            user_id as &UserId,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let total_count = required_count(total_count, "user room membership total")?;
+
         let rows = sqlx::query!(
             r#"
-            SELECT rm.room_id as "room_id: RoomId", COUNT(*) OVER() as "total_count!"
+            SELECT rm.room_id as "room_id: RoomId"
              FROM room_members rm
              JOIN rooms r ON rm.room_id = r.id
              WHERE rm.user_id = $1 AND r.deleted_at IS NULL
@@ -2336,8 +2361,7 @@ impl RoomMemberRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        let total_count = rows.first().map_or(0, |r| r.total_count);
-        let room_ids = rows.into_iter().map(|r| r.room_id).collect();
+        let room_ids = rows.into_iter().map(|row| row.room_id).collect();
 
         Ok((room_ids, total_count))
     }
@@ -2345,8 +2369,8 @@ impl RoomMemberRepository {
     /// Get rooms where a user is a member with full room details and member count (optimized)
     /// Returns (room, role, status, `member_count`) tuples
     ///
-    /// Uses `COUNT(*) OVER()` window function to atomically get total count and data
-    /// in a single query, avoiding the race condition of separate COUNT + SELECT queries.
+    /// Uses a separate count query so out-of-range pages still return the
+    /// number of matching rooms.
     pub async fn list_by_user_with_details(
         &self,
         user_id: &UserId,
@@ -2372,8 +2396,23 @@ impl RoomMemberRepository {
         let offset = query.pagination.offset_i64()?;
         let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
         let wb = Self::build_my_room_list_conditions(query);
+        let (count_where_sql, _) = wb.build(2)?;
         let (where_sql, _) = wb.build(4)?;
         let order_by_sql = Self::my_room_order_by_sql(query);
+        let count_sql = format!(
+            r"
+            SELECT COUNT(*)
+            FROM room_members rm
+            JOIN rooms r ON rm.room_id = r.id
+            WHERE rm.user_id = $1 AND {count_where_sql}
+            "
+        );
+        let total_count = Self::bind_my_room_count_filters(
+            sqlx::query_scalar::<_, i64>(trusted_dynamic_sql(count_sql)).bind(user_id),
+            search_pattern.as_deref(),
+        )
+        .fetch_one(&self.pool)
+        .await?;
         let sql = format!(
             r"
             SELECT
@@ -2381,8 +2420,7 @@ impl RoomMemberRepository {
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                 {ACTIVE_ROOM_BAN_EXISTS_SQL} AS is_banned,
                 rm.role as user_role,
-                COUNT(rm2.user_id)::int as member_count,
-                COUNT(*) OVER() as total_count
+                COUNT(rm2.user_id)::int as member_count
             FROM room_members rm
             JOIN rooms r ON rm.room_id = r.id
             LEFT JOIN room_members rm2
@@ -2412,7 +2450,6 @@ impl RoomMemberRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        let total_count = rows.first().map_or(0, |row| row.total_count);
         let results = rows
             .into_iter()
             .map(Self::my_room_result_from_row)
@@ -2431,8 +2468,23 @@ impl RoomMemberRepository {
         let offset = query.pagination.offset_i64()?;
         let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
         let wb = Self::build_my_room_list_conditions(query);
+        let (count_where_sql, _) = wb.build(2)?;
         let (where_sql, _) = wb.build(4)?;
         let order_by_sql = Self::my_room_order_by_sql(query);
+        let count_sql = format!(
+            r"
+            SELECT COUNT(*)
+            FROM room_members rm
+            JOIN rooms r ON rm.room_id = r.id
+            WHERE rm.user_id = $1 AND {count_where_sql} AND {ACCESSIBLE_ROOM_CREATOR_CONDITION}
+            "
+        );
+        let total_count = Self::bind_my_room_count_filters(
+            sqlx::query_scalar::<_, i64>(trusted_dynamic_sql(count_sql)).bind(user_id),
+            search_pattern.as_deref(),
+        )
+        .fetch_one(&self.pool)
+        .await?;
         let sql = format!(
             r"
             SELECT
@@ -2440,8 +2492,7 @@ impl RoomMemberRepository {
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                 {ACTIVE_ROOM_BAN_EXISTS_SQL} AS is_banned,
                 rm.role as user_role,
-                COUNT(rm2.user_id)::int as member_count,
-                COUNT(*) OVER() as total_count
+                COUNT(rm2.user_id)::int as member_count
             FROM room_members rm
             JOIN rooms r ON rm.room_id = r.id
             LEFT JOIN room_members rm2
@@ -2471,7 +2522,6 @@ impl RoomMemberRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        let total_count = rows.first().map_or(0, |row| row.total_count);
         let results = rows
             .into_iter()
             .map(Self::my_room_result_from_row)

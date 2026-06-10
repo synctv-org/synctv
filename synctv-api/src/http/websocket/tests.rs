@@ -11,6 +11,23 @@ use synctv_core::{
 };
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
+type TestResult<T = ()> = anyhow::Result<T>;
+
+fn test_error(message: impl Into<String>) -> anyhow::Error {
+    anyhow::anyhow!(message.into())
+}
+
+fn app_ok<T>(result: Result<T, AppError>) -> TestResult<T> {
+    result.map_err(|error| test_error(format!("{error:?}")))
+}
+
+fn app_err<T>(result: Result<T, AppError>) -> TestResult<AppError> {
+    match result {
+        Ok(_) => Err(test_error("expected HTTP app error")),
+        Err(error) => Ok(error),
+    }
+}
+
 struct AllowAllTicketValidator;
 
 #[async_trait::async_trait]
@@ -25,13 +42,12 @@ impl UserValidator for AllowAllTicketValidator {
     }
 }
 
-fn test_user_service(pool: &sqlx::PgPool) -> UserService {
-    let jwt_service =
-        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").expect("jwt service");
+fn test_user_service(pool: &sqlx::PgPool) -> TestResult<UserService> {
+    let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")?;
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
 
-    UserService::new_with_runtime(
+    Ok(UserService::new_with_runtime(
         pool,
         jwt_service,
         username_cache,
@@ -45,28 +61,28 @@ fn test_user_service(pool: &sqlx::PgPool) -> UserService {
             }),
             ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
         },
-    )
+    ))
 }
 
-fn test_room_service(pool: &sqlx::PgPool) -> RoomService {
-    RoomService::new_for_tests(pool.clone(), test_user_service(pool))
-        .expect("room service should build")
+fn test_room_service(pool: &sqlx::PgPool) -> TestResult<RoomService> {
+    RoomService::new_for_tests(pool.clone(), test_user_service(pool)?)
+        .map_err(|error| test_error(error.to_string()))
 }
 
 async fn register_test_user(
     user_service: &UserService,
     username: &str,
     email: &str,
-) -> synctv_core::models::User {
-    synctv_core_testing::opaque_register_user(
+) -> TestResult<synctv_core::models::User> {
+    Ok(synctv_core_testing::opaque_register_user(
         user_service,
         username,
         Some(email.to_string()),
         "Password123!",
     )
     .await
-    .expect("test user should register")
-    .0
+    .map_err(|error| test_error(error.to_string()))?
+    .0)
 }
 
 #[test]
@@ -88,69 +104,75 @@ fn test_ws_query_with_ticket() {
 }
 
 #[test]
-fn test_realtime_transport_format_defaults_to_json() {
+fn test_realtime_transport_format_defaults_to_json() -> TestResult {
     assert_eq!(
-        RealtimeTransportFormat::parse(None).expect("missing format should default"),
+        app_ok(RealtimeTransportFormat::parse(None))?,
         RealtimeTransportFormat::Json
     );
     assert_eq!(
-        RealtimeTransportFormat::parse(Some("")).expect("empty format should default"),
+        app_ok(RealtimeTransportFormat::parse(Some("")))?,
         RealtimeTransportFormat::Json
     );
+    Ok(())
 }
 
 #[test]
-fn test_realtime_transport_format_accepts_protobuf() {
+fn test_realtime_transport_format_accepts_protobuf() -> TestResult {
     assert_eq!(
-        RealtimeTransportFormat::parse(Some("protobuf")).expect("protobuf format"),
+        app_ok(RealtimeTransportFormat::parse(Some("protobuf")))?,
         RealtimeTransportFormat::Protobuf
     );
+    Ok(())
 }
 
 #[test]
-fn test_realtime_transport_format_rejects_unknown_values() {
-    let err = RealtimeTransportFormat::parse(Some("xml")).expect_err("invalid format");
+fn test_realtime_transport_format_rejects_unknown_values() -> TestResult {
+    let err = app_err(RealtimeTransportFormat::parse(Some("xml")))?;
     assert_eq!(err.status, StatusCode::BAD_REQUEST);
     assert!(err.message.contains("Invalid format"));
 
-    let err = RealtimeTransportFormat::parse(Some("proto")).expect_err("invalid format");
+    let err = app_err(RealtimeTransportFormat::parse(Some("proto")))?;
     assert_eq!(err.status, StatusCode::BAD_REQUEST);
     assert!(err.message.contains("Invalid format"));
+    Ok(())
 }
 
 #[test]
-fn test_websocket_request_metadata_uses_forwarded_ip_for_trusted_proxy() {
+fn test_websocket_request_metadata_uses_forwarded_ip_for_trusted_proxy() -> TestResult {
     let mut config = synctv_core::Config::default();
     config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
     let mut headers = HeaderMap::new();
-    headers.insert("x-forwarded-for", "203.0.113.50".parse().unwrap());
+    headers.insert("x-forwarded-for", "203.0.113.50".parse()?);
 
-    let metadata =
-        websocket_request_metadata(&config, &headers, Some("127.0.0.1".parse().unwrap()))
-            .expect("metadata should build");
+    let metadata = app_ok(websocket_request_metadata(
+        &config,
+        &headers,
+        Some("127.0.0.1".parse()?),
+    ))?;
 
-    assert_eq!(metadata.client_ip, Some("203.0.113.50".parse().unwrap()));
+    assert_eq!(metadata.client_ip, Some("203.0.113.50".parse()?));
+    Ok(())
 }
 
 #[test]
-fn test_websocket_request_metadata_rejects_non_utf8_user_agent() {
+fn test_websocket_request_metadata_rejects_non_utf8_user_agent() -> TestResult {
     let config = synctv_core::Config::default();
     let mut headers = HeaderMap::new();
     headers.insert(
         header::USER_AGENT,
-        axum::http::HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
+        axum::http::HeaderValue::from_bytes(&[0xff])?,
     );
 
-    let err = websocket_request_metadata(&config, &headers, None)
-        .expect_err("invalid user-agent must be rejected");
+    let err = app_err(websocket_request_metadata(&config, &headers, None))?;
 
     assert_eq!(err.status, StatusCode::BAD_REQUEST);
     assert!(err.message.contains("Invalid user-agent header"));
+    Ok(())
 }
 
 #[test]
-fn test_websocket_content_filter_reuses_shared_filter() {
+fn test_websocket_content_filter_reuses_shared_filter() -> TestResult {
     let shared = Arc::new(ContentFilter::new_with_config(
         17,
         Some(vec!["blocked".to_string()]),
@@ -163,30 +185,38 @@ fn test_websocket_content_filter_reuses_shared_filter() {
     );
     assert_eq!(selected.max_chat_length, 17);
     assert_eq!(
-        selected.filter_chat("<b>hi</b>").unwrap(),
+        selected
+            .filter_chat("<b>hi</b>")
+            .map_err(|error| test_error(error.to_string()))?,
         "<b>hi</b>",
         "websocket path must reuse the shared filter config instead of default strip_html=true"
     );
+    Ok(())
 }
 
 #[test]
-fn test_ws_query_deserialization_empty() {
+fn test_ws_query_deserialization_empty() -> TestResult {
     let json = "{}";
-    let query: WsQuery = serde_json::from_str(json).expect("deserialize empty");
+    let query: WsQuery = serde_json::from_str(json)?;
     assert!(query.ticket.is_empty());
+    Ok(())
 }
 
 #[test]
-fn test_ws_query_deserialization_with_ticket() {
+fn test_ws_query_deserialization_with_ticket() -> TestResult {
     let json = r#"{"ticket":"my_ticket"}"#;
-    let query: WsQuery = serde_json::from_str(json).expect("deserialize");
+    let query: WsQuery = serde_json::from_str(json)?;
     assert_eq!(query.ticket, "my_ticket");
+    Ok(())
 }
 
 #[test]
-fn test_ws_query_deserialization_rejects_extra_fields() {
+fn test_ws_query_deserialization_rejects_extra_fields() -> TestResult {
     let json = r#"{"ticket":"tix","extra":"ignored"}"#;
-    serde_json::from_str::<WsQuery>(json).expect_err("extra fields should be rejected");
+    match serde_json::from_str::<WsQuery>(json) {
+        Ok(_) => Err(test_error("extra fields should be rejected")),
+        Err(_) => Ok(()),
+    }
 }
 
 #[test]
@@ -233,48 +263,49 @@ fn test_playback_requires_state_resync() {
     assert_eq!(message_type_name(&message), "Playback");
 }
 
-// extract_user_id is async and requires AppState, so we test the priority
-// logic via the documented contract:
-// 1. Header > 2. Ticket
-// These tests verify the query parsing that feeds into extract_user_id.
-
 #[test]
-fn test_auth_priority_header_present_in_header_map() {
+fn test_auth_priority_header_present_in_header_map() -> TestResult {
     let mut headers = HeaderMap::new();
-    headers.insert("Authorization", "Bearer some_jwt_token".parse().unwrap());
+    headers.insert("Authorization", "Bearer some_jwt_token".parse()?);
 
-    // When Authorization header is present, it should be checked first
     let auth_header = headers.get("Authorization");
     assert!(auth_header.is_some());
-    let auth_str = auth_header.unwrap().to_str().unwrap();
+    let auth_str = auth_header
+        .ok_or_else(|| test_error("Authorization header should be present"))?
+        .to_str()?;
     assert!(auth_str.starts_with("Bearer "));
-    let token = auth_str.strip_prefix("Bearer ").unwrap();
+    let token = auth_str
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| test_error("Authorization header should use Bearer scheme"))?;
     assert_eq!(token, "some_jwt_token");
+    Ok(())
 }
 
 #[test]
-fn test_auth_priority_no_bearer_prefix_in_header() {
+fn test_auth_priority_no_bearer_prefix_in_header() -> TestResult {
     let mut headers = HeaderMap::new();
-    headers.insert("Authorization", "Basic dXNlcjpwYXNz".parse().unwrap());
+    headers.insert("Authorization", "Basic dXNlcjpwYXNz".parse()?);
 
-    // Non-Bearer auth should not extract a token
-    let auth_header = headers.get("Authorization").unwrap();
-    let auth_str = auth_header.to_str().unwrap();
+    let auth_header = headers
+        .get("Authorization")
+        .ok_or_else(|| test_error("Authorization header should be present"))?;
+    let auth_str = auth_header.to_str()?;
     assert!(auth_str.strip_prefix("Bearer ").is_none());
+    Ok(())
 }
 
 #[test]
-fn test_auth_priority_invalid_utf8_header_is_not_ignored() {
+fn test_auth_priority_invalid_utf8_header_is_not_ignored() -> TestResult {
     let mut headers = HeaderMap::new();
     headers.insert(
         "Authorization",
-        axum::http::HeaderValue::from_bytes(b"Bearer \xFFinvalid").unwrap(),
+        axum::http::HeaderValue::from_bytes(b"Bearer \xFFinvalid")?,
     );
 
-    let err = extract_authorization_bearer_token(&headers)
-        .expect_err("non-UTF-8 authorization header must fail closed");
+    let err = app_err(extract_authorization_bearer_token(&headers))?;
     assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
     assert!(err.message.contains("non-UTF-8"));
+    Ok(())
 }
 
 #[test]
@@ -285,9 +316,7 @@ fn test_auth_priority_no_header_falls_through_to_ticket() {
         ..Default::default()
     };
 
-    // No Authorization header
     assert!(headers.get("Authorization").is_none());
-    // Ticket is available as fallback
     assert!(!query.ticket.is_empty());
 }
 
@@ -301,7 +330,6 @@ fn test_auth_priority_no_auth_at_all() {
 
     assert!(headers.get("Authorization").is_none());
     assert!(query.ticket.is_empty());
-    // This would produce an Unauthorized error in extract_user_id
 }
 
 #[test]
@@ -327,220 +355,257 @@ fn test_unauthorized_error_for_revoked_token() {
 }
 
 #[test]
-fn test_validate_websocket_origin_allows_missing_origin_for_non_browser_clients() {
+fn test_validate_websocket_origin_allows_missing_origin_for_non_browser_clients() -> TestResult {
     let headers = HeaderMap::new();
     let config = synctv_core::Config::default();
-    validate_websocket_origin(&headers, &[], None, &config.server)
-        .expect("missing origin should be allowed");
+    app_ok(validate_websocket_origin(
+        &headers,
+        &[],
+        None,
+        &config.server,
+    ))?;
+    Ok(())
 }
 
 #[test]
-fn test_validate_websocket_origin_allows_same_origin_host_when_explicitly_allowlisted() {
+fn test_validate_websocket_origin_allows_same_origin_host_when_explicitly_allowlisted() -> TestResult
+{
     let mut headers = HeaderMap::new();
-    headers.insert(header::HOST, "app.example.com".parse().unwrap());
-    headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+    headers.insert(header::HOST, "app.example.com".parse()?);
+    headers.insert(header::ORIGIN, "https://app.example.com".parse()?);
 
-    validate_websocket_origin(
+    app_ok(validate_websocket_origin(
         &headers,
         &["https://app.example.com".to_string()],
         None,
         &synctv_core::Config::default().server,
-    )
-    .expect("same-origin browser websocket should only be allowed when explicitly configured");
+    ))?;
+    Ok(())
 }
 
 #[test]
-fn test_validate_websocket_origin_allows_same_origin_host_without_explicit_allowlist() {
+fn test_validate_websocket_origin_allows_same_origin_host_without_explicit_allowlist() -> TestResult
+{
     let mut headers = HeaderMap::new();
-    headers.insert(header::HOST, "app.example.com".parse().unwrap());
-    headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+    headers.insert(header::HOST, "app.example.com".parse()?);
+    headers.insert(header::ORIGIN, "https://app.example.com".parse()?);
 
-    validate_websocket_origin(&headers, &[], None, &synctv_core::Config::default().server)
-        .expect("same-origin browser websocket should be allowed without explicit CORS allowlist");
+    app_ok(validate_websocket_origin(
+        &headers,
+        &[],
+        None,
+        &synctv_core::Config::default().server,
+    ))?;
+    Ok(())
 }
 
 #[test]
-fn test_validate_websocket_origin_allows_explicitly_configured_cross_origin() {
+fn test_validate_websocket_origin_allows_explicitly_configured_cross_origin() -> TestResult {
     let mut headers = HeaderMap::new();
-    headers.insert(header::HOST, "api.example.com".parse().unwrap());
-    headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+    headers.insert(header::HOST, "api.example.com".parse()?);
+    headers.insert(header::ORIGIN, "https://app.example.com".parse()?);
 
-    validate_websocket_origin(
+    app_ok(validate_websocket_origin(
         &headers,
         &["https://app.example.com".to_string()],
         None,
         &synctv_core::Config::default().server,
-    )
-    .expect("configured frontend origin should be allowed");
+    ))?;
+    Ok(())
 }
 
 #[test]
-fn test_validate_websocket_origin_rejects_same_host_with_mismatched_scheme() {
+fn test_validate_websocket_origin_rejects_same_host_with_mismatched_scheme() -> TestResult {
     let mut headers = HeaderMap::new();
-    headers.insert(header::HOST, "app.example.com".parse().unwrap());
-    headers.insert(header::ORIGIN, "http://app.example.com".parse().unwrap());
-    headers.insert("x-forwarded-proto", "https".parse().unwrap());
+    headers.insert(header::HOST, "app.example.com".parse()?);
+    headers.insert(header::ORIGIN, "http://app.example.com".parse()?);
+    headers.insert("x-forwarded-proto", "https".parse()?);
     let mut config = synctv_core::Config::default();
     config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
-    let err = validate_websocket_origin(
+    let err = app_err(validate_websocket_origin(
         &headers,
         &[],
-        Some("127.0.0.1".parse().unwrap()),
+        Some("127.0.0.1".parse()?),
         &config.server,
-    )
-    .expect_err("same host with proxy-reported https must reject an http origin");
+    ))?;
     assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    Ok(())
 }
 
 #[test]
-fn test_validate_websocket_origin_rejects_non_utf8_host() {
+fn test_validate_websocket_origin_rejects_non_utf8_host() -> TestResult {
     let mut headers = HeaderMap::new();
     headers.insert(
         header::HOST,
-        axum::http::HeaderValue::from_bytes(b"app.example.com\xff").unwrap(),
+        axum::http::HeaderValue::from_bytes(b"app.example.com\xff")?,
     );
-    headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+    headers.insert(header::ORIGIN, "https://app.example.com".parse()?);
 
-    let err =
-        validate_websocket_origin(&headers, &[], None, &synctv_core::Config::default().server)
-            .expect_err("invalid Host header must fail closed");
+    let err = app_err(validate_websocket_origin(
+        &headers,
+        &[],
+        None,
+        &synctv_core::Config::default().server,
+    ))?;
     assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
     assert!(err.message.contains("Host"));
+    Ok(())
 }
 
 #[test]
-fn test_validate_websocket_origin_rejects_malformed_host_port() {
+fn test_validate_websocket_origin_rejects_malformed_host_port() -> TestResult {
     let mut headers = HeaderMap::new();
-    headers.insert(header::HOST, "app.example.com:bad".parse().unwrap());
-    headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+    headers.insert(header::HOST, "app.example.com:bad".parse()?);
+    headers.insert(header::ORIGIN, "https://app.example.com".parse()?);
 
-    let err =
-        validate_websocket_origin(&headers, &[], None, &synctv_core::Config::default().server)
-            .expect_err("malformed Host port must fail closed");
+    let err = app_err(validate_websocket_origin(
+        &headers,
+        &[],
+        None,
+        &synctv_core::Config::default().server,
+    ))?;
     assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
     assert!(err.message.contains("Host"));
+    Ok(())
 }
 
 #[test]
-fn test_split_host_and_port_rejects_malformed_ipv6_host_header() {
-    let err = split_host_and_port("[::1:8080").expect_err("malformed IPv6 host");
+fn test_split_host_and_port_rejects_malformed_ipv6_host_header() -> TestResult {
+    let err = app_err(split_host_and_port("[::1:8080"))?;
     assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
     assert!(err.message.contains("Host"));
+    Ok(())
 }
 
 #[test]
-fn test_validate_websocket_origin_rejects_non_utf8_forwarded_proto_from_trusted_proxy() {
+fn test_validate_websocket_origin_rejects_non_utf8_forwarded_proto_from_trusted_proxy() -> TestResult
+{
     let mut headers = HeaderMap::new();
-    headers.insert(header::HOST, "app.example.com".parse().unwrap());
-    headers.insert(header::ORIGIN, "https://app.example.com".parse().unwrap());
+    headers.insert(header::HOST, "app.example.com".parse()?);
+    headers.insert(header::ORIGIN, "https://app.example.com".parse()?);
     headers.insert(
         "x-forwarded-proto",
-        axum::http::HeaderValue::from_bytes(b"https\xff").unwrap(),
+        axum::http::HeaderValue::from_bytes(b"https\xff")?,
     );
     let mut config = synctv_core::Config::default();
     config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
-    let err = validate_websocket_origin(
+    let err = app_err(validate_websocket_origin(
         &headers,
         &[],
-        Some("127.0.0.1".parse().unwrap()),
+        Some("127.0.0.1".parse()?),
         &config.server,
-    )
-    .expect_err("invalid trusted proxy metadata must fail closed");
+    ))?;
     assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
     assert!(err.message.contains("x-forwarded-proto"));
+    Ok(())
 }
 
 #[test]
-fn test_validate_websocket_origin_ignores_forwarded_proto_from_untrusted_peer() {
+fn test_validate_websocket_origin_ignores_forwarded_proto_from_untrusted_peer() -> TestResult {
     let mut headers = HeaderMap::new();
-    headers.insert(header::HOST, "app.example.com".parse().unwrap());
-    headers.insert(header::ORIGIN, "http://app.example.com".parse().unwrap());
-    headers.insert("x-forwarded-proto", "https".parse().unwrap());
+    headers.insert(header::HOST, "app.example.com".parse()?);
+    headers.insert(header::ORIGIN, "http://app.example.com".parse()?);
+    headers.insert("x-forwarded-proto", "https".parse()?);
     let mut config = synctv_core::Config::default();
     config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
-    validate_websocket_origin(
+    app_ok(validate_websocket_origin(
         &headers,
         &[],
-        Some("198.51.100.10".parse().unwrap()),
+        Some("198.51.100.10".parse()?),
         &config.server,
-    )
-    .expect("untrusted peers must not influence same-origin checks via x-forwarded-proto");
+    ))?;
+    Ok(())
 }
 
 #[test]
-fn test_validate_websocket_origin_uses_direct_peer_for_trusted_proxy_forwarded_proto() {
+fn test_validate_websocket_origin_uses_direct_peer_for_trusted_proxy_forwarded_proto() -> TestResult
+{
     let mut config = synctv_core::Config::default();
     config.server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
 
     let mut headers = HeaderMap::new();
-    headers.insert(header::HOST, "app.example.com".parse().unwrap());
-    headers.insert(header::ORIGIN, "http://app.example.com".parse().unwrap());
-    headers.insert("x-forwarded-for", "203.0.113.10".parse().unwrap());
-    headers.insert("x-forwarded-proto", "https".parse().unwrap());
+    headers.insert(header::HOST, "app.example.com".parse()?);
+    headers.insert(header::ORIGIN, "http://app.example.com".parse()?);
+    headers.insert("x-forwarded-for", "203.0.113.10".parse()?);
+    headers.insert("x-forwarded-proto", "https".parse()?);
 
-    let direct_peer_ip = "10.2.3.4".parse().unwrap();
+    let direct_peer_ip = "10.2.3.4".parse()?;
     let resolved_client_ip =
-        crate::client_ip::extract_client_ip_from_headers(&config, direct_peer_ip, &headers)
-            .expect("client ip should parse");
+        crate::client_ip::extract_client_ip_from_headers(&config, direct_peer_ip, &headers)?;
     assert_eq!(
         resolved_client_ip,
-        "203.0.113.10".parse::<std::net::IpAddr>().unwrap()
+        "203.0.113.10".parse::<std::net::IpAddr>()?
     );
 
-    let err = validate_websocket_origin(&headers, &[], Some(direct_peer_ip), &config.server)
-        .expect_err(
-            "origin validation must trust x-forwarded-proto based on the direct proxy peer",
-        );
+    let err = app_err(validate_websocket_origin(
+        &headers,
+        &[],
+        Some(direct_peer_ip),
+        &config.server,
+    ))?;
     assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
 
-    validate_websocket_origin(&headers, &[], Some(resolved_client_ip), &config.server).expect(
-        "using the resolved client IP as peer would ignore trusted proxy metadata and allow the mismatched scheme",
-    );
+    app_ok(validate_websocket_origin(
+        &headers,
+        &[],
+        Some(resolved_client_ip),
+        &config.server,
+    ))?;
+    Ok(())
 }
 
 #[test]
-fn test_split_host_and_port_supports_ipv6_host_header() {
-    let (host, port) = split_host_and_port("[::1]:8080").expect("valid IPv6 host");
+fn test_split_host_and_port_supports_ipv6_host_header() -> TestResult {
+    let (host, port) = app_ok(split_host_and_port("[::1]:8080"))?;
     assert_eq!(host, "::1");
     assert_eq!(port, Some(8080));
+    Ok(())
 }
 
 #[test]
-fn test_validate_websocket_origin_rejects_unconfigured_cross_origin() {
+fn test_validate_websocket_origin_rejects_unconfigured_cross_origin() -> TestResult {
     let mut headers = HeaderMap::new();
-    headers.insert(header::HOST, "api.example.com".parse().unwrap());
-    headers.insert(header::ORIGIN, "https://evil.example.com".parse().unwrap());
+    headers.insert(header::HOST, "api.example.com".parse()?);
+    headers.insert(header::ORIGIN, "https://evil.example.com".parse()?);
 
-    let err =
-        validate_websocket_origin(&headers, &[], None, &synctv_core::Config::default().server)
-            .expect_err("unconfigured cross-origin websocket must fail closed");
+    let err = app_err(validate_websocket_origin(
+        &headers,
+        &[],
+        None,
+        &synctv_core::Config::default().server,
+    ))?;
     assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
     assert!(err.message.contains("Origin"));
+    Ok(())
 }
 
 #[test]
-fn test_validate_websocket_origin_rejects_null_origin() {
+fn test_validate_websocket_origin_rejects_null_origin() -> TestResult {
     let mut headers = HeaderMap::new();
-    headers.insert(header::HOST, "api.example.com".parse().unwrap());
-    headers.insert(header::ORIGIN, "null".parse().unwrap());
+    headers.insert(header::HOST, "api.example.com".parse()?);
+    headers.insert(header::ORIGIN, "null".parse()?);
 
-    let err =
-        validate_websocket_origin(&headers, &[], None, &synctv_core::Config::default().server)
-            .expect_err("null origin should not be trusted");
+    let err = app_err(validate_websocket_origin(
+        &headers,
+        &[],
+        None,
+        &synctv_core::Config::default().server,
+    ))?;
     assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    Ok(())
 }
 
 #[test]
-fn test_validate_websocket_runtime_dependency_flags_require_realtime_and_chat_services() {
-    let err = validate_websocket_runtime_dependency_flags(false)
-        .expect_err("missing realtime event service must fail before websocket upgrade");
+fn test_validate_websocket_runtime_dependency_flags_require_realtime_and_chat_services(
+) -> TestResult {
+    let err = app_err(validate_websocket_runtime_dependency_flags(false))?;
     assert_eq!(err.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
 
-    validate_websocket_runtime_dependency_flags(true)
-        .expect("present dependencies should allow websocket upgrade to proceed");
+    app_ok(validate_websocket_runtime_dependency_flags(true))?;
+    Ok(())
 }
 
 #[test]
@@ -553,7 +618,7 @@ fn test_websocket_handshake_timeout_matches_global_http_timeout_budget() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn test_websocket_handshake_timeout_returns_request_timeout_error() {
+async fn test_websocket_handshake_timeout_returns_request_timeout_error() -> TestResult {
     let handshake = async { std::future::pending::<Result<(), AppError>>().await };
 
     let timeout_task =
@@ -561,17 +626,16 @@ async fn test_websocket_handshake_timeout_returns_request_timeout_error() {
 
     tokio::time::advance(WEBSOCKET_HANDSHAKE_TIMEOUT + Duration::from_secs(1)).await;
 
-    let err = timeout_task
-        .await
-        .expect("timeout task should complete")
-        .expect_err("pending handshake must time out");
+    let err = app_err(timeout_task.await?)?;
 
     assert_eq!(err.status, StatusCode::REQUEST_TIMEOUT);
     assert_eq!(err.message, "WebSocket handshake timed out");
+    Ok(())
 }
 
 #[tokio::test(start_paused = true)]
-async fn test_handshake_timeout_releases_reserved_capacity_without_marking_presence() {
+async fn test_handshake_timeout_releases_reserved_capacity_without_marking_presence() -> TestResult
+{
     let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
         max_per_room: 1,
         max_per_user: 1,
@@ -583,10 +647,10 @@ async fn test_handshake_timeout_releases_reserved_capacity_without_marking_prese
 
     manager
         .reserve_user_slot(&user_id)
-        .expect("handshake should reserve a user slot");
+        .map_err(|error| test_error(error.clone()))?;
     manager
         .reserve_room_slot(&room_id)
-        .expect("handshake should reserve a room slot");
+        .map_err(|error| test_error(error.clone()))?;
 
     assert!(
         manager.get_connection_id(&room_id, &user_id).is_none(),
@@ -612,10 +676,7 @@ async fn test_handshake_timeout_releases_reserved_capacity_without_marking_prese
 
     tokio::time::advance(WEBSOCKET_HANDSHAKE_TIMEOUT + Duration::from_secs(1)).await;
 
-    let err = timeout_task
-        .await
-        .expect("timeout task should complete")
-        .expect_err("pending reserved handshake must time out");
+    let err = app_err(timeout_task.await?)?;
     assert_eq!(err.status, StatusCode::REQUEST_TIMEOUT);
 
     assert!(
@@ -626,6 +687,7 @@ async fn test_handshake_timeout_releases_reserved_capacity_without_marking_prese
         manager.reserve_room_slot(&room_id).is_ok(),
         "timeout cleanup should free room reservation capacity"
     );
+    Ok(())
 }
 
 #[test]
@@ -737,9 +799,10 @@ fn test_map_websocket_membership_probe_error_preserves_backend_outages() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_validate_websocket_room_membership_rejects_room_with_inactive_creator() {
+async fn test_validate_websocket_room_membership_rejects_room_with_inactive_creator() -> TestResult
+{
     let (_container, pool) = synctv_core_testing::create_test_pool().await;
-    let room_service = test_room_service(&pool);
+    let room_service = test_room_service(&pool)?;
     let user_service = room_service.user_service().clone();
 
     let owner = register_test_user(
@@ -747,13 +810,13 @@ async fn test_validate_websocket_room_membership_rejects_room_with_inactive_crea
         "ws-owner-inactive",
         "ws-owner-inactive@test.invalid",
     )
-    .await;
+    .await?;
     let member = register_test_user(
         &user_service,
         "ws-member-inactive-owner",
         "ws-member-inactive-owner@test.invalid",
     )
-    .await;
+    .await?;
 
     let room = room_service
         .create_room(
@@ -764,21 +827,24 @@ async fn test_validate_websocket_room_membership_rejects_room_with_inactive_crea
             None,
         )
         .await
-        .expect("room should be created")
+        .map_err(|error| test_error(error.to_string()))?
         .0;
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .expect("member should join room");
+        .map_err(|error| test_error(error.to_string()))?;
 
     synctv_core::repository::UserRepository::new(pool.clone())
         .ban(&owner.id, None, Some("websocket test".to_string()))
         .await
-        .expect("banning owner should succeed");
+        .map_err(|error| test_error(error.to_string()))?;
 
-    let err = validate_websocket_room_membership(&room_service, &room, &member.id)
-        .await
-        .expect_err("room with inactive creator must be rejected during websocket prepare");
+    let Err(err) = validate_websocket_room_membership(&room_service, &room, &member.id).await
+    else {
+        return Err(test_error(
+            "expected inactive creator to reject websocket prepare",
+        ));
+    };
 
     assert_eq!(err.status, StatusCode::FORBIDDEN);
     assert!(
@@ -788,6 +854,7 @@ async fn test_validate_websocket_room_membership_rejects_room_with_inactive_crea
     );
 
     pool.close().await;
+    Ok(())
 }
 
 #[test]
@@ -920,11 +987,8 @@ fn test_map_websocket_pre_join_error_hides_unexpected_internal_details() {
     assert_eq!(err.message, "Internal error");
 }
 
-// These tests verify that the RateLimitConfig used for WebSocket message handling
-// has sensible defaults and can be customized.
-
 #[tokio::test]
-async fn test_failed_upgrade_cleanup_releases_reserved_capacity_without_presence() {
+async fn test_failed_upgrade_cleanup_releases_reserved_capacity_without_presence() -> TestResult {
     let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
         max_per_room: 1,
         max_per_user: 1,
@@ -936,10 +1000,10 @@ async fn test_failed_upgrade_cleanup_releases_reserved_capacity_without_presence
 
     manager
         .reserve_user_slot(&user_id)
-        .expect("handshake should reserve a user slot");
+        .map_err(|error| test_error(error.clone()))?;
     manager
         .reserve_room_slot(&room_id)
-        .expect("handshake should reserve a room slot");
+        .map_err(|error| test_error(error.clone()))?;
 
     assert!(
         manager.get_connection_id(&room_id, &user_id).is_none(),
@@ -965,10 +1029,11 @@ async fn test_failed_upgrade_cleanup_releases_reserved_capacity_without_presence
         manager.reserve_room_slot(&room_id).is_ok(),
         "cleanup should free room reservation capacity"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() {
+async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() -> TestResult {
     let state = crate::http::tests::test_app_state();
     let ws_ticket_service = state.ws_ticket_service.clone();
     let user_id = UserId::expect_positive(130_006);
@@ -979,21 +1044,21 @@ async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() {
         .router_config
         .connection_manager
         .reserve_user_slot(&user_id)
-        .expect("handshake should reserve a user slot");
+        .map_err(|error| test_error(error.clone()))?;
     state
         .router_config
         .connection_manager
         .reserve_room_slot(&room_id)
-        .expect("handshake should reserve a room slot");
+        .map_err(|error| test_error(error.clone()))?;
 
     let ticket = ws_ticket_service
         .create_ticket(&user_id, &room_id, 0)
         .await
-        .expect("create websocket ticket");
+        .map_err(|error| test_error(error.to_string()))?;
     let pending = ws_ticket_service
         .validate_checked(&ticket, &room_id, &AllowAllTicketValidator)
         .await
-        .expect("ticket should prevalidate before upgrade");
+        .map_err(|error| test_error(error.to_string()))?;
     let prepared = PreparedWebSocketUpgrade {
         room_id,
         auth: HandshakeAuthContext {
@@ -1012,7 +1077,7 @@ async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() {
 
     commit_websocket_upgrade(&state, prepared, &handshake_control)
         .await
-        .expect("handshake commit should consume the ticket before switching protocols");
+        .map_err(|error| test_error(format!("{error:?}")))?;
 
     let cleanup =
         build_failed_upgrade_cleanup(state.router_config.connection_manager.clone(), reservation);
@@ -1025,10 +1090,12 @@ async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() {
         validated.is_err(),
         "failed upgrade cleanup must not resurrect a one-time ticket after the HTTP handshake succeeded"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fails() {
+async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fails() -> TestResult
+{
     let state = crate::http::tests::test_app_state();
     let ws_ticket_service = state.ws_ticket_service.clone();
     let user_id = UserId::expect_positive(130_008);
@@ -1039,21 +1106,21 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fa
         &room_id,
         &user_id,
     )
-    .expect("handshake should reserve websocket capacity");
+    .map_err(|error| test_error(format!("{error:?}")))?;
 
     let ticket = ws_ticket_service
         .create_ticket(&user_id, &room_id, 0)
         .await
-        .expect("create websocket ticket");
+        .map_err(|error| test_error(error.to_string()))?;
     let pending = ws_ticket_service
         .validate_checked(&ticket, &room_id, &AllowAllTicketValidator)
         .await
-        .expect("ticket should prevalidate before upgrade");
+        .map_err(|error| test_error(error.to_string()))?;
 
     ws_ticket_service
         .consume_prevalidated(&ticket, &room_id, &pending)
         .await
-        .expect("fixture should spend the ticket before commit");
+        .map_err(|error| test_error(error.to_string()))?;
 
     let prepared = PreparedWebSocketUpgrade {
         room_id,
@@ -1068,25 +1135,25 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fa
     };
     let handshake_control = ExecutionControl::default();
 
-    let error = commit_websocket_upgrade(&state, prepared, &handshake_control)
-        .await
-        .expect_err("commit should fail when another handshake already claimed the ticket");
+    let error = app_err(commit_websocket_upgrade(&state, prepared, &handshake_control).await)?;
     assert_eq!(error.status, StatusCode::UNAUTHORIZED);
 
     state
         .router_config
         .connection_manager
         .reserve_user_slot(&user_id)
-        .expect("failed commit should release the reserved user slot");
+        .map_err(|error| test_error(error.clone()))?;
     state
         .router_config
         .connection_manager
         .reserve_room_slot(&room_id)
-        .expect("failed commit should release the reserved room slot");
+        .map_err(|error| test_error(error.clone()))?;
+    Ok(())
 }
 
 #[tokio::test(start_paused = true)]
-async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels_commit() {
+async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels_commit(
+) -> TestResult {
     let state = crate::http::tests::test_app_state();
     let timeout_state = state.clone();
     let user_id = UserId::expect_positive(130_010);
@@ -1096,7 +1163,7 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels
         &room_id,
         &user_id,
     )
-    .expect("handshake should reserve websocket capacity");
+    .map_err(|error| test_error(format!("{error:?}")))?;
 
     let prepared = PreparedWebSocketUpgrade {
         room_id,
@@ -1123,26 +1190,24 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels
 
     tokio::time::advance(WEBSOCKET_HANDSHAKE_TIMEOUT + Duration::from_secs(1)).await;
 
-    let err = timeout_task
-        .await
-        .expect("timeout task should complete")
-        .expect_err("commit path should time out");
+    let err = app_err(timeout_task.await?)?;
     assert_eq!(err.status, StatusCode::REQUEST_TIMEOUT);
 
     state
         .router_config
         .connection_manager
         .reserve_user_slot(&user_id)
-        .expect("timed out commit should release the reserved user slot");
+        .map_err(|error| test_error(error.clone()))?;
     state
         .router_config
         .connection_manager
         .reserve_room_slot(&room_id)
-        .expect("timed out commit should release the reserved room slot");
+        .map_err(|error| test_error(error.clone()))?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_reservation_stays_full_until_connection_pre_join_succeeds() {
+async fn test_reservation_stays_full_until_connection_pre_join_succeeds() -> TestResult {
     let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
         max_per_room: 1,
         max_per_user: 1,
@@ -1155,10 +1220,10 @@ async fn test_reservation_stays_full_until_connection_pre_join_succeeds() {
 
     manager
         .reserve_user_slot(&user_id)
-        .expect("handshake should reserve a user slot");
+        .map_err(|error| test_error(error.clone()))?;
     manager
         .reserve_room_slot(&room_id)
-        .expect("handshake should reserve a room slot");
+        .map_err(|error| test_error(error.clone()))?;
 
     assert!(
         manager.reserve_user_slot(&user_id).is_err(),
@@ -1172,11 +1237,11 @@ async fn test_reservation_stays_full_until_connection_pre_join_succeeds() {
     manager
         .register(connection_id.clone(), user_id)
         .await
-        .expect("pre_join should register the connection before releasing reservation");
+        .map_err(|error| test_error(error.clone()))?;
     manager
         .join_room(&connection_id, room_id)
         .await
-        .expect("pre_join should join the room before releasing reservation");
+        .map_err(|error| test_error(error.clone()))?;
 
     assert!(
         manager.reserve_user_slot(&user_id).is_err(),
@@ -1208,10 +1273,11 @@ async fn test_reservation_stays_full_until_connection_pre_join_succeeds() {
         manager.reserve_room_slot(&room_id).is_ok(),
         "room capacity should reopen only after the active connection leaves"
     );
+    Ok(())
 }
 
 #[test]
-fn test_state_resync_messages_disconnect_slow_client_immediately() {
+fn test_state_resync_messages_disconnect_slow_client_immediately() -> TestResult {
     use crate::impls::messaging::MessageSender;
     use synctv_proto::client::{server_message::Message, ServerMessage, UserJoinedRoom};
 
@@ -1221,7 +1287,7 @@ fn test_state_resync_messages_disconnect_slow_client_immediately() {
         WebSocketMessageSender::new(tx.clone(), critical_tx, RealtimeTransportFormat::Protobuf);
 
     tx.try_send(axum::extract::ws::Message::Text("occupied".into()))
-        .expect("fill the channel");
+        .map_err(|error| test_error(error.to_string()))?;
 
     let result = sender.send(ServerMessage {
         message: Some(Message::UserJoined(UserJoinedRoom {
@@ -1230,17 +1296,17 @@ fn test_state_resync_messages_disconnect_slow_client_immediately() {
         })),
     });
 
-    assert!(
-        result.is_err(),
-        "stateful join messages must disconnect slow clients instead of being silently dropped"
-    );
-    let err = result.unwrap_err();
+    let err = match result {
+        Ok(()) => return Err(test_error("expected slow client disconnect error")),
+        Err(error) => error,
+    };
     assert!(err.contains("stateful message"));
     assert!(err.contains("UserJoined"));
+    Ok(())
 }
 
 #[test]
-fn test_critical_messages_bypass_full_normal_queue() {
+fn test_critical_messages_bypass_full_normal_queue() -> TestResult {
     use crate::impls::messaging::MessageSender;
     use synctv_proto::client::{server_message::Message, ErrorMessage, ServerMessage};
 
@@ -1250,7 +1316,7 @@ fn test_critical_messages_bypass_full_normal_queue() {
         WebSocketMessageSender::new(tx.clone(), critical_tx, RealtimeTransportFormat::Protobuf);
 
     tx.try_send(axum::extract::ws::Message::Text("occupied".into()))
-        .expect("fill normal queue");
+        .map_err(|error| test_error(error.to_string()))?;
 
     let result = sender.send(ServerMessage {
         message: Some(Message::Error(ErrorMessage {
@@ -1268,10 +1334,11 @@ fn test_critical_messages_bypass_full_normal_queue() {
         critical_rx.try_recv().is_ok(),
         "critical message should be queued on the dedicated critical channel"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_forward_websocket_messages_disconnects_connection_on_sink_failure() {
+async fn test_forward_websocket_messages_disconnects_connection_on_sink_failure() -> TestResult {
     use axum::Error;
     use futures::task::{Context, Poll};
     use std::pin::Pin;
@@ -1319,7 +1386,7 @@ async fn test_forward_websocket_messages_disconnects_connection_on_sink_failure(
     manager
         .register(connection_id.clone(), user_id)
         .await
-        .expect("register connection");
+        .map_err(|error| test_error(error.clone()))?;
 
     let mut disconnect_rx = manager.subscribe_disconnect();
     let is_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -1327,7 +1394,7 @@ async fn test_forward_websocket_messages_disconnects_connection_on_sink_failure(
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     tx.send(axum::extract::ws::Message::Text("payload".into()))
         .await
-        .expect("enqueue outbound message");
+        .map_err(|error| test_error(error.to_string()))?;
     drop(tx);
     drop(critical_tx);
 
@@ -1347,20 +1414,24 @@ async fn test_forward_websocket_messages_disconnects_connection_on_sink_failure(
     );
 
     let signal = tokio::time::timeout(std::time::Duration::from_secs(1), disconnect_rx.recv())
-        .await
-        .expect("disconnect signal should be sent promptly")
-        .expect("disconnect channel should remain open");
+        .await?
+        .map_err(|error| test_error(error.to_string()))?;
 
     match signal {
         synctv_realtime::sync::DisconnectSignal::Connection(id) => {
             assert_eq!(id, connection_id);
         }
-        other => panic!("expected connection disconnect signal, got {other:?}"),
+        other => {
+            return Err(test_error(format!(
+                "expected connection disconnect signal, got {other:?}"
+            )));
+        }
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_forward_websocket_messages_prioritizes_critical_queue() {
+async fn test_forward_websocket_messages_prioritizes_critical_queue() -> TestResult {
     use axum::Error;
     use futures::task::{Context, Poll};
     use std::pin::Pin;
@@ -1414,11 +1485,11 @@ async fn test_forward_websocket_messages_prioritizes_critical_queue() {
 
     tx.send(axum::extract::ws::Message::Text("normal".into()))
         .await
-        .expect("enqueue normal message");
+        .map_err(|error| test_error(error.to_string()))?;
     critical_tx
         .send(axum::extract::ws::Message::Text("critical".into()))
         .await
-        .expect("enqueue critical message");
+        .map_err(|error| test_error(error.to_string()))?;
     drop(tx);
     drop(critical_tx);
 
@@ -1438,10 +1509,11 @@ async fn test_forward_websocket_messages_prioritizes_critical_queue() {
         vec!["critical".to_string(), "normal".to_string()],
         "critical websocket queue must be drained before best-effort backlog"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_forward_websocket_messages_prevents_normal_queue_starvation() {
+async fn test_forward_websocket_messages_prevents_normal_queue_starvation() -> TestResult {
     use axum::Error;
     use futures::task::{Context, Poll};
     use std::pin::Pin;
@@ -1499,18 +1571,18 @@ async fn test_forward_websocket_messages_prevents_normal_queue_starvation() {
                 format!("critical-{idx}").into(),
             ))
             .await
-            .expect("enqueue critical message");
+            .map_err(|error| test_error(error.to_string()))?;
     }
     tx.send(axum::extract::ws::Message::Text("normal".into()))
         .await
-        .expect("enqueue normal message");
+        .map_err(|error| test_error(error.to_string()))?;
     for idx in 3..6 {
         critical_tx
             .send(axum::extract::ws::Message::Text(
                 format!("critical-{idx}").into(),
             ))
             .await
-            .expect("enqueue later critical message");
+            .map_err(|error| test_error(error.to_string()))?;
     }
     drop(tx);
     drop(critical_tx);
@@ -1530,11 +1602,12 @@ async fn test_forward_websocket_messages_prevents_normal_queue_starvation() {
         .sent
         .iter()
         .position(|message| message == "normal")
-        .expect("normal queue message must be forwarded");
+        .ok_or_else(|| test_error("normal queue message must be forwarded"))?;
 
     assert!(
         normal_index < 4,
         "normal queue should not starve behind sustained critical traffic: {:?}",
         sink.sent
     );
+    Ok(())
 }

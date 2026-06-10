@@ -390,6 +390,13 @@ mod tests {
 
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn test_token_type_expiration() {
         let email_verify = EmailTokenType::EmailBind;
@@ -437,9 +444,14 @@ mod tests {
         assert!(key.contains("email_bind"));
         assert!(key.contains("user123"));
 
-        // Test that rate limiter blocks after limit
-        limiter.check_rate_limit(&key, 2, 60).await.unwrap();
-        limiter.check_rate_limit(&key, 2, 60).await.unwrap();
+        ok(
+            limiter.check_rate_limit(&key, 2, 60).await,
+            "first rate limit check should pass",
+        );
+        ok(
+            limiter.check_rate_limit(&key, 2, 60).await,
+            "second rate limit check should pass",
+        );
         let result = limiter.check_rate_limit(&key, 2, 60).await;
         assert!(result.is_err());
     }
@@ -455,24 +467,30 @@ mod tests {
         };
         let user_id = UserId::new();
 
-        EmailTokenService::check_generation_rate_limit_for(
-            Some(limiter.as_ref()),
-            &config,
-            &user_id,
-            EmailTokenType::EmailBind,
-            None,
-        )
-        .await
-        .unwrap();
-        EmailTokenService::check_generation_rate_limit_for(
-            Some(limiter.as_ref()),
-            &config,
-            &user_id,
-            EmailTokenType::EmailBind,
-            None,
-        )
-        .await
-        .unwrap();
+        ok(
+            EmailTokenService::check_generation_rate_limit_for(
+                Some(limiter.as_ref()),
+                &config,
+                &user_id,
+                EmailTokenType::EmailBind,
+                None,
+            )
+            .await
+            .map_err(|error| error.to_string()),
+            "first generation rate limit check should pass",
+        );
+        ok(
+            EmailTokenService::check_generation_rate_limit_for(
+                Some(limiter.as_ref()),
+                &config,
+                &user_id,
+                EmailTokenType::EmailBind,
+                None,
+            )
+            .await
+            .map_err(|error| error.to_string()),
+            "second generation rate limit check should pass",
+        );
 
         let result = EmailTokenService::check_generation_rate_limit_for(
             Some(limiter.as_ref()),

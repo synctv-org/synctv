@@ -226,10 +226,13 @@ pub(in crate::http::room) async fn open_resource_watch_sse(
         connection_service: state.connection_manager.clone(),
         public_id_codec: state.shared_api_runtime.public_id_codec.clone(),
         sender,
-        playback_service: Some(state.shared_api_runtime.client_api.clone()),
-        playlist_items_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
-        room_members_snapshot_service: Some(state.shared_api_runtime.client_api.clone()),
-        room_settings_snapshot_service: None,
+        playback_service: state.shared_api_runtime.client_api.clone(),
+        playlist_items_snapshot_service: state.shared_api_runtime.client_api.clone(),
+        room_members_snapshot_service: state.shared_api_runtime.client_api.clone(),
+        room_settings_snapshot_service:
+            crate::impls::room_settings_snapshot::default_room_settings_snapshot_service(
+                state.room_service.clone(),
+            ),
     });
     let prepared_session = session
         .prepare(&observe)

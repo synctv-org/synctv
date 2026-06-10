@@ -13,7 +13,7 @@ use synctv_proto::providers::rtmp::{
 
 use super::common::provider_request_metadata;
 
-pub fn rtmp_routes() -> Router<AppState> {
+pub(crate) fn rtmp_routes() -> Router<AppState> {
     Router::new()
         .route(
             "/rooms/{room_id}/publish-key/{media_id}",

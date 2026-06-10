@@ -426,12 +426,6 @@ impl RoomService {
                 return Err(error);
             }
         };
-        let cleanup_outbox_events = outbox
-            .cleanup
-            .as_ref()
-            .map(|factory| factory(&cleanup))
-            .transpose()?
-            .unwrap_or_default();
         let snapshot = match self
             .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, kicker_id, None)
             .await
@@ -461,7 +455,7 @@ impl RoomService {
             return Err(error);
         }
         if let Err(error) = self
-            .insert_realtime_outbox_events_tx(&mut tx, &cleanup_outbox_events)
+            .insert_member_resource_cleanup_outbox_tx(&mut tx, &cleanup, outbox.cleanup.as_ref())
             .await
         {
             self.abort_permission_write(&fence).await;
@@ -1247,12 +1241,6 @@ impl RoomService {
                 return Err(error);
             }
         };
-        let cleanup_outbox_events = outbox
-            .cleanup
-            .as_ref()
-            .map(|factory| factory(&cleanup))
-            .transpose()?
-            .unwrap_or_default();
         let snapshot = match self
             .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
             .await
@@ -1282,7 +1270,7 @@ impl RoomService {
             return Err(error);
         }
         if let Err(error) = self
-            .insert_realtime_outbox_events_tx(&mut tx, &cleanup_outbox_events)
+            .insert_member_resource_cleanup_outbox_tx(&mut tx, &cleanup, outbox.cleanup.as_ref())
             .await
         {
             self.abort_permission_write(&fence).await;
@@ -1340,8 +1328,7 @@ impl RoomService {
 
     /// Get room members with database-level pagination
     ///
-    /// Uses `COUNT(*) OVER()` for atomic count + fetch.
-    /// Returns (members, total_count) tuple.
+    /// Returns the requested page and the total matching member count.
     ///
     /// # Performance
     ///

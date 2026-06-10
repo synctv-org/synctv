@@ -292,6 +292,120 @@ mod inner {
             Ok(deleted)
         }
 
+        async fn list_streams(&self) -> Result<Vec<(String, String)>> {
+            let segments_root = self.segments_root_prefix();
+            let lister = self
+                .operator
+                .lister_with(&segments_root)
+                .recursive(true)
+                .await
+                .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
+
+            let mut entries = lister;
+            let mut streams = std::collections::HashSet::new();
+            while let Some(entry) = entries
+                .try_next()
+                .await
+                .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
+            {
+                if entry.metadata().mode() == EntryMode::DIR {
+                    continue;
+                }
+                let Some(relative) = entry.path().strip_prefix(&segments_root) else {
+                    continue;
+                };
+                let mut parts = relative.splitn(4, '/');
+                let (Some(_bucket), Some(app), Some(stream), Some(_name)) =
+                    (parts.next(), parts.next(), parts.next(), parts.next())
+                else {
+                    continue;
+                };
+                streams.insert((app.to_string(), stream.to_string()));
+            }
+
+            let mut streams = streams.into_iter().collect::<Vec<_>>();
+            streams.sort();
+            Ok(streams)
+        }
+
+        async fn count_stream_segments(&self, app: &str, stream: &str) -> Result<usize> {
+            validate_component(app, "app")?;
+            validate_component(stream, "stream")?;
+            let mut total = 0;
+            for bucket_prefix in self.list_dirs(&self.segments_root_prefix()).await? {
+                let Some(bucket_name) = path_leaf(&bucket_prefix) else {
+                    continue;
+                };
+                let prefix = self.get_bucket_stream_prefix(bucket_name, app, stream);
+                let lister = self
+                    .operator
+                    .lister_with(&prefix)
+                    .recursive(true)
+                    .await
+                    .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
+
+                let mut entries = lister;
+                while let Some(entry) = entries
+                    .try_next()
+                    .await
+                    .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
+                {
+                    if entry.metadata().mode() != EntryMode::DIR {
+                        total += 1;
+                    }
+                }
+            }
+            Ok(total)
+        }
+
+        async fn delete_oldest_stream_segments(
+            &self,
+            app: &str,
+            stream: &str,
+            max_count: usize,
+        ) -> Result<usize> {
+            validate_component(app, "app")?;
+            validate_component(stream, "stream")?;
+
+            let mut paths = Vec::new();
+            for bucket_prefix in self.list_dirs(&self.segments_root_prefix()).await? {
+                let Some(bucket_name) = path_leaf(&bucket_prefix) else {
+                    continue;
+                };
+                let prefix = self.get_bucket_stream_prefix(bucket_name, app, stream);
+                let lister = self
+                    .operator
+                    .lister_with(&prefix)
+                    .recursive(true)
+                    .await
+                    .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
+
+                let mut entries = lister;
+                while let Some(entry) = entries
+                    .try_next()
+                    .await
+                    .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
+                {
+                    if entry.metadata().mode() != EntryMode::DIR {
+                        paths.push(entry.path().to_string());
+                    }
+                }
+            }
+
+            if paths.len() <= max_count {
+                return Ok(0);
+            }
+
+            paths.sort();
+            let to_delete = paths.len() - max_count;
+            let delete_paths = paths.into_iter().take(to_delete).collect::<Vec<_>>();
+            self.operator
+                .delete_iter(delete_paths)
+                .await
+                .map_err(|e| Error::other(format!("OSS batch delete failed: {e}")))?;
+            Ok(to_delete)
+        }
+
         async fn cleanup(&self, older_than: Duration) -> Result<usize> {
             let segments_root = self.segments_root_prefix();
 
@@ -572,32 +686,3 @@ mod inner {
 
 #[cfg(feature = "oss")]
 pub use inner::*;
-
-// When oss feature is disabled, provide stub types so downstream code compiles
-#[cfg(not(feature = "oss"))]
-mod stub {
-    /// OSS storage configuration (requires `oss` feature)
-    #[derive(Debug, Clone)]
-    pub struct OssConfig {
-        pub endpoint: String,
-        pub access_key_id: String,
-        pub secret_access_key: String,
-        pub bucket: String,
-        pub region: Option<String>,
-        pub base_path: String,
-        pub public_url_prefix: String,
-        pub presign_expires_in: u64,
-    }
-
-    /// OSS storage backend (requires `oss` feature)
-    pub struct OssStorage;
-
-    impl OssStorage {
-        pub fn new(_config: OssConfig) -> std::result::Result<Self, Box<dyn std::error::Error>> {
-            Err("OSS storage requires the `oss` feature to be enabled".into())
-        }
-    }
-}
-
-#[cfg(not(feature = "oss"))]
-pub use stub::*;

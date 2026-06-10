@@ -16,9 +16,15 @@ mod types;
 use types::UserTokenSigningKind;
 pub use types::{Claims, GuestClaims, TokenAuthContext, TokenCredentialBinding, TokenType};
 
-#[allow(clippy::cast_precision_loss)]
-fn usize_to_f64(value: usize) -> f64 {
-    value as f64
+fn usize_to_f64(value: usize) -> Result<f64> {
+    let value = u32::try_from(value)
+        .map_err(|_| Error::InvalidInput("value exceeds u32::MAX".to_string()))?;
+    Ok(f64::from(value))
+}
+
+fn usize_to_f64_saturating(value: usize) -> f64 {
+    let value = u32::try_from(value).unwrap_or(u32::MAX);
+    f64::from(value)
 }
 
 fn u64_to_i64(value: u64, field: &'static str) -> Result<i64> {
@@ -39,8 +45,21 @@ fn duration_hours_to_seconds(value: u64, field: &'static str) -> Result<i64> {
         .ok_or_else(|| Error::InvalidInput(format!("{field} seconds exceed i64::MAX")))
 }
 
+fn decode_untrusted_token_type_hint(token: &str) -> Option<TokenTypeHint> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    serde_json::from_slice::<TokenTypeHint>(&decoded).ok()
+}
+
 const MIN_JWT_SECRET_ENTROPY_BITS_F64: f64 = 128.0;
 const MIN_SHANNON_ENTROPY: f64 = 3.5;
+
+#[derive(Deserialize)]
+struct TokenTypeHint {
+    typ: String,
+}
 
 /// JWT service for signing and verifying tokens
 #[derive(Clone)]
@@ -99,16 +118,7 @@ impl JwtService {
     /// revocation state.
     #[must_use]
     pub fn token_type_hint(token: &str) -> Option<TokenType> {
-        #[derive(Deserialize)]
-        struct TokenTypeHint {
-            typ: String,
-        }
-
-        let payload = token.split('.').nth(1)?;
-        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(payload)
-            .ok()?;
-        let hint = serde_json::from_slice::<TokenTypeHint>(&decoded).ok()?;
+        let hint = decode_untrusted_token_type_hint(token)?;
         TokenType::from_claim_typ(&hint.typ)
     }
 
@@ -248,7 +258,7 @@ impl JwtService {
         // Requirement 3: Unique character ratio
         // Prevents "aaaa..." or "abcabcabc..." patterns
         let unique_chars: std::collections::HashSet<char> = secret.chars().collect();
-        let unique_ratio = usize_to_f64(unique_chars.len()) / usize_to_f64(secret.len());
+        let unique_ratio = usize_to_f64(unique_chars.len())? / usize_to_f64(secret.len())?;
 
         // Require at least 25% unique characters
         if unique_ratio < 0.25 {
@@ -299,7 +309,7 @@ impl JwtService {
 
         // Requirement 5: Shannon entropy calculation
         // More accurate than simple charset-based estimation
-        let entropy = Self::calculate_shannon_entropy(secret);
+        let entropy = Self::calculate_shannon_entropy(secret)?;
         if entropy < MIN_SHANNON_ENTROPY {
             return Err(Error::Internal(format!(
                 "JWT secret has low entropy ({entropy:.1} bits/char, need at least {MIN_SHANNON_ENTROPY:.1}). \
@@ -309,7 +319,7 @@ impl JwtService {
 
         // Requirement 6: Estimate total entropy bits
         // Entropy = length * entropy_per_char
-        let estimated_entropy_bits = usize_to_f64(secret.len()) * entropy;
+        let estimated_entropy_bits = usize_to_f64(secret.len())? * entropy;
 
         if estimated_entropy_bits < MIN_JWT_SECRET_ENTROPY_BITS_F64 {
             return Err(Error::Internal(format!(
@@ -324,11 +334,11 @@ impl JwtService {
     /// Calculate Shannon entropy in bits per character
     ///
     /// Higher values indicate more randomness. Maximum for ASCII is ~4.7 bits/char.
-    fn calculate_shannon_entropy(s: &str) -> f64 {
+    fn calculate_shannon_entropy(s: &str) -> Result<f64> {
         use std::collections::HashMap;
 
         if s.is_empty() {
-            return 0.0;
+            return Ok(0.0);
         }
 
         let mut freq: HashMap<char, usize> = HashMap::new();
@@ -336,17 +346,17 @@ impl JwtService {
             *freq.entry(c).or_insert(0) += 1;
         }
 
-        let len = usize_to_f64(s.len());
+        let len = usize_to_f64(s.len())?;
         let mut entropy = 0.0;
 
         for &count in freq.values() {
-            let p = usize_to_f64(count) / len;
+            let p = usize_to_f64(count)? / len;
             if p > 0.0 {
                 entropy = p.mul_add(-p.log2(), entropy);
             }
         }
 
-        entropy
+        Ok(entropy)
     }
 
     /// Check if the string is a simple sequential pattern
@@ -373,7 +383,7 @@ impl JwtService {
         }
 
         // If more than 70% of adjacent chars are sequential, reject
-        let threshold = usize_to_f64(chars.len() - 1) * 0.7;
+        let threshold = usize_to_f64_saturating(chars.len() - 1) * 0.7;
         f64::from(ascending_count) > threshold || f64::from(descending_count) > threshold
     }
 
@@ -400,7 +410,7 @@ impl JwtService {
                     }
                 }
                 // If more than 80% match, it's a repeating pattern
-                if f64::from(matches) / usize_to_f64(repetitions) > 0.8 {
+                if f64::from(matches) / usize_to_f64_saturating(repetitions) > 0.8 {
                     return true;
                 }
             }

@@ -18,9 +18,9 @@ fn invalid_data_error(message: &str) -> Error {
 pub struct Pmt {
     pub pid: u16,
     pub program_number: u16,
-    pub version_number: u8,     //5 bits
-    pub continuity_counter: u8, //4i bits
-    pub pcr_pid: u16,           //13 bits
+    pub version_number: u8,
+    pub continuity_counter: u8,
+    pub pcr_pid: u16,
     pub program_info: BytesMut,
     pub streams: Vec<pes::Pes>,
 }
@@ -37,9 +37,9 @@ impl Pmt {
         Self {
             pid: 0,
             program_number: 0,
-            version_number: 0,     //5 bits
-            continuity_counter: 0, //4i bits
-            pcr_pid: 0,            //13 bit
+            version_number: 0,
+            continuity_counter: 0,
+            pcr_pid: 0,
             program_info: BytesMut::new(),
             streams: Vec::new(),
         }
@@ -65,23 +65,17 @@ impl PmtMuxer {
     }
 
     pub fn write(&mut self, pmt: &Pmt) -> Result<BytesMut, MpegTsError> {
-        /*table id*/
         let table_id = u8::try_from(epat_pid::PAT_TID_PMS)
             .map_err(|_| invalid_data_error("PMT table id exceeds u8"))?;
         self.bytes_writer.write_u8(table_id)?;
 
+        // Build section body first because section_length is written before it.
         let mut tmp_bytes_writer = BytesWriter::new();
-        /*program_number*/
         tmp_bytes_writer.write_u16::<BigEndian>(pmt.program_number)?;
-        /*version_number*/
         tmp_bytes_writer.write_u8(0xC1 | (pmt.version_number << 1))?;
-        /*section_number*/
         tmp_bytes_writer.write_u8(0x00)?;
-        /*last_section_number*/
         tmp_bytes_writer.write_u8(0x00)?;
-        /*PCR_PID*/
         tmp_bytes_writer.write_u16::<BigEndian>(0xE000 | pmt.pcr_pid)?;
-        /*program_info_length*/
         let program_info_length = u16::try_from(pmt.program_info.len())
             .map_err(|_| invalid_data_error("PMT program info length exceeds u16"))?;
         tmp_bytes_writer.write_u16::<BigEndian>(0xF000 | program_info_length)?;
@@ -91,20 +85,16 @@ impl PmtMuxer {
         }
 
         for stream in &pmt.streams {
-            /*stream_type*/
             let stream_type = if stream.codec_id == epsi_stream_type::PSI_STREAM_AUDIO_OPUS {
                 epsi_stream_type::PSI_STREAM_PRIVATE_DATA
             } else {
                 stream.codec_id
             };
             tmp_bytes_writer.write_u8(stream_type)?;
-            /*elementary_PID*/
             tmp_bytes_writer.write_u16::<BigEndian>(0xE000 | stream.pid)?;
-            /*ES_info_length*/
             tmp_bytes_writer.write_u16::<BigEndian>(0xF000)?;
         }
 
-        /*section_length*/
         let section_length = u16::try_from(tmp_bytes_writer.len())
             .map_err(|_| invalid_data_error("PMT section length exceeds u16"))?
             .saturating_add(4);
@@ -114,15 +104,10 @@ impl PmtMuxer {
         self.bytes_writer
             .write(&tmp_bytes_writer.extract_current_bytes()[..])?;
 
-        /*crc32*/
         let crc32_value = crc32::gen_crc32(0xffff_ffff, self.bytes_writer.get_current_bytes());
         self.bytes_writer.write_u32::<LittleEndian>(crc32_value)?;
 
         Ok(self.bytes_writer.extract_current_bytes())
-    }
-
-    pub const fn write_descriptor(&mut self) -> Result<(), MpegTsError> {
-        Ok(())
     }
 }
 
@@ -201,12 +186,5 @@ mod tests {
         assert!(result.is_ok());
         let data = result.unwrap();
         assert!(!data.is_empty());
-    }
-
-    #[test]
-    fn test_pmt_muxer_write_descriptor() {
-        let mut muxer = PmtMuxer::new();
-        let result = muxer.write_descriptor();
-        assert!(result.is_ok());
     }
 }

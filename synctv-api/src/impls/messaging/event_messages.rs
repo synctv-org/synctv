@@ -12,7 +12,7 @@ use super::notifications::system_notification_server_message;
 pub(super) fn realtime_event_to_server_messages(
     event: &synctv_realtime::sync::RealtimeEvent,
     room_id: &str,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<Vec<ServerMessage>, String> {
     use synctv_proto::client::server_message::Message;
     use synctv_proto::client::{

@@ -3,7 +3,6 @@
 //! Tests verify Allow/Deny permission pattern and integration with database.
 //!
 //! Requires Docker for testcontainers.
-#![allow(clippy::unwrap_used)]
 
 use sqlx::PgPool;
 use synctv_core::{
@@ -14,8 +13,8 @@ use synctv_core::{
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
     service::permission::PermissionService,
 };
-use synctv_core_testing::create_test_pool;
-/// Default `PostgreSQL` version for test containers
+use synctv_core_testing::{create_test_pool, ok};
+
 /// Create a test user in the database (required for FK constraints)
 async fn create_test_user(pool: &PgPool, user_id: &UserId) -> UserId {
     let username = format!("test_user_{user_id}");
@@ -36,11 +35,11 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) -> UserId {
         banned_reason: None,
     };
     let user_repo = UserRepository::new(pool.clone());
-    user_repo
-        .create(&user)
-        .await
-        .expect("Failed to create test user")
-        .id
+    ok(
+        user_repo.create(&user).await,
+        "permission test user should be created",
+    )
+    .id
 }
 
 fn make_member(room_id: RoomId, user_id: UserId, role: RoomRole) -> RoomMember {
@@ -80,8 +79,10 @@ fn make_perm_service(
     member_repo: RoomMemberRepository,
     room_repo: RoomRepository,
 ) -> PermissionService {
-    PermissionService::new(member_repo, room_repo, None, 1000, 300)
-        .expect("permission service should build")
+    ok(
+        PermissionService::new(member_repo, room_repo, None, 1000, 300),
+        "permission service should build",
+    )
 }
 
 #[tokio::test]
@@ -94,32 +95,36 @@ async fn test_permission_check_with_database_member() {
 
     let creator_id = create_test_user(&pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
+    let room = ok(
+        room_repo.create(&room).await,
+        "permission test room should be created",
+    );
 
     let user_id = create_test_user(&pool, &UserId::new()).await;
     let mut member = make_member(room.id, user_id, RoomRole::Member);
     member.added_permissions =
         RoomMemberPermissionBits::CHAT | RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE;
-    member_repo
-        .add(&member)
-        .await
-        .expect("Failed to create member");
+    ok(
+        member_repo.add(&member).await,
+        "permission test member should be created",
+    );
 
     let perm_service = make_perm_service(member_repo, room_repo);
 
     // check_permission_no_cache returns Ok(()) if granted, Err if denied
-    perm_service
-        .check_permission_no_cache(&room.id, &user_id, RoomPermission::CHAT)
-        .await
-        .expect("User should have CHAT permission");
+    ok(
+        perm_service
+            .check_permission_no_cache(&room.id, &user_id, RoomPermission::CHAT)
+            .await,
+        "user should have CHAT permission",
+    );
 
-    perm_service
-        .check_permission_no_cache(&room.id, &user_id, RoomPermission::CREATE_MEDIA_RESOURCE)
-        .await
-        .expect("User should have CREATE_MEDIA_RESOURCE permission");
+    ok(
+        perm_service
+            .check_permission_no_cache(&room.id, &user_id, RoomPermission::CREATE_MEDIA_RESOURCE)
+            .await,
+        "user should have CREATE_MEDIA_RESOURCE permission",
+    );
 
     let kick_result = perm_service
         .check_permission_no_cache(&room.id, &user_id, RoomPermission::KICK_MEMBER)
@@ -140,31 +145,33 @@ async fn test_permission_allow_deny_pattern() {
 
     let creator_id = create_test_user(&pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
+    let room = ok(
+        room_repo.create(&room).await,
+        "permission test room should be created",
+    );
 
     let admin_id = create_test_user(&pool, &UserId::new()).await;
     let admin_member = make_member(room.id, admin_id, RoomRole::Admin);
-    member_repo
-        .add(&admin_member)
-        .await
-        .expect("Failed to create admin");
+    ok(
+        member_repo.add(&admin_member).await,
+        "permission test admin should be created",
+    );
 
     let guest_id = create_test_user(&pool, &UserId::new()).await;
     let guest_member = make_member(room.id, guest_id, RoomRole::Guest);
-    member_repo
-        .add(&guest_member)
-        .await
-        .expect("Failed to create guest");
+    ok(
+        member_repo.add(&guest_member).await,
+        "permission test guest should be created",
+    );
 
     let perm_service = make_perm_service(member_repo, room_repo);
 
-    perm_service
-        .check_permission_no_cache(&room.id, &admin_id, RoomPermission::KICK_MEMBER)
-        .await
-        .expect("Admin should be able to kick members");
+    ok(
+        perm_service
+            .check_permission_no_cache(&room.id, &admin_id, RoomPermission::KICK_MEMBER)
+            .await,
+        "admin should be able to kick members",
+    );
 
     let guest_chat_result = perm_service
         .check_permission_no_cache(&room.id, &guest_id, RoomPermission::CHAT)
@@ -185,21 +192,21 @@ async fn test_permission_removed_member_denied() {
 
     let creator_id = create_test_user(&pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
+    let room = ok(
+        room_repo.create(&room).await,
+        "permission test room should be created",
+    );
 
     let user_id = create_test_user(&pool, &UserId::new()).await;
     let member = make_member(room.id, user_id, RoomRole::Member);
-    member_repo
-        .add(&member)
-        .await
-        .expect("Failed to create member");
-    member_repo
-        .remove(&room.id, &user_id)
-        .await
-        .expect("Failed to delete membership");
+    ok(
+        member_repo.add(&member).await,
+        "permission test member should be created",
+    );
+    ok(
+        member_repo.remove(&room.id, &user_id).await,
+        "permission test membership should be removed",
+    );
 
     let perm_service = make_perm_service(member_repo, room_repo);
 
@@ -222,10 +229,10 @@ async fn test_permission_non_member_denied() {
 
     let creator_id = create_test_user(&pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
+    let room = ok(
+        room_repo.create(&room).await,
+        "permission test room should be created",
+    );
 
     let perm_service = make_perm_service(member_repo, room_repo);
 
@@ -270,17 +277,17 @@ async fn test_concurrent_permission_checks() {
 
     let creator_id = create_test_user(&pool, &UserId::new()).await;
     let room = make_room(creator_id);
-    let room = room_repo
-        .create(&room)
-        .await
-        .expect("Failed to create room");
+    let room = ok(
+        room_repo.create(&room).await,
+        "permission test room should be created",
+    );
 
     let user_id = create_test_user(&pool, &UserId::new()).await;
     let member = make_member(room.id, user_id, RoomRole::Member);
-    member_repo
-        .add(&member)
-        .await
-        .expect("Failed to create member");
+    ok(
+        member_repo.add(&member).await,
+        "permission test member should be created",
+    );
 
     let perm_service = Arc::new(make_perm_service(member_repo, room_repo));
 
@@ -291,16 +298,18 @@ async fn test_concurrent_permission_checks() {
         let uid = user_id;
 
         let handle = tokio::spawn(async move {
-            service
-                .check_permission(&room_id, &uid, RoomPermission::CHAT)
-                .await
-                .expect("Permission check should succeed");
+            ok(
+                service
+                    .check_permission(&room_id, &uid, RoomPermission::CHAT)
+                    .await,
+                "permission check should succeed",
+            );
         });
         handles.push(handle);
     }
 
     // All checks should complete without error (Ok(()) means permission granted)
     for handle in handles {
-        handle.await.expect("Join failed");
+        ok(handle.await, "permission check task should join");
     }
 }

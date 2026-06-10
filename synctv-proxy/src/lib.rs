@@ -1,5 +1,3 @@
-#![cfg_attr(test, allow(clippy::unwrap_used))]
-
 //! Shared media proxy utilities
 //!
 //! Provides reusable functions for proxying media streams and rewriting M3U8
@@ -34,14 +32,7 @@ pub use error::{
     proxy_error_kind, proxy_error_kind_from_std_error, proxy_range_not_satisfiable_total_size,
     ProxyErrorKind,
 };
-pub use manifest::{
-    default_proxy_url, make_absolute, percent_encode, rewrite_m3u8, rewrite_m3u8_with_limit,
-    rewrite_m3u8_with_url_mapper, rewrite_uri_attribute_with_count, MAX_M3U8_URLS,
-};
-#[cfg(test)]
-pub(crate) use redirect::send_with_redirect_validation;
-#[cfg(test)]
-pub(crate) use redirect::REDIRECT_PRESERVE_HEADERS;
+pub use manifest::{percent_encode, rewrite_m3u8, MAX_M3U8_URLS};
 pub(crate) use redirect::{
     send_head_with_redirect_validation_with_control_and_timeout,
     send_with_redirect_validation_with_control_and_timeout, validate_target_url_against_ssrf,
@@ -52,6 +43,9 @@ const MAX_PROXY_BODY_SIZE: usize = 256 * 1024 * 1024;
 
 /// Maximum response body size for M3U8/MPD manifests (10 MB).
 const MAX_MANIFEST_SIZE: usize = 10 * 1024 * 1024;
+
+/// Provider-selected HTTP headers forwarded to upstream media origins.
+pub type ProviderHeaders = HashMap<String, String>;
 
 /// Default timeout for sending an upstream proxy request and receiving response headers.
 ///
@@ -125,7 +119,7 @@ pub struct ProxyConfig<'a> {
     /// The remote URL to fetch.
     pub url: &'a str,
     /// Extra headers the provider requires (e.g. Referer, cookies).
-    pub provider_headers: &'a HashMap<String, String>,
+    pub provider_headers: &'a ProviderHeaders,
     /// Provider-selected Range header for this fetch.
     pub range_header: Option<&'a str>,
     /// Cooperative execution control propagated by the caller.

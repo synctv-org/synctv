@@ -1,11 +1,10 @@
 use {
     super::{
         bytes_errors::{BytesReadError, BytesReadErrorValue},
-        bytesio::TNetIO,
+        net_io::TNetIO,
     },
     byteorder::{ByteOrder, ReadBytesExt},
     bytes::{BufMut, BytesMut},
-    futures::FutureExt,
     std::{io::Cursor, sync::Arc, time::Duration},
     tokio::sync::Mutex,
 };
@@ -15,16 +14,6 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Max buffer size (10 MB) to prevent unbounded memory growth from malicious/buggy input.
 const MAX_BUFFER_SIZE: usize = 10 * 1024 * 1024;
-
-/// Create an Elapsed error without requiring a timeout future.
-/// This is needed because `tokio::time::error::Elapsed::new()` is private.
-fn elapsed_error() -> tokio::time::error::Elapsed {
-    // Use a zero-duration timeout on a pending future to generate an Elapsed error.
-    tokio::time::timeout(Duration::ZERO, std::future::pending::<()>())
-        .now_or_never()
-        .expect("zero-duration timeout should resolve immediately")
-        .expect_err("zero-duration timeout on pending should always fail with Elapsed")
-}
 
 pub struct BytesReader {
     buffer: BytesMut,
@@ -184,8 +173,7 @@ impl BytesReader {
 pub struct AsyncBytesReader<T1: TNetIO> {
     pub bytes_reader: BytesReader,
     pub io: Arc<Mutex<T1>>,
-    /// Timeout for read operations. If None, DEFAULT_READ_TIMEOUT is used.
-    timeout: Option<Duration>,
+    timeout: Duration,
 }
 
 impl<T1> AsyncBytesReader<T1>
@@ -196,7 +184,7 @@ where
         Self {
             bytes_reader: BytesReader::new(BytesMut::default()),
             io,
-            timeout: None,
+            timeout: DEFAULT_READ_TIMEOUT,
         }
     }
 
@@ -205,18 +193,18 @@ where
         Self {
             bytes_reader: BytesReader::new(BytesMut::default()),
             io,
-            timeout: Some(timeout),
+            timeout,
         }
     }
 
     /// Sets a custom timeout for read operations.
     pub const fn set_timeout(&mut self, timeout: Duration) {
-        self.timeout = Some(timeout);
+        self.timeout = timeout;
     }
 
     /// Returns the current timeout duration.
-    pub fn timeout(&self) -> Duration {
-        self.timeout.unwrap_or(DEFAULT_READ_TIMEOUT)
+    pub const fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     pub async fn read(&mut self) -> Result<(), BytesReadError> {
@@ -235,7 +223,9 @@ where
             // Calculate remaining time for this read attempt
             let remaining = timeout_duration.saturating_sub(start.elapsed());
             if remaining.is_zero() {
-                return Err(elapsed_error().into());
+                return Err(BytesReadError {
+                    value: BytesReadErrorValue::Timeout,
+                });
             }
 
             // Read with the remaining timeout
@@ -418,61 +408,50 @@ mod async_tests {
             Ok(())
         }
 
-        fn get_net_type(&self) -> super::super::bytesio::NetType {
-            super::super::bytesio::NetType::TCP
+        fn get_net_type(&self) -> super::super::net_io::NetType {
+            super::super::net_io::NetType::TCP
         }
     }
 
     #[tokio::test]
     async fn test_async_bytes_reader_timeout_on_check() {
-        // Create an AsyncBytesReader with a very short timeout (100ms)
         let io = Arc::new(Mutex::new(NeverReturningIO));
         let mut reader = AsyncBytesReader::with_timeout(io, Duration::from_millis(100));
 
-        // Try to read 1 byte - this should timeout since NeverReturningIO never returns data
         let result = reader.read_bytes(1).await;
 
-        // Verify that we got a timeout error
         assert!(result.is_err(), "Expected timeout error");
         let err = result.unwrap_err();
-        matches!(err.value, BytesReadErrorValue::TimeoutError(_));
+        matches!(err.value, BytesReadErrorValue::Timeout);
     }
 
     #[tokio::test]
     async fn test_async_bytes_reader_default_timeout() {
-        // Create an AsyncBytesReader with default timeout
         let io = Arc::new(Mutex::new(NeverReturningIO));
         let reader = AsyncBytesReader::new(io);
 
-        // Verify default timeout is 10 seconds
         assert_eq!(reader.timeout(), Duration::from_secs(10));
     }
 
     #[tokio::test]
     async fn test_async_bytes_reader_custom_timeout() {
-        // Create an AsyncBytesReader with custom timeout
         let io = Arc::new(Mutex::new(NeverReturningIO));
         let custom_timeout = Duration::from_millis(500);
         let reader = AsyncBytesReader::with_timeout(io, custom_timeout);
 
-        // Verify custom timeout is set
         assert_eq!(reader.timeout(), custom_timeout);
     }
 
     #[tokio::test]
     async fn test_async_bytes_reader_set_timeout() {
-        // Create an AsyncBytesReader and set timeout later
         let io = Arc::new(Mutex::new(NeverReturningIO));
         let mut reader = AsyncBytesReader::new(io);
 
-        // Initially should have default timeout
         assert_eq!(reader.timeout(), Duration::from_secs(10));
 
-        // Set a custom timeout
         let custom_timeout = Duration::from_millis(200);
         reader.set_timeout(custom_timeout);
 
-        // Verify timeout was updated
         assert_eq!(reader.timeout(), custom_timeout);
     }
 }

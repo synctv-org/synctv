@@ -165,6 +165,8 @@ impl SsrfSafeClientBuilder {
 mod tests {
     use super::*;
 
+    type TestResult<T = ()> = Result<T, String>;
+
     #[test]
     fn test_builder_customization() {
         let b = SsrfSafeClientBuilder::new()
@@ -193,10 +195,11 @@ mod tests {
     }
 
     #[test]
-    fn test_build_client() {
+    fn test_build_client() -> TestResult {
         let _client = SsrfSafeClientBuilder::new()
             .build()
-            .expect("HTTP client should build");
+            .map_err(|error| format!("HTTP client should build: {error}"))?;
+        Ok(())
     }
 
     #[test]
@@ -220,11 +223,12 @@ mod tests {
     }
 
     #[test]
-    fn test_build_with_user_agent() {
+    fn test_build_with_user_agent() -> TestResult {
         let _client = SsrfSafeClientBuilder::new()
             .user_agent("MyApp/1.0")
             .build()
-            .expect("custom HTTP client should build");
+            .map_err(|error| format!("custom HTTP client should build: {error}"))?;
+        Ok(())
     }
 
     #[test]

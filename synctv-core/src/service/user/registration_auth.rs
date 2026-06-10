@@ -21,6 +21,15 @@ use super::{
 mod admin_create;
 mod email;
 
+pub(super) struct PasswordRegistrationCompletion {
+    username: String,
+    email: Option<String>,
+    opaque_record: OpaquePasswordRecord,
+    registration_policy: RegistrationPolicy,
+    client_ip: Option<IpAddr>,
+    cache_reason: &'static str,
+}
+
 impl UserService {
     async fn issue_registration_tokens(&self, user: &User) -> Result<(String, String)> {
         let session_id = synctv_common::snanoid!(32);
@@ -194,17 +203,20 @@ impl UserService {
         Ok(policy)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn complete_password_registration_with_opaque_record(
         &self,
-        username: String,
-        email: Option<String>,
-        opaque_record: OpaquePasswordRecord,
-        registration_policy: RegistrationPolicy,
-        client_ip: Option<IpAddr>,
+        completion: PasswordRegistrationCompletion,
         control: Option<&ExecutionControl>,
-        cache_reason: &'static str,
     ) -> Result<AccountRegistrationOutcome> {
+        let PasswordRegistrationCompletion {
+            username,
+            email,
+            opaque_record,
+            registration_policy,
+            client_ip,
+            cache_reason,
+        } = completion;
+
         if registration_policy.need_review {
             let pending_user = self
                 .create_registration_request(
@@ -305,13 +317,15 @@ impl UserService {
             .register_password(&credential_identifier, &password)?;
 
         self.complete_password_registration_with_opaque_record(
-            username,
-            email,
-            opaque_record,
-            registration_policy,
-            client_ip,
+            PasswordRegistrationCompletion {
+                username,
+                email,
+                opaque_record,
+                registration_policy,
+                client_ip,
+                cache_reason: "direct_password_register",
+            },
             control,
-            "direct_password_register",
         )
         .await
     }
@@ -394,13 +408,15 @@ impl UserService {
             self.ensure_registration_review_supported(RegistrationMode::Password)?;
 
         self.complete_password_registration_with_opaque_record(
-            username,
-            email,
-            opaque_record,
-            registration_policy,
-            client_ip,
+            PasswordRegistrationCompletion {
+                username,
+                email,
+                opaque_record,
+                registration_policy,
+                client_ip,
+                cache_reason: "opaque_register",
+            },
             control,
-            "opaque_register",
         )
         .await
     }

@@ -29,7 +29,6 @@ const RETRY_AFTER_METADATA_KEY: &str = "retry-after";
 /// - Network errors -> `UNAVAILABLE`
 /// - Parse errors -> `INTERNAL`
 /// - Invalid config -> `INVALID_ARGUMENT`
-/// - Not implemented -> `UNIMPLEMENTED`
 /// - Response too large -> `RESOURCE_EXHAUSTED`
 /// - API errors -> mapped by code (401/403/404 -> corresponding status, others -> `INTERNAL`)
 #[must_use]
@@ -66,9 +65,6 @@ pub fn map_provider_error(context: &str, e: &ProviderClientError) -> Status {
         }
         ProviderClientError::InvalidHeader(_) => {
             Status::internal(format!("{context}: invalid header"))
-        }
-        ProviderClientError::NotImplemented(_) => {
-            Status::unimplemented(format!("{context}: not implemented"))
         }
         ProviderClientError::ResponseTooLarge { size } => {
             Status::resource_exhausted(format!("{context}: response too large ({size} bytes)"))
@@ -220,13 +216,6 @@ mod tests {
         let err = ProviderClientError::InvalidConfig("missing host".to_string());
         let status = map_provider_error("init", &err);
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
-    }
-
-    #[test]
-    fn not_implemented_maps_to_unimplemented() {
-        let err = ProviderClientError::NotImplemented("feature X".to_string());
-        let status = map_provider_error("call", &err);
-        assert_eq!(status.code(), tonic::Code::Unimplemented);
     }
 
     #[test]

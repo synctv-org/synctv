@@ -13,7 +13,9 @@ use crate::{
         normalize_provider_instance_name, FromProviderParams, Media, MediaId, PlaylistId, RoomId,
         UserId,
     },
-    provider::{provider_requires_credential_repo, ProviderContext, SourceConfig},
+    provider::{
+        provider_requires_credential_repo, ProviderAccessService, ProviderContext, SourceConfig,
+    },
     repository::{realtime_outbox::NewRealtimeOutboxEvent, UserProviderCredentialRepository},
     repository::{MediaRepository, PlaylistRepository, UserRepository},
     service::{
@@ -42,6 +44,15 @@ pub type RealtimeOutboxMediaEventFactory =
     Arc<dyn Fn(&Media) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
 pub type RealtimeOutboxMediaBatchEventFactory =
     Arc<dyn Fn(&[Media]) -> Result<Vec<NewRealtimeOutboxEvent>> + Send + Sync>;
+
+#[derive(Default)]
+pub struct MediaServiceRuntime {
+    pub credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
+    pub credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    pub provider_access_service: Option<Arc<dyn ProviderAccessService>>,
+    pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+    pub file_storage_service: Option<Arc<dyn FileStorageService>>,
+}
 
 /// Request to add a media item
 ///
@@ -107,6 +118,8 @@ pub struct MediaService {
     credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
     /// Repository used by credential-backed providers.
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    /// Typed provider credential/session access cache.
+    provider_access_service: Option<Arc<dyn ProviderAccessService>>,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
@@ -118,16 +131,53 @@ impl std::fmt::Debug for MediaService {
 }
 
 impl MediaService {
+    async fn insert_media_outbox_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        media: &Media,
+        outbox_event_factory: Option<&RealtimeOutboxMediaEventFactory>,
+    ) -> Result<()> {
+        if let Some(event) = outbox_event_factory
+            .map(|factory| factory(media))
+            .transpose()?
+        {
+            if let Some(outbox) = &self.realtime_outbox {
+                outbox.insert_with_executor(&event, &mut **tx).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn insert_media_batch_outbox_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        media: &[Media],
+        outbox_event_factory: Option<&RealtimeOutboxMediaBatchEventFactory>,
+    ) -> Result<()> {
+        if let Some(events) = outbox_event_factory
+            .map(|factory| factory(media))
+            .transpose()?
+        {
+            if let Some(outbox) = &self.realtime_outbox {
+                for event in &events {
+                    outbox.insert_with_executor(event, &mut **tx).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn build_provider_context<'a>(
         &'a self,
-        user_id: &'a UserId,
+        user_id: Option<&'a UserId>,
         room_id: &'a RoomId,
         credential_owner_id: Option<&'a UserId>,
         provider_instance_name: Option<&'a str>,
     ) -> ProviderContext<'a> {
-        let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(*user_id)
-            .with_room_id(*room_id);
+        let mut ctx = ProviderContext::new("synctv").with_room_id(*room_id);
+        if let Some(user_id) = user_id {
+            ctx = ctx.with_user_id(*user_id);
+        }
         if let Some(credential_owner_id) = credential_owner_id {
             ctx = ctx.with_credential_owner_id(*credential_owner_id);
         }
@@ -141,6 +191,9 @@ impl MediaService {
         }
         if let Some(ref repo) = self.credential_repo {
             ctx = ctx.with_credential_repo(repo);
+        }
+        if let Some(service) = self.provider_access_service.clone() {
+            ctx = ctx.with_provider_access_service(service);
         }
         ctx
     }
@@ -202,7 +255,7 @@ impl MediaService {
         self.ensure_provider_credential_repo(provider.name())?;
 
         let dependency_ctx = self.build_provider_context(
-            user_id,
+            Some(user_id),
             room_id,
             Some(user_id),
             explicit_provider_instance.as_deref(),
@@ -229,7 +282,7 @@ impl MediaService {
         };
 
         let ctx = self.build_provider_context(
-            user_id,
+            Some(user_id),
             room_id,
             Some(user_id),
             bound_provider_instance.as_deref(),
@@ -261,61 +314,27 @@ impl MediaService {
         providers_manager: Arc<ProvidersManager>,
         notification_service: NotificationService,
     ) -> Self {
-        Self {
-            media_repo,
-            playlist_repo,
-            permission_service,
-            providers_manager,
-            notification_service,
-            credential_encryption: None,
-            credential_repo: None,
-            realtime_outbox: None,
-            file_storage_service: None,
-        }
-    }
-
-    /// Create a media service with provider credential dependencies already wired.
-    ///
-    /// Production bootstrap should prefer this constructor so every clone of the
-    /// service observes the same credential runtime from the start.
-    #[must_use]
-    pub fn new_with_provider_credentials(
-        media_repo: MediaRepository,
-        playlist_repo: PlaylistRepository,
-        permission_service: PermissionService,
-        providers_manager: Arc<ProvidersManager>,
-        notification_service: NotificationService,
-        credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
-        credential_repo: Option<Arc<UserProviderCredentialRepository>>,
-    ) -> Self {
         Self::new_with_runtime(
             media_repo,
             playlist_repo,
             permission_service,
             providers_manager,
             notification_service,
-            credential_encryption,
-            credential_repo,
-            None,
-            None,
+            MediaServiceRuntime::default(),
         )
     }
 
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
     pub fn new_with_runtime(
         media_repo: MediaRepository,
         playlist_repo: PlaylistRepository,
         permission_service: PermissionService,
         providers_manager: Arc<ProvidersManager>,
         notification_service: NotificationService,
-        credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
-        credential_repo: Option<Arc<UserProviderCredentialRepository>>,
-        realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
-        file_storage_service: Option<Arc<dyn FileStorageService>>,
+        runtime: MediaServiceRuntime,
     ) -> Self {
         assert!(
-            credential_repo.is_none() || credential_encryption.is_some(),
+            runtime.credential_repo.is_none() || runtime.credential_encryption.is_some(),
             "provider credential repository wiring requires credential encryption"
         );
         Self {
@@ -324,10 +343,11 @@ impl MediaService {
             permission_service,
             providers_manager,
             notification_service,
-            credential_encryption,
-            credential_repo,
-            realtime_outbox,
-            file_storage_service,
+            credential_encryption: runtime.credential_encryption,
+            credential_repo: runtime.credential_repo,
+            provider_access_service: runtime.provider_access_service,
+            realtime_outbox: runtime.realtime_outbox,
+            file_storage_service: runtime.file_storage_service,
         }
     }
 
@@ -445,13 +465,8 @@ impl MediaService {
             .create_with_executor(&media, &mut *tx)
             .await?;
 
-        let outbox_event = outbox_event_factory
-            .as_ref()
-            .map(|factory| factory(&created_media))
-            .transpose()?;
-        if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
-            outbox.insert_with_executor(event, &mut *tx).await?;
-        }
+        self.insert_media_outbox_tx(&mut tx, &created_media, outbox_event_factory.as_ref())
+            .await?;
 
         tx.commit().await?;
 
@@ -609,15 +624,8 @@ impl MediaService {
             .create_batch_with_executor(&media_items, &mut *tx)
             .await?;
 
-        let outbox_events = match outbox_event_factory.as_ref() {
-            Some(factory) => factory(&created_items)?,
-            None => Vec::new(),
-        };
-        if let Some(outbox) = &self.realtime_outbox {
-            for event in &outbox_events {
-                outbox.insert_with_executor(event, &mut *tx).await?;
-            }
-        }
+        self.insert_media_batch_outbox_tx(&mut tx, &created_items, outbox_event_factory.as_ref())
+            .await?;
 
         tx.commit().await?;
 
@@ -748,14 +756,12 @@ impl MediaService {
                     .await
                 {
                     Ok(Some(updated_media)) => {
-                        let outbox_event = outbox_event_factory
-                            .as_ref()
-                            .map(|factory| factory(&updated_media))
-                            .transpose()?;
-                        if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event)
-                        {
-                            outbox.insert_with_executor(event, &mut *tx).await?;
-                        }
+                        self.insert_media_outbox_tx(
+                            &mut tx,
+                            &updated_media,
+                            outbox_event_factory.as_ref(),
+                        )
+                        .await?;
                         tx.commit().await?;
                         Ok(updated_media)
                     }
@@ -854,14 +860,12 @@ impl MediaService {
                     .await
                 {
                     Ok(Some(updated_media)) => {
-                        let outbox_event = outbox_event_factory
-                            .as_ref()
-                            .map(|factory| factory(&updated_media))
-                            .transpose()?;
-                        if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event)
-                        {
-                            outbox.insert_with_executor(event, &mut *tx).await?;
-                        }
+                        self.insert_media_outbox_tx(
+                            &mut tx,
+                            &updated_media,
+                            outbox_event_factory.as_ref(),
+                        )
+                        .await?;
                         tx.commit().await?;
                         Ok(updated_media)
                     }
@@ -1196,15 +1200,8 @@ impl MediaService {
             )
             .await?;
 
-        let outbox_events = match outbox_event_factory.as_ref() {
-            Some(factory) => factory(&moved)?,
-            None => Vec::new(),
-        };
-        if let Some(outbox) = &self.realtime_outbox {
-            for event in &outbox_events {
-                outbox.insert_with_executor(event, &mut *tx).await?;
-            }
-        }
+        self.insert_media_batch_outbox_tx(&mut tx, &moved, outbox_event_factory.as_ref())
+            .await?;
 
         tx.commit().await?;
 

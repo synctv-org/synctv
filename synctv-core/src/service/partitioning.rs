@@ -93,23 +93,40 @@ mod tests {
 
     use super::{add_months, start_of_month};
 
+    fn some<T>(value: Option<T>, context: &str) -> T {
+        match value {
+            Some(value) => value,
+            None => std::panic::panic_any(context.to_string()),
+        }
+    }
+
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn month_helpers_return_errors_for_overflow() {
-        let max_date = NaiveDate::from_ymd_opt(262_142, 12, 1).expect("valid max chrono month");
+        let max_date = some(
+            NaiveDate::from_ymd_opt(262_142, 12, 1),
+            "valid max chrono month",
+        );
         assert!(add_months(max_date, 1).is_err());
     }
 
     #[test]
     fn month_helpers_normalize_valid_dates() {
-        let date = NaiveDate::from_ymd_opt(2026, 6, 5).expect("valid date");
-        let month = start_of_month(date).expect("valid month");
+        let date = some(NaiveDate::from_ymd_opt(2026, 6, 5), "valid date");
+        let month = ok(start_of_month(date), "valid month");
         assert_eq!(
             month,
-            NaiveDate::from_ymd_opt(2026, 6, 1).expect("valid month start")
+            some(NaiveDate::from_ymd_opt(2026, 6, 1), "valid month start")
         );
         assert_eq!(
-            add_months(month, 8).expect("valid month addition"),
-            NaiveDate::from_ymd_opt(2027, 2, 1).expect("valid target month")
+            ok(add_months(month, 8), "valid month addition"),
+            some(NaiveDate::from_ymd_opt(2027, 2, 1), "valid target month")
         );
     }
 }

@@ -35,7 +35,7 @@ pub(crate) struct RoomMemberTargetPath {
 
 // Router
 
-pub fn create_admin_router() -> Router<AppState> {
+pub(crate) fn create_admin_router() -> Router<AppState> {
     Router::new()
         // System stats
         .route("/stats", get(get_system_stats))
@@ -1722,19 +1722,26 @@ mod tests {
     };
     use std::net::SocketAddr;
 
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
+    }
+
     #[test]
-    fn test_update_user_role_request_deserialization() {
+    fn test_update_user_role_request_deserialization() -> TestResult {
         let json = format!(
             r#"{{"role":{}}}"#,
             synctv_proto::common::UserRole::Admin as i32
         );
-        let req: admin::UpdateUserRoleRequest = serde_json::from_str(&json).expect("deserialize");
+        let req: admin::UpdateUserRoleRequest = serde_json::from_str(&json)?;
         assert_eq!(req.user_id, "");
         assert_eq!(req.role, synctv_proto::common::UserRole::Admin as i32);
+        Ok(())
     }
 
     #[test]
-    fn test_update_user_role_request_all_roles() {
+    fn test_update_user_role_request_all_roles() -> TestResult {
         let role_mappings = [
             (synctv_proto::common::UserRole::Root as i32),
             (synctv_proto::common::UserRole::Admin as i32),
@@ -1743,10 +1750,10 @@ mod tests {
 
         for expected in role_mappings {
             let json = format!(r#"{{"role":{expected}}}"#);
-            let req: admin::UpdateUserRoleRequest =
-                serde_json::from_str(&json).expect("deserialize");
+            let req: admin::UpdateUserRoleRequest = serde_json::from_str(&json)?;
             assert_eq!(req.role, expected);
         }
+        Ok(())
     }
 
     #[test]
@@ -1757,39 +1764,38 @@ mod tests {
     }
 
     #[test]
-    fn test_update_room_settings_request_accepts_raw_json_body() {
+    fn test_update_room_settings_request_accepts_raw_json_body() -> TestResult {
         let json = r#"{"theme":"dark","guest_enabled":true}"#;
-        let req: admin::UpdateRoomSettingsRequest =
-            serde_json::from_str(json).expect("deserialize");
+        let req: admin::UpdateRoomSettingsRequest = serde_json::from_str(json)?;
         assert_eq!(req.room_id, "");
-        let settings_json: serde_json::Value =
-            serde_json::from_slice(&req.settings).expect("settings bytes should contain JSON");
+        let settings_json: serde_json::Value = serde_json::from_slice(&req.settings)?;
         assert_eq!(
             settings_json,
             serde_json::json!({"theme":"dark","guest_enabled":true})
         );
+        Ok(())
     }
 
     #[test]
-    fn test_admin_user_path_request_deserializes_proto_field_name() {
-        let req: admin::UserPathRequest =
-            serde_json::from_str(r#"{"user_id":"usr_1"}"#).expect("deserialize");
+    fn test_admin_user_path_request_deserializes_proto_field_name() -> TestResult {
+        let req: admin::UserPathRequest = serde_json::from_str(r#"{"user_id":"usr_1"}"#)?;
 
         assert_eq!(req.user_id, "usr_1");
+        Ok(())
     }
 
     #[test]
-    fn test_admin_room_path_request_deserializes_proto_field_name() {
-        let req: admin::RoomPathRequest =
-            serde_json::from_str(r#"{"room_id":"room_1"}"#).expect("deserialize");
+    fn test_admin_room_path_request_deserializes_proto_field_name() -> TestResult {
+        let req: admin::RoomPathRequest = serde_json::from_str(r#"{"room_id":"room_1"}"#)?;
 
         assert_eq!(req.room_id, "room_1");
+        Ok(())
     }
 
     #[test]
-    fn test_list_users_query_deserialization() {
+    fn test_list_users_query_deserialization() -> TestResult {
         let json = r#"{"page":2,"page_size":50,"status":1,"role":2,"search":"test","sort_by":3,"sort_direction":1}"#;
-        let query: admin::ListUsersRequest = serde_json::from_str(json).expect("deserialize");
+        let query: admin::ListUsersRequest = serde_json::from_str(json)?;
         assert_eq!(query.page, 2);
         assert_eq!(query.page_size, 50);
         assert_eq!(
@@ -1800,12 +1806,13 @@ mod tests {
         assert_eq!(query.search, "test");
         assert_eq!(query.sort_by, admin::UserListSortBy::Username as i32);
         assert_eq!(query.sort_direction, admin::SortDirection::Asc as i32);
+        Ok(())
     }
 
     #[test]
-    fn test_list_rooms_query_deserialization() {
+    fn test_list_rooms_query_deserialization() -> TestResult {
         let json = r#"{"page":1,"page_size":10,"status":1,"search":"room","creator_id":"user1","is_banned":false,"sort_by":3,"sort_direction":2}"#;
-        let query: admin::ListRoomsRequest = serde_json::from_str(json).expect("deserialize");
+        let query: admin::ListRoomsRequest = serde_json::from_str(json)?;
         assert_eq!(query.page, 1);
         assert_eq!(query.page_size, 10);
         assert_eq!(
@@ -1817,13 +1824,14 @@ mod tests {
         assert_eq!(query.is_banned, Some(false));
         assert_eq!(query.sort_by, admin::RoomListSortBy::LastActivityAt as i32);
         assert_eq!(query.sort_direction, admin::SortDirection::Desc as i32);
+        Ok(())
     }
 
     #[test]
-    fn test_room_members_query_deserialization() {
+    fn test_room_members_query_deserialization() -> TestResult {
         let json =
             r#"{"page":2,"page_size":25,"search":"alice","role":2,"sort_by":2,"sort_direction":1}"#;
-        let query: admin::GetRoomMembersRequest = serde_json::from_str(json).expect("deserialize");
+        let query: admin::GetRoomMembersRequest = serde_json::from_str(json)?;
         assert_eq!(query.page, 2);
         assert_eq!(query.page_size, 25);
         assert_eq!(query.search, "alice");
@@ -1833,10 +1841,11 @@ mod tests {
         );
         assert_eq!(query.sort_by, admin::RoomMemberListSortBy::Username as i32);
         assert_eq!(query.sort_direction, admin::SortDirection::Asc as i32);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_request_context_uses_trusted_proxy_headers_for_audit_ip() {
+    async fn test_request_context_uses_trusted_proxy_headers_for_audit_ip() -> TestResult {
         let mut state = crate::http::tests::test_app_state();
         {
             let router_config = std::sync::Arc::make_mut(&mut state.router_config);
@@ -1849,65 +1858,66 @@ mod tests {
             .header("X-Forwarded-For", "203.0.113.10")
             .header("User-Agent", "audit-test")
             .body(())
-            .expect("request");
-        request.extensions_mut().insert(ConnectInfo(
-            "127.0.0.1:8080".parse::<SocketAddr>().expect("socket addr"),
-        ));
+            .map_err(|err| test_error(format!("request should build: {err}")))?;
+        request
+            .extensions_mut()
+            .insert(ConnectInfo("127.0.0.1:8080".parse::<SocketAddr>()?));
 
         let (mut parts, ()) = request.into_parts();
         let request_meta =
             crate::http::middleware::RequestMetadata::from_request_parts(&mut parts, &state)
                 .await
-                .expect("extractor should not fail");
+                .map_err(|err| test_error(format!("extractor should not fail: {err}")))?;
         let ctx = crate::http::admin_execute::request_context(&request_meta.0);
 
         assert_eq!(ctx.ip_address.as_deref(), Some("203.0.113.10"));
         assert_eq!(ctx.user_agent.as_deref(), Some("audit-test"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_request_context_ignores_forwarded_headers_from_untrusted_proxy() {
+    async fn test_request_context_ignores_forwarded_headers_from_untrusted_proxy() -> TestResult {
         let state = crate::http::tests::test_app_state();
 
         let mut request = Request::builder()
             .uri("/admin/test")
             .header("X-Forwarded-For", "203.0.113.10")
             .body(())
-            .expect("request");
-        request.extensions_mut().insert(ConnectInfo(
-            "198.51.100.7:8080"
-                .parse::<SocketAddr>()
-                .expect("socket addr"),
-        ));
+            .map_err(|err| test_error(format!("request should build: {err}")))?;
+        request
+            .extensions_mut()
+            .insert(ConnectInfo("198.51.100.7:8080".parse::<SocketAddr>()?));
 
         let (mut parts, ()) = request.into_parts();
         let request_meta =
             crate::http::middleware::RequestMetadata::from_request_parts(&mut parts, &state)
                 .await
-                .expect("extractor should not fail");
+                .map_err(|err| test_error(format!("extractor should not fail: {err}")))?;
         let ctx = crate::http::admin_execute::request_context(&request_meta.0);
 
         assert_eq!(ctx.ip_address.as_deref(), Some("198.51.100.7"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_require_admin_api_error() {
+    async fn test_require_admin_api_error() -> TestResult {
         let mut state = crate::http::tests::test_app_state();
         Arc::make_mut(&mut state.shared_api_runtime).admin_api = None;
 
         let Err(err) = require_admin_api(&state) else {
-            panic!("missing admin api should fail");
+            return Err(test_error("missing admin api should fail"));
         };
         assert_eq!(err.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             err.message,
             "Admin service is not available on this server."
         );
+        Ok(())
     }
 
     #[test]
-    fn test_get_user_rooms_query_defaults_to_proto_zero_values() {
-        let query: admin::GetUserRoomsRequest = serde_urlencoded::from_str("").unwrap();
+    fn test_get_user_rooms_query_defaults_to_proto_zero_values() -> TestResult {
+        let query: admin::GetUserRoomsRequest = serde_urlencoded::from_str("")?;
 
         assert!(query.user_id.is_empty());
         assert_eq!(query.page, 0);
@@ -1917,14 +1927,14 @@ mod tests {
         assert_eq!(query.is_banned, None);
         assert_eq!(query.sort_by, 0);
         assert_eq!(query.sort_direction, 0);
+        Ok(())
     }
 
     #[test]
-    fn test_list_active_streams_query_deserializes_explicit_values() {
+    fn test_list_active_streams_query_deserializes_explicit_values() -> TestResult {
         let query: admin::ListActiveStreamsRequest = serde_urlencoded::from_str(
             "page=2&page_size=25&room_id=room123&user_id=user123&node_id=node-a&search=live&sort_by=5&sort_direction=1",
-        )
-        .unwrap();
+        )?;
 
         assert_eq!(query.page, 2);
         assert_eq!(query.page_size, 25);
@@ -1934,16 +1944,18 @@ mod tests {
         assert_eq!(query.search, "live");
         assert_eq!(query.sort_by, admin::ActiveStreamListSortBy::NodeId as i32);
         assert_eq!(query.sort_direction, admin::SortDirection::Asc as i32);
+        Ok(())
     }
 
     #[test]
-    fn test_list_admins_query_defaults_to_proto_zero_values() {
-        let query: admin::ListAdminsRequest = serde_urlencoded::from_str("").unwrap();
+    fn test_list_admins_query_defaults_to_proto_zero_values() -> TestResult {
+        let query: admin::ListAdminsRequest = serde_urlencoded::from_str("")?;
 
         assert_eq!(query.page, 0);
         assert_eq!(query.page_size, 0);
         assert!(query.search.is_empty());
         assert_eq!(query.sort_by, 0);
         assert_eq!(query.sort_direction, 0);
+        Ok(())
     }
 }

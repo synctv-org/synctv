@@ -24,15 +24,25 @@ fn optional_timestamp(value: Option<chrono::DateTime<chrono::Utc>>) -> i64 {
     value.map_or(0, |timestamp| timestamp.timestamp())
 }
 
+fn required_banned_at(user: &synctv_core::models::User) -> Result<i64, ApiError> {
+    if !user.is_banned {
+        return Ok(0);
+    }
+
+    user.banned_at
+        .map(|value| value.timestamp())
+        .ok_or_else(|| ApiError::Internal(format!("Banned user {} is missing banned_at", user.id)))
+}
+
 fn encode_optional_user_id(
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
     id: Option<UserId>,
 ) -> Result<String, ApiError> {
     encode_optional_user_id_option(public_id_codec, id).map(std::option::Option::unwrap_or_default)
 }
 
 fn encode_optional_user_id_option(
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
     id: Option<UserId>,
 ) -> Result<Option<String>, ApiError> {
     id.map(|id| {
@@ -44,7 +54,7 @@ fn encode_optional_user_id_option(
 }
 
 fn encode_optional_room_id(
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
     id: Option<RoomId>,
 ) -> Result<String, ApiError> {
     id.map(|id| {
@@ -58,7 +68,7 @@ fn encode_optional_room_id(
 
 pub(in crate::impls::admin) fn user_registration_review_row_to_proto(
     row: &UserRegistrationReviewRecord,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::admin::UserRegistrationReview, ApiError> {
     Ok(synctv_proto::admin::UserRegistrationReview {
         id: public_id_codec
@@ -89,7 +99,7 @@ pub(in crate::impls::admin) fn user_registration_review_row_to_proto(
 
 pub(in crate::impls::admin) fn room_creation_review_row_to_proto(
     row: &RoomCreationReviewRecord,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::admin::RoomCreationReview, ApiError> {
     Ok(synctv_proto::admin::RoomCreationReview {
         id: public_id_codec
@@ -111,7 +121,7 @@ pub(in crate::impls::admin) fn room_creation_review_row_to_proto(
 
 pub(in crate::impls::admin) fn room_join_review_row_to_proto(
     row: &RoomJoinReviewRecord,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::admin::RoomJoinReview, ApiError> {
     Ok(synctv_proto::admin::RoomJoinReview {
         id: public_id_codec
@@ -136,7 +146,7 @@ pub(in crate::impls::admin) fn room_join_review_row_to_proto(
 
 pub(in crate::impls::admin) fn ban_row_to_proto(
     row: &BanRecordRow,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::admin::BanRecord, ApiError> {
     Ok(synctv_proto::admin::BanRecord {
         id: public_id_codec
@@ -164,7 +174,7 @@ pub(in crate::impls::admin) fn try_admin_room_to_proto(
     member_count: Option<i32>,
     creator_username: Option<&str>,
     creator_status: UserStatus,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::admin::AdminRoom, ApiError> {
     let room_settings = settings.ok_or_else(|| {
         ApiError::Internal(format!("Missing room settings for admin room {}", room.id))
@@ -174,6 +184,9 @@ pub(in crate::impls::admin) fn try_admin_room_to_proto(
             "Missing creator username for room {} created_by {}",
             room.id, room.created_by
         ))
+    })?;
+    let member_count = member_count.ok_or_else(|| {
+        ApiError::Internal(format!("Missing member count for admin room {}", room.id))
     })?;
     Ok(synctv_proto::admin::AdminRoom {
         id: public_id_codec
@@ -189,7 +202,7 @@ pub(in crate::impls::admin) fn try_admin_room_to_proto(
         creator_username: creator_username.to_string(),
         status: synctv_proto::common::RoomStatus::from(room.status) as i32,
         settings: json_to_vec(room_settings, "admin room settings")?,
-        member_count: member_count.unwrap_or(0),
+        member_count,
         created_at: room.created_at.timestamp(),
         updated_at: room.updated_at.timestamp(),
         is_banned: room.is_banned,
@@ -202,7 +215,7 @@ pub(in crate::impls::admin) fn try_admin_room_member_to_proto_with_settings(
     member: &synctv_core::models::RoomMemberWithUser,
     room_settings: &synctv_core::models::RoomSettings,
     permission_service: &synctv_core::service::PermissionService,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::common::RoomMember, ApiError> {
     let permissions =
         permission_service.effective_member_with_user_permissions(member, room_settings);
@@ -212,7 +225,7 @@ pub(in crate::impls::admin) fn try_admin_room_member_to_proto_with_settings(
 pub(in crate::impls::admin) fn try_admin_room_member_to_proto_with_permissions(
     member: &synctv_core::models::RoomMemberWithUser,
     permissions: synctv_core::models::RoomPermissionSet,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::common::RoomMember, ApiError> {
     Ok(synctv_proto::common::RoomMember {
         room_id: public_id_codec
@@ -240,7 +253,7 @@ pub(in crate::impls::admin) fn try_admin_room_member_to_proto_with_permissions(
 pub(in crate::impls::admin) fn try_admin_user_to_proto(
     user: &synctv_core::models::User,
     email: Option<&str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
     Ok(synctv_proto::admin::AdminUser {
         id: public_id_codec
@@ -253,7 +266,7 @@ pub(in crate::impls::admin) fn try_admin_user_to_proto(
         created_at: user.created_at.timestamp(),
         updated_at: user.updated_at.timestamp(),
         is_banned: user.is_banned,
-        banned_at: user.banned_at.map_or(0, |value| value.timestamp()),
+        banned_at: required_banned_at(user)?,
         banned_by: user
             .banned_by
             .map(|id| public_id_codec.encode_user_id(id))

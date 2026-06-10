@@ -24,11 +24,6 @@ fn validate_realtime_room_access_for_webrtc(
 }
 
 impl ClientApiImpl {
-    /// Get ICE servers configuration for WebRTC.
-    ///
-    /// Combines:
-    /// 1. Built-in STUN server (from static config)
-    /// 2. External ICE servers (dynamic setting: `webrtc.external_ice_servers`)
     pub async fn get_ice_servers(
         &self,
         room_id: &RoomId,
@@ -63,7 +58,6 @@ impl ClientApiImpl {
 
         let mut servers = Vec::new();
 
-        // 1. Built-in STUN server (only if it started successfully with a valid external address)
         if let Some(ref stun_url) = self.builtin_stun_url {
             servers.push(IceServer {
                 urls: vec![stun_url.clone()],
@@ -72,16 +66,14 @@ impl ClientApiImpl {
             });
         }
 
-        // 2. Dynamic external ICE servers
         if let Some(registry) = &self.settings_registry {
-            if let Ok(ice_servers) = registry.external_ice_servers.get() {
-                for server in &ice_servers.0 {
-                    servers.push(IceServer {
-                        urls: server.urls.clone(),
-                        username: server.username.clone(),
-                        credential: server.credential.clone(),
-                    });
-                }
+            let ice_servers = registry.external_ice_servers.get()?;
+            for server in &ice_servers.0 {
+                servers.push(IceServer {
+                    urls: server.urls.clone(),
+                    username: server.username.clone(),
+                    credential: server.credential.clone(),
+                });
             }
         }
 
@@ -98,31 +90,52 @@ mod tests {
     use crate::impls::ApiError;
     use synctv_core::models::{Room, RoomStatus, UserId};
 
-    #[test]
-    fn validate_realtime_room_access_for_webrtc_rejects_banned_room() {
-        let mut room = Room::new("test-room".to_string(), UserId::new());
-        room.ban();
+    type TestResult<T = ()> = anyhow::Result<T>;
 
-        let err = validate_realtime_room_access_for_webrtc(&room)
-            .expect_err("banned room must reject webrtc bootstrap");
-        match err {
-            ApiError::Authorization(message) => assert!(message.contains("banned")),
-            other => panic!("expected authorization error, got {other:?}"),
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn rejected_webrtc_access(room: &Room) -> TestResult<ApiError> {
+        match validate_realtime_room_access_for_webrtc(room) {
+            Ok(()) => Err(test_error("room should reject webrtc bootstrap")),
+            Err(error) => Ok(error),
         }
     }
 
     #[test]
-    fn validate_realtime_room_access_for_webrtc_rejects_closed_room() {
+    fn validate_realtime_room_access_for_webrtc_rejects_banned_room() -> TestResult {
+        let mut room = Room::new("test-room".to_string(), UserId::new());
+        room.ban();
+
+        let err = rejected_webrtc_access(&room)?;
+        match err {
+            ApiError::Authorization(message) => assert!(message.contains("banned")),
+            other => {
+                return Err(test_error(format!(
+                    "expected authorization error, got {other:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn validate_realtime_room_access_for_webrtc_rejects_closed_room() -> TestResult {
         let mut room = Room::new("test-room".to_string(), UserId::new());
         room.status = RoomStatus::Closed;
 
-        let err = validate_realtime_room_access_for_webrtc(&room)
-            .expect_err("closed room must reject webrtc bootstrap");
+        let err = rejected_webrtc_access(&room)?;
         match err {
             ApiError::Authorization(message) => {
                 assert!(message.contains("not accepting new connections"));
             }
-            other => panic!("expected authorization error, got {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "expected authorization error, got {other:?}"
+                )));
+            }
         }
+        Ok(())
     }
 }

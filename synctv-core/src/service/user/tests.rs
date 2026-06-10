@@ -1,4 +1,4 @@
-use super::UserService;
+use super::{nonnegative_i64_to_u64, UserService};
 use crate::{
     config::PasswordComplexityConfig,
     models::{UserAuthFactors, UserId},
@@ -6,6 +6,20 @@ use crate::{
     Error, Result,
 };
 use std::{collections::HashSet, sync::Arc};
+
+fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
+fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
+    match result {
+        Ok(_) => std::panic::panic_any(context.to_string()),
+        Err(error) => error,
+    }
+}
 
 fn validate_username(username: &str) -> Result<()> {
     crate::validation::UsernameValidator::new()
@@ -126,8 +140,19 @@ fn test_validation_failures_return_invalid_input_error() {
     ];
 
     for result in failures {
-        assert!(matches!(result.unwrap_err(), Error::InvalidInput(_)));
+        assert!(matches!(
+            err(result, "validation should fail"),
+            Error::InvalidInput(_)
+        ));
     }
+}
+
+#[test]
+fn nonnegative_i64_to_u64_clamps_negative_values() {
+    assert_eq!(nonnegative_i64_to_u64(-1), 0);
+    assert_eq!(nonnegative_i64_to_u64(0), 0);
+    assert_eq!(nonnegative_i64_to_u64(42), 42);
+    assert_eq!(nonnegative_i64_to_u64(i64::MAX), i64::MAX as u64);
 }
 
 #[tokio::test]
@@ -176,9 +201,10 @@ fn test_sign_in_method_count_includes_active_oauth2() {
 
 #[test]
 fn test_oauth2_username_candidates_normalize_external_display_name() {
-    let (base, candidates) =
-        UserService::oauth2_username_candidates("provider_user_123", " User@Special.Name! ")
-            .unwrap();
+    let (base, candidates) = ok(
+        UserService::oauth2_username_candidates("provider_user_123", " User@Special.Name! "),
+        "OAuth2 username candidates should build from display name",
+    );
 
     assert_eq!(base, "userspecialname");
     assert_eq!(candidates.len(), 10);
@@ -188,9 +214,10 @@ fn test_oauth2_username_candidates_normalize_external_display_name() {
 
 #[test]
 fn test_oauth2_username_candidates_fallback_to_provider_id() {
-    let (base, candidates) =
-        UserService::oauth2_username_candidates("provider_user_id_longer_than_limit", "@@@!!!")
-            .unwrap();
+    let (base, candidates) = ok(
+        UserService::oauth2_username_candidates("provider_user_id_longer_than_limit", "@@@!!!"),
+        "OAuth2 username candidates should fall back to provider id",
+    );
 
     assert_eq!(base, "user_provider_user_id_lon");
     assert_eq!(candidates[0], base);
@@ -239,17 +266,22 @@ fn test_count_active_oauth2_identities_filters_missing_provider_instances() {
 
 #[test]
 fn test_email_domain_allowed_by_whitelist_normalizes_domains() {
-    assert!(
-        UserService::email_domain_allowed_by_whitelist("alice@example.com", "@example.com")
-            .unwrap()
-    );
-    assert!(
-        UserService::email_domain_allowed_by_whitelist("alice@example.com", "Example.COM").unwrap()
-    );
-    assert!(UserService::email_domain_allowed_by_whitelist("alice@example.com", "").unwrap());
-    assert!(
-        !UserService::email_domain_allowed_by_whitelist("alice@example.com", "other.com").unwrap()
-    );
+    assert!(ok(
+        UserService::email_domain_allowed_by_whitelist("alice@example.com", "@example.com"),
+        "email whitelist should allow normalized matching domain",
+    ));
+    assert!(ok(
+        UserService::email_domain_allowed_by_whitelist("alice@example.com", "Example.COM"),
+        "email whitelist should normalize case",
+    ));
+    assert!(ok(
+        UserService::email_domain_allowed_by_whitelist("alice@example.com", ""),
+        "empty email whitelist should allow all domains",
+    ));
+    assert!(!ok(
+        UserService::email_domain_allowed_by_whitelist("alice@example.com", "other.com"),
+        "email whitelist should evaluate non-matching domain",
+    ));
 }
 
 #[test]
@@ -272,18 +304,20 @@ async fn test_password_login_uses_same_brute_force_key_for_check_and_record() {
     let client_ip = Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
 
     for _ in 0..5 {
-        brute_force
-            .record_failure(identifier, client_ip)
-            .await
-            .unwrap();
+        ok(
+            brute_force.record_failure(identifier, client_ip).await,
+            "brute-force failure should record",
+        );
     }
 
     let prefixed_identifier_key = key_builder.login_attempts(identifier);
-    let (attempts, _) = brute_force
-        .username_tracker()
-        .get_attempts(&prefixed_identifier_key)
-        .await
-        .unwrap();
+    let (attempts, _) = ok(
+        brute_force
+            .username_tracker()
+            .get_attempts(&prefixed_identifier_key)
+            .await,
+        "brute-force attempts should be readable",
+    );
     assert_eq!(attempts, 5, "identifier bucket should accumulate failures");
 
     let result = brute_force.check_allowed(identifier, client_ip).await;

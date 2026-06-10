@@ -4,17 +4,19 @@ use {
     bytes::BytesMut,
 };
 
-fn i64_to_u8(value: i64) -> Result<u8, MpegTsError> {
-    u8::try_from(value)
-        .map_err(|_| std::io::Error::other("PES timestamp field exceeds u8 range").into())
+fn masked_timestamp_byte(value: i64, shift: u32) -> u8 {
+    u8::try_from((value >> shift) & 0xFF).unwrap_or(0)
 }
 
-fn timestamp_byte(value: i64, shift: u32) -> Result<u8, MpegTsError> {
-    i64_to_u8((value >> shift) & 0xFF)
+fn marked_timestamp_byte(value: i64, shift: u32, mask: i64) -> u8 {
+    u8::try_from((value >> shift) & mask).unwrap_or(0) | 0x01
+}
+
+fn marked_timestamp_low_byte(value: i64) -> u8 {
+    u8::try_from((value << 1) & 0xFE).unwrap_or(0) | 0x01
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Pes {
     pub program_number: u16,
     pub pid: u16,
@@ -24,13 +26,10 @@ pub struct Pes {
     pub esinfo: BytesMut,
     pub esinfo_length: usize,
 
-    pub data_alignment_indicator: u8, //1
+    pub data_alignment_indicator: u8,
 
     pub pts: i64,
     pub dts: i64,
-    escr_base: u64,
-    escr_extension: u32,
-    es_rate: u32,
 }
 
 impl Default for Pes {
@@ -51,13 +50,10 @@ impl Pes {
             esinfo: BytesMut::new(),
             esinfo_length: 0,
 
-            data_alignment_indicator: 0, //1
+            data_alignment_indicator: 0,
 
-            pts: 0,
-            dts: 0,
-            escr_base: 0,
-            escr_extension: 0,
-            es_rate: 0,
+            pts: define::PTS_NO_VALUE,
+            dts: define::PTS_NO_VALUE,
         }
     }
 }
@@ -90,27 +86,22 @@ impl PesMuxer {
         self.len() == 0
     }
 
-    //http://dvdnav.mplayerhq.hu/dvdinfo/pes-hdr.html
     pub fn write_pes_header(
         &mut self,
         payload_data_length: usize,
         stream_data: &Pes,
         h264_h265_with_aud: bool,
     ) -> Result<(), MpegTsError> {
-        /*pes start code 3 bytes*/
-        self.bytes_writer.write_u8(0x00)?; //0
-        self.bytes_writer.write_u8(0x00)?; //1
-        self.bytes_writer.write_u8(0x01)?; //2
+        self.bytes_writer.write_u8(0x00)?;
+        self.bytes_writer.write_u8(0x00)?;
+        self.bytes_writer.write_u8(0x01)?;
 
-        /*stream id 1 byte*/
-        self.bytes_writer.write_u8(stream_data.stream_id)?; //3
+        self.bytes_writer.write_u8(stream_data.stream_id)?;
 
-        /*pes packet length 2 bytes*/
-        self.bytes_writer.write_u8(0x00)?; //4
-        self.bytes_writer.write_u8(0x00)?; //5
+        self.bytes_writer.write_u8(0x00)?;
+        self.bytes_writer.write_u8(0x00)?;
 
-        /*first flag 1 byte*/
-        self.bytes_writer.write_u8(0x80)?; //6
+        self.bytes_writer.write_u8(0x80)?;
 
         if stream_data.data_alignment_indicator > 0 {
             self.bytes_writer.or_u8_at(6, 0x04)?;
@@ -128,50 +119,43 @@ impl PesMuxer {
             length += 5;
         }
 
-        /*second flag 1 byte*/
-        self.bytes_writer.write_u8(flags)?; //7
+        self.bytes_writer.write_u8(flags)?;
 
-        /*pes header data length*/
-        self.bytes_writer.write_u8(length)?; //8
+        self.bytes_writer.write_u8(length)?;
 
-        //http://dvdnav.mplayerhq.hu/dvdinfo/pes-hdr.html
-        /*The flags has 0x80 means that it has pts -- 5 bytes*/
+        // PTS and DTS are each encoded as 5 marker-bit-protected bytes.
         if (flags & 0x80) > 0 {
-            let b9 = ((flags >> 2) & 0x30)/* 0011/0010 */
-                | i64_to_u8(((stream_data.pts >> 30) & 0x07) << 1)? /* PTS 30-32 */
-                | 0x01 /* marker_bit */;
-            self.bytes_writer.write_u8(b9)?; //9
+            let pts_prefix = if (flags & 0x40) > 0 { 0x30 } else { 0x20 };
+            let b9 = pts_prefix | marked_timestamp_byte(stream_data.pts, 29, 0x0E);
+            self.bytes_writer.write_u8(b9)?;
 
-            let b10 = timestamp_byte(stream_data.pts, 22)?; /* PTS 22-29 */
-            self.bytes_writer.write_u8(b10)?; //10
+            let b10 = masked_timestamp_byte(stream_data.pts, 22);
+            self.bytes_writer.write_u8(b10)?;
 
-            let b11 = i64_to_u8((stream_data.pts >> 14) & 0xFE)? /* PTS 15-21 */ | 0x01; /* marker_bit */
-            self.bytes_writer.write_u8(b11)?; //11
+            let b11 = marked_timestamp_byte(stream_data.pts, 14, 0xFE);
+            self.bytes_writer.write_u8(b11)?;
 
-            let b12 = timestamp_byte(stream_data.pts, 7)?; /* PTS 7-14 */
-            self.bytes_writer.write_u8(b12)?; //12
+            let b12 = masked_timestamp_byte(stream_data.pts, 7);
+            self.bytes_writer.write_u8(b12)?;
 
-            let b13 = i64_to_u8((stream_data.pts << 1) & 0xFE)? /* PTS 0-6 */ | 0x01; /* marker_bit */
-            self.bytes_writer.write_u8(b13)?; //13
+            let b13 = marked_timestamp_low_byte(stream_data.pts);
+            self.bytes_writer.write_u8(b13)?;
         }
 
-        /*The flags has 0x40 means that it has dts -- 5 bytes*/
         if (flags & 0x40) > 0 {
-            let b14 = 0x10 /* 0001 */
-                | i64_to_u8(((stream_data.dts >> 30) & 0x07) << 1)? /* DTS 30-32 */
-                | 0x01 /* marker_bit */;
+            let b14 = 0x10 | marked_timestamp_byte(stream_data.dts, 29, 0x0E);
             self.bytes_writer.write_u8(b14)?;
 
-            let b15 = timestamp_byte(stream_data.dts, 22)?; /* DTS 22-29 */
+            let b15 = masked_timestamp_byte(stream_data.dts, 22);
             self.bytes_writer.write_u8(b15)?;
 
-            let b16 = i64_to_u8((stream_data.dts >> 14) & 0xFE)? /* DTS 15-21 */ | 0x01 /* marker_bit */;
+            let b16 = marked_timestamp_byte(stream_data.dts, 14, 0xFE);
             self.bytes_writer.write_u8(b16)?;
 
-            let b17 = timestamp_byte(stream_data.dts, 7)?; /* DTS 7-14 */
+            let b17 = masked_timestamp_byte(stream_data.dts, 7);
             self.bytes_writer.write_u8(b17)?;
 
-            let b18 = i64_to_u8((stream_data.dts << 1) & 0xFE)? /* DTS 0-6 */ | 0x01 /* marker_bit */;
+            let b18 = marked_timestamp_low_byte(stream_data.dts);
             self.bytes_writer.write_u8(b18)?;
         }
 
@@ -187,9 +171,8 @@ impl PesMuxer {
             .saturating_sub(define::PES_HEADER_LEN as usize)
             + payload_data_length;
 
-        /*pes header -- update pes packet length*/
         if pes_payload_length > 0xFFFF {
-            //only video data can exceed the 0xFFFF length,0 represet unlimited length
+            // PES length 0 means unbounded payload length, used for large video frames.
             self.bytes_writer.write_u8_at(4, 0x00)?;
             self.bytes_writer.write_u8_at(5, 0x00)?;
         } else {
@@ -227,11 +210,48 @@ mod tests {
             .expect("33-bit PTS should encode into PES header bytes");
 
         let bytes = muxer.bytes_writer.extract_current_bytes();
-        assert_eq!(bytes[9], 51);
+        assert_eq!(bytes[7], 0x80);
+        assert_eq!(bytes[8], 5);
+        assert_eq!(bytes[9], 35);
         assert_eq!(bytes[10], 132);
         assert_eq!(bytes[11], 19);
         assert_eq!(bytes[12], 134);
         assert_eq!(bytes[13], 161);
+    }
+
+    #[test]
+    fn write_pes_header_omits_timestamps_by_default() {
+        let mut pes = Pes::new();
+        pes.stream_id = 0xE0;
+
+        let mut muxer = PesMuxer::new();
+        muxer
+            .write_pes_header(0, &pes, true)
+            .expect("PES header without timestamps should encode");
+
+        let bytes = muxer.bytes_writer.extract_current_bytes();
+        assert_eq!(bytes[7], 0);
+        assert_eq!(bytes[8], 0);
+        assert_eq!(bytes.len(), usize::from(define::PES_HEADER_LEN) + 3);
+    }
+
+    #[test]
+    fn write_pes_header_encodes_pts_and_dts_prefixes() {
+        let mut pes = Pes::new();
+        pes.stream_id = 0xE0;
+        pes.pts = 1_627_702_096;
+        pes.dts = 1_627_701_000;
+
+        let mut muxer = PesMuxer::new();
+        muxer
+            .write_pes_header(0, &pes, true)
+            .expect("PES header with PTS/DTS should encode");
+
+        let bytes = muxer.bytes_writer.extract_current_bytes();
+        assert_eq!(bytes[7], 0xC0);
+        assert_eq!(bytes[8], 10);
+        assert_eq!(bytes[9], 51);
+        assert_eq!(bytes[14], 19);
     }
 
     #[test]

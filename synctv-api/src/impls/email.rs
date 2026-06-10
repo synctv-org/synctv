@@ -130,7 +130,7 @@ pub struct EmailApiImpl {
     pub email_service: Arc<dyn EmailDeliveryService>,
     pub email_token_service: Arc<EmailTokenService>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
-    public_id_codec: Arc<crate::PublicIdCodec>,
+    public_id_codec: Arc<synctv_core::PublicIdCodec>,
 }
 
 /// Request password reset result
@@ -174,8 +174,8 @@ pub fn build_shared_email_api(
     user_service: Arc<UserService>,
     email_service: Option<Arc<EmailService>>,
     email_token_service: Option<Arc<EmailTokenService>>,
-    rate_limiter: impl RequestRateLimiterService + 'static,
-    public_id_codec: Arc<crate::PublicIdCodec>,
+    rate_limiter: Arc<dyn RequestRateLimiterService>,
+    public_id_codec: Arc<synctv_core::PublicIdCodec>,
 ) -> Option<Arc<EmailApiImpl>> {
     match (email_service, email_token_service) {
         (Some(email_service), Some(email_token_service)) => Some(Arc::new(EmailApiImpl::new(
@@ -261,14 +261,14 @@ impl EmailApiImpl {
         user_service: Arc<UserService>,
         email_service: Arc<dyn EmailDeliveryService>,
         email_token_service: Arc<EmailTokenService>,
-        rate_limiter: impl RequestRateLimiterService + 'static,
-        public_id_codec: Arc<crate::PublicIdCodec>,
+        rate_limiter: Arc<dyn RequestRateLimiterService>,
+        public_id_codec: Arc<synctv_core::PublicIdCodec>,
     ) -> Self {
         Self {
             user_service,
             email_service,
             email_token_service,
-            rate_limiter: Arc::new(rate_limiter),
+            rate_limiter,
             public_id_codec,
         }
     }
@@ -760,6 +760,20 @@ mod tests {
         InMemoryTokenBlacklistStore, JwtService, RateLimiter, UserService,
     };
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn api_ok<T>(result: Result<T, crate::impls::ApiError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("{error:?}")))
+    }
+
+    fn core_ok<T>(result: synctv_core::Result<T>) -> TestResult<T> {
+        result.map_err(|error| test_error(error.to_string()))
+    }
+
     #[derive(Clone)]
     struct TestEmailDeliveryService;
 
@@ -828,10 +842,9 @@ mod tests {
         }
     }
 
-    fn build_test_email_api(pool: sqlx::PgPool) -> EmailApiImpl {
+    fn build_test_email_api(pool: sqlx::PgPool) -> TestResult<EmailApiImpl> {
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
-        let jwt_service =
-            JwtService::new("test-secret-key-for-email-api-tests-minimum-32-chars").unwrap();
+        let jwt_service = JwtService::new("test-secret-key-for-email-api-tests-minimum-32-chars")?;
         let user_service = UserService::new_with_runtime(
             &pool,
             jwt_service,
@@ -851,71 +864,75 @@ mod tests {
         );
         let user_service = Arc::new(user_service);
 
-        EmailApiImpl::new(
+        Ok(EmailApiImpl::new(
             user_service,
             Arc::new(TestEmailDeliveryService),
             Arc::new(EmailTokenService::new(pool)),
-            RateLimiter::local_only("email-api-tests:".to_string()),
-            Arc::new(crate::PublicIdCodec::plain()),
-        )
+            Arc::new(RateLimiter::local_only("email-api-tests:".to_string())),
+            Arc::new(synctv_core::PublicIdCodec::plain()),
+        ))
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
-    async fn request_password_reset_returns_same_message_for_existing_and_missing_users() {
+    async fn request_password_reset_returns_same_message_for_existing_and_missing_users(
+    ) -> TestResult {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
-        let api = build_test_email_api(pool.clone());
+        let api = build_test_email_api(pool.clone())?;
         let repo = synctv_core::repository::UserRepository::new(pool.clone());
         let email_repo = synctv_core::repository::UserEmailRepository::new(pool);
         let existing_user = make_user("email_api_existing");
         let existing_email = "email_api_existing@example.com".to_string();
-        let created = repo.create(&existing_user).await.unwrap();
-        email_repo
-            .create_for_user_with_executor(&created, Some(&existing_email), repo.pool())
-            .await
-            .unwrap();
+        let created = repo.create(&existing_user).await?;
+        core_ok(
+            email_repo
+                .create_for_user_with_executor(&created, Some(&existing_email), repo.pool())
+                .await,
+        )?;
 
-        let existing = api.request_password_reset(&existing_email).await.unwrap();
-        let missing = api
-            .request_password_reset("missing-email@example.com")
-            .await
-            .unwrap();
+        let existing = api_ok(api.request_password_reset(&existing_email).await)?;
+        let missing = api_ok(
+            api.request_password_reset("missing-email@example.com")
+                .await,
+        )?;
 
         assert_eq!(existing.message, GENERIC_PASSWORD_RESET_MESSAGE);
         assert_eq!(missing.message, GENERIC_PASSWORD_RESET_MESSAGE);
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
-    async fn confirm_email_login_accepts_multiple_outstanding_codes_for_same_user() {
+    async fn confirm_email_login_accepts_multiple_outstanding_codes_for_same_user() -> TestResult {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
-        let api = build_test_email_api(pool.clone());
+        let api = build_test_email_api(pool.clone())?;
         let repo = synctv_core::repository::UserRepository::new(pool.clone());
         let email_repo = synctv_core::repository::UserEmailRepository::new(pool);
 
         let user = make_user("email_login_multi");
         let email = "email_login_multi@example.com".to_string();
-        let created = repo.create(&user).await.unwrap();
-        email_repo
-            .create_for_user_with_executor(&created, Some(&email), repo.pool())
-            .await
-            .unwrap();
+        let created = repo.create(&user).await?;
+        core_ok(
+            email_repo
+                .create_for_user_with_executor(&created, Some(&email), repo.pool())
+                .await,
+        )?;
 
-        let first = api
-            .email_token_service
-            .generate_token(&created.id, synctv_core::models::EmailTokenType::EmailLogin)
-            .await
-            .unwrap();
-        let second = api
-            .email_token_service
-            .generate_token(&created.id, synctv_core::models::EmailTokenType::EmailLogin)
-            .await
-            .unwrap();
+        let first = core_ok(
+            api.email_token_service
+                .generate_token(&created.id, synctv_core::models::EmailTokenType::EmailLogin)
+                .await,
+        )?;
+        let second = core_ok(
+            api.email_token_service
+                .generate_token(&created.id, synctv_core::models::EmailTokenType::EmailLogin)
+                .await,
+        )?;
 
-        let first_login = api.confirm_email_login(&email, &first, None).await.unwrap();
+        let first_login = api_ok(api.confirm_email_login(&email, &first, None).await)?;
         assert_eq!(
             first_login.user_id,
-            api.public_user_id(created.id).unwrap(),
+            api_ok(api.public_user_id(created.id))?,
             "first login code should authenticate the target user"
         );
         assert!(
@@ -930,13 +947,10 @@ mod tests {
             "first login code should issue tokens"
         );
 
-        let second_login = api
-            .confirm_email_login(&email, &second, None)
-            .await
-            .unwrap();
+        let second_login = api_ok(api.confirm_email_login(&email, &second, None).await)?;
         assert_eq!(
             second_login.user_id,
-            api.public_user_id(created.id).unwrap(),
+            api_ok(api.public_user_id(created.id))?,
             "second outstanding login code should remain usable"
         );
         assert!(
@@ -950,59 +964,63 @@ mod tests {
             ),
             "second login code should issue tokens"
         );
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
-    async fn mfa_email_code_flow_completes_password_first_factor_login() {
+    async fn mfa_email_code_flow_completes_password_first_factor_login() -> TestResult {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
-        let api = build_test_email_api(pool);
+        let api = build_test_email_api(pool)?;
         let email = format!("mfa_{}@example.com", synctv_common::snanoid!(8));
-        let (user, _, _) = synctv_core_testing::opaque_register_user(
-            api.user_service.as_ref(),
-            "mfa_email_user",
-            Some(email.clone()),
-            "StrongPass1",
-        )
-        .await
-        .unwrap();
-        api.user_service
-            .set_two_factor_enabled(&user.id, true)
-            .await
-            .unwrap();
+        let (user, _, _) = core_ok(
+            synctv_core_testing::opaque_register_user(
+                api.user_service.as_ref(),
+                "mfa_email_user",
+                Some(email.clone()),
+                "StrongPass1",
+            )
+            .await,
+        )?;
+        core_ok(
+            api.user_service
+                .set_two_factor_enabled(&user.id, true)
+                .await,
+        )?;
 
-        let first_factor = synctv_core_testing::opaque_login_user_with_challenge(
-            api.user_service.as_ref(),
-            "mfa_email_user",
-            "StrongPass1",
-        )
-        .await
-        .unwrap();
+        let first_factor = core_ok(
+            synctv_core_testing::opaque_login_user_with_challenge(
+                api.user_service.as_ref(),
+                "mfa_email_user",
+                "StrongPass1",
+            )
+            .await,
+        )?;
         let AuthenticatedLogin::MfaRequired { challenge, .. } = first_factor else {
-            panic!("password first factor should require MFA");
+            return Err(test_error("password first factor should require MFA"));
         };
         assert!(challenge
             .available_methods
             .contains(&synctv_core::service::AuthFactorMethod::Email));
 
-        let request = api
-            .request_mfa_email_code_with_control(&challenge.session_id, None)
-            .await
-            .unwrap();
+        let request = api_ok(
+            api.request_mfa_email_code_with_control(&challenge.session_id, None)
+                .await,
+        )?;
         assert_eq!(
             request.masked_email,
             synctv_core::service::mask_email(&email)
         );
 
-        let token = api
-            .email_token_service
-            .generate_token(&user.id, synctv_core::models::EmailTokenType::EmailLogin)
-            .await
-            .unwrap();
-        let completed = api
-            .verify_mfa_email_code_with_control(&challenge.session_id, &token, None, None)
-            .await
-            .unwrap();
+        let token = core_ok(
+            api.email_token_service
+                .generate_token(&user.id, synctv_core::models::EmailTokenType::EmailLogin)
+                .await,
+        )?;
+        let completed = api_ok(
+            api.verify_mfa_email_code_with_control(&challenge.session_id, &token, None, None)
+                .await,
+        )?;
         assert!(
             matches!(
                 completed,
@@ -1014,31 +1032,32 @@ mod tests {
             ),
             "email MFA verification should issue tokens"
         );
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
-    async fn request_email_login_returns_same_message_for_existing_and_missing_users() {
+    async fn request_email_login_returns_same_message_for_existing_and_missing_users() -> TestResult
+    {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
-        let api = build_test_email_api(pool.clone());
+        let api = build_test_email_api(pool.clone())?;
         let repo = synctv_core::repository::UserRepository::new(pool.clone());
         let email_repo = synctv_core::repository::UserEmailRepository::new(pool);
         let existing_user = make_user("email_login_existing");
         let existing_email = "email_login_existing@example.com".to_string();
-        let created = repo.create(&existing_user).await.unwrap();
-        email_repo
-            .create_for_user_with_executor(&created, Some(&existing_email), repo.pool())
-            .await
-            .unwrap();
+        let created = repo.create(&existing_user).await?;
+        core_ok(
+            email_repo
+                .create_for_user_with_executor(&created, Some(&existing_email), repo.pool())
+                .await,
+        )?;
 
-        let existing = api.request_email_login(&existing_email).await.unwrap();
-        let missing = api
-            .request_email_login("missing-login@example.com")
-            .await
-            .unwrap();
+        let existing = api_ok(api.request_email_login(&existing_email).await)?;
+        let missing = api_ok(api.request_email_login("missing-login@example.com").await)?;
 
         assert_eq!(existing.message, GENERIC_EMAIL_LOGIN_MESSAGE);
         assert_eq!(missing.message, GENERIC_EMAIL_LOGIN_MESSAGE);
+        Ok(())
     }
 
     #[test]

@@ -10,9 +10,9 @@ use synctv_core::service::playback::{
 };
 
 use super::convert::{
-    playback_client_profile_from_proto, provider_playback_info_to_model,
-    sign_local_bilibili_danmaku_urls, try_bilibili_live_danmaku_for_static_media,
-    try_playback_state_to_proto, try_playback_to_proto,
+    dynamic_playlist_source_fields, playback_client_profile_from_proto,
+    provider_playback_info_to_model, sign_local_bilibili_danmaku_urls,
+    try_bilibili_live_danmaku_for_static_media, try_playback_state_to_proto, try_playback_to_proto,
 };
 use super::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
@@ -20,10 +20,6 @@ use crate::impls::playback::playback_expires_at;
 use crate::impls::ApiError;
 use crate::playback_fanout::{PlaybackFanoutActor, PreparedPlaybackStateFanout};
 use synctv_core::models::MediaId;
-
-pub(super) fn providers_manager_unavailable_error() -> ApiError {
-    ApiError::ServiceUnavailable("Playback providers are not available on this server.".to_string())
-}
 
 pub(super) fn static_media_source_provider(
     media: &synctv_core::models::Media,
@@ -87,7 +83,7 @@ struct DynamicPlaylistPlaybackRequest<'a> {
 
 pub(crate) fn build_start_playback_request(
     req: synctv_proto::client::StartPlaybackRequest,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<StartPlaybackTarget, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let synctv_proto::client::StartPlaybackRequest {
@@ -108,7 +104,7 @@ pub(crate) fn build_start_playback_request(
 
 pub(crate) fn build_update_playback(
     update: synctv_proto::client::UpdatePlaybackRequest,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<PlaybackUpdateCommand, ApiError> {
     crate::impls::validate_proto_request(&update)?;
     let synctv_proto::client::UpdatePlaybackRequest {
@@ -193,7 +189,7 @@ pub(crate) fn build_playback_source_expectation(
     expected_media_id: Option<String>,
     expected_playlist_id: Option<String>,
     expected_target_hash: Option<String>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<Option<PlaybackSourceExpectation>, ApiError> {
     if expected_media_id.is_none()
         && expected_playlist_id.is_none()
@@ -274,18 +270,14 @@ impl ClientApiImpl {
         {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
         }
-        if let Some(ref enc) = self.credential_encryption {
+        if let Some(repo) = self.room_service.media_service().credential_repo() {
+            ctx = ctx.with_credential_repo(repo.as_ref());
+        }
+        if let Some(enc) = self.room_service.media_service().credential_encryption() {
             ctx = ctx.with_credential_encryption(enc);
         }
-        if let Some(ref repo) = self.credential_repo {
-            ctx = ctx.with_credential_repo(repo);
-        }
-        if let Some(access_service) = &self.provider_access_service {
-            ctx = ctx.with_provider_access_service(access_service.clone());
-        }
-        if let Some(ref key) = self.signing_key {
-            ctx = ctx.with_signing_key(key);
-        }
+        ctx = ctx.with_provider_access_service(self.provider_access_service.clone());
+        ctx = ctx.with_signing_key(&self.signing_key);
         Ok(ctx)
     }
 
@@ -294,10 +286,7 @@ impl ClientApiImpl {
         ctx: ProviderContext<'a>,
         provider: &dyn synctv_core::provider::MediaProvider,
     ) -> ProviderContext<'a> {
-        match &self.provider_stores {
-            Some(stores) => ctx.with_store(stores.load(provider.name())),
-            None => ctx,
-        }
+        ctx.with_store(self.provider_stores.load(provider.name()))
     }
 
     async fn build_static_media_playback_result(
@@ -315,11 +304,7 @@ impl ClientApiImpl {
             .map_err(|error| {
                 ApiError::Internal(format!("Failed to encode user public id: {error}"))
             })?;
-
-        let providers_manager = self
-            .providers_manager
-            .as_ref()
-            .ok_or_else(providers_manager_unavailable_error)?;
+        let providers_manager = self.room_service.media_service().providers_manager();
 
         let provider = providers_manager
             .resolve_provider(
@@ -368,7 +353,7 @@ impl ClientApiImpl {
             &media,
             &public_user_id,
             &self.public_id_codec,
-            self.signing_key.as_deref(),
+            &self.signing_key,
             default_mode_expires_at,
         )?;
 
@@ -398,7 +383,7 @@ impl ClientApiImpl {
         sign_local_bilibili_danmaku_urls(
             &mut full_result,
             &public_user_id,
-            self.signing_key.as_deref(),
+            &self.signing_key,
             default_mode_expires_at,
         );
         let mut playback = try_playback_to_proto(&full_result, &self.public_id_codec)?;
@@ -439,24 +424,13 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound("Dynamic playlist item not found".to_string()))?;
 
-        let provider_name = playlist
-            .source_provider
-            .as_deref()
-            .ok_or_else(|| ApiError::Internal("Dynamic playlist missing provider".to_string()))?;
-        let providers_manager = self
-            .providers_manager
-            .as_ref()
-            .ok_or_else(providers_manager_unavailable_error)?;
-        let bound_instance = playlist.provider_instance_name.as_deref().and_then(|name| {
-            let trimmed = name.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        });
+        let source_fields = dynamic_playlist_source_fields(&playlist)?;
+        let providers_manager = self.room_service.media_service().providers_manager();
         let provider = providers_manager
-            .resolve_provider(provider_name, bound_instance)
+            .resolve_provider(
+                source_fields.provider_name,
+                source_fields.provider_instance_name,
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -465,7 +439,7 @@ impl ClientApiImpl {
                 user_id,
                 playlist.creator_id.as_ref(),
                 room_id,
-                playlist.provider_instance_name.as_deref(),
+                source_fields.provider_instance_name,
                 playback_client_profile,
                 request_control,
             )?,
@@ -481,8 +455,8 @@ impl ClientApiImpl {
                     state,
                     actor_user_id: user_id,
                     provider: provider.as_ref(),
-                    provider_name,
-                    provider_instance_name: playlist.provider_instance_name.as_deref(),
+                    provider_name: source_fields.provider_name,
+                    provider_instance_name: source_fields.provider_instance_name,
                     credential_owner_id: playlist.creator_id.as_ref(),
                     source_config: &item.source_config,
                     result: &provider_result,
@@ -593,11 +567,7 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
-
-            let providers_manager = self
-                .providers_manager
-                .as_ref()
-                .ok_or_else(providers_manager_unavailable_error)?;
+            let providers_manager = self.room_service.media_service().providers_manager();
             let provider = providers_manager
                 .resolve_provider(
                     static_media_source_provider(&media)?,
@@ -632,31 +602,26 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?;
 
-            let provider_name = playlist.source_provider.as_deref().ok_or_else(|| {
-                ApiError::Internal("Dynamic playlist missing provider".to_string())
-            })?;
-            let source_config = playlist.source_config.as_ref().ok_or_else(|| {
-                ApiError::Internal("Dynamic playlist missing source_config".to_string())
-            })?;
-            let providers_manager = self
-                .providers_manager
-                .as_ref()
-                .ok_or_else(providers_manager_unavailable_error)?;
+            let source_fields = dynamic_playlist_source_fields(&playlist)?;
+            let providers_manager = self.room_service.media_service().providers_manager();
             let provider = providers_manager
-                .resolve_provider(provider_name, playlist.provider_instance_name.as_deref())
+                .resolve_provider(
+                    source_fields.provider_name,
+                    source_fields.provider_instance_name,
+                )
                 .await
                 .map_err(ApiError::from)?;
             let ctx = self.build_provider_context(
                 user_id,
                 playlist.creator_id.as_ref(),
                 room_id,
-                playlist.provider_instance_name.as_deref(),
+                source_fields.provider_instance_name,
                 None,
                 None,
             )?;
 
             return provider
-                .credential_dependencies(&ctx, source_config)
+                .credential_dependencies(&ctx, source_fields.source_config)
                 .map_err(ApiError::from);
         }
 

@@ -19,8 +19,6 @@ use tokio_util::sync::CancellationToken;
 use super::node_registry::ClusterMode;
 use super::runtime::{ClusterHealthRuntime, ClusterNodeDirectory};
 use crate::error::Result;
-#[allow(unused_imports)]
-use futures::future::join_all;
 
 /// Health status of a node
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -642,24 +640,20 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    /// Helper: create a NodeRegistry (redis::Client::open succeeds without a running server)
-    fn make_registry() -> Arc<NodeRegistry> {
-        Arc::new(
-            NodeRegistry::new(
-                synctv_core::coordination_runtime_from_client(
-                    redis::Client::open("redis://127.0.0.1:1").unwrap(),
-                ),
-                "self".to_string(),
-                30,
-                "test:",
-            )
-            .unwrap(),
-        )
+    fn make_registry() -> Result<Arc<NodeRegistry>> {
+        let client = redis::Client::open("redis://127.0.0.1:1")
+            .map_err(|error| crate::Error::Redis(error.to_string()))?;
+        Ok(Arc::new(NodeRegistry::new(
+            synctv_core::coordination_runtime_from_client(client),
+            "self".to_string(),
+            30,
+            "test:",
+        )?))
     }
 
     #[tokio::test]
-    async fn test_health_monitor_new() {
-        let registry = make_registry();
+    async fn test_health_monitor_new() -> Result<()> {
+        let registry = make_registry()?;
         let monitor = HealthMonitor::new(registry, 10);
         let status = monitor.get_all_status().await;
         assert!(status.is_empty(), "New monitor should have no statuses");
@@ -667,11 +661,12 @@ mod tests {
             !monitor.is_snapshot_stale(),
             "monitor without a successful refresh is uninitialized, not stale"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_health_monitor_with_probe_config() {
-        let registry = make_registry();
+    async fn test_health_monitor_with_probe_config() -> Result<()> {
+        let registry = make_registry()?;
         let config = HealthProbeConfig {
             probe_timeout_secs: 1,
             failure_threshold: 5,
@@ -682,18 +677,20 @@ mod tests {
         let monitor = HealthMonitor::with_probe_config(registry, 10, config);
         assert_eq!(monitor.probe_config.failure_threshold, 5);
         assert_eq!(monitor.probe_config.success_threshold, 3);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_get_node_status_returns_none_for_unknown() {
-        let registry = make_registry();
+    async fn test_get_node_status_returns_none_for_unknown() -> Result<()> {
+        let registry = make_registry()?;
         let monitor = HealthMonitor::new(registry, 10);
         assert_eq!(monitor.get_node_status("nonexistent").await, None);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_process_heartbeats_does_not_mark_fresh_nodes() {
-        let registry = make_registry();
+    async fn test_process_heartbeats_does_not_mark_fresh_nodes() -> Result<()> {
+        let registry = make_registry()?;
         registry
             .test_insert_local(NodeInfo::new(
                 "self".to_string(),
@@ -708,12 +705,13 @@ mod tests {
         let status = health_status.read().await;
         // Fresh node should not be marked unhealthy
         let self_status = status.get("self");
-        assert!(self_status.is_none() || *self_status.unwrap() != NodeHealth::Unhealthy);
+        assert!(!matches!(self_status, Some(NodeHealth::Unhealthy)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_process_heartbeats_prunes_removed_nodes() {
-        let registry = make_registry();
+    async fn test_process_heartbeats_prunes_removed_nodes() -> Result<()> {
+        let registry = make_registry()?;
         registry
             .test_insert_local(NodeInfo::new(
                 "self".to_string(),
@@ -736,6 +734,7 @@ mod tests {
             !status.contains_key("ghost-node"),
             "Removed node should be pruned"
         );
+        Ok(())
     }
 
     #[tokio::test]
@@ -761,29 +760,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_health_monitor_start_and_shutdown() {
-        let registry = make_registry();
+    async fn test_health_monitor_start_and_shutdown() -> Result<()> {
+        let registry = make_registry()?;
         let monitor = HealthMonitor::new(registry, 60);
-        monitor.start().unwrap();
+        monitor.start()?;
 
         // Let it run briefly
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Shutdown should complete without error
         monitor.shutdown().await;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_health_monitor_shutdown_completes_when_monitor_is_running() {
-        let registry = make_registry();
+    async fn test_health_monitor_shutdown_completes_when_monitor_is_running() -> Result<()> {
+        let registry = make_registry()?;
         let monitor = HealthMonitor::new(registry, 60);
-        monitor.start().unwrap();
+        monitor.start()?;
 
         let shutdown = tokio::time::timeout(Duration::from_secs(6), monitor.shutdown()).await;
         assert!(
             shutdown.is_ok(),
             "shutdown should stop a running health monitor task"
         );
+        Ok(())
     }
 
     #[tokio::test]
@@ -810,11 +811,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_with_cancellation_token_parent_cancel_stops_monitor() {
-        let registry = make_registry();
+    async fn test_with_cancellation_token_parent_cancel_stops_monitor() -> Result<()> {
+        let registry = make_registry()?;
         let parent = CancellationToken::new();
         let monitor = HealthMonitor::with_cancellation_token(registry, 60, &parent);
-        monitor.start().unwrap();
+        monitor.start()?;
 
         // Let it run briefly
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -827,12 +828,13 @@ mod tests {
         let status = monitor.get_all_status().await;
         // No assertion on status content, just verify it doesn't hang
         drop(status);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_with_cancellation_token_child_cancel_does_not_affect_parent() {
+    async fn test_with_cancellation_token_child_cancel_does_not_affect_parent() -> Result<()> {
         let parent = CancellationToken::new();
-        let registry = make_registry();
+        let registry = make_registry()?;
         let monitor = HealthMonitor::with_cancellation_token(registry, 60, &parent);
 
         // Shutdown only cancels the child token
@@ -843,11 +845,12 @@ mod tests {
             !parent.is_cancelled(),
             "Parent token should not be cancelled by child shutdown"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_degraded_local_cache_refresh_does_not_mark_snapshot_fresh() {
-        let registry = make_registry();
+    async fn test_degraded_local_cache_refresh_does_not_mark_snapshot_fresh() -> Result<()> {
+        let registry = make_registry()?;
         registry.test_set_cluster_mode(super::super::node_registry::ClusterMode::Degraded);
         registry
             .test_insert_local(NodeInfo::new(
@@ -858,7 +861,7 @@ mod tests {
 
         let monitor = HealthMonitor::new(registry, 1);
         monitor.test_set_last_successful_refresh_at(current_unix_timestamp_secs());
-        monitor.start().expect("monitor should start");
+        monitor.start()?;
 
         tokio::time::sleep(Duration::from_millis(2300)).await;
 
@@ -868,11 +871,12 @@ mod tests {
         );
 
         monitor.shutdown().await;
+        Ok(())
     }
 
     #[test]
-    fn test_with_cancellation_token_and_probe_config_preserves_secret() {
-        let registry = make_registry();
+    fn test_with_cancellation_token_and_probe_config_preserves_secret() -> Result<()> {
+        let registry = make_registry()?;
         let parent = CancellationToken::new();
         let monitor = HealthMonitor::with_cancellation_token_and_probe_config(
             registry,
@@ -897,11 +901,12 @@ mod tests {
             !parent.is_cancelled(),
             "Constructing the child monitor must not cancel the parent token"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_snapshot_stale_after_successful_refresh_ages_out() {
-        let registry = make_registry();
+    fn test_snapshot_stale_after_successful_refresh_ages_out() -> Result<()> {
+        let registry = make_registry()?;
         let monitor = HealthMonitor::new(registry, 10);
 
         monitor.last_successful_refresh_at.store(
@@ -913,6 +918,7 @@ mod tests {
             monitor.is_snapshot_stale(),
             "health snapshot should be stale after exceeding one monitor interval"
         );
+        Ok(())
     }
 
     #[test]

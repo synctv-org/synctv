@@ -3,8 +3,6 @@
 //! Tests `set_member_permissions` `GRANT_PERMISSION` check, optimistic lock retry,
 //! and `reset_member_permissions` with real `PostgreSQL` via testcontainers.
 //!
-#![allow(clippy::unwrap_used)]
-
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -24,10 +22,10 @@ use synctv_core::{
     },
     Error,
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};
 fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = JwtService::new(secret).checked("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -46,24 +44,24 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+    RoomService::new_for_tests(pool, user_service).checked("room service should build")
 }
 
 fn make_room_service_with_fence(
-    pool: PgPool,
+    pool: &PgPool,
     version_fence: Arc<dyn VersionFenceStore>,
 ) -> RoomService {
-    let user_service = make_user_service(&pool);
+    let user_service = make_user_service(pool);
 
     RoomService::new_with_options(
-        pool,
+        pool.clone(),
         user_service,
         RoomServiceOptions {
-            version_fence: Some(version_fence),
-            ..RoomServiceOptions::test_defaults()
+            version_fence,
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
-    .expect("room service should build")
+    .checked("room service should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -93,9 +91,18 @@ async fn test_set_member_permissions_requires_grant_permission() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("smp_creator")).await.unwrap();
-    let member = user_repo.create(&make_user("smp_member")).await.unwrap();
-    let target = user_repo.create(&make_user("smp_target")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("smp_creator"))
+        .await
+        .checked("test operation should succeed");
+    let member = user_repo
+        .create(&make_user("smp_member"))
+        .await
+        .checked("test operation should succeed");
+    let target = user_repo
+        .create(&make_user("smp_target"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -106,16 +113,16 @@ async fn test_set_member_permissions_requires_grant_permission() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let member_service = room_service.member_service();
 
@@ -134,9 +141,9 @@ async fn test_set_member_permissions_requires_grant_permission() {
         result.is_err(),
         "Member without GRANT_PERMISSION should be denied"
     );
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::Authorization(_) => {}
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected Authorization error, got: {other:?}")),
     }
 }
 
@@ -147,8 +154,14 @@ async fn test_set_member_permissions_creator_can_set() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("smp2_creator")).await.unwrap();
-    let target = user_repo.create(&make_user("smp2_target")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("smp2_creator"))
+        .await
+        .checked("test operation should succeed");
+    let target = user_repo
+        .create(&make_user("smp2_target"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -159,12 +172,12 @@ async fn test_set_member_permissions_creator_can_set() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let member_service = room_service.member_service();
 
@@ -178,7 +191,7 @@ async fn test_set_member_permissions_creator_can_set() {
             0,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(
         updated.added_permissions & RoomMemberPermissionBits::USE_WEBRTC != 0,
@@ -200,11 +213,11 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
     let creator = user_repo
         .create(&make_user("smp_admin_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let target = user_repo
         .create(&make_user("smp_admin_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -215,18 +228,18 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .member_service()
         .set_member_role(room.id, creator.id, target.id, RoomRole::Admin)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let member_service = room_service.member_service();
     let updated = member_service
@@ -238,7 +251,7 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
             RoomAdminPermissionBits::KICK_MEMBER,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(
         updated.admin_added_permissions & RoomAdminPermissionBits::USE_WEBRTC,
@@ -263,7 +276,7 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
         .permission_service()
         .get_user_permissions_no_cache(&room.id, &target.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(
         effective.has(RoomPermission::USE_WEBRTC),
         "admin allow override should affect effective permissions"
@@ -280,16 +293,16 @@ async fn test_admin_update_member_role_to_admin_persists_admin_overrides() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let version_fence = Arc::new(LocalVersionFenceStore::new());
-    let room_service = make_room_service_with_fence(pool.clone(), version_fence.clone());
+    let room_service = make_room_service_with_fence(&pool, version_fence.clone());
 
     let creator = user_repo
         .create(&make_user("aum_admin_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let target = user_repo
         .create(&make_user("aum_admin_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -300,12 +313,12 @@ async fn test_admin_update_member_role_to_admin_persists_admin_overrides() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let updated = room_service
         .member_service()
@@ -321,7 +334,7 @@ async fn test_admin_update_member_role_to_admin_persists_admin_overrides() {
             admin_removed_permissions: RoomAdminPermissionBits::KICK_MEMBER,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(updated.role, RoomRole::Admin);
     assert_eq!(
@@ -349,8 +362,8 @@ async fn test_admin_update_member_role_to_admin_persists_admin_overrides() {
             user_id: target.id,
         })
         .await
-        .unwrap()
-        .expect("permission fence should be committed after update");
+        .checked("test operation should succeed")
+        .checked("permission fence should be committed after update");
     assert_eq!(
         state.pending_version, None,
         "role plus permission update must commit every reservation it created"
@@ -365,16 +378,16 @@ async fn test_transfer_room_ownership_commits_permission_fences_for_both_members
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let version_fence = Arc::new(LocalVersionFenceStore::new());
-    let room_service = make_room_service_with_fence(pool.clone(), version_fence.clone());
+    let room_service = make_room_service_with_fence(&pool, version_fence.clone());
 
     let old_owner = user_repo
         .create(&make_user("transfer_fence_old_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let new_owner = user_repo
         .create(&make_user("transfer_fence_new_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -385,28 +398,28 @@ async fn test_transfer_room_ownership_commits_permission_fences_for_both_members
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, new_owner.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .transfer_room_ownership(room.id, old_owner.id, new_owner.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let updated_old_owner = member_repo
         .get(&room.id, &old_owner.id)
         .await
-        .unwrap()
-        .expect("old owner member should remain active");
+        .checked("test operation should succeed")
+        .checked("old owner member should remain active");
     let updated_new_owner = member_repo
         .get(&room.id, &new_owner.id)
         .await
-        .unwrap()
-        .expect("new owner member should remain active");
+        .checked("test operation should succeed")
+        .checked("new owner member should remain active");
 
     assert_eq!(updated_old_owner.role, RoomRole::Admin);
     assert_eq!(updated_new_owner.role, RoomRole::Creator);
@@ -417,16 +430,16 @@ async fn test_transfer_room_ownership_commits_permission_fences_for_both_members
             user_id: old_owner.id,
         })
         .await
-        .unwrap()
-        .expect("old owner permission fence should be committed");
+        .checked("test operation should succeed")
+        .checked("old owner permission fence should be committed");
     let new_owner_fence = version_fence
         .current_state(&CacheDomain::Permission {
             room_id: room.id,
             user_id: new_owner.id,
         })
         .await
-        .unwrap()
-        .expect("new owner permission fence should be committed");
+        .checked("test operation should succeed")
+        .checked("new owner permission fence should be committed");
 
     assert_eq!(old_owner_fence.pending_version, None);
     assert_eq!(new_owner_fence.pending_version, None);
@@ -450,11 +463,11 @@ async fn test_set_member_permissions_rejects_lifecycle_only_delete_room_permissi
     let creator = user_repo
         .create(&make_user("deny_delete_room_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let target = user_repo
         .create(&make_user("deny_delete_room_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -465,18 +478,18 @@ async fn test_set_member_permissions_rejects_lifecycle_only_delete_room_permissi
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let err = room_service
         .member_service()
         .set_member_permissions(room.id, creator.id, target.id, 1 << 21, 0)
         .await
-        .unwrap_err();
+        .failed("operation should fail");
 
     match err {
         Error::InvalidInput(message) => {
@@ -485,7 +498,7 @@ async fn test_set_member_permissions_rejects_lifecycle_only_delete_room_permissi
                 "got: {message}"
             );
         }
-        other => panic!("Expected InvalidInput, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected InvalidInput error, got: {other:?}")),
     }
 }
 
@@ -496,8 +509,14 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let creator = user_repo.create(&make_user("olr_creator")).await.unwrap();
-    let target = user_repo.create(&make_user("olr_target")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("olr_creator"))
+        .await
+        .checked("test operation should succeed");
+    let target = user_repo
+        .create(&make_user("olr_target"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -508,31 +527,32 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Bump version concurrently to trigger retries
-    let room_id_str = room.id.to_string();
-    let target_id_str = target.id.to_string();
+    let room_id = room.id;
+    let target_id = target.id;
     let pool_clone = pool.clone();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
 
     let bumper = tokio::spawn(async move {
         while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-            let _ = sqlx::query(
+            sqlx::query(
                 "UPDATE room_members SET version = version + 1 WHERE room_id = $1 AND user_id = $2",
             )
-            .bind(&room_id_str)
-            .bind(&target_id_str)
+            .bind(room_id)
+            .bind(target_id)
             .execute(&pool_clone)
-            .await;
+            .await?;
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
+        Ok::<_, sqlx::Error>(())
     });
 
     let member_service = room_service.member_service();
@@ -547,7 +567,10 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
         .await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let _ = bumper.await;
+    bumper
+        .await
+        .checked("bumper task should not panic")
+        .checked("bumper task should update member versions");
 
     // Either succeeds (retries worked) or returns Internal (retry exhaustion)
     match result {
@@ -559,10 +582,10 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
             );
         }
         Err(Error::OptimisticLockConflict) => {
-            panic!("OptimisticLockConflict should not leak to caller");
+            std::panic::panic_any("OptimisticLockConflict should not leak to caller");
         }
         Err(other) => {
-            panic!("Unexpected error: {other:?}");
+            std::panic::panic_any(format!("unexpected error: {other:?}"));
         }
     }
 }
@@ -577,11 +600,11 @@ async fn test_concurrent_single_bit_grants_retry_optimistic_conflicts() {
     let creator = user_repo
         .create(&make_user("grant_race_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let target = user_repo
         .create(&make_user("grant_race_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -592,12 +615,12 @@ async fn test_concurrent_single_bit_grants_retry_optimistic_conflicts() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let first_service = room_service.clone();
@@ -628,14 +651,20 @@ async fn test_concurrent_single_bit_grants_retry_optimistic_conflicts() {
             .await
     });
 
-    first.await.unwrap().unwrap();
-    second.await.unwrap().unwrap();
+    first
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
+    second
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
 
     let refreshed = RoomMemberRepository::new(pool)
         .get(&room.id, &target.id)
         .await
-        .unwrap()
-        .unwrap();
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert_eq!(
         refreshed.added_permissions & RoomMemberPermissionBits::USE_WEBRTC,
         RoomMemberPermissionBits::USE_WEBRTC
@@ -656,11 +685,11 @@ async fn test_concurrent_single_bit_revokes_retry_optimistic_conflicts() {
     let creator = user_repo
         .create(&make_user("revoke_race_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let target = user_repo
         .create(&make_user("revoke_race_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -671,12 +700,12 @@ async fn test_concurrent_single_bit_revokes_retry_optimistic_conflicts() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let first_service = room_service.clone();
@@ -707,14 +736,20 @@ async fn test_concurrent_single_bit_revokes_retry_optimistic_conflicts() {
             .await
     });
 
-    first.await.unwrap().unwrap();
-    second.await.unwrap().unwrap();
+    first
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
+    second
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
 
     let refreshed = RoomMemberRepository::new(pool)
         .get(&room.id, &target.id)
         .await
-        .unwrap()
-        .unwrap();
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert_eq!(
         refreshed.removed_permissions & RoomMemberPermissionBits::USE_WEBRTC,
         RoomMemberPermissionBits::USE_WEBRTC
@@ -732,8 +767,14 @@ async fn test_reset_member_permissions_clears_all_overrides() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("reset_creator")).await.unwrap();
-    let target = user_repo.create(&make_user("reset_target")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("reset_creator"))
+        .await
+        .checked("test operation should succeed");
+    let target = user_repo
+        .create(&make_user("reset_target"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -744,12 +785,12 @@ async fn test_reset_member_permissions_clears_all_overrides() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let member_service = room_service.member_service();
 
@@ -763,15 +804,15 @@ async fn test_reset_member_permissions_clears_all_overrides() {
             RoomMemberPermissionBits::CHAT,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Verify overrides were applied
     let member_repo = RoomMemberRepository::new(pool.clone());
     let member_before = member_repo
         .get(&room.id, &target.id)
         .await
-        .unwrap()
-        .unwrap();
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert!(
         member_before.added_permissions & RoomMemberPermissionBits::VIEW_CHAT_HISTORY != 0,
         "Should have VIEW_CHAT_HISTORY added before reset"
@@ -785,7 +826,7 @@ async fn test_reset_member_permissions_clears_all_overrides() {
     let updated = member_service
         .reset_member_permissions(room.id, creator.id, target.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(
         updated.added_permissions, 0,
@@ -807,9 +848,15 @@ async fn test_reset_member_permissions_requires_grant_permission() {
     let creator = user_repo
         .create(&make_user("resetp_creator"))
         .await
-        .unwrap();
-    let member = user_repo.create(&make_user("resetp_member")).await.unwrap();
-    let target = user_repo.create(&make_user("resetp_target")).await.unwrap();
+        .checked("test operation should succeed");
+    let member = user_repo
+        .create(&make_user("resetp_member"))
+        .await
+        .checked("test operation should succeed");
+    let target = user_repo
+        .create(&make_user("resetp_target"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -820,16 +867,16 @@ async fn test_reset_member_permissions_requires_grant_permission() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let member_service = room_service.member_service();
 
@@ -842,9 +889,9 @@ async fn test_reset_member_permissions_requires_grant_permission() {
         result.is_err(),
         "Member without GRANT_PERMISSION should be denied"
     );
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::Authorization(_) => {}
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected Authorization error, got: {other:?}")),
     }
 }
 
@@ -858,11 +905,11 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
     let creator = user_repo
         .create(&make_user("grp_admin_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let target = user_repo
         .create(&make_user("grp_admin_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -873,18 +920,18 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .member_service()
         .set_member_role(room.id, creator.id, target.id, RoomRole::Admin)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let member_service = room_service.member_service();
     let updated = member_service
@@ -895,7 +942,7 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
             RoomAdminPermissionBits::USE_WEBRTC,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(
         updated.admin_added_permissions & RoomAdminPermissionBits::USE_WEBRTC,
@@ -915,7 +962,7 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
             RoomAdminPermissionBits::KICK_MEMBER,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(
         updated.admin_removed_permissions & RoomAdminPermissionBits::KICK_MEMBER,
@@ -931,7 +978,7 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
         .permission_service()
         .get_user_permissions_no_cache(&room.id, &target.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(
         effective.has(RoomPermission::USE_WEBRTC),
         "granted admin override should be visible in effective permissions"
@@ -952,11 +999,11 @@ async fn test_grant_permission_rejects_lifecycle_only_delete_room_permission() {
     let creator = user_repo
         .create(&make_user("deny_delete_room_grant_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let target = user_repo
         .create(&make_user("deny_delete_room_grant_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -967,18 +1014,18 @@ async fn test_grant_permission_rejects_lifecycle_only_delete_room_permission() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let err = room_service
         .member_service()
         .grant_permission(room.id, creator.id, target.id, 1 << 21)
         .await
-        .unwrap_err();
+        .failed("operation should fail");
 
     match err {
         Error::InvalidInput(message) => {
@@ -987,7 +1034,7 @@ async fn test_grant_permission_rejects_lifecycle_only_delete_room_permission() {
                 "got: {message}"
             );
         }
-        other => panic!("Expected InvalidInput, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected InvalidInput error, got: {other:?}")),
     }
 }
 
@@ -1002,11 +1049,11 @@ async fn test_stale_admin_role_grant_fails_closed_without_writing_override_colum
     let creator = user_repo
         .create(&make_user("stale_admin_grant_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let target = user_repo
         .create(&make_user("stale_admin_grant_target"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1017,42 +1064,42 @@ async fn test_stale_admin_role_grant_fails_closed_without_writing_override_colum
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, target.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .member_service()
         .set_member_role(room.id, creator.id, target.id, RoomRole::Admin)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let stale_admin = member_repo
         .get(&room.id, &target.id)
         .await
-        .unwrap()
-        .unwrap();
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
 
     room_service
         .member_service()
         .set_member_role(room.id, creator.id, target.id, RoomRole::Member)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let err = member_repo
         .grant_admin_permission_atomic_for_role(&room.id, &target.id, 1 << 21, stale_admin.role)
         .await
-        .unwrap_err();
+        .failed("operation should fail");
     assert!(matches!(err, synctv_core::Error::OptimisticLockConflict));
 
     let refreshed = member_repo
         .get(&room.id, &target.id)
         .await
-        .unwrap()
-        .unwrap();
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert_eq!(refreshed.admin_added_permissions, 0);
     assert_eq!(refreshed.added_permissions, 0);
 }

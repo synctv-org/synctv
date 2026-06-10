@@ -23,9 +23,7 @@ use model::{
 mod config;
 pub use config::ConnectionLimits;
 mod metrics;
-pub use metrics::{
-    ConnectionMetrics, DisconnectSignalMetrics, ShutdownReport, ShutdownTaskOutcome,
-};
+pub use metrics::{ConnectionMetrics, ShutdownReport};
 mod disconnects;
 mod redis_maintenance;
 mod redis_state;
@@ -121,19 +119,6 @@ pub struct ConnectionManager {
     /// Counts how many WebSocket upgrades are in-flight for each user.
     pending_user_reservations: Arc<DashMap<UserId, AtomicUsize>>,
 
-    /// Pending disconnect signals that failed to send (channel full).
-    /// These are retried by a background task to ensure reliable delivery.
-    pending_disconnects: Arc<DashMap<u64, (DisconnectSignal, Instant)>>,
-
-    /// Counter for generating unique IDs for pending disconnect signals
-    pending_disconnect_id: Arc<AtomicU64>,
-
-    /// Counter for tracking dropped disconnect signals (monitoring)
-    dropped_disconnect_signals: Arc<AtomicU64>,
-
-    /// Counter for tracking retried disconnect signals (monitoring)
-    retried_disconnect_signals: Arc<AtomicU64>,
-
     /// Optional Redis connection handle for distributed connection counting.
     /// When present, per-user and per-room limits are enforced across all replicas.
     /// When absent, limits are per-node only (fallback).
@@ -149,16 +134,6 @@ pub struct ConnectionManager {
     /// Cancelled on shutdown to stop the background task.
     ttl_refresh_cancel: Arc<tokio_util::sync::CancellationToken>,
 
-    /// Cancellation token for the disconnect signal retry task.
-    /// Cancelled on shutdown to stop the background task.
-    disconnect_retry_cancel: Arc<tokio_util::sync::CancellationToken>,
-
-    /// Whether the disconnect retry task has already been started.
-    /// Guards `start()` against spawning duplicate background tasks when
-    /// startup wiring calls it more than once.
-    disconnect_retry_started: Arc<std::sync::atomic::AtomicBool>,
-    /// JoinHandle for the disconnect retry task so shutdown can await termination.
-    disconnect_retry_handle: Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// JoinHandle for the TTL refresh task.
     ttl_refresh_handle: Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// JoinHandle for the pending Redis retries task.
@@ -201,11 +176,6 @@ pub struct ConnectionManager {
 /// are lost.
 const PENDING_RETRY_QUEUE_CAPACITY: usize = 10_000;
 
-/// Maximum capacity of the pending disconnect signals queue.
-/// When the broadcast channel is full (lagging receivers), disconnect signals
-/// are stored here for retry. This ensures kick/ban operations are not lost
-/// even under high load.
-const PENDING_DISCONNECT_QUEUE_CAPACITY: usize = 10_000;
 const CONNECTION_LIFECYCLE_LOCK_STRIPES: usize = 256;
 
 impl ConnectionManager {
@@ -260,10 +230,6 @@ impl ConnectionManager {
 
     /// Create a new `ConnectionManager`.
     ///
-    /// **Note**: this constructor does not spawn any background tasks. Call
-    /// [`start`](Self::start) (or [`with_redis`](Self::with_redis), which calls
-    /// it internally) after construction to launch the disconnect-signal retry
-    /// task and any Redis-related background work.
     #[must_use]
     pub fn new(limits: ConnectionLimits) -> Self {
         // Use a large buffer (10 000) to minimise lag for critical events such as
@@ -272,9 +238,6 @@ impl ConnectionManager {
         // re-validation backstop to handle the rare case where a signal is lost.
         let (disconnect_tx, _) = broadcast::channel(10_000);
         let (pending_retries_tx, pending_retries_rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
-
-        // Create the disconnect retry cancellation token
-        let disconnect_retry_cancel = tokio_util::sync::CancellationToken::new();
 
         // Store the receiver so it is not dropped here. with_redis() will take it
         // and hand it to spawn_pending_retries_task when Redis is configured.
@@ -295,16 +258,9 @@ impl ConnectionManager {
             disconnect_tx: Arc::new(disconnect_tx),
             pending_room_reservations: Arc::new(DashMap::new()),
             pending_user_reservations: Arc::new(DashMap::new()),
-            pending_disconnects: Arc::new(DashMap::new()),
-            pending_disconnect_id: Arc::new(AtomicU64::new(0)),
-            dropped_disconnect_signals: Arc::new(AtomicU64::new(0)),
-            retried_disconnect_signals: Arc::new(AtomicU64::new(0)),
             redis_conn: None,
             redis_key_prefix: String::new(),
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
-            disconnect_retry_cancel: Arc::new(disconnect_retry_cancel),
-            disconnect_retry_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            disconnect_retry_handle: Arc::new(parking_lot::Mutex::new(None)),
             ttl_refresh_handle: Arc::new(parking_lot::Mutex::new(None)),
             pending_retries_handle: Arc::new(parking_lot::Mutex::new(None)),
             pending_retries_tx,
@@ -325,8 +281,6 @@ impl ConnectionManager {
 
     /// Build a connection manager from an optional shared runtime.
     ///
-    /// When no shared runtime is provided, the manager starts in local-only
-    /// mode and still launches its local background tasks.
     #[must_use]
     pub(crate) fn from_redis_runtime(
         limits: ConnectionLimits,
@@ -336,29 +290,8 @@ impl ConnectionManager {
         if let Some(redis_runtime) = redis_runtime {
             Self::new_with_redis_runtime(limits, redis_runtime, key_prefix)
         } else {
-            let manager = Self::new(limits);
-            manager.start();
-            manager
+            Self::new(limits)
         }
-    }
-
-    /// Start background tasks that require a Tokio runtime.
-    ///
-    /// Launches the disconnect-signal retry task. This must be called from
-    /// within an async context (i.e. after the Tokio runtime is available).
-    /// [`with_redis`](Self::with_redis) calls this automatically.
-    pub fn start(&self) {
-        if self.disconnect_retry_started.swap(true, Ordering::AcqRel) {
-            debug!("Disconnect retry task already started; skipping duplicate start()");
-            return;
-        }
-        let handle = self.spawn_disconnect_retry_task((*self.disconnect_retry_cancel).clone());
-        *self.disconnect_retry_handle.lock() = Some(handle);
-    }
-
-    #[cfg(test)]
-    fn disconnect_retry_task_started(&self) -> bool {
-        self.disconnect_retry_started.load(Ordering::Acquire)
     }
 
     #[cfg(test)]
@@ -382,8 +315,12 @@ impl ConnectionManager {
     fn connection_lifecycle_lock(&self, connection_id: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         connection_id.hash(&mut hasher);
-        let shard_count = u64::try_from(self.connection_lifecycle_locks.len()).unwrap_or(u64::MAX);
-        let index = u64_to_usize_saturating(hasher.finish() % shard_count);
+        let shard_count = self.connection_lifecycle_locks.len();
+        debug_assert!(
+            shard_count > 0,
+            "connection lifecycle lock stripes must exist"
+        );
+        let index = u64_to_usize_saturating(hasher.finish() % shard_count as u64);
         Arc::clone(&self.connection_lifecycle_locks[index])
     }
 
@@ -418,9 +355,7 @@ impl ConnectionManager {
 
     #[cfg(test)]
     pub(crate) fn background_tasks_running(&self) -> bool {
-        self.disconnect_retry_handle.lock().is_some()
-            || self.ttl_refresh_handle.lock().is_some()
-            || self.pending_retries_handle.lock().is_some()
+        self.ttl_refresh_handle.lock().is_some() || self.pending_retries_handle.lock().is_some()
     }
 
     const fn redis_enabled(&self) -> bool {
@@ -486,8 +421,6 @@ impl ConnectionManager {
         self.redis_conn = Some(Arc::clone(&conn));
         self.redis_key_prefix = key_prefix.to_string();
 
-        self.start();
-
         let cancel = tokio_util::sync::CancellationToken::new();
         self.ttl_refresh_cancel = Arc::new(cancel.clone());
         let handle = self.spawn_ttl_refresh_task(Duration::from_mins(1), cancel.clone());
@@ -517,8 +450,7 @@ impl ConnectionManager {
     /// enforced across all replicas. Without Redis, limits are per-node only.
     ///
     /// Automatically spawns background tasks:
-    /// - Disconnect-signal retry task (via [`start`](Self::start))
-    /// - TTL refresh task (every 60s) for long-lived connection counters
+    /// - TTL refresh task for long-lived connection counters
     /// - Pending-retries task for failed Redis counter operations
     ///
     /// All tasks are cancelled when `shutdown()` is called.

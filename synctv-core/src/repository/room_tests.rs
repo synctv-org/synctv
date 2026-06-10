@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_helpers::{TestOptionExt, TestResultExt};
 use synctv_core_testing::create_test_pool;
 
 #[test]
@@ -46,17 +47,26 @@ async fn test_create_room() {
 
     // Create owner user first (rooms have FK to users)
     let owner = UserFixture::new().with_username("room_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Test Room")
         .with_description("desc")
         .with_owner(owner.id)
         .build();
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
     assert_eq!(created.name, "Test Room");
     assert_eq!(created.created_by, owner.id);
-    assert!(room_repo.exists(&created.id).await.unwrap());
+    assert!(room_repo
+        .exists(&created.id)
+        .await
+        .checked("operation should succeed"));
 }
 
 #[tokio::test]
@@ -72,13 +82,16 @@ async fn test_create_room_duplicate_name_for_same_owner_is_repository_allowed() 
     let owner = user_repo
         .create(&UserFixture::new().with_username("room_dup_owner1").build())
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let room1 = RoomFixture::new()
         .with_name("Duplicate Room Name")
         .with_owner(owner.id)
         .build();
-    room_repo.create(&room1).await.unwrap();
+    room_repo
+        .create(&room1)
+        .await
+        .checked("operation should succeed");
 
     let room2 = RoomFixture::new()
         .with_name("Duplicate Room Name")
@@ -86,7 +99,7 @@ async fn test_create_room_duplicate_name_for_same_owner_is_repository_allowed() 
         .build();
     let result = room_repo.create(&room2).await;
 
-    let created = result.expect("repository should not enforce room-name product policy");
+    let created = result.checked("repository should not enforce room-name product policy");
     assert_eq!(created.name, "Duplicate Room Name");
     assert_eq!(created.created_by, owner.id);
 }
@@ -108,7 +121,7 @@ async fn test_create_room_duplicate_name_for_different_owner_succeeds() {
                 .build(),
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
     let owner2 = user_repo
         .create(
             &UserFixture::new()
@@ -116,7 +129,7 @@ async fn test_create_room_duplicate_name_for_different_owner_succeeds() {
                 .build(),
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let room1 = RoomFixture::new()
         .with_name("Shared Room Name")
@@ -127,8 +140,14 @@ async fn test_create_room_duplicate_name_for_different_owner_succeeds() {
         .with_owner(owner2.id)
         .build();
 
-    room_repo.create(&room1).await.unwrap();
-    let created = room_repo.create(&room2).await.unwrap();
+    room_repo
+        .create(&room1)
+        .await
+        .checked("operation should succeed");
+    let created = room_repo
+        .create(&room2)
+        .await
+        .checked("operation should succeed");
     assert_eq!(created.name, "Shared Room Name");
     assert_eq!(created.created_by, owner2.id);
 }
@@ -190,7 +209,10 @@ async fn test_get_nonexistent_room() {
     let room_repo = RoomRepository::new(pool.clone());
 
     let room_id = RoomId::expect_positive(92_001);
-    let result = room_repo.get_by_id(&room_id).await.unwrap();
+    let result = room_repo
+        .get_by_id(&room_id)
+        .await
+        .checked("operation should succeed");
     assert!(result.is_none());
 }
 
@@ -207,21 +229,30 @@ async fn test_update_room() {
 
     // Create owner and room
     let owner = UserFixture::new().with_username("update_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Original Name")
         .with_description("Original description")
         .with_owner(owner.id)
         .build();
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Update room
     let mut updated = created.clone();
     updated.name = "Updated Name".to_string();
     updated.description = "Updated description".to_string();
 
-    let result = room_repo.update(&updated, created.version).await.unwrap();
+    let result = room_repo
+        .update(&updated, created.version)
+        .await
+        .checked("operation should succeed");
     assert_eq!(result.name, "Updated Name");
     assert_eq!(result.description, "Updated description");
 }
@@ -239,28 +270,46 @@ async fn test_soft_delete_room() {
 
     // Create owner and room
     let owner = UserFixture::new().with_username("delete_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Room to Delete")
         .with_owner(owner.id)
         .build();
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Soft delete
-    let deleted = room_repo.delete(&created.id).await.unwrap();
+    let deleted = room_repo
+        .delete(&created.id)
+        .await
+        .checked("operation should succeed");
     assert!(deleted);
 
     // Verify soft deleted (get_by_id returns None because deleted_at IS NOT NULL)
-    let result = room_repo.get_by_id(&created.id).await.unwrap();
+    let result = room_repo
+        .get_by_id(&created.id)
+        .await
+        .checked("operation should succeed");
     assert!(result.is_none());
 
     // exists() also returns false
-    let exists = room_repo.exists(&created.id).await.unwrap();
+    let exists = room_repo
+        .exists(&created.id)
+        .await
+        .checked("operation should succeed");
     assert!(!exists);
 
     // Delete again returns false
-    let deleted_again = room_repo.delete(&created.id).await.unwrap();
+    let deleted_again = room_repo
+        .delete(&created.id)
+        .await
+        .checked("operation should succeed");
     assert!(!deleted_again);
 }
 
@@ -279,16 +328,25 @@ async fn test_hard_delete_room() {
     let owner = UserFixture::new()
         .with_username("hard_delete_owner")
         .build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Room to Hard Delete")
         .with_owner(owner.id)
         .build();
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Hard delete
-    let deleted = room_repo.hard_delete(&created.id).await.unwrap();
+    let deleted = room_repo
+        .hard_delete(&created.id)
+        .await
+        .checked("operation should succeed");
     assert!(deleted);
 }
 
@@ -305,32 +363,38 @@ async fn test_update_room_status() {
 
     // Create owner and room
     let owner = UserFixture::new().with_username("status_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Status Test Room")
         .with_owner(owner.id)
         .build();
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
     assert_eq!(created.status, RoomStatus::Active);
 
     // Update to Closed
     let updated = room_repo
         .update_status(&created.id, RoomStatus::Closed)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(updated.status, RoomStatus::Closed);
 
     let banned = room_repo
         .update_ban_status(&created.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert!(banned.is_banned);
 
     let reopened = room_repo
         .update_status(&created.id, RoomStatus::Active)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(reopened.status, RoomStatus::Active);
     assert!(
         reopened.is_banned,
@@ -351,27 +415,33 @@ async fn test_update_ban_status() {
 
     // Create owner and room
     let owner = UserFixture::new().with_username("ban_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Ban Test Room")
         .with_owner(owner.id)
         .build();
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
     assert!(!created.is_banned);
 
     // Ban room
     let updated = room_repo
         .update_ban_status(&created.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert!(updated.is_banned);
 
     // Unban room
     let updated = room_repo
         .update_ban_status(&created.id, false)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert!(!updated.is_banned);
 }
 
@@ -388,30 +458,36 @@ async fn test_update_description() {
 
     // Create owner and room
     let owner = UserFixture::new().with_username("desc_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Desc Test Room")
         .with_description("Original description")
         .with_owner(owner.id)
         .build();
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Update description
     let updated = room_repo
         .update_description(&created.id, "New description")
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(updated.description, "New description");
 
     room_repo
         .update_ban_status(&created.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     let updated = room_repo
         .update_description(&created.id, "Another description")
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(updated.description, "Another description");
     assert!(
         updated.is_banned,
@@ -432,7 +508,10 @@ async fn test_list_rooms_pagination() {
 
     // Create owner
     let owner = UserFixture::new().with_username("list_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     // Create 15 rooms
     for i in 0..15 {
@@ -440,7 +519,10 @@ async fn test_list_rooms_pagination() {
             .with_name(&format!("List Room {i}"))
             .with_owner(owner.id)
             .build();
-        room_repo.create(&room).await.unwrap();
+        room_repo
+            .create(&room)
+            .await
+            .checked("operation should succeed");
     }
 
     // List with pagination
@@ -453,7 +535,10 @@ async fn test_list_rooms_pagination() {
         sort_by: crate::models::RoomListSortBy::CreatedAt,
         sort_direction: crate::models::SortDirection::Desc,
     };
-    let (rooms, total) = room_repo.list(&query).await.unwrap();
+    let (rooms, total) = room_repo
+        .list(&query)
+        .await
+        .checked("operation should succeed");
     assert_eq!(rooms.len(), 10);
     assert_eq!(total, 15);
 
@@ -467,7 +552,10 @@ async fn test_list_rooms_pagination() {
         sort_by: crate::models::RoomListSortBy::CreatedAt,
         sort_direction: crate::models::SortDirection::Desc,
     };
-    let (rooms, total) = room_repo.list(&query).await.unwrap();
+    let (rooms, total) = room_repo
+        .list(&query)
+        .await
+        .checked("operation should succeed");
     assert_eq!(rooms.len(), 5);
     assert_eq!(total, 15);
 }
@@ -485,14 +573,20 @@ async fn test_list_rooms_with_filters() {
 
     // Create owner
     let owner = UserFixture::new().with_username("filter_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     // Create active room
     let room = RoomFixture::new()
         .with_name("Active Room")
         .with_owner(owner.id)
         .build();
-    room_repo.create(&room).await.unwrap();
+    room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create and ban a room
     let mut banned_room = RoomFixture::new()
@@ -500,7 +594,10 @@ async fn test_list_rooms_with_filters() {
         .with_owner(owner.id)
         .build();
     banned_room.is_banned = true;
-    room_repo.create(&banned_room).await.unwrap();
+    room_repo
+        .create(&banned_room)
+        .await
+        .checked("operation should succeed");
 
     // Filter by status Active
     let query = RoomListQuery {
@@ -512,7 +609,10 @@ async fn test_list_rooms_with_filters() {
         sort_by: crate::models::RoomListSortBy::CreatedAt,
         sort_direction: crate::models::SortDirection::Desc,
     };
-    let (rooms, _) = room_repo.list(&query).await.unwrap();
+    let (rooms, _) = room_repo
+        .list(&query)
+        .await
+        .checked("operation should succeed");
     assert!(rooms.iter().all(|r| r.status == RoomStatus::Active));
 
     // Filter by not banned
@@ -525,7 +625,10 @@ async fn test_list_rooms_with_filters() {
         sort_by: crate::models::RoomListSortBy::CreatedAt,
         sort_direction: crate::models::SortDirection::Desc,
     };
-    let (rooms, _) = room_repo.list(&query).await.unwrap();
+    let (rooms, _) = room_repo
+        .list(&query)
+        .await
+        .checked("operation should succeed");
     assert!(rooms.iter().all(|r| !r.is_banned));
 
     // Filter by search term
@@ -538,7 +641,10 @@ async fn test_list_rooms_with_filters() {
         sort_by: crate::models::RoomListSortBy::CreatedAt,
         sort_direction: crate::models::SortDirection::Desc,
     };
-    let (rooms, _) = room_repo.list(&query).await.unwrap();
+    let (rooms, _) = room_repo
+        .list(&query)
+        .await
+        .checked("operation should succeed");
     assert!(rooms.iter().all(|r| r.name.contains("Active")));
 }
 
@@ -562,13 +668,19 @@ async fn test_list_with_count_counts_current_members() {
     let owner = user_repo
         .create(&UserFixture::new().with_username("count_owner").build())
         .await
-        .unwrap();
-    let active = user_repo.create(&make_user("count_active")).await.unwrap();
-    let banned = user_repo.create(&make_user("count_banned")).await.unwrap();
+        .checked("operation should succeed");
+    let active = user_repo
+        .create(&make_user("count_active"))
+        .await
+        .checked("operation should succeed");
+    let banned = user_repo
+        .create(&make_user("count_banned"))
+        .await
+        .checked("operation should succeed");
     let rejected = user_repo
         .create(&make_user("count_rejected"))
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let room = room_repo
         .create(
@@ -578,12 +690,12 @@ async fn test_list_with_count_counts_current_members() {
                 .build(),
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     member_repo
         .add(&RoomMember::new(room.id, active.id, RoomRole::Member))
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let _ = banned;
     let _ = rejected;
@@ -598,7 +710,10 @@ async fn test_list_with_count_counts_current_members() {
         sort_direction: crate::models::SortDirection::Desc,
     };
 
-    let (rows, total) = room_repo.list_with_count(&query).await.unwrap();
+    let (rows, total) = room_repo
+        .list_with_count(&query)
+        .await
+        .checked("operation should succeed");
     assert_eq!(total, 1);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].room.id, room.id);
@@ -606,7 +721,13 @@ async fn test_list_with_count_counts_current_members() {
         rows[0].member_count, 1,
         "room member_count should include only current member rows"
     );
-    assert_eq!(room_repo.get_member_count(&room.id).await.unwrap(), 1);
+    assert_eq!(
+        room_repo
+            .get_member_count(&room.id)
+            .await
+            .checked("operation should succeed"),
+        1
+    );
 }
 
 /// Integration test: List rooms by creator
@@ -622,10 +743,16 @@ async fn test_list_by_creator() {
 
     // Create two users
     let owner1 = UserFixture::new().with_username("creator1").build();
-    let owner1 = user_repo.create(&owner1).await.unwrap();
+    let owner1 = user_repo
+        .create(&owner1)
+        .await
+        .checked("operation should succeed");
 
     let owner2 = UserFixture::new().with_username("creator2").build();
-    let owner2 = user_repo.create(&owner2).await.unwrap();
+    let owner2 = user_repo
+        .create(&owner2)
+        .await
+        .checked("operation should succeed");
 
     // Create rooms for owner1
     for i in 0..3 {
@@ -633,7 +760,10 @@ async fn test_list_by_creator() {
             .with_name(&format!("Owner1 Room {i}"))
             .with_owner(owner1.id)
             .build();
-        room_repo.create(&room).await.unwrap();
+        room_repo
+            .create(&room)
+            .await
+            .checked("operation should succeed");
     }
 
     // Create rooms for owner2
@@ -642,21 +772,24 @@ async fn test_list_by_creator() {
             .with_name(&format!("Owner2 Room {i}"))
             .with_owner(owner2.id)
             .build();
-        room_repo.create(&room).await.unwrap();
+        room_repo
+            .create(&room)
+            .await
+            .checked("operation should succeed");
     }
 
     // List by creator
     let (rooms, total) = room_repo
         .list_by_creator(&owner1.id, PageParams::default())
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(rooms.len(), 3);
     assert_eq!(total, 3);
 
     let (rooms, total) = room_repo
         .list_by_creator(&owner2.id, PageParams::default())
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(rooms.len(), 2);
     assert_eq!(total, 2);
 }
@@ -674,35 +807,50 @@ async fn test_is_accessible() {
 
     // Create owner
     let owner = UserFixture::new().with_username("accessible_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     // Create active room
     let room = RoomFixture::new()
         .with_name("Accessible Room")
         .with_owner(owner.id)
         .build();
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Active room is accessible
-    assert!(room_repo.is_accessible(&created.id).await.unwrap());
+    assert!(room_repo
+        .is_accessible(&created.id)
+        .await
+        .checked("operation should succeed"));
 
     // Ban room
     room_repo
         .update_ban_status(&created.id, true)
         .await
-        .unwrap();
-    assert!(!room_repo.is_accessible(&created.id).await.unwrap());
+        .checked("operation should succeed");
+    assert!(!room_repo
+        .is_accessible(&created.id)
+        .await
+        .checked("operation should succeed"));
 
     // Unban and close
     room_repo
         .update_ban_status(&created.id, false)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     room_repo
         .update_status(&created.id, RoomStatus::Closed)
         .await
-        .unwrap();
-    assert!(!room_repo.is_accessible(&created.id).await.unwrap());
+        .checked("operation should succeed");
+    assert!(!room_repo
+        .is_accessible(&created.id)
+        .await
+        .checked("operation should succeed"));
 }
 
 /// Integration test: `get_join_context`
@@ -720,22 +868,28 @@ async fn test_get_join_context() {
     let owner = UserFixture::new()
         .with_username("join_context_owner")
         .build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Join Context Room")
         .with_owner(owner.id)
         .build();
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Get join context
     let context = room_repo
         .get_join_context(&created.id, &owner.id)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert!(context.is_some());
 
-    let context = context.unwrap();
+    let context = context.checked("operation should succeed");
     assert_eq!(context.room.id, created.id);
     assert!(!context.is_in_kick_cooldown);
 
@@ -744,7 +898,7 @@ async fn test_get_join_context() {
     let context = room_repo
         .get_join_context(&non_existent, &owner.id)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert!(context.is_none());
 }
 
@@ -761,14 +915,20 @@ async fn test_create_with_executor() {
 
     // Create owner
     let owner = UserFixture::new().with_username("executor_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     // Create room with executor (pool)
     let room = RoomFixture::new()
         .with_name("Executor Room")
         .with_owner(owner.id)
         .build();
-    let created = room_repo.create_with_executor(&room, &pool).await.unwrap();
+    let created = room_repo
+        .create_with_executor(&room, &pool)
+        .await
+        .checked("operation should succeed");
     assert_eq!(created.name, "Executor Room");
 }
 
@@ -798,14 +958,20 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
 
     // Create owner and room
     let owner = UserFixture::new().with_username("optimistic_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Optimistic Room")
         .with_description("original")
         .with_owner(owner.id)
         .build();
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
     let original_version = created.version;
 
     // First update succeeds
@@ -815,7 +981,7 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     let v1 = room_repo
         .update(&updated_room, original_version)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(v1.version, original_version + 1);
     assert_eq!(v1.name, "Updated Name V1");
 
@@ -826,7 +992,7 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     let err = room_repo
         .update(&stale_room, original_version)
         .await
-        .unwrap_err();
+        .failed("operation should fail");
     assert!(
         matches!(err, crate::Error::OptimisticLockConflict),
         "Expected OptimisticLockConflict, got: {err:?}"
@@ -846,23 +1012,35 @@ async fn test_update_soft_deleted_room_returns_not_found() {
 
     // Create owner and room
     let owner = UserFixture::new().with_username("softdel_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Soft Delete Room")
         .with_owner(owner.id)
         .build();
-    let created = room_repo.create(&room).await.unwrap();
+    let created = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
     let version = created.version;
 
     // Soft delete the room
-    let deleted = room_repo.delete(&created.id).await.unwrap();
+    let deleted = room_repo
+        .delete(&created.id)
+        .await
+        .checked("operation should succeed");
     assert!(deleted);
 
     // Trying to update the deleted room should return NotFound (not OptimisticLockConflict)
     let mut updated = created.clone();
     updated.name = "Updated Soft Deleted".to_string();
-    let err = room_repo.update(&updated, version).await.unwrap_err();
+    let err = room_repo
+        .update(&updated, version)
+        .await
+        .failed("operation should fail");
     assert!(
         matches!(err, crate::Error::NotFound(_)),
         "Expected NotFound for soft-deleted room, got: {err:?}"

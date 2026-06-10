@@ -6,77 +6,167 @@
       {
         "ordinal": 0,
         "name": "id",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "origin",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "origin"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "storage_backend",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "storage_backend"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "object_key",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "object_key"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "reference_kind",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "reference_kind"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "reference_id",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "reference_id"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "metadata: serde_json::Value",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "metadata"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "attempt_count",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "attempt_count"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "last_error",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "last_error"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "next_attempt_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "next_attempt_at"
+          }
+        }
       },
       {
         "ordinal": 10,
         "name": "locked_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "locked_at"
+          }
+        }
       },
       {
         "ordinal": 11,
         "name": "locked_by",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "locked_by"
+          }
+        }
       },
       {
         "ordinal": 12,
         "name": "completed_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "completed_at"
+          }
+        }
       },
       {
         "ordinal": 13,
         "name": "created_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "created_at"
+          }
+        }
       },
       {
         "ordinal": 14,
         "name": "updated_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_cleanup_jobs",
+            "name": "updated_at"
+          }
+        }
       }
     ],
     "parameters": {

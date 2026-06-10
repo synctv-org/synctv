@@ -50,8 +50,12 @@ impl UserService {
             .await;
             match created {
                 Ok(created_user) => {
-                    self.cache_oauth2_username_best_effort(&created_user.id, candidate)
-                        .await;
+                    self.cache_username_best_effort(
+                        &created_user.id,
+                        candidate,
+                        "create_or_load_by_oauth2",
+                    )
+                    .await;
 
                     if candidate == &base_username {
                         tracing::info!(

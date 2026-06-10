@@ -14,7 +14,7 @@ use {
 const PARSE_ERROR_NUMBER: usize = 5;
 /// Maximum number of chunk stream IDs to track before cleanup
 /// RTMP spec allows up to 65599 stream IDs, but in practice most streams use far fewer
-const MAX_CACHED_CHUNK_HEADERS: usize = 256;
+const MAX_CACHED_CHUNK_HEADERS: NonZeroUsize = NonZeroUsize::MIN.saturating_add(255);
 /// Maximum message size (10 MB) to prevent unbounded memory growth from malicious clients
 const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
 
@@ -71,15 +71,10 @@ enum MessageHeaderReadState {
 pub struct ChunkUnpacketizer {
     pub reader: BytesReader,
 
-    //https://doc.rust-lang.org/stable/rust-by-example/scope/lifetime/fn.html
-    //https://zhuanlan.zhihu.com/p/165976086
-    //We use this member to generate a complete message:
-    // - basic_header:   the 2 fields will be updated from each chunk.
-    // - message_header: whose fields need to be updated for current chunk
-    //                   depends on the format id from basic header.
-    //                   Each field can inherit the value from the previous chunk.
-    // - payload:        If the message's payload size is longger than the max chunk size,
-    //                   the whole payload will be splitted into several chunks.
+    /// Chunk reconstruction state for the active message.
+    /// RTMP chunks can inherit message header fields from previous chunks on
+    /// the same chunk stream, and large messages are split across multiple
+    /// chunks according to the negotiated max chunk size.
     pub current_chunk_info: ChunkInfo,
     /// LRU cache of chunk message headers per chunk stream ID.
     /// Bounded to `MAX_CACHED_CHUNK_HEADERS`; least-recently-used entries
@@ -106,9 +101,7 @@ impl ChunkUnpacketizer {
         Self {
             reader: BytesReader::new(BytesMut::new()),
             current_chunk_info: ChunkInfo::default(),
-            chunk_message_headers: lru::LruCache::new(
-                NonZeroUsize::new(MAX_CACHED_CHUNK_HEADERS).expect("non-zero constant"),
-            ),
+            chunk_message_headers: lru::LruCache::new(MAX_CACHED_CHUNK_HEADERS),
             chunk_read_state: ChunkReadState::ReadBasicHeader,
             msg_header_read_state: MessageHeaderReadState::ReadTimeStamp,
             max_chunk_size: define::INIT_CHUNK_SIZE as usize,
@@ -144,11 +137,6 @@ impl ChunkUnpacketizer {
     }
 
     pub fn read_chunks(&mut self) -> Result<UnpackResult, UnpackError> {
-        // tracing::trace!(
-        //     "read chunks, reader remaining data: {}",
-        //     self.reader.get_remaining_bytes()
-        // );
-
         let mut chunks: Vec<ChunkInfo> = Vec::new();
 
         loop {
@@ -158,7 +146,7 @@ impl ChunkUnpacketizer {
                         let msg_type_id = chunk_info.message_header.msg_type_id;
                         chunks.push(chunk_info);
 
-                        //if the chunk_size is changed, then break and update chunk_size
+                        // Chunk size changes apply to subsequent chunks.
                         if msg_type_id == msg_type_id::SET_CHUNK_SIZE {
                             break;
                         }
@@ -182,14 +170,8 @@ impl ChunkUnpacketizer {
         }
     }
 
-    /******************************************************************************
-     * 5.3.1 Chunk Format
-     * Each chunk consists of a header and data. The header itself has three parts:
-     * +--------------+----------------+--------------------+--------------+
-     * | Basic Header | Message Header | Extended Timestamp | Chunk Data |
-     * +--------------+----------------+--------------------+--------------+
-     * |<------------------- Chunk Header ----------------->|
-     ******************************************************************************/
+    /// Read one RTMP chunk: basic header, message header, optional extended
+    /// timestamp, and payload fragment.
     pub fn read_chunk(&mut self) -> Result<UnpackResult, UnpackError> {
         let mut result: UnpackResult = UnpackResult::Empty;
 
@@ -209,11 +191,9 @@ impl ChunkUnpacketizer {
         }
 
         Ok(result)
-
-        // Ok(UnpackResult::Success)
     }
 
-    pub fn print_current_basic_header(&mut self) {
+    fn print_current_basic_header(&mut self) {
         tracing::trace!(
             "print_current_basic_header, csid: {},format id: {}",
             self.current_chunk_info.basic_header.chunk_stream_id,
@@ -221,51 +201,9 @@ impl ChunkUnpacketizer {
         );
     }
 
-    /******************************************************************
-     * 5.3.1.1. Chunk Basic Header
-     * The Chunk Basic Header encodes the chunk stream ID and the chunk
-     * type(represented by fmt field in the figure below). Chunk type
-     * determines the format of the encoded message header. Chunk Basic
-     * Header field may be 1, 2, or 3 bytes, depending on the chunk stream
-     * ID.
-     *
-     * The bits 0-5 (least significant) in the chunk basic header represent
-     * the chunk stream ID.
-     *
-     * Chunk stream IDs 2-63 can be encoded in the 1-byte version of this
-     * field.
-     *    0 1 2 3 4 5 6 7
-     *   +-+-+-+-+-+-+-+-+
-     *   |fmt|   cs id   |
-     *   +-+-+-+-+-+-+-+-+
-     *   Figure 6 Chunk basic header 1
-     *
-     * Chunk stream IDs 64-319 can be encoded in the 2-byte version of this
-     * field. ID is computed as (the second byte + 64).
-     *   0                   1
-     *   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
-     *   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     *   |fmt|    0      | cs id - 64    |
-     *   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     *   Figure 7 Chunk basic header 2
-     *
-     * Chunk stream IDs 64-65599 can be encoded in the 3-byte version of
-     * this field. ID is computed as ((the third byte)*256 + the second byte
-     * + 64).
-     *    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3
-     *   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     *   |fmt|     1     |         cs id - 64            |
-     *   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-     *   Figure 8 Chunk basic header 3
-     *
-     * cs id: 6 bits
-     * fmt: 2 bits
-     * cs id - 64: 8 or 16 bits
-     *
-     * Chunk stream IDs with values 64-319 could be represented by both 2-
-     * byte version and 3-byte version of this field.
-     ***********************************************************************/
-
+    /// Read the RTMP basic header and recover the chunk stream ID.
+    /// IDs 2-63 use one byte, 64-319 use two bytes, and 64-65599 can use
+    /// three bytes.
     pub fn read_basic_header(&mut self) -> Result<UnpackResult, UnpackError> {
         let byte = self.reader.read_u8()?;
 
@@ -291,11 +229,9 @@ impl ChunkUnpacketizer {
             _ => {}
         }
 
-        //todo
-        //Only when the csid is changed, we restore the chunk message header
-        //One AV message may be splitted into serval chunks, the csid
-        //will be updated when one av message's chunks are completely
-        //sent/received??
+        // Restore the cached message header when the chunk stream changes.
+        // RTMP chunks may omit repeated header fields, so each chunk stream ID
+        // keeps its own previous header context.
         if csid != self.current_chunk_info.basic_header.chunk_stream_id {
             tracing::trace!(
                 "read_basic_header, chunk stream id update, new: {}, old:{}, byte: {}",
@@ -303,17 +239,13 @@ impl ChunkUnpacketizer {
                 self.current_chunk_info.basic_header.chunk_stream_id,
                 byte
             );
-            //If the chunk stream id is changed, then we should
-            //restore the cached chunk message header used for
-            //getting the correct message header fields.
             match self.chunk_message_headers.get(&csid) {
                 Some(header) => {
                     self.current_chunk_info.message_header = header.clone();
                     self.print_current_basic_header();
                 }
                 None => {
-                    //The format id of the first chunk of a new chunk stream id must be zero.
-                    //assert_eq!(format_id, 0);
+                    // A new chunk stream starts with a type 0 message header.
                     if format_id != 0 {
                         tracing::warn!(
                             "The chunk stream id: {csid}'s first chunk format is {format_id}."
@@ -326,7 +258,6 @@ impl ChunkUnpacketizer {
                         }
                         self.parse_error_number += 1;
                     } else {
-                        //reset
                         self.parse_error_number = 0;
                     }
                 }
@@ -336,7 +267,6 @@ impl ChunkUnpacketizer {
         if format_id == 0 {
             self.current_message_header().timestamp_delta = 0;
         }
-        // each chunk will read and update the csid and format id
         self.current_chunk_info.basic_header.chunk_stream_id = csid;
         self.current_chunk_info.basic_header.format = format_id;
         self.print_current_basic_header();
@@ -370,29 +300,15 @@ impl ChunkUnpacketizer {
             self.reader.len(),
         );
 
-        //Reset is_extended_timestamp for type 0 ,1 ,2 , for type 3 ,this field will
-        //inherited from the most recent chunk 0, 1, or 2.
-        //(This field is present in Type 3 chunks when the most recent Type 0,
-        //1, or 2 chunk for the same chunk stream ID indicated the presence of
-        //an extended timestamp field. 5.3.1.3)
+        // Type 3 inherits the extended-timestamp flag from the previous
+        // type 0, 1, or 2 chunk on the same chunk stream.
         if self.current_chunk_info.basic_header.format != 3 {
             self.current_message_header().extended_timestamp_type = ExtendTimestampType::NONE;
         }
 
         match self.current_chunk_info.basic_header.format {
-            /*****************************************************************/
-            /*      5.3.1.2.1. Type 0                                        */
-            /*****************************************************************
-             0                   1                   2                   3
-             0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-            |                timestamp(3bytes)              |message length |
-            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-            | message length (cont)(3bytes) |message type id| msg stream id |
-            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-            |       message stream id (cont) (4bytes)       |
-            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-            *****************************************************************/
+            // Type 0: absolute timestamp, message length, message type ID,
+            // and message stream ID.
             0 => {
                 loop {
                     match self.msg_header_read_state {
@@ -434,17 +350,7 @@ impl ChunkUnpacketizer {
                         ExtendTimestampType::FORMAT0;
                 }
             }
-            /*****************************************************************/
-            /*      5.3.1.2.2. Type 1                                        */
-            /*****************************************************************
-             0                   1                   2                   3
-             0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-            |                timestamp(3bytes)              |message length |
-            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-            | message length (cont)(3bytes) |message type id|
-            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-            *****************************************************************/
+            // Type 1: timestamp delta, message length, and message type ID.
             1 => {
                 loop {
                     match self.msg_header_read_state {
@@ -474,7 +380,7 @@ impl ChunkUnpacketizer {
                             break;
                         }
                         _ => {
-                            tracing::error!("error happend when read chunk message header");
+                            tracing::error!("unexpected message header read state");
                             break;
                         }
                     }
@@ -485,15 +391,7 @@ impl ChunkUnpacketizer {
                         ExtendTimestampType::FORMAT12;
                 }
             }
-            /************************************************/
-            /*      5.3.1.2.3. Type 2                       */
-            /************************************************
-             0                   1                   2
-             0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3
-            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-            |                timestamp(3bytes)              |
-            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-            ***************************************************/
+            // Type 2: timestamp delta only.
             2 => {
                 tracing::trace!(
                     "read_message_header format 2, msg_type_id: {}",
@@ -518,15 +416,10 @@ impl ChunkUnpacketizer {
     }
 
     pub fn read_extended_timestamp(&mut self) -> Result<UnpackResult, UnpackError> {
-        //The extended timestamp field is present in Type 3 chunks when the most recent Type 0,
-        //1, or 2 chunk for the same chunk stream ID indicated the presence of
-        //an extended timestamp field.
         match self.current_message_header().extended_timestamp_type {
-            //the current fortmat type can be 0 or 3
             ExtendTimestampType::FORMAT0 => {
                 self.current_message_header().timestamp = self.reader.read_u32::<BigEndian>()?;
             }
-            //the current fortmat type can be 1,2 or 3
             ExtendTimestampType::FORMAT12 => {
                 self.current_message_header().timestamp_delta =
                     self.reader.read_u32::<BigEndian>()?;
@@ -534,7 +427,6 @@ impl ChunkUnpacketizer {
             ExtendTimestampType::NONE => {}
         }
 
-        //compute the abs timestamp
         let cur_format_id = self.current_chunk_info.basic_header.format;
         if cur_format_id == 1
             || cur_format_id == 2
@@ -565,7 +457,6 @@ impl ChunkUnpacketizer {
     pub fn read_message_payload(&mut self) -> Result<UnpackResult, UnpackError> {
         let whole_msg_length = self.current_message_header().msg_length as usize;
 
-        // Check message size limit to prevent unbounded memory growth
         if whole_msg_length > MAX_MESSAGE_SIZE {
             return Err(UnpackError {
                 value: UnpackErrorValue::MessageTooLarge(whole_msg_length, MAX_MESSAGE_SIZE),
@@ -608,13 +499,11 @@ impl ChunkUnpacketizer {
 
         if self.current_chunk_info.payload.len() == whole_msg_length {
             self.chunk_read_state = ChunkReadState::Finish;
-            //get the complete chunk and clear the current chunk payload
             let chunk_info = self.current_chunk_info.clone();
             self.current_chunk_info.payload.clear();
 
             let csid = self.current_chunk_info.basic_header.chunk_stream_id;
 
-            // LRU cache automatically evicts least-recently-used entries when full
             self.chunk_message_headers
                 .put(csid, self.current_chunk_info.message_header.clone());
 
@@ -640,12 +529,10 @@ mod tests {
         let mut unpacker = ChunkUnpacketizer::new();
 
         let data: [u8; 16] = [
-            2, //|format+csid|
-            00, 00, 00, //timestamp
-            00, 00, 4, //msg_length
-            1, //msg_type_id
-            00, 00, 00, 00, //msg_stream_id
-            00, 00, 10, 00, //body
+            2, 0, 0, 0, // format + csid, timestamp
+            0, 0, 4, 1, // message length, message type ID
+            0, 0, 0, 0, // message stream ID
+            0, 0, 10, 0, // body
         ];
 
         unpacker.extend_data(&data[..]).unwrap();
@@ -657,38 +544,10 @@ mod tests {
 
         let expected = ChunkInfo::new(2, 0, 0, 4, 1, 0, body);
 
-        println!("{:?}, {:?}", expected.basic_header, expected.message_header);
-
         assert_eq!(
             rv.unwrap(),
             UnpackResult::ChunkInfo(expected),
-            "not correct"
+            "set chunk size packet should unpack into the expected RTMP chunk"
         );
-    }
-
-    #[test]
-    fn test_overflow_add() {
-        let aa: u32 = u32::MAX;
-        println!("{aa}");
-
-        let (_a, _b) = aa.overflowing_add(5);
-
-        let b = aa.wrapping_add(5);
-
-        println!("{b}");
-    }
-
-    use std::collections::VecDeque;
-
-    #[test]
-    fn test_unpacketizer2() {
-        let mut queue = VecDeque::new();
-        queue.push_back(2);
-        queue.push_back(3);
-        queue.push_back(4);
-
-        for data in &queue {
-            println!("{data}");
-        }
     }
 }

@@ -4,7 +4,8 @@ use crate::impls::ApiError;
 use std::collections::HashMap;
 use synctv_core::models::{
     ChatMessageEvent, ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery,
-    CreateChatImageUploadSession, MarkChatRead, SendChatMessage, SetChatReaction, UserId,
+    CreateChatImageUploadSession, MarkChatRead, PageParams, RoomListQuery, RoomListSortBy,
+    RoomStatus, SendChatMessage, SetChatReaction, SortDirection, UserId,
 };
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::room::ClientResourceAvailability;
@@ -22,6 +23,17 @@ use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 mod support;
 use support::*;
 pub(crate) use support::{chat_reaction_count, chat_reaction_summary_to_proto};
+
+fn required_room_availability(
+    availability_map: &HashMap<synctv_core::models::RoomId, ClientResourceAvailability>,
+    room_id: &synctv_core::models::RoomId,
+) -> Result<ClientResourceAvailability, ApiError> {
+    availability_map.get(room_id).copied().ok_or_else(|| {
+        ApiError::Internal(format!(
+            "Missing client availability for room {room_id} in batch response"
+        ))
+    })
+}
 
 impl ClientApiImpl {
     async fn load_room_member_count(
@@ -117,16 +129,14 @@ impl ClientApiImpl {
 
         let mut room_list = Vec::with_capacity(rooms.len());
         for r in &rooms {
-            let member_count = member_counts.get(&r.id).copied();
-            let availability = *availability_map
-                .get(&r.id)
-                .unwrap_or(&ClientResourceAvailability::Available);
-            let settings = room_settings_map.get(&r.id);
+            let member_count = crate::impls::room_member_count_or_zero(&member_counts, &r.id);
+            let availability = required_room_availability(&availability_map, &r.id)?;
+            let settings = required_room_settings(&room_settings_map, &r.id)?;
             room_list.push(
                 self.room_to_proto_with_availability_and_loaded_cover(
                     r,
-                    settings,
-                    member_count,
+                    Some(settings),
+                    Some(member_count),
                     availability,
                 )
                 .await?,
@@ -639,10 +649,7 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::CreateWebSocketTicketResponse, ApiError> {
         let room_id = build_create_websocket_ticket_request(&req, &self.public_id_codec)?;
         let requested_room_id = req.room_id;
-        let ws_ticket_service = self
-            .ws_ticket_service
-            .as_ref()
-            .ok_or_else(websocket_ticket_service_unavailable_error)?;
+        let ws_ticket_service = &self.ws_ticket_service;
 
         let room = self
             .room_service
@@ -704,10 +711,7 @@ impl ClientApiImpl {
             ));
         }
 
-        let ws_ticket_service = self
-            .ws_ticket_service
-            .as_ref()
-            .ok_or_else(websocket_ticket_service_unavailable_error)?;
+        let ws_ticket_service = &self.ws_ticket_service;
 
         let room = self
             .room_service
@@ -1236,43 +1240,43 @@ impl ClientApiImpl {
 
         let mut online_by_room: HashMap<synctv_core::models::RoomId, usize> =
             room_online_counts.into_iter().collect();
-        let mut room_online: Vec<(synctv_core::models::Room, i32)> = rooms
-            .into_iter()
-            .filter_map(|room| {
-                let count = online_by_room.remove(&room.id).unwrap_or(0);
-                (count > 0).then_some((room, count))
-            })
-            .map(|(room, count)| {
-                usize_to_i32_api(count, "hot room online count").map(|count| (room, count))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        room_online.sort_by_key(|(room, count)| (std::cmp::Reverse(*count), room.id));
-        let mut top_rooms: Vec<_> = room_online.into_iter().take(limit_usize).collect();
-
+        let mut top_rooms = Vec::with_capacity(rooms.len());
+        for room in rooms {
+            let count = online_by_room.remove(&room.id).ok_or_else(|| {
+                ApiError::Internal(format!("Missing online count for hot room {}", room.id))
+            })?;
+            if count > 0 {
+                top_rooms.push((room, usize_to_i32_api(count, "hot room online count")?));
+            }
+        }
+        top_rooms.sort_by_key(|(room, count)| (std::cmp::Reverse(*count), room.id));
+        top_rooms.truncate(limit_usize);
         if top_rooms.len() < limit_usize {
-            let fallback_query = synctv_core::models::RoomListQuery {
-                pagination: synctv_core::models::PageParams::new(
-                    Some(1),
-                    Some(usize_to_u32_api(limit_usize, "hot room fallback limit")?),
-                ),
-                search: None,
-                status: Some(synctv_core::models::RoomStatus::Active),
-                is_banned: Some(false),
-                creator_id: None,
-                sort_by: synctv_core::models::RoomListSortBy::CreatedAt,
-                sort_direction: synctv_core::models::SortDirection::Desc,
-            };
-            let (fallback_rooms, _) = self
+            let recent_limit =
+                u32::try_from(limit_usize.saturating_add(top_rooms.len())).map_err(|_| {
+                    ApiError::InvalidInput("hot room limit exceeds u32::MAX".to_string())
+                })?;
+            let (recent_rooms, _) = self
                 .room_service
-                .list_rooms(&fallback_query)
+                .list_rooms(&RoomListQuery {
+                    pagination: PageParams::new(Some(1), Some(recent_limit)),
+                    status: Some(RoomStatus::Active),
+                    search: None,
+                    is_banned: Some(false),
+                    creator_id: None,
+                    sort_by: RoomListSortBy::LastActivityAt,
+                    sort_direction: SortDirection::Desc,
+                })
                 .await
                 .map_err(ApiError::from)?;
-            for room in fallback_rooms {
-                if top_rooms.iter().all(|(existing, _)| existing.id != room.id) {
-                    top_rooms.push((room, 0));
-                }
+            let mut selected_ids: std::collections::HashSet<synctv_core::models::RoomId> =
+                top_rooms.iter().map(|(room, _)| room.id).collect();
+            for room in recent_rooms {
                 if top_rooms.len() >= limit_usize {
                     break;
+                }
+                if selected_ids.insert(room.id) {
+                    top_rooms.push((room, 0));
                 }
             }
         }
@@ -1303,17 +1307,15 @@ impl ClientApiImpl {
 
         let mut hot_rooms = Vec::with_capacity(top_rooms.len());
         for (room, online_count) in top_rooms {
-            let total_members = member_counts.get(&room.id).copied().unwrap_or(0);
-            let settings = settings_map.get(&room.id);
-            let availability = *availability_map
-                .get(&room.id)
-                .unwrap_or(&ClientResourceAvailability::Available);
+            let total_members = crate::impls::room_member_count_or_zero(&member_counts, &room.id);
+            let settings = required_room_settings(&settings_map, &room.id)?;
+            let availability = required_room_availability(&availability_map, &room.id)?;
 
             hot_rooms.push(synctv_proto::client::RoomWithStats {
                 room: Some(
                     self.room_to_proto_with_availability_and_loaded_cover(
                         &room,
-                        settings,
+                        Some(settings),
                         Some(total_members),
                         availability,
                     )
@@ -1946,21 +1948,45 @@ mod tests {
         build_transfer_room_ownership_request, delete_chat_message_request_to_core,
         edit_chat_message_request_to_core, optional_positive_limit,
         optional_positive_window_seconds, optional_trimmed_string, parse_json_metadata,
-        parse_proto_chat_images, required_playback_position_seconds,
-        settings_registry_unavailable_error, websocket_ticket_service_unavailable_error,
+        parse_proto_chat_images, required_playback_position_seconds, required_room_availability,
+        settings_registry_unavailable_error,
     };
     use crate::impls::ErrorKind;
+    use std::collections::HashMap;
+    use synctv_core::service::room::ClientResourceAvailability;
+
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn api_ok<T>(result: Result<T, crate::impls::ApiError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("{error:?}")))
+    }
+
+    fn api_err<T>(result: Result<T, crate::impls::ApiError>) -> TestResult<crate::impls::ApiError> {
+        match result {
+            Ok(_) => Err(test_error("expected API error result")),
+            Err(error) => Ok(error),
+        }
+    }
+
+    fn codec_ok<T>(result: Result<T, String>) -> TestResult<T> {
+        result.map_err(test_error)
+    }
 
     #[test]
-    fn build_public_room_list_query_maps_sorting_and_defaults() {
-        let query = build_public_room_list_query(synctv_proto::client::ListRoomsRequest {
-            page: 0,
-            page_size: 0,
-            search: "alpha".to_string(),
-            sort_by: synctv_proto::client::RoomListSortBy::Name as i32,
-            sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-        })
-        .unwrap();
+    fn build_public_room_list_query_maps_sorting_and_defaults() -> TestResult {
+        let query = api_ok(build_public_room_list_query(
+            synctv_proto::client::ListRoomsRequest {
+                page: 0,
+                page_size: 0,
+                search: "alpha".to_string(),
+                sort_by: synctv_proto::client::RoomListSortBy::Name as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+            },
+        ))?;
 
         assert_eq!(query.pagination.page, 1);
         assert_eq!(query.pagination.page_size, 20);
@@ -1972,21 +1998,23 @@ mod tests {
             query.sort_direction,
             synctv_core::models::SortDirection::Asc
         );
+        Ok(())
     }
 
     #[test]
-    fn build_my_room_list_query_maps_filters_sorting_and_defaults() {
-        let query = build_my_room_list_query(synctv_proto::client::ListMyRoomsRequest {
-            page: 0,
-            page_size: 0,
-            search: "alpha".to_string(),
-            status: synctv_proto::common::RoomStatus::Closed as i32,
-            is_banned: Some(false),
-            relation: synctv_proto::client::MyRoomRelation::Participating as i32,
-            sort_by: synctv_proto::client::MyRoomListSortBy::Name as i32,
-            sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-        })
-        .unwrap();
+    fn build_my_room_list_query_maps_filters_sorting_and_defaults() -> TestResult {
+        let query = api_ok(build_my_room_list_query(
+            synctv_proto::client::ListMyRoomsRequest {
+                page: 0,
+                page_size: 0,
+                search: "alpha".to_string(),
+                status: synctv_proto::common::RoomStatus::Closed as i32,
+                is_banned: Some(false),
+                relation: synctv_proto::client::MyRoomRelation::Participating as i32,
+                sort_by: synctv_proto::client::MyRoomListSortBy::Name as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+            },
+        ))?;
 
         assert_eq!(query.pagination.page, 1);
         assert_eq!(query.pagination.page_size, 20);
@@ -2002,21 +2030,23 @@ mod tests {
             query.sort_direction,
             synctv_core::models::SortDirection::Asc
         );
+        Ok(())
     }
 
     #[test]
-    fn build_my_room_list_query_defaults_relation_to_all() {
-        let query = build_my_room_list_query(synctv_proto::client::ListMyRoomsRequest {
-            page: 1,
-            page_size: 20,
-            search: String::new(),
-            status: synctv_proto::common::RoomStatus::Unspecified as i32,
-            is_banned: None,
-            relation: synctv_proto::client::MyRoomRelation::Unspecified as i32,
-            sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
-            sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
-        })
-        .unwrap();
+    fn build_my_room_list_query_defaults_relation_to_all() -> TestResult {
+        let query = api_ok(build_my_room_list_query(
+            synctv_proto::client::ListMyRoomsRequest {
+                page: 1,
+                page_size: 20,
+                search: String::new(),
+                status: synctv_proto::common::RoomStatus::Unspecified as i32,
+                is_banned: None,
+                relation: synctv_proto::client::MyRoomRelation::Unspecified as i32,
+                sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
+                sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+            },
+        ))?;
 
         assert_eq!(query.relation, synctv_core::models::MyRoomRelation::All);
         assert_eq!(
@@ -2027,48 +2057,51 @@ mod tests {
             query.sort_direction,
             synctv_core::models::SortDirection::Desc
         );
+        Ok(())
     }
 
     #[test]
-    fn build_my_room_list_query_rejects_unknown_room_status() {
-        let error = build_my_room_list_query(synctv_proto::client::ListMyRoomsRequest {
-            page: 1,
-            page_size: 20,
-            search: String::new(),
-            status: 99,
-            is_banned: None,
-            relation: synctv_proto::client::MyRoomRelation::Unspecified as i32,
-            sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
-            sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
-        })
-        .unwrap_err();
+    fn build_my_room_list_query_rejects_unknown_room_status() -> TestResult {
+        let error = api_err(build_my_room_list_query(
+            synctv_proto::client::ListMyRoomsRequest {
+                page: 1,
+                page_size: 20,
+                search: String::new(),
+                status: 99,
+                is_banned: None,
+                relation: synctv_proto::client::MyRoomRelation::Unspecified as i32,
+                sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
+                sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+            },
+        ))?;
 
         match error {
             crate::impls::ApiError::InvalidInput(message) => {
                 assert!(message.contains("status"), "{message}");
             }
-            other => panic!("expected invalid input, got {other:?}"),
+            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
         }
+        Ok(())
     }
 
     #[test]
-    fn room_list_query_builders_reject_unknown_sort_and_relation_enums() {
-        let public_room_error =
-            build_public_room_list_query(synctv_proto::client::ListRoomsRequest {
+    fn room_list_query_builders_reject_unknown_sort_and_relation_enums() -> TestResult {
+        let public_room_error = api_err(build_public_room_list_query(
+            synctv_proto::client::ListRoomsRequest {
                 page: 1,
                 page_size: 20,
                 search: String::new(),
                 sort_by: 99,
                 sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
-            })
-            .unwrap_err();
+            },
+        ))?;
         assert!(matches!(
             public_room_error,
             crate::impls::ApiError::InvalidInput(message) if message.contains("sort_by")
         ));
 
-        let my_room_relation_error =
-            build_my_room_list_query(synctv_proto::client::ListMyRoomsRequest {
+        let my_room_relation_error = api_err(build_my_room_list_query(
+            synctv_proto::client::ListMyRoomsRequest {
                 page: 1,
                 page_size: 20,
                 search: String::new(),
@@ -2077,15 +2110,15 @@ mod tests {
                 relation: 99,
                 sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
                 sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
-            })
-            .unwrap_err();
+            },
+        ))?;
         assert!(matches!(
             my_room_relation_error,
             crate::impls::ApiError::InvalidInput(message) if message.contains("relation")
         ));
 
-        let my_room_sort_error =
-            build_my_room_list_query(synctv_proto::client::ListMyRoomsRequest {
+        let my_room_sort_error = api_err(build_my_room_list_query(
+            synctv_proto::client::ListMyRoomsRequest {
                 page: 1,
                 page_size: 20,
                 search: String::new(),
@@ -2094,46 +2127,50 @@ mod tests {
                 relation: synctv_proto::client::MyRoomRelation::Unspecified as i32,
                 sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
                 sort_direction: 99,
-            })
-            .unwrap_err();
+            },
+        ))?;
         assert!(matches!(
             my_room_sort_error,
             crate::impls::ApiError::InvalidInput(message) if message.contains("sort_direction")
         ));
+        Ok(())
     }
 
     #[test]
-    fn build_my_room_list_query_rejects_too_long_search() {
-        let error = build_my_room_list_query(synctv_proto::client::ListMyRoomsRequest {
-            page: 1,
-            page_size: 20,
-            search: "a".repeat(101),
-            status: synctv_proto::common::RoomStatus::Unspecified as i32,
-            is_banned: None,
-            relation: synctv_proto::client::MyRoomRelation::Unspecified as i32,
-            sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
-            sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
-        })
-        .unwrap_err();
+    fn build_my_room_list_query_rejects_too_long_search() -> TestResult {
+        let error = api_err(build_my_room_list_query(
+            synctv_proto::client::ListMyRoomsRequest {
+                page: 1,
+                page_size: 20,
+                search: "a".repeat(101),
+                status: synctv_proto::common::RoomStatus::Unspecified as i32,
+                is_banned: None,
+                relation: synctv_proto::client::MyRoomRelation::Unspecified as i32,
+                sort_by: synctv_proto::client::MyRoomListSortBy::Unspecified as i32,
+                sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+            },
+        ))?;
 
         match error {
             crate::impls::ApiError::InvalidInput(message) => {
                 assert!(message.contains("search"), "{message}");
             }
-            other => panic!("expected invalid input, got {other:?}"),
+            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
         }
+        Ok(())
     }
 
     #[test]
-    fn build_public_room_list_query_rejects_invalid_proto_request() {
-        let error = build_public_room_list_query(synctv_proto::client::ListRoomsRequest {
-            page: -1,
-            page_size: 101,
-            search: "a".repeat(101),
-            sort_by: 99,
-            sort_direction: 99,
-        })
-        .unwrap_err();
+    fn build_public_room_list_query_rejects_invalid_proto_request() -> TestResult {
+        let error = api_err(build_public_room_list_query(
+            synctv_proto::client::ListRoomsRequest {
+                page: -1,
+                page_size: 101,
+                search: "a".repeat(101),
+                sort_by: 99,
+                sort_direction: 99,
+            },
+        ))?;
 
         match error {
             crate::impls::ApiError::InvalidInput(message) => {
@@ -2143,167 +2180,181 @@ mod tests {
                 assert!(message.contains("sort_by"), "{message}");
                 assert!(message.contains("sort_direction"), "{message}");
             }
-            other => panic!("expected invalid input, got {other:?}"),
+            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
         }
+        Ok(())
     }
 
     #[test]
-    fn build_transfer_room_ownership_request_rejects_invalid_new_owner_user_id() {
-        let codec = crate::PublicIdCodec::plain();
-        let error = build_transfer_room_ownership_request(
+    fn build_transfer_room_ownership_request_rejects_invalid_new_owner_user_id() -> TestResult {
+        let codec = synctv_core::PublicIdCodec::plain();
+        let error = api_err(build_transfer_room_ownership_request(
             synctv_proto::client::TransferRoomOwnershipRequest {
                 new_owner_user_id: "bad-id".to_string(),
             },
             &codec,
-        )
-        .unwrap_err();
+        ))?;
 
         match error {
             crate::impls::ApiError::InvalidInput(message) => {
                 assert!(message.contains("new_owner_user_id"), "{message}");
             }
-            other => panic!("expected invalid input, got {other:?}"),
+            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
         }
+        Ok(())
     }
 
     #[test]
-    fn build_check_room_request_rejects_invalid_room_id() {
-        let codec = crate::PublicIdCodec::plain();
-        let error = build_check_room_request(
+    fn build_check_room_request_rejects_invalid_room_id() -> TestResult {
+        let codec = synctv_core::PublicIdCodec::plain();
+        let error = api_err(build_check_room_request(
             synctv_proto::client::CheckRoomRequest {
                 room_id: "bad-room".to_string(),
             },
             &codec,
-        )
-        .unwrap_err();
+        ))?;
 
         match error {
             crate::impls::ApiError::InvalidInput(message) => {
                 assert!(message.contains("room_id"), "{message}");
             }
-            other => panic!("expected invalid input, got {other:?}"),
+            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
         }
+        Ok(())
     }
 
     #[test]
-    fn build_create_websocket_ticket_request_rejects_invalid_room_id() {
-        let codec = crate::PublicIdCodec::plain();
-        let error = build_create_websocket_ticket_request(
+    fn build_create_websocket_ticket_request_rejects_invalid_room_id() -> TestResult {
+        let codec = synctv_core::PublicIdCodec::plain();
+        let error = api_err(build_create_websocket_ticket_request(
             &synctv_proto::client::CreateWebSocketTicketRequest {
                 room_id: "bad-room".to_string(),
             },
             &codec,
-        )
-        .unwrap_err();
+        ))?;
 
         match error {
             crate::impls::ApiError::InvalidInput(message) => {
                 assert!(message.contains("room_id"), "{message}");
             }
-            other => panic!("expected invalid input, got {other:?}"),
+            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
         }
+        Ok(())
     }
 
     #[test]
-    fn build_create_websocket_ticket_request_parses_proto_validated_room_id() {
-        let codec = crate::PublicIdCodec::plain();
+    fn build_create_websocket_ticket_request_parses_proto_validated_room_id() -> TestResult {
+        let codec = synctv_core::PublicIdCodec::plain();
         let room_id = synctv_core::models::RoomId::expect_positive(123);
-        let room_public_id = codec.encode_room_id(room_id).unwrap();
-        let parsed = build_create_websocket_ticket_request(
+        let room_public_id = codec_ok(codec.encode_room_id(room_id))?;
+        let parsed = api_ok(build_create_websocket_ticket_request(
             &synctv_proto::client::CreateWebSocketTicketRequest {
                 room_id: room_public_id,
             },
             &codec,
-        )
-        .expect("valid room id");
+        ))?;
 
         assert_eq!(parsed, room_id);
+        Ok(())
     }
 
     #[test]
-    fn build_create_websocket_ticket_request_rejects_proto_valid_but_undecodable_room_id() {
-        let codec = crate::PublicIdCodec::plain();
-        let error = build_create_websocket_ticket_request(
+    fn build_create_websocket_ticket_request_rejects_proto_valid_but_undecodable_room_id(
+    ) -> TestResult {
+        let codec = synctv_core::PublicIdCodec::plain();
+        let error = api_err(build_create_websocket_ticket_request(
             &synctv_proto::client::CreateWebSocketTicketRequest {
                 room_id: "room_abc".to_string(),
             },
             &codec,
-        )
-        .expect_err("plain public ID body must decode");
+        ))?;
 
         match error {
             crate::impls::ApiError::InvalidInput(message) => {
                 assert!(message.contains("RoomId"), "{message}");
             }
-            other => panic!("expected invalid input, got {other:?}"),
+            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
         }
+        Ok(())
     }
 
     #[test]
-    fn websocket_ticket_service_unavailable_maps_to_service_unavailable() {
-        let err = websocket_ticket_service_unavailable_error();
+    fn build_get_chat_history_request_rejects_invalid_limit() -> TestResult {
+        let error = api_err(build_get_chat_history_request(
+            &synctv_proto::client::GetChatHistoryRequest {
+                limit: 101,
+                cursor: String::new(),
+            },
+        ))?;
 
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("limit"), "{message}");
+            }
+            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hot_rooms_validation_rejects_out_of_range_limit() -> TestResult {
+        let error = api_err(crate::impls::validate_proto_request(
+            &synctv_proto::client::GetHotRoomsRequest { limit: 51 },
+        ))?;
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("limit"), "{message}");
+            }
+            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hot_rooms_validation_allows_default_limit_sentinel() -> TestResult {
+        api_ok(crate::impls::validate_proto_request(
+            &synctv_proto::client::GetHotRoomsRequest { limit: 0 },
+        ))?;
+        Ok(())
+    }
+
+    #[test]
+    fn required_room_availability_rejects_missing_batch_entry() -> TestResult {
+        let room_id = synctv_core::models::RoomId::expect_positive(456);
+        let map = HashMap::from([(room_id, ClientResourceAvailability::CreatorInactive)]);
+
+        assert_eq!(
+            api_ok(required_room_availability(&map, &room_id))?,
+            ClientResourceAvailability::CreatorInactive
+        );
+
+        let missing_room_id = synctv_core::models::RoomId::expect_positive(457);
+        let error = api_err(required_room_availability(&map, &missing_room_id))?;
         assert!(matches!(
-            err,
-            crate::impls::ApiError::ServiceUnavailable(ref message)
-                if message == "WebSocket ticket service is not available."
+            error,
+            crate::impls::ApiError::Internal(message)
+                if message.contains("Missing client availability for room")
         ));
+        Ok(())
     }
 
     #[test]
-    fn build_get_chat_history_request_rejects_invalid_limit() {
-        let error = build_get_chat_history_request(&synctv_proto::client::GetChatHistoryRequest {
-            limit: 101,
-            cursor: String::new(),
-        })
-        .unwrap_err();
-
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("limit"), "{message}");
-            }
-            other => panic!("expected invalid input, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn hot_rooms_validation_rejects_out_of_range_limit() {
-        let error =
-            crate::impls::validate_proto_request(&synctv_proto::client::GetHotRoomsRequest {
-                limit: 51,
-            })
-            .unwrap_err();
-
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("limit"), "{message}");
-            }
-            other => panic!("expected invalid input, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn hot_rooms_validation_allows_default_limit_sentinel() {
-        crate::impls::validate_proto_request(&synctv_proto::client::GetHotRoomsRequest {
-            limit: 0,
-        })
-        .expect("zero should request the default hot-room limit");
-    }
-
-    #[test]
-    fn build_get_chat_history_request_rejects_invalid_cursor() {
-        let error = build_get_chat_history_request(&synctv_proto::client::GetChatHistoryRequest {
-            limit: 50,
-            cursor: "not-a-cursor".to_string(),
-        })
-        .unwrap_err();
+    fn build_get_chat_history_request_rejects_invalid_cursor() -> TestResult {
+        let error = api_err(build_get_chat_history_request(
+            &synctv_proto::client::GetChatHistoryRequest {
+                limit: 50,
+                cursor: "not-a-cursor".to_string(),
+            },
+        ))?;
 
         match error {
             crate::impls::ApiError::InvalidInput(message) => {
                 assert!(message.contains("Invalid cursor format"), "{message}");
             }
-            other => panic!("expected invalid input, got {other:?}"),
+            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
         }
+        Ok(())
     }
 
     #[test]
@@ -2316,13 +2367,17 @@ mod tests {
     }
 
     #[test]
-    fn chat_playback_window_seconds_validate_explicit_values() {
+    fn chat_playback_window_seconds_validate_explicit_values() -> TestResult {
         assert_eq!(
-            optional_positive_window_seconds(0.0, 30.0, "after_seconds").unwrap(),
+            api_ok(optional_positive_window_seconds(0.0, 30.0, "after_seconds"))?,
             30.0
         );
         assert_eq!(
-            optional_positive_window_seconds(12.5, 30.0, "after_seconds").unwrap(),
+            api_ok(optional_positive_window_seconds(
+                12.5,
+                30.0,
+                "after_seconds"
+            ))?,
             12.5
         );
         assert!(matches!(
@@ -2335,12 +2390,13 @@ mod tests {
             Err(crate::impls::ApiError::InvalidInput(message))
                 if message.contains("after_seconds")
         ));
+        Ok(())
     }
 
     #[test]
-    fn chat_playback_limit_validates_explicit_values() {
-        assert_eq!(optional_positive_limit(0, 200, 500, "limit").unwrap(), 200);
-        assert_eq!(optional_positive_limit(50, 200, 500, "limit").unwrap(), 50);
+    fn chat_playback_limit_validates_explicit_values() -> TestResult {
+        assert_eq!(api_ok(optional_positive_limit(0, 200, 500, "limit"))?, 200);
+        assert_eq!(api_ok(optional_positive_limit(50, 200, 500, "limit"))?, 50);
         assert!(matches!(
             optional_positive_limit(-1, 200, 500, "limit"),
             Err(crate::impls::ApiError::InvalidInput(message)) if message.contains("limit")
@@ -2349,11 +2405,12 @@ mod tests {
             optional_positive_limit(501, 200, 500, "limit"),
             Err(crate::impls::ApiError::InvalidInput(message)) if message.contains("limit")
         ));
+        Ok(())
     }
 
     #[test]
-    fn chat_playback_position_seconds_is_required_valid_value() {
-        assert_eq!(required_playback_position_seconds(42.5).unwrap(), 42.5);
+    fn chat_playback_position_seconds_is_required_valid_value() -> TestResult {
+        assert_eq!(api_ok(required_playback_position_seconds(42.5))?, 42.5);
         assert!(matches!(
             required_playback_position_seconds(-0.1),
             Err(crate::impls::ApiError::InvalidInput(message))
@@ -2364,11 +2421,12 @@ mod tests {
             Err(crate::impls::ApiError::InvalidInput(message))
                 if message.contains("position_seconds")
         ));
+        Ok(())
     }
 
     #[test]
-    fn parse_json_metadata_rejects_non_object_values() {
-        let error = parse_json_metadata(br#"["tag"]"#).expect_err("metadata should be object");
+    fn parse_json_metadata_rejects_non_object_values() -> TestResult {
+        let error = api_err(parse_json_metadata(br#"["tag"]"#))?;
 
         match error {
             crate::impls::ApiError::InvalidInput(message) => {
@@ -2377,12 +2435,13 @@ mod tests {
                     "{message}"
                 );
             }
-            other => panic!("expected invalid input, got {other:?}"),
+            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
         }
+        Ok(())
     }
 
     #[test]
-    fn chat_image_proto_roundtrip_preserves_upload_token_metadata() {
+    fn chat_image_proto_roundtrip_preserves_upload_token_metadata() -> TestResult {
         let metadata = serde_json::json!({
             "_synctv_upload_token": "v1.payload.signature",
             "blurhash": "abc"
@@ -2399,11 +2458,12 @@ mod tests {
             metadata: metadata.clone(),
         };
 
-        let proto = super::new_chat_image_to_proto(&image).expect("image should convert");
-        let parsed = parse_proto_chat_images(&[proto]).expect("image should parse");
+        let proto = api_ok(super::new_chat_image_to_proto(&image))?;
+        let parsed = api_ok(parse_proto_chat_images(&[proto]))?;
 
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].metadata, metadata);
+        Ok(())
     }
 
     #[test]
@@ -2439,20 +2499,19 @@ mod tests {
     }
 
     #[test]
-    fn edit_chat_message_request_maps_client_operation_id() {
+    fn edit_chat_message_request_maps_client_operation_id() -> TestResult {
         let request = synctv_proto::client::EditChatMessageRequest {
             message_id: "42".to_string(),
             content: "hello".to_string(),
             expected_version: 7,
-            metadata: serde_json::to_vec(&serde_json::json!({"edited": true})).unwrap(),
+            metadata: serde_json::to_vec(&serde_json::json!({"edited": true}))?,
             client_operation_id: " edit-op-42 ".to_string(),
         };
-        let core = edit_chat_message_request_to_core(
+        let core = api_ok(edit_chat_message_request_to_core(
             synctv_core::models::RoomId::expect_positive(9),
             synctv_core::models::UserId::expect_positive(11),
             request,
-        )
-        .expect("request should map");
+        ))?;
 
         assert_eq!(
             core.room_id,
@@ -2465,22 +2524,22 @@ mod tests {
         assert_eq!(core.message_id, 42);
         assert_eq!(core.client_operation_id.as_deref(), Some("edit-op-42"));
         assert_eq!(core.expected_version, Some(7));
+        Ok(())
     }
 
     #[test]
-    fn delete_chat_message_request_maps_client_operation_id() {
+    fn delete_chat_message_request_maps_client_operation_id() -> TestResult {
         let request = synctv_proto::client::DeleteChatMessageRequest {
             message_id: "42".to_string(),
             expected_version: 7,
             reason: " cleanup ".to_string(),
             client_operation_id: " delete-op-42 ".to_string(),
         };
-        let core = delete_chat_message_request_to_core(
+        let core = api_ok(delete_chat_message_request_to_core(
             synctv_core::models::RoomId::expect_positive(9),
             synctv_core::models::UserId::expect_positive(11),
             &request,
-        )
-        .expect("request should map");
+        ))?;
 
         assert_eq!(
             core.room_id,
@@ -2494,11 +2553,12 @@ mod tests {
         assert_eq!(core.client_operation_id.as_deref(), Some("delete-op-42"));
         assert_eq!(core.reason.as_deref(), Some("cleanup"));
         assert_eq!(core.expected_version, Some(7));
+        Ok(())
     }
 
     #[test]
-    fn edit_chat_message_request_accepts_absent_expected_version() {
-        let core = edit_chat_message_request_to_core(
+    fn edit_chat_message_request_accepts_absent_expected_version() -> TestResult {
+        let core = api_ok(edit_chat_message_request_to_core(
             synctv_core::models::RoomId::expect_positive(9),
             synctv_core::models::UserId::expect_positive(11),
             synctv_proto::client::EditChatMessageRequest {
@@ -2508,33 +2568,33 @@ mod tests {
                 metadata: Vec::new(),
                 client_operation_id: String::new(),
             },
-        )
-        .expect("edit request should accept absent expected_version");
+        ))?;
 
         assert_eq!(core.expected_version, None);
+        Ok(())
     }
 
     #[test]
-    fn delete_chat_message_request_accepts_absent_expected_version() {
+    fn delete_chat_message_request_accepts_absent_expected_version() -> TestResult {
         let request = synctv_proto::client::DeleteChatMessageRequest {
             message_id: "42".to_string(),
             expected_version: 0,
             reason: String::new(),
             client_operation_id: String::new(),
         };
-        let core = delete_chat_message_request_to_core(
+        let core = api_ok(delete_chat_message_request_to_core(
             synctv_core::models::RoomId::expect_positive(9),
             synctv_core::models::UserId::expect_positive(11),
             &request,
-        )
-        .expect("delete request should accept absent expected_version");
+        ))?;
 
         assert_eq!(core.expected_version, None);
+        Ok(())
     }
 
     #[test]
-    fn chat_message_request_rejects_negative_expected_version() {
-        let edit_error = edit_chat_message_request_to_core(
+    fn chat_message_request_rejects_negative_expected_version() -> TestResult {
+        let edit_error = api_err(edit_chat_message_request_to_core(
             synctv_core::models::RoomId::expect_positive(9),
             synctv_core::models::UserId::expect_positive(11),
             synctv_proto::client::EditChatMessageRequest {
@@ -2544,8 +2604,7 @@ mod tests {
                 metadata: Vec::new(),
                 client_operation_id: String::new(),
             },
-        )
-        .expect_err("edit request with negative expected_version should fail");
+        ))?;
         assert!(matches!(
             edit_error,
             crate::impls::ApiError::InvalidInput(message)
@@ -2558,57 +2617,57 @@ mod tests {
             reason: String::new(),
             client_operation_id: String::new(),
         };
-        let delete_error = delete_chat_message_request_to_core(
+        let delete_error = api_err(delete_chat_message_request_to_core(
             synctv_core::models::RoomId::expect_positive(9),
             synctv_core::models::UserId::expect_positive(11),
             &delete_request,
-        )
-        .expect_err("delete request with negative expected_version should fail");
+        ))?;
         assert!(matches!(
             delete_error,
             crate::impls::ApiError::InvalidInput(message)
                 if message.contains("expected_version")
         ));
+        Ok(())
     }
 
     #[test]
-    fn chat_reaction_summary_rejects_empty_key() {
+    fn chat_reaction_summary_rejects_empty_key() -> TestResult {
         let reaction = synctv_core::models::ChatReactionSummary {
             key: " ".to_string(),
             count: 1,
             reacted_by_me: false,
         };
 
-        let error = super::chat_reaction_summary_to_proto(&reaction)
-            .expect_err("empty reaction key should fail");
+        let error = api_err(super::chat_reaction_summary_to_proto(&reaction))?;
 
         assert!(matches!(
             error,
             crate::impls::ApiError::Internal(message)
                 if message.contains("reaction summary key is empty")
         ));
+        Ok(())
     }
 
     #[test]
-    fn chat_reaction_summary_rejects_negative_count() {
+    fn chat_reaction_summary_rejects_negative_count() -> TestResult {
         let reaction = synctv_core::models::ChatReactionSummary {
             key: "like".to_string(),
             count: -1,
             reacted_by_me: true,
         };
 
-        let error = super::chat_reaction_summary_to_proto(&reaction)
-            .expect_err("negative reaction count should fail");
+        let error = api_err(super::chat_reaction_summary_to_proto(&reaction))?;
 
         assert!(matches!(
             error,
             crate::impls::ApiError::Internal(message)
                 if message.contains("negative count")
         ));
+        Ok(())
     }
 
     #[test]
-    fn chat_reaction_count_rejects_overflow() {
+    fn chat_reaction_count_rejects_overflow() -> TestResult {
         let reactions = vec![
             synctv_proto::client::ChatReactionSummary {
                 key: "a".to_string(),
@@ -2622,14 +2681,14 @@ mod tests {
             },
         ];
 
-        let error = super::chat_reaction_count(&reactions)
-            .expect_err("reaction count overflow should fail");
+        let error = api_err(super::chat_reaction_count(&reactions))?;
 
         assert!(matches!(
             error,
             crate::impls::ApiError::Internal(message)
                 if message.contains("reaction count exceeds")
         ));
+        Ok(())
     }
 
     #[test]
@@ -2643,35 +2702,35 @@ mod tests {
     }
 
     #[test]
-    fn room_password_set_validation_rejects_whitespace_only_password() {
-        let err =
-            super::validate_room_password_for_set("    ").expect_err("blank password should fail");
+    fn room_password_set_validation_rejects_whitespace_only_password() -> TestResult {
+        let err = api_err(super::validate_room_password_for_set("    "))?;
         assert!(matches!(err, crate::impls::ApiError::InvalidInput(_)));
+        Ok(())
     }
 
     #[test]
-    fn room_password_set_validation_counts_trimmed_password_length() {
-        let err = super::validate_room_password_for_set(" abc ")
-            .expect_err("trimmed password is too short");
+    fn room_password_set_validation_counts_trimmed_password_length() -> TestResult {
+        let err = api_err(super::validate_room_password_for_set(" abc "))?;
         assert!(matches!(err, crate::impls::ApiError::InvalidInput(_)));
-        super::validate_room_password_for_set(" abcd ")
-            .expect("trimmed password meets room minimum");
+        api_ok(super::validate_room_password_for_set(" abcd "))?;
+        Ok(())
     }
 
     #[test]
-    fn parse_optional_client_ip_accepts_valid_ip() {
-        let parsed = super::parse_optional_client_ip(Some("203.0.113.42"))
-            .expect("valid client ip should parse");
-        assert_eq!(parsed, Some("203.0.113.42".parse().unwrap()));
+    fn parse_optional_client_ip_accepts_valid_ip() -> TestResult {
+        let parsed = api_ok(super::parse_optional_client_ip(Some("203.0.113.42")))?;
+        let expected = "203.0.113.42".parse()?;
+        assert_eq!(parsed, Some(expected));
+        Ok(())
     }
 
     #[test]
-    fn parse_optional_client_ip_rejects_invalid_ip() {
-        let error = super::parse_optional_client_ip(Some("not-an-ip"))
-            .expect_err("invalid client ip should fail");
+    fn parse_optional_client_ip_rejects_invalid_ip() -> TestResult {
+        let error = api_err(super::parse_optional_client_ip(Some("not-an-ip")))?;
         assert!(matches!(
             error,
             crate::impls::ApiError::InvalidInput(message) if message.contains("Invalid client IP address")
         ));
+        Ok(())
     }
 }

@@ -13,7 +13,6 @@
 //! maintains independent brute-force counters. Monitor the `is_degraded()` flag
 //! or `degraded_operation_count()` to detect Redis connectivity issues.
 //!
-#![allow(clippy::unwrap_used)]
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -23,6 +22,7 @@ use synctv_core::service::{
 };
 use synctv_core_testing::constants::{brute_force, network};
 use synctv_core_testing::start_redis;
+use synctv_core_testing::{ok, TestResultExt};
 use tokio::sync::RwLock;
 
 fn redis_brute_force_protection(
@@ -52,15 +52,30 @@ async fn test_in_memory_tracker_record_and_get() {
     let now = chrono::Utc::now().timestamp();
 
     // Initially no attempts
-    let (count, _ts) = tracker.get_attempts(key).await.unwrap();
+    let (count, _ts) = tracker
+        .get_attempts(key)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 0);
 
     // Record failures
-    tracker.record_failure(key, now, 900).await.unwrap();
-    tracker.record_failure(key, now + 1, 900).await.unwrap();
-    tracker.record_failure(key, now + 2, 900).await.unwrap();
+    tracker
+        .record_failure(key, now, 900)
+        .await
+        .checked("test operation should succeed");
+    tracker
+        .record_failure(key, now + 1, 900)
+        .await
+        .checked("test operation should succeed");
+    tracker
+        .record_failure(key, now + 2, 900)
+        .await
+        .checked("test operation should succeed");
 
-    let (count, last_ts) = tracker.get_attempts(key).await.unwrap();
+    let (count, last_ts) = tracker
+        .get_attempts(key)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 3);
     assert_eq!(last_ts, now + 2);
 }
@@ -71,15 +86,30 @@ async fn test_in_memory_tracker_reset_clears() {
     let key = "user:bob";
     let now = chrono::Utc::now().timestamp();
 
-    tracker.record_failure(key, now, 900).await.unwrap();
-    tracker.record_failure(key, now, 900).await.unwrap();
+    tracker
+        .record_failure(key, now, 900)
+        .await
+        .checked("test operation should succeed");
+    tracker
+        .record_failure(key, now, 900)
+        .await
+        .checked("test operation should succeed");
 
-    let (count, _) = tracker.get_attempts(key).await.unwrap();
+    let (count, _) = tracker
+        .get_attempts(key)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 2);
 
-    tracker.reset(key).await.unwrap();
+    tracker
+        .reset(key)
+        .await
+        .checked("test operation should succeed");
 
-    let (count, _) = tracker.get_attempts(key).await.unwrap();
+    let (count, _) = tracker
+        .get_attempts(key)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 0);
 }
 
@@ -92,7 +122,10 @@ async fn test_brute_force_below_threshold_allowed() {
 
     // Record 4 failures (below tier1 threshold)
     for _ in 0..(brute_force::TIER1_THRESHOLD - 1) {
-        protection.record_failure("alice", ip).await.unwrap();
+        protection
+            .record_failure("alice", ip)
+            .await
+            .checked("test operation should succeed");
     }
 
     // Should still be allowed
@@ -104,17 +137,20 @@ async fn test_brute_force_below_threshold_allowed() {
 #[ignore = "Requires Docker"]
 async fn test_brute_force_at_tier1_threshold_locked() {
     let protection = BruteForceProtection::in_memory("test".to_string());
-    let ip = Some(network::PROXY_IP.parse().unwrap());
+    let ip = Some(ok(network::PROXY_IP.parse(), "proxy IP should parse"));
 
     // Record exactly tier1 threshold failures
     for _ in 0..brute_force::TIER1_THRESHOLD {
-        protection.record_failure("bob", ip).await.unwrap();
+        protection
+            .record_failure("bob", ip)
+            .await
+            .checked("test operation should succeed");
     }
 
     let result = protection.check_allowed("bob", ip).await;
     assert!(result.is_err(), "5 failures should trigger tier1 lockout");
 
-    let err = result.unwrap_err();
+    let err = result.failed("operation should fail");
     let msg = err.to_string();
     assert!(
         msg.contains("Too many failed login attempts"),
@@ -141,7 +177,7 @@ async fn test_brute_force_tier1_expired_window_unlocks() {
         username_tracker
             .record_failure(key, past + i, 900)
             .await
-            .unwrap();
+            .checked("failure should be recorded");
     }
 
     // Lockout should have expired (60s window, 120s ago)
@@ -161,7 +197,10 @@ async fn test_brute_force_ip_lockout() {
     // Record 20 failures from same IP (across different usernames)
     for i in 0..20 {
         let username = format!("user_{i}");
-        protection.record_failure(&username, ip).await.unwrap();
+        protection
+            .record_failure(&username, ip)
+            .await
+            .checked("test operation should succeed");
     }
 
     // IP should be locked out even for a brand-new username
@@ -176,13 +215,19 @@ async fn test_brute_force_reset_unlocks() {
 
     // Record 5 failures
     for _ in 0..5 {
-        protection.record_failure("dave", None).await.unwrap();
+        protection
+            .record_failure("dave", None)
+            .await
+            .checked("test operation should succeed");
     }
 
     assert!(protection.check_allowed("dave", None).await.is_err());
 
     // Reset
-    protection.reset("dave").await.unwrap();
+    protection
+        .reset("dave")
+        .await
+        .checked("test operation should succeed");
 
     assert!(
         protection.check_allowed("dave", None).await.is_ok(),
@@ -202,14 +247,26 @@ async fn test_redis_tracker_record_and_get() {
     let now = chrono::Utc::now().timestamp();
 
     // Initially no attempts
-    let (count, _) = tracker.get_attempts(key).await.unwrap();
+    let (count, _) = tracker
+        .get_attempts(key)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 0);
 
     // Record failures
-    tracker.record_failure(key, now, 900).await.unwrap();
-    tracker.record_failure(key, now + 1, 900).await.unwrap();
+    tracker
+        .record_failure(key, now, 900)
+        .await
+        .checked("test operation should succeed");
+    tracker
+        .record_failure(key, now + 1, 900)
+        .await
+        .checked("test operation should succeed");
 
-    let (count, last_ts) = tracker.get_attempts(key).await.unwrap();
+    let (count, last_ts) = tracker
+        .get_attempts(key)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 2);
     assert_eq!(last_ts, now + 1);
 }
@@ -223,17 +280,35 @@ async fn test_redis_tracker_reset() {
     let key = "test:bf:redis_reset:bob";
     let now = chrono::Utc::now().timestamp();
 
-    tracker.record_failure(key, now, 900).await.unwrap();
-    tracker.record_failure(key, now, 900).await.unwrap();
-    tracker.record_failure(key, now, 900).await.unwrap();
+    tracker
+        .record_failure(key, now, 900)
+        .await
+        .checked("test operation should succeed");
+    tracker
+        .record_failure(key, now, 900)
+        .await
+        .checked("test operation should succeed");
+    tracker
+        .record_failure(key, now, 900)
+        .await
+        .checked("test operation should succeed");
 
-    let (count, _) = tracker.get_attempts(key).await.unwrap();
+    let (count, _) = tracker
+        .get_attempts(key)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 3);
 
     // Reset clears both Redis and fallback state.
-    tracker.reset(key).await.unwrap();
+    tracker
+        .reset(key)
+        .await
+        .checked("test operation should succeed");
 
-    let (count, _) = tracker.get_attempts(key).await.unwrap();
+    let (count, _) = tracker
+        .get_attempts(key)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 0, "Reset should clear the Redis key");
 }
 
@@ -249,7 +324,10 @@ async fn test_brute_force_with_redis_e2e_lockout_and_reset() {
 
     // Record 5 failures to trigger tier1 lockout
     for _ in 0..5 {
-        protection.record_failure("redis_user", ip).await.unwrap();
+        protection
+            .record_failure("redis_user", ip)
+            .await
+            .checked("test operation should succeed");
     }
 
     let result = protection.check_allowed("redis_user", ip).await;
@@ -257,14 +335,17 @@ async fn test_brute_force_with_redis_e2e_lockout_and_reset() {
         result.is_err(),
         "5 failures via Redis should trigger lockout"
     );
-    let err_msg = result.unwrap_err().to_string();
+    let err_msg = result.failed("operation should fail").to_string();
     assert!(
         err_msg.contains("Too many failed login attempts"),
         "Error should mention lockout: {err_msg}"
     );
 
     // Reset should unlock
-    protection.reset("redis_user").await.unwrap();
+    protection
+        .reset("redis_user")
+        .await
+        .checked("test operation should succeed");
 
     let result = protection.check_allowed("redis_user", ip).await;
     assert!(result.is_ok(), "Reset should unlock the account via Redis");
@@ -284,7 +365,7 @@ async fn test_brute_force_with_redis_ip_lockout_and_reset() {
         protection
             .record_failure(&username, Some(ip))
             .await
-            .unwrap();
+            .checked("failure should be recorded");
     }
 
     // IP should be locked out even for a brand-new username
@@ -297,7 +378,10 @@ async fn test_brute_force_with_redis_ip_lockout_and_reset() {
     );
 
     // Reset the IP
-    protection.reset_ip(&ip).await.unwrap();
+    protection
+        .reset_ip(&ip)
+        .await
+        .checked("test operation should succeed");
 
     // IP should be unlocked now
     let result = protection
@@ -330,7 +414,10 @@ async fn test_redis_tracker_degradation_tracking() {
     let now = chrono::Utc::now().timestamp();
 
     // Successful operation should keep tracker in non-degraded state
-    tracker.record_failure(key, now, 900).await.unwrap();
+    tracker
+        .record_failure(key, now, 900)
+        .await
+        .checked("test operation should succeed");
     assert!(
         !tracker.is_degraded(),
         "After successful operation, should not be degraded"
@@ -341,7 +428,10 @@ async fn test_redis_tracker_degradation_tracking() {
         "No degraded operations after success"
     );
 
-    let (count, _) = tracker.get_attempts(key).await.unwrap();
+    let (count, _) = tracker
+        .get_attempts(key)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 1);
     assert!(
         !tracker.is_degraded(),
@@ -374,7 +464,10 @@ async fn test_redis_tracker_counter_is_monotonically_increasing() {
     let key = "test:monotonic:user";
     let now = chrono::Utc::now().timestamp();
     for _ in 0..5 {
-        tracker.record_failure(key, now, 900).await.unwrap();
+        tracker
+            .record_failure(key, now, 900)
+            .await
+            .checked("test operation should succeed");
     }
 
     // Counter should still be at initial (no failures)
@@ -399,14 +492,20 @@ async fn test_redis_tracker_success_clears_degraded_flag() {
 
     // Multiple successful operations
     for i in 1..=3 {
-        let _ = tracker.record_failure(key, now + i, 900).await;
+        tracker
+            .record_failure(key, now + i, 900)
+            .await
+            .checked("test operation should succeed");
         assert!(
             !tracker.is_degraded(),
             "After successful record_failure #{i}, should not be degraded"
         );
     }
 
-    let (count, ts) = tracker.get_attempts(key).await.unwrap();
+    let (count, ts) = tracker
+        .get_attempts(key)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 3);
     assert_eq!(ts, now + 3);
     assert!(
@@ -415,13 +514,19 @@ async fn test_redis_tracker_success_clears_degraded_flag() {
     );
 
     // Reset should also clear degraded flag
-    let _ = tracker.reset(key).await;
+    tracker
+        .reset(key)
+        .await
+        .checked("test operation should succeed");
     assert!(
         !tracker.is_degraded(),
         "After successful reset, should not be degraded"
     );
 
-    let (count, _) = tracker.get_attempts(key).await.unwrap();
+    let (count, _) = tracker
+        .get_attempts(key)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 0);
 }
 
@@ -439,12 +544,24 @@ async fn test_redis_tracker_fallback_not_used_when_redis_healthy() {
     let now = chrono::Utc::now().timestamp();
 
     // Record failures - should go to Redis, not fallback
-    tracker.record_failure(key, now, 900).await.unwrap();
-    let _ = tracker.record_failure(key, now + 1, 900).await;
-    let _ = tracker.record_failure(key, now + 2, 900).await;
+    tracker
+        .record_failure(key, now, 900)
+        .await
+        .checked("test operation should succeed");
+    tracker
+        .record_failure(key, now + 1, 900)
+        .await
+        .checked("test operation should succeed");
+    tracker
+        .record_failure(key, now + 2, 900)
+        .await
+        .checked("test operation should succeed");
 
     // Read back - should get data from Redis
-    let (count, ts) = tracker.get_attempts(key).await.unwrap();
+    let (count, ts) = tracker
+        .get_attempts(key)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(count, 3, "Should read from Redis, not fallback");
     assert_eq!(ts, now + 2);
 
@@ -474,7 +591,7 @@ async fn test_brute_force_with_custom_tier1_threshold() {
         protection
             .record_failure("custom_user", None)
             .await
-            .unwrap();
+            .checked("failure should be recorded");
     }
 
     let result = protection.check_allowed("custom_user", None).await;
@@ -483,7 +600,7 @@ async fn test_brute_force_with_custom_tier1_threshold() {
         "Should be locked out at 3 failures with custom threshold"
     );
 
-    let err_msg = result.unwrap_err().to_string();
+    let err_msg = result.failed("operation should fail").to_string();
     assert!(
         err_msg.contains("Too many failed login attempts"),
         "Error should mention lockout: {err_msg}"
@@ -516,7 +633,7 @@ async fn test_brute_force_with_custom_lockout_duration() {
         username_tracker
             .record_failure(key, past + i, 900)
             .await
-            .unwrap();
+            .checked("failure should be recorded");
     }
 
     // Lockout should have expired (5s lockout, failures 10s ago)
@@ -545,7 +662,10 @@ async fn test_brute_force_with_custom_ip_threshold() {
     // Record 5 failures from same IP (custom IP threshold)
     for i in 0..5 {
         let username = format!("ip_user_{i}");
-        protection.record_failure(&username, ip).await.unwrap();
+        protection
+            .record_failure(&username, ip)
+            .await
+            .checked("test operation should succeed");
     }
 
     // IP should be locked out at 5 failures (not 20)
@@ -595,7 +715,7 @@ fn test_brute_force_config_from_json() {
         "ip_attempts_ttl_secs": 900
     });
 
-    let config: BruteForceConfig = serde_json::from_value(json).unwrap();
+    let config: BruteForceConfig = ok(serde_json::from_value(json), "config JSON should parse");
 
     assert_eq!(config.tier1_threshold, 4);
     assert_eq!(config.tier1_lockout_secs, 45);
@@ -617,7 +737,10 @@ async fn test_record_ip_failure_only_affects_ip_counter() {
 
     // Record IP-only failure multiple times
     for _ in 0..5 {
-        protection.record_ip_failure(ip).await.unwrap();
+        protection
+            .record_ip_failure(ip)
+            .await
+            .checked("test operation should succeed");
     }
 
     // IP should be tracked
@@ -628,7 +751,10 @@ async fn test_record_ip_failure_only_affects_ip_counter() {
 
     // Record more failures to trigger IP lockout
     for _ in 0..15 {
-        protection.record_ip_failure(ip).await.unwrap();
+        protection
+            .record_ip_failure(ip)
+            .await
+            .checked("test operation should succeed");
     }
 
     // Now IP should be locked out (default threshold is 20)
@@ -654,7 +780,10 @@ async fn test_ip_only_failure_does_not_lock_username() {
 
     // Record many IP-only failures
     for _ in 0..25 {
-        protection.record_ip_failure(ip).await.unwrap();
+        protection
+            .record_ip_failure(ip)
+            .await
+            .checked("test operation should succeed");
     }
 
     // IP should be locked
@@ -684,7 +813,10 @@ async fn test_wrong_password_for_existing_user_locks_both() {
 
     // Simulate wrong password attempts for existing user (record_failure)
     for _ in 0..5 {
-        protection.record_failure(username, ip).await.unwrap();
+        protection
+            .record_failure(username, ip)
+            .await
+            .checked("test operation should succeed");
     }
 
     // Username should be locked at tier 1 threshold (5)
@@ -704,7 +836,10 @@ async fn test_legitimate_user_wrong_password_locks_username() {
 
     // Alice enters wrong password 5 times
     for _ in 0..5 {
-        protection.record_failure(username, ip).await.unwrap();
+        protection
+            .record_failure(username, ip)
+            .await
+            .checked("test operation should succeed");
     }
 
     // Alice should be locked out
@@ -720,7 +855,10 @@ async fn test_attacker_cannot_lock_legitimate_user() {
 
     // Attacker tries many non-existent usernames (only IP tracking)
     for _ in 0..19 {
-        protection.record_ip_failure(attacker_ip).await.unwrap();
+        protection
+            .record_ip_failure(attacker_ip)
+            .await
+            .checked("test operation should succeed");
     }
 
     // Legitimate user "bob" should NOT be locked out
@@ -740,7 +878,10 @@ async fn test_ip_lockout_works_with_ip_only_failures() {
 
     // Record IP-only failures up to threshold (default: 20)
     for _ in 0..20 {
-        protection.record_ip_failure(ip).await.unwrap();
+        protection
+            .record_ip_failure(ip)
+            .await
+            .checked("test operation should succeed");
     }
 
     // IP should be locked

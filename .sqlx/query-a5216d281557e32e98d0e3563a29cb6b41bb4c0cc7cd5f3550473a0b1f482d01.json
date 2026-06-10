@@ -6,52 +6,107 @@
       {
         "ordinal": 0,
         "name": "room_id: RoomId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "room_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "playing_media_id: MediaId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "playing_media_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "playing_playlist_id: PlaylistId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "playing_playlist_id"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "target",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "target"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "current_progress_id",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "current_progress_id"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "position!",
-        "type_info": "Float8"
+        "type_info": "Float8",
+        "origin": "Expression"
       },
       {
         "ordinal": 6,
         "name": "speed!",
-        "type_info": "Float8"
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "speed"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "is_playing",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "is_playing"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "updated_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "updated_at"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "version",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "version"
+          }
+        }
       }
     ],
     "parameters": {

@@ -15,7 +15,6 @@
 //! # Requirements
 //!
 //! - Docker for testcontainers (`PostgreSQL`)
-#![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
 use sqlx::PgPool;
@@ -33,7 +32,9 @@ use synctv_core::{
     },
     Error,
 };
-use synctv_core_testing::{create_test_database_with_options_and_label, TestDatabase};
+use synctv_core_testing::{
+    create_test_database_with_options_and_label, TestDatabase, TestOptionExt, TestResultExt,
+};
 // Test Infrastructure
 
 async fn create_test_pool() -> TestDatabase {
@@ -95,11 +96,11 @@ async fn setup_test_room(pool: &PgPool, room_name: &str) -> (User, Room) {
     let owner = user_repo
         .create(&make_user(&format!("{room_name}_owner")))
         .await
-        .expect("Failed to create owner");
+        .checked("Failed to create owner");
     let room = room_repo
         .create(&make_room(room_name, "Test room", &owner.id))
         .await
-        .expect("Failed to create room");
+        .checked("Failed to create room");
 
     // Add owner as member (Creator)
     let member_repo = RoomMemberRepository::new(pool.clone());
@@ -107,7 +108,7 @@ async fn setup_test_room(pool: &PgPool, room_name: &str) -> (User, Room) {
     member_repo
         .add(&owner_member)
         .await
-        .expect("Failed to add owner as member");
+        .checked("Failed to add owner as member");
 
     (owner, room)
 }
@@ -118,7 +119,7 @@ fn make_member_service(pool: PgPool) -> MemberService {
     let room_repo = RoomRepository::new(pool.clone());
     let permission_service =
         PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300)
-            .expect("permission service should build");
+            .checked("permission service should build");
 
     MemberService::new_with_runtime(
         member_repo,
@@ -132,7 +133,8 @@ fn make_member_service(pool: PgPool) -> MemberService {
 }
 
 fn make_user_service(pool: &PgPool) -> UserService {
-    let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
+    let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
+        .checked("test operation should succeed");
     let username_cache =
         synctv_core::cache::UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = std::sync::Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
@@ -150,7 +152,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+    RoomService::new_for_tests(pool, user_service).checked("room service should build")
 }
 
 /// Test that Admin cannot delete room (Creator-only operation).
@@ -167,12 +169,12 @@ async fn test_admin_cannot_delete_room() {
     let admin_user = user_repo
         .create(&make_user("admin_delete"))
         .await
-        .expect("Failed to create admin");
+        .checked("Failed to create admin");
     let admin_member = RoomMember::new(room.id, admin_user.id, RoomRole::Admin);
     member_repo
         .add(&admin_member)
         .await
-        .expect("Failed to add admin");
+        .checked("Failed to add admin");
 
     let room_service = make_room_service(pool.clone());
     let result = room_service.delete_room(room.id, admin_user.id).await;
@@ -197,22 +199,22 @@ async fn test_admin_cannot_transfer_ownership() {
     let admin_user = user_repo
         .create(&make_user("admin_transfer"))
         .await
-        .expect("Failed to create admin");
+        .checked("Failed to create admin");
     let admin_member = RoomMember::new(room.id, admin_user.id, RoomRole::Admin);
     member_repo
         .add(&admin_member)
         .await
-        .expect("Failed to add admin");
+        .checked("Failed to add admin");
 
     let target_user = user_repo
         .create(&make_user("transfer_target"))
         .await
-        .expect("Failed to create target");
+        .checked("Failed to create target");
     let target_member = RoomMember::new(room.id, target_user.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
-        .expect("Failed to add target");
+        .checked("Failed to add target");
 
     // Admin tries to set Creator role (should fail)
     let member_service = make_member_service(pool.clone());
@@ -237,12 +239,12 @@ async fn test_admin_cannot_demote_creator() {
     let admin_user = user_repo
         .create(&make_user("admin_demote"))
         .await
-        .expect("Failed to create admin");
+        .checked("Failed to create admin");
     let admin_member = RoomMember::new(room.id, admin_user.id, RoomRole::Admin);
     member_repo
         .add(&admin_member)
         .await
-        .expect("Failed to add admin");
+        .checked("Failed to add admin");
 
     // Admin tries to demote Creator to Admin (should fail)
     let member_service = make_member_service(pool.clone());
@@ -269,22 +271,22 @@ async fn test_member_cannot_kick() {
     let kicker = user_repo
         .create(&make_user("member_kicker"))
         .await
-        .expect("Failed to create kicker");
+        .checked("Failed to create kicker");
     let kicker_member = RoomMember::new(room.id, kicker.id, RoomRole::Member);
     member_repo
         .add(&kicker_member)
         .await
-        .expect("Failed to add kicker");
+        .checked("Failed to add kicker");
 
     let target = user_repo
         .create(&make_user("kick_target"))
         .await
-        .expect("Failed to create target");
+        .checked("Failed to create target");
     let target_member = RoomMember::new(room.id, target.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
-        .expect("Failed to add target");
+        .checked("Failed to add target");
 
     // Member tries to kick another member (should fail)
     let result = room_service
@@ -292,7 +294,7 @@ async fn test_member_cannot_kick() {
         .await;
 
     assert!(result.is_err(), "Member cannot kick other members");
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::Authorization(msg) => {
             assert!(
                 msg.to_lowercase().contains("permission")
@@ -301,7 +303,7 @@ async fn test_member_cannot_kick() {
                 "Error should mention permission: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected Authorization error, got: {other:?}")),
     }
 }
 
@@ -320,12 +322,12 @@ async fn test_member_cannot_change_settings() {
     let member_user = user_repo
         .create(&make_user("settings_member"))
         .await
-        .expect("Failed to create member");
+        .checked("Failed to create member");
     let member = RoomMember::new(room.id, member_user.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
-        .expect("Failed to add member");
+        .checked("Failed to add member");
 
     // Member does not have SET_ROOM_SETTINGS permission by default
     let permission_service = PermissionService::new(
@@ -335,12 +337,12 @@ async fn test_member_cannot_change_settings() {
         1000,
         300,
     )
-    .expect("permission service should build");
+    .checked("permission service should build");
 
     let member_perms = permission_service
         .get_user_permissions_eventually_consistent(&room.id, &member_user.id)
         .await
-        .expect("Failed to get permissions");
+        .checked("Failed to get permissions");
 
     assert!(
         !member_perms.has(RoomPermission::SET_ROOM_SETTINGS),
@@ -363,22 +365,22 @@ async fn test_member_cannot_promote() {
     let promoter = user_repo
         .create(&make_user("member_promoter"))
         .await
-        .expect("Failed to create promoter");
+        .checked("Failed to create promoter");
     let promoter_member = RoomMember::new(room.id, promoter.id, RoomRole::Member);
     member_repo
         .add(&promoter_member)
         .await
-        .expect("Failed to add promoter");
+        .checked("Failed to add promoter");
 
     let target = user_repo
         .create(&make_user("promote_target"))
         .await
-        .expect("Failed to create target");
+        .checked("Failed to create target");
     let target_member = RoomMember::new(room.id, target.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
-        .expect("Failed to add target");
+        .checked("Failed to add target");
 
     // Member tries to promote another member to Admin (should fail)
     let member_service = make_member_service(pool.clone());
@@ -408,12 +410,12 @@ async fn test_cross_room_permission_isolation() {
     let cross_user = user_repo
         .create(&make_user("cross_room_user"))
         .await
-        .expect("Failed to create user");
+        .checked("Failed to create user");
     let admin_member_a = RoomMember::new(room_a.id, cross_user.id, RoomRole::Admin);
     member_repo
         .add(&admin_member_a)
         .await
-        .expect("Failed to add to Room A");
+        .checked("Failed to add to Room A");
 
     let (_owner_b, room_b) = setup_test_room(pool, "Room B").await;
     let room_service = make_room_service(pool.clone());
@@ -421,17 +423,17 @@ async fn test_cross_room_permission_isolation() {
     member_repo
         .add(&member_b)
         .await
-        .expect("Failed to add to Room B");
+        .checked("Failed to add to Room B");
 
     let target = user_repo
         .create(&make_user("room_b_target"))
         .await
-        .expect("Failed to create target");
+        .checked("Failed to create target");
     let target_member = RoomMember::new(room_b.id, target.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
-        .expect("Failed to add target");
+        .checked("Failed to add target");
 
     // User (Admin in Room A) tries to kick member in Room B (should fail)
     let result = room_service
@@ -455,18 +457,18 @@ async fn test_kick_cooldown_isolated_to_single_room() {
     let kicked_user = user_repo
         .create(&make_user("kicked_user"))
         .await
-        .expect("Failed to create user");
+        .checked("Failed to create user");
     let member_a = RoomMember::new(room_a.id, kicked_user.id, RoomRole::Member);
     member_repo
         .add(&member_a)
         .await
-        .expect("Failed to add to Room A");
+        .checked("Failed to add to Room A");
 
     let room_service = make_room_service(pool.clone());
     room_service
         .kick_member(room_a.id, owner_a.id, kicked_user.id, 3600)
         .await
-        .expect("Failed to kick user");
+        .checked("Failed to kick user");
 
     let (_owner_b, room_b) = setup_test_room(pool, "Kick Room B").await;
 
@@ -496,7 +498,7 @@ async fn test_creator_role_not_global() {
     let creator_user = user_repo
         .create(&make_user("creator_user"))
         .await
-        .expect("Failed to create creator");
+        .checked("Failed to create creator");
     let room_a = {
         let room_repo = RoomRepository::new(pool.clone());
         let room = room_repo
@@ -506,12 +508,12 @@ async fn test_creator_role_not_global() {
                 &creator_user.id,
             ))
             .await
-            .expect("Failed to create room");
+            .checked("Failed to create room");
         let member = RoomMember::new(room.id, creator_user.id, RoomRole::Creator);
         member_repo
             .add(&member)
             .await
-            .expect("Failed to add creator");
+            .checked("Failed to add creator");
         room
     };
 
@@ -520,7 +522,7 @@ async fn test_creator_role_not_global() {
     member_repo
         .add(&member_b)
         .await
-        .expect("Failed to add to Room B");
+        .checked("Failed to add to Room B");
 
     // User is Creator in Room A but only Member in Room B
     let permission_service = PermissionService::new(
@@ -530,17 +532,17 @@ async fn test_creator_role_not_global() {
         1000,
         300,
     )
-    .expect("permission service should build");
+    .checked("permission service should build");
 
     let perms_a = permission_service
         .get_user_permissions_eventually_consistent(&room_a.id, &creator_user.id)
         .await
-        .expect("Failed to get Room A permissions");
+        .checked("Failed to get Room A permissions");
 
     let perms_b = permission_service
         .get_user_permissions_eventually_consistent(&room_b.id, &creator_user.id)
         .await
-        .expect("Failed to get Room B permissions");
+        .checked("Failed to get Room B permissions");
 
     // Room A permissions should be higher (Creator has all admin/member permissions)
     assert!(
@@ -568,12 +570,12 @@ async fn test_member_cannot_grant_self_permissions() {
     let member_user = user_repo
         .create(&make_user("self_granter"))
         .await
-        .expect("Failed to create member");
+        .checked("Failed to create member");
     let member = RoomMember::new(room.id, member_user.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
-        .expect("Failed to add member");
+        .checked("Failed to add member");
 
     // Member tries to grant themselves a permission (should fail)
     let member_service = make_member_service(pool.clone());
@@ -607,22 +609,22 @@ async fn test_admin_cannot_create_admin() {
     let admin_user = user_repo
         .create(&make_user("admin_creator"))
         .await
-        .expect("Failed to create admin");
+        .checked("Failed to create admin");
     let admin_member = RoomMember::new(room.id, admin_user.id, RoomRole::Admin);
     member_repo
         .add(&admin_member)
         .await
-        .expect("Failed to add admin");
+        .checked("Failed to add admin");
 
     let target_user = user_repo
         .create(&make_user("admin_target"))
         .await
-        .expect("Failed to create target");
+        .checked("Failed to create target");
     let target_member = RoomMember::new(room.id, target_user.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
-        .expect("Failed to add target");
+        .checked("Failed to add target");
 
     // Admin tries to promote Member to Admin (should fail)
     let member_service = make_member_service(pool.clone());
@@ -648,22 +650,22 @@ async fn test_grant_permission_requires_permission() {
     let grantor = user_repo
         .create(&make_user("grantor"))
         .await
-        .expect("Failed to create grantor");
+        .checked("Failed to create grantor");
     let grantor_member = RoomMember::new(room.id, grantor.id, RoomRole::Member);
     member_repo
         .add(&grantor_member)
         .await
-        .expect("Failed to add grantor");
+        .checked("Failed to add grantor");
 
     let target = user_repo
         .create(&make_user("grantee"))
         .await
-        .expect("Failed to create target");
+        .checked("Failed to create target");
     let target_member = RoomMember::new(room.id, target.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
-        .expect("Failed to add target");
+        .checked("Failed to add target");
 
     // Member tries to grant permission (should fail - no GRANT_PERMISSION)
     let member_service = make_member_service(pool.clone());
@@ -697,22 +699,22 @@ async fn test_cannot_downgrade_equal_role() {
     let admin1 = user_repo
         .create(&make_user("admin1_downgrade"))
         .await
-        .expect("Failed to create admin1");
+        .checked("Failed to create admin1");
     let admin1_member = RoomMember::new(room.id, admin1.id, RoomRole::Admin);
     member_repo
         .add(&admin1_member)
         .await
-        .expect("Failed to add admin1");
+        .checked("Failed to add admin1");
 
     let admin2 = user_repo
         .create(&make_user("admin2_downgrade"))
         .await
-        .expect("Failed to create admin2");
+        .checked("Failed to create admin2");
     let admin2_member = RoomMember::new(room.id, admin2.id, RoomRole::Admin);
     member_repo
         .add(&admin2_member)
         .await
-        .expect("Failed to add admin2");
+        .checked("Failed to add admin2");
 
     // Admin1 tries to downgrade Admin2 (should fail - equal role)
     let member_service = make_member_service(pool.clone());
@@ -739,22 +741,22 @@ async fn test_kick_respects_role_hierarchy() {
     let admin = user_repo
         .create(&make_user("kick_admin"))
         .await
-        .expect("Failed to create admin");
+        .checked("Failed to create admin");
     let admin_member = RoomMember::new(room.id, admin.id, RoomRole::Admin);
     member_repo
         .add(&admin_member)
         .await
-        .expect("Failed to add admin");
+        .checked("Failed to add admin");
 
     let member = user_repo
         .create(&make_user("kick_member"))
         .await
-        .expect("Failed to create member");
+        .checked("Failed to create member");
     let member_member = RoomMember::new(room.id, member.id, RoomRole::Member);
     member_repo
         .add(&member_member)
         .await
-        .expect("Failed to add member");
+        .checked("Failed to add member");
 
     // Member tries to kick Admin (should fail - lower role)
     let result = room_service
@@ -762,7 +764,7 @@ async fn test_kick_respects_role_hierarchy() {
         .await;
 
     assert!(result.is_err(), "Member cannot kick Admin (role hierarchy)");
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::Authorization(msg) => {
             assert!(
                 msg.to_lowercase().contains("permission")
@@ -772,7 +774,7 @@ async fn test_kick_respects_role_hierarchy() {
                 "Error should mention permission or role: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected Authorization error, got: {other:?}")),
     }
 }
 
@@ -791,22 +793,22 @@ async fn test_revoked_permission_denied() {
     let member_user = user_repo
         .create(&make_user("revoke_member"))
         .await
-        .expect("Failed to create member");
+        .checked("Failed to create member");
     let member = RoomMember::new(room.id, member_user.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
-        .expect("Failed to add member");
+        .checked("Failed to add member");
 
     // Get owner for operations
     let members = member_repo
         .list_by_room_all(&room.id)
         .await
-        .expect("Failed to list members");
+        .checked("Failed to list members");
     let owner_user_id = members
         .iter()
         .find(|m| m.role == RoomRole::Creator)
-        .expect("Creator should exist")
+        .checked("Creator should exist")
         .user_id;
 
     // Revoke CHAT from member
@@ -819,7 +821,7 @@ async fn test_revoked_permission_denied() {
             RoomMemberPermissionBits::CHAT,
         )
         .await
-        .expect("Failed to revoke permission");
+        .checked("Failed to revoke permission");
 
     // Verify permission is denied
     let permission_service = PermissionService::new(
@@ -829,12 +831,12 @@ async fn test_revoked_permission_denied() {
         1000,
         300,
     )
-    .expect("permission service should build");
+    .checked("permission service should build");
 
     let effective = permission_service
         .get_user_permissions_no_cache(&room.id, &member_user.id)
         .await
-        .expect("Failed to get permissions");
+        .checked("Failed to get permissions");
 
     assert!(
         !effective.has(RoomPermission::CHAT),
@@ -857,14 +859,14 @@ async fn test_member_without_chat_cannot_send() {
     let muted_user = user_repo
         .create(&make_user("muted_user"))
         .await
-        .expect("Failed to create muted user");
+        .checked("Failed to create muted user");
     let mut muted_member = RoomMember::new(room.id, muted_user.id, RoomRole::Member);
     // Revoke CHAT
     muted_member.removed_permissions = RoomMemberPermissionBits::CHAT;
     member_repo
         .add(&muted_member)
         .await
-        .expect("Failed to add muted user");
+        .checked("Failed to add muted user");
 
     // Verify user doesn't have CHAT
     let permission_service = PermissionService::new(
@@ -874,12 +876,12 @@ async fn test_member_without_chat_cannot_send() {
         1000,
         300,
     )
-    .expect("permission service should build");
+    .checked("permission service should build");
 
     let perms = permission_service
         .get_user_permissions_eventually_consistent(&room.id, &muted_user.id)
         .await
-        .expect("Failed to get permissions");
+        .checked("Failed to get permissions");
 
     assert!(
         !perms.has(RoomPermission::CHAT),

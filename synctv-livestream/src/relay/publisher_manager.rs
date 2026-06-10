@@ -8,7 +8,7 @@
 // This component only maintains heartbeat for already-registered publishers.
 // Based on design doc 17-data-flow-design.md §11.1
 
-use super::registry::{RedisOperationTimeout, HEARTBEAT_INTERVAL_SECS};
+use super::registry::HEARTBEAT_INTERVAL_SECS;
 use super::registry_trait::{PublisherRefreshOutcome, StreamRegistryTrait};
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -17,65 +17,22 @@ use synctv_xiu::streamhub::{
     define::{BroadcastEventReceiver, StreamHubEvent, StreamHubEventSender},
     stream::StreamIdentifier,
 };
-use tokio::time::{interval, sleep, Duration};
+use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::util::validate_stream_ids;
 
-/// Maximum number of retry attempts for heartbeat failures within a single heartbeat cycle
-const MAX_HEARTBEAT_RETRIES: u32 = 3;
-/// Delay between heartbeat retries (exponential backoff base)
-const HEARTBEAT_RETRY_BASE_DELAY_MS: u64 = 100;
-/// Cleanup-time unregister uses a longer retry budget because stale fenced keys
-/// block rapid republish even after Redis recovers.
-const UNREGISTER_RETRY_ATTEMPTS: u32 = 3;
-/// Retry envelope matches the previous background cleanup behavior.
-const UNREGISTER_RETRY_DELAYS_MS: [u64; 2] = [2_000, 4_000];
-/// Number of consecutive heartbeat *cycles* where Redis **confirms the publisher is gone**
-/// before cleaning up. This prevents killing active streams during transient Redis timeouts
-/// or maintenance windows.
-///
-/// A Redis timeout (slow response) is NOT the same as the publisher being dead.
-/// Only count a heartbeat failure if Redis responds AND the publisher TTL actually expired.
-/// If Redis itself is unreachable, use a separate `redis_unreachable` counter (below).
+/// Number of consecutive heartbeat cycles that can fail before the local
+/// publisher is cleaned up.
 const MAX_CONSECUTIVE_HEARTBEAT_FAILURES: u32 = 3;
-
-/// Number of consecutive heartbeat cycles where Redis is completely unreachable before
-/// triggering publisher cleanup as a last resort.
-///
-/// This threshold is intentionally much higher than `MAX_CONSECUTIVE_HEARTBEAT_FAILURES`
-/// because Redis timeouts should not cause publisher cleanup — they likely indicate a
-/// transient network issue, not a dead publisher.
-const MAX_CONSECUTIVE_REDIS_UNREACHABLE: u32 = 10;
 /// Maximum time to wait for delivering a critical `UnPublish` control event.
 const UNPUBLISH_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Duration after which a publisher that hasn't sent any media data is
-/// considered silent and should be cleaned up (LS-5). This is separate from
-/// Redis TTL, which only detects node-level failures. A silent publisher may
-/// keep its TCP connection alive but stop sending RTMP frames (e.g., crashed
-/// encoder, frozen camera).
-///
-/// The silent timeout must be LONGER than the max broadcast channel
-/// lag window (typically several seconds) to avoid false-positive timeouts when
-/// frames are still being produced but have not yet been delivered through the
-/// broadcast channel. The activity callback is throttled to 10s intervals
-/// (see `ACTIVITY_RECORD_INTERVAL`), so the effective minimum useful timeout is
-/// ~2× the throttle interval. Set to 5 minutes to comfortably exceed any
-/// realistic broadcast lag window while still detecting truly frozen encoders.
-/// Reduced from 300s to 60s for faster detection of crashed encoders.
+/// considered silent and should be cleaned up.
 const SILENT_PUBLISHER_TIMEOUT_SECS: u64 = 60;
 
 /// Interval for periodic registry-local consistency sync.
-///
-/// This sync ensures local tracking state matches the registry, detecting and
-/// repairing inconsistencies caused by:
-/// - Network partitions where registry state changed but local didn't notice
-/// - Missed broadcast events (though these also trigger immediate reconciliation)
-/// - Registry entries taken over by other nodes
-///
-/// Set to 5 minutes as a balance between consistency and registry load.
-/// Reconciliation also runs on broadcast lag events, so this is a safety net.
 const PERIODIC_SYNC_INTERVAL_SECS: u64 = 300;
 
 #[derive(Clone, Debug)]
@@ -90,21 +47,10 @@ struct PublisherEntry {
     /// Unix timestamp (seconds) of last observed data activity.
     /// Updated via `record_publisher_activity` when media frames arrive.
     last_active_secs: AtomicU64,
-    /// Number of consecutive heartbeat cycles where Redis responded AND
-    /// the publisher TTL refresh failed (i.e., publisher entry is gone).
+    /// Number of consecutive heartbeat cycles where TTL refresh failed.
     /// Reset to 0 on any successful heartbeat. Only triggers cleanup when
     /// this reaches `MAX_CONSECUTIVE_HEARTBEAT_FAILURES`.
-    ///
-    /// This counter is NOT incremented when Redis itself is
-    /// unreachable (timeout/connection error). See `redis_unreachable_cycles`.
     consecutive_heartbeat_failures: std::sync::atomic::AtomicU32,
-    /// Number of consecutive heartbeat cycles where Redis was completely
-    /// unreachable (timeout or connection refused), regardless of publisher status.
-    ///
-    /// Separated from `consecutive_heartbeat_failures` to prevent
-    /// slow Redis from triggering false publisher cleanup. Only triggers
-    /// cleanup when this reaches `MAX_CONSECUTIVE_REDIS_UNREACHABLE`.
-    redis_unreachable_cycles: std::sync::atomic::AtomicU32,
     /// User ID from the publisher registration, used for reverse-index TTL refresh.
     user_id: String,
     /// Publisher epoch captured from the registry when tracking started.
@@ -118,7 +64,6 @@ impl PublisherEntry {
         Self {
             last_active_secs: AtomicU64::new(Self::now_secs()),
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
-            redis_unreachable_cycles: std::sync::atomic::AtomicU32::new(0),
             user_id: String::new(),
             epoch: 0,
         }
@@ -128,7 +73,6 @@ impl PublisherEntry {
         Self {
             last_active_secs: AtomicU64::new(Self::now_secs()),
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
-            redis_unreachable_cycles: std::sync::atomic::AtomicU32::new(0),
             user_id,
             epoch,
         }
@@ -140,18 +84,19 @@ impl PublisherEntry {
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(
                 self.consecutive_heartbeat_failures.load(Ordering::Acquire),
             ),
-            redis_unreachable_cycles: std::sync::atomic::AtomicU32::new(
-                self.redis_unreachable_cycles.load(Ordering::Acquire),
-            ),
             user_id,
             epoch,
         }
     }
 
     fn now_secs() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs())
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => duration.as_secs(),
+            Err(error) => {
+                tracing::warn!(%error, "system clock is before Unix epoch");
+                0
+            }
+        }
     }
 
     fn touch(&self) {
@@ -162,21 +107,6 @@ impl PublisherEntry {
     fn idle_secs(&self) -> u64 {
         Self::now_secs().saturating_sub(self.last_active_secs.load(Ordering::Acquire))
     }
-}
-
-fn is_redis_unreachable_error(error: &anyhow::Error) -> bool {
-    if let Some(redis_err) = error.downcast_ref::<redis::RedisError>() {
-        return matches!(
-            redis_err.kind(),
-            redis::ErrorKind::Io | redis::ErrorKind::ClusterConnectionNotFound
-        );
-    }
-
-    if error.downcast_ref::<std::io::Error>().is_some() {
-        return true;
-    }
-
-    error.downcast_ref::<RedisOperationTimeout>().is_some()
 }
 
 fn publisher_key(room_id: &str, media_id: &str) -> anyhow::Result<String> {
@@ -193,7 +123,7 @@ fn parse_publisher_key(key: &str) -> Option<(&str, &str)> {
 }
 
 /// Publisher manager that listens to `StreamHub` events
-pub struct PublisherManager {
+pub(crate) struct PublisherManager {
     registry: Arc<dyn StreamRegistryTrait>,
     local_node_id: String,
     /// Advertised shared API address of this node, used for re-registration after restart.
@@ -214,29 +144,12 @@ pub struct PublisherManager {
 }
 
 impl PublisherManager {
-    pub fn new(
-        registry: Arc<dyn StreamRegistryTrait>,
-        local_node_id: String,
-        hub_event_sender: StreamHubEventSender,
-    ) -> Self {
-        Self {
-            registry,
-            local_node_id,
-            local_api_address: String::new(),
-            active_publishers: Arc::new(DashMap::new()),
-            hub_event_sender,
-            lag_event_count: AtomicU64::new(0),
-            silent_timeout_secs: SILENT_PUBLISHER_TIMEOUT_SECS,
-            is_restarting: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
     /// Create a new `PublisherManager` with a shared restarting flag.
     ///
     /// This allows external code (e.g., `StreamHub` restart loop) to share the
     /// restarting flag and set it before cleanup operations begin, preventing
     /// false silent-publisher detections during the restart window.
-    pub fn with_restarting_flag(
+    pub(crate) fn with_restarting_flag(
         registry: Arc<dyn StreamRegistryTrait>,
         local_node_id: String,
         hub_event_sender: StreamHubEventSender,
@@ -254,37 +167,23 @@ impl PublisherManager {
         }
     }
 
-    /// Get a clone of the restarting flag for external coordination.
-    ///
-    /// This allows external code (e.g., `StreamHub` restart loop) to set the
-    /// restarting flag before cleanup operations begin, preventing false
-    /// silent-publisher detections during the restart window.
-    pub fn restarting_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.is_restarting)
-    }
-
     /// Set the advertised shared API address for this node.
     /// Used during re-registration after `StreamHub` restart (L-05).
     #[must_use]
-    pub fn with_api_address(mut self, api_address: String) -> Self {
+    pub(crate) fn with_api_address(mut self, api_address: String) -> Self {
         self.local_api_address = api_address;
         self
     }
 
     /// Mark the manager as restarting to suppress silent-publisher cleanup
     /// during the `StreamHub` restart window.
-    pub fn set_restarting(&self) {
+    fn set_restarting(&self) {
         self.is_restarting.store(true, Ordering::Release);
     }
 
     /// Clear the restarting flag after re-registration completes.
-    pub fn clear_restarting(&self) {
+    fn clear_restarting(&self) {
         self.is_restarting.store(false, Ordering::Release);
-    }
-
-    /// Returns the number of broadcast lag events observed since startup.
-    pub fn lag_event_count(&self) -> u64 {
-        self.lag_event_count.load(Ordering::Relaxed)
     }
 
     /// Returns the list of active publishers as `(app_name, stream_name)` pairs.
@@ -292,7 +191,7 @@ impl PublisherManager {
     /// Used by the HLS remuxer for post-lag reconciliation: after a broadcast
     /// lag event, the remuxer queries this list and starts HLS handlers for
     /// any active publishers that don't already have a running handler.
-    pub fn active_publisher_streams(&self) -> Vec<(String, String)> {
+    pub(crate) fn active_publisher_streams(&self) -> Vec<(String, String)> {
         self.active_publishers
             .iter()
             .filter_map(|entry| {
@@ -308,7 +207,7 @@ impl PublisherManager {
     /// the silent publisher timeout. Without periodic calls to this method,
     /// the publisher will be considered silent after `SILENT_PUBLISHER_TIMEOUT_SECS`
     /// and automatically cleaned up.
-    pub fn record_publisher_activity(&self, room_id: &str, media_id: &str) {
+    pub(crate) fn record_publisher_activity(&self, room_id: &str, media_id: &str) {
         let Ok(key) = publisher_key(room_id, media_id) else {
             warn!(
                 room_id = room_id,
@@ -323,7 +222,7 @@ impl PublisherManager {
     }
 
     /// Start listening to `StreamHub` broadcast events
-    pub async fn start(self: Arc<Self>, mut event_receiver: BroadcastEventReceiver) {
+    pub(crate) async fn start(self: Arc<Self>, mut event_receiver: BroadcastEventReceiver) {
         if self.local_api_address.is_empty() {
             warn!(
                 "PublisherManager started with empty api_address. \
@@ -459,15 +358,10 @@ impl PublisherManager {
     /// been successfully authenticated and registered.
     async fn handle_publish(&self, identifier: StreamIdentifier) -> anyhow::Result<()> {
         // Extract app_name and stream_name from RTMP identifier
-        let identifier_debug = format!("{identifier:?}");
         let StreamIdentifier::Rtmp {
             app_name,
             stream_name,
-        } = identifier
-        else {
-            warn!("Ignoring non-RTMP publish event: {identifier_debug}");
-            return Ok(());
-        };
+        } = identifier;
 
         // StreamIdentifier format for RTMP:
         // - app_name: room_id (from RTMP connect command)
@@ -527,10 +421,7 @@ impl PublisherManager {
         let StreamIdentifier::Rtmp {
             app_name,
             stream_name,
-        } = identifier
-        else {
-            return Ok(());
-        };
+        } = identifier;
 
         info!(
             "RTMP UnPublish event: app_name={}, stream_name={}",
@@ -825,21 +716,6 @@ impl PublisherManager {
         }
     }
 
-    fn spawn_cleanup_publisher(
-        self: &Arc<Self>,
-        room_id: String,
-        media_id: String,
-        expected_epoch: u64,
-        reason: String,
-    ) {
-        let manager = Arc::clone(self);
-        tokio::spawn(async move {
-            manager
-                .cleanup_publisher(&room_id, &media_id, expected_epoch, &reason)
-                .await;
-        });
-    }
-
     /// Force re-registration of all tracked active publishers in Redis.
     ///
     /// Called after `StreamHub` restart to ensure Redis state is consistent
@@ -851,7 +727,7 @@ impl PublisherManager {
     ///
     /// Sets `is_restarting` before re-registration and clears it after,
     /// suppressing silent-publisher cleanup during the restart window.
-    pub async fn reregister_all_publishers(&self) {
+    pub(crate) async fn reregister_all_publishers(&self) {
         self.set_restarting();
 
         // First reconcile with registry to remove zombie entries, meaning local
@@ -1056,49 +932,22 @@ impl PublisherManager {
             epoch: removed_entry.epoch,
         };
 
-        // 2. Unregister from Redis immediately (don't wait for TTL), retrying
-        // transient failures to avoid leaving a stale epoch fenced key that
-        // blocks rapid republish.
-        for attempt in 0..UNREGISTER_RETRY_ATTEMPTS {
-            match self
-                .registry
-                .unregister_publisher_if_epoch_matches(
-                    &cleanup.room_id,
-                    &cleanup.media_id,
-                    cleanup.epoch,
-                )
-                .await
-            {
-                Ok(()) => {
-                    break;
-                }
-                Err(e) if attempt < UNREGISTER_RETRY_ATTEMPTS - 1 => {
-                    let delay_ms = UNREGISTER_RETRY_DELAYS_MS[attempt as usize];
-                    warn!(
-                        "Failed to unregister publisher from Redis for room {} / media {} with epoch {} on attempt {}/{}: {}. Retrying in {}ms",
-                        cleanup.room_id,
-                        cleanup.media_id,
-                        cleanup.epoch,
-                        attempt + 1,
-                        UNREGISTER_RETRY_ATTEMPTS,
-                        e,
-                        delay_ms
-                    );
-                    sleep(Duration::from_millis(delay_ms)).await;
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to unregister publisher from Redis for room {} / media {} with epoch {} after {} attempts: {}. \
-                         Leaving Redis cleanup to later reconciliation/TTL expiry.",
-                        cleanup.room_id,
-                        cleanup.media_id,
-                        cleanup.epoch,
-                        UNREGISTER_RETRY_ATTEMPTS,
-                        e
-                    );
-                    break;
-                }
-            }
+        // 2. Unregister from Redis immediately. The epoch fence protects newer
+        // publishers from delayed cleanup events.
+        if let Err(e) = self
+            .registry
+            .unregister_publisher_if_epoch_matches(
+                &cleanup.room_id,
+                &cleanup.media_id,
+                cleanup.epoch,
+            )
+            .await
+        {
+            warn!(
+                "Failed to unregister publisher from Redis for room {} / media {} with epoch {}: {}. \
+                 Leaving Redis cleanup to later reconciliation/TTL expiry.",
+                cleanup.room_id, cleanup.media_id, cleanup.epoch, e
+            );
         }
 
         // 3. Send UnPublish to StreamHub so subscribers are notified.
@@ -1170,207 +1019,77 @@ impl PublisherManager {
                     "Silent publisher detected: room={} media={} (no data for {}s, threshold={}s)",
                     room_id, media_id, idle_secs, self.silent_timeout_secs
                 );
-                self.spawn_cleanup_publisher(
-                    room_id.to_string(),
-                    media_id.to_string(),
+                self.cleanup_publisher(
+                    room_id,
+                    media_id,
                     entry.epoch,
-                    format!("silent publisher timeout ({idle_secs}s idle)"),
-                );
+                    &format!("silent publisher timeout ({idle_secs}s idle)"),
+                )
+                .await;
                 continue;
             }
 
             // Pass stored user_id to refresh both publisher TTL and user reverse-index TTL.
             let user_id = &entry.user_id;
 
-            // Per-cycle heartbeat failure counting semantics:
-            // Within a single cycle, we retry up to MAX_HEARTBEAT_RETRIES times
-            // with exponential backoff. The cycle is considered:
-            // - SUCCESS: at least one retry returned Ok(())
-            // - FAILURE: ALL retries returned Err(...)
-            // `consecutive_heartbeat_failures` counts consecutive *cycles* with
-            // a FAILURE outcome, not individual retry attempts within a cycle.
-            // Reset semantics: reset to 0 when a cycle succeeds (even partially).
-            // This means a transient Redis error that resolves within the retry
-            // window does NOT accumulate toward the cleanup threshold.
-            // Redis timeout (slow response) counts as a cycle failure.
-            // To prevent false publisher cleanup due to slow Redis, we separate the
-            // publisher-dead threshold (MAX_CONSECUTIVE_HEARTBEAT_FAILURES cycles)
-            // from Redis reachability issues. Slow Redis increments this counter;
-            // only when it reaches the max do we conclude the publisher is dead.
-            let mut cycle_succeeded = false;
-            let mut publisher_missing = false;
-            let mut last_error: Option<anyhow::Error> = None;
-            for attempt in 0..MAX_HEARTBEAT_RETRIES {
-                match self
-                    .registry
-                    .refresh_publisher_ttl(
-                        room_id,
-                        media_id,
-                        user_id,
-                        &self.local_node_id,
-                        entry.epoch,
-                    )
-                    .await
-                {
-                    Ok(PublisherRefreshOutcome::Refreshed) => {
-                        cycle_succeeded = true;
-                        break;
-                    }
-                    Ok(PublisherRefreshOutcome::Missing) => {
-                        publisher_missing = true;
-                        last_error = Some(anyhow::anyhow!(
-                            "publisher registration missing from registry"
-                        ));
-                        break;
-                    }
-                    Ok(PublisherRefreshOutcome::OwnershipChanged) => {
-                        warn!(
-                            "Publisher room={} media={} no longer matches local owner/epoch; cleaning up immediately",
-                            room_id, media_id
-                        );
-                        self.spawn_cleanup_publisher(
-                            room_id.to_string(),
-                            media_id.to_string(),
-                            entry.epoch,
-                            "publisher ownership changed in registry".to_string(),
-                        );
-                        cycle_succeeded = true;
-                        break;
-                    }
-                    Err(e) => {
-                        if attempt < MAX_HEARTBEAT_RETRIES - 1 {
-                            let delay_ms = HEARTBEAT_RETRY_BASE_DELAY_MS * (1 << attempt);
-                            warn!(
-                                "Heartbeat attempt {} failed for room {} / media {}: {}. Retrying in {}ms",
-                                attempt + 1, room_id, media_id, e, delay_ms
-                            );
-                            last_error = Some(e);
-                            sleep(Duration::from_millis(delay_ms)).await;
-                        } else {
-                            error!(
-                                "All {} heartbeat attempts failed for room {} / media {}: {}. \
-                                 Incrementing consecutive failure counter.",
-                                MAX_HEARTBEAT_RETRIES, room_id, media_id, e
-                            );
-                            last_error = Some(e);
-                        }
-                    }
-                }
-            }
-
-            if cycle_succeeded {
-                // Cycle succeeded: reset BOTH failure counters.
-                // Any previous partial failures within this cycle are discarded.
-                entry
-                    .consecutive_heartbeat_failures
-                    .store(0, Ordering::Release);
-                entry.redis_unreachable_cycles.store(0, Ordering::Release);
-                trace!(
-                    "Heartbeat cycle succeeded for room {} / media {}",
-                    room_id,
-                    media_id
-                );
-            } else {
-                // Cycle failed: ALL retries exhausted with errors.
-                synctv_core::metrics::livestream::PUBLISHER_HEARTBEAT_FAILURES.inc();
-
-                // Distinguish Redis-unreachable errors from publisher-missing errors.
-                // A slow/unreachable Redis should NOT immediately trigger publisher cleanup.
-                // Only escalate to cleanup if:
-                // (a) Redis is reachable but publisher TTL refresh actually fails
-                // (key not found = publisher expired) → uses heartbeat_failures counter
-                // (b) Redis is completely unreachable for an extended period
-                // → uses redis_unreachable_cycles counter (higher threshold)
-                // Use structured redis::ErrorKind matching instead of string comparison
-                // to avoid brittle matching against error message text.
-                let is_redis_unreachable =
-                    last_error.as_ref().is_some_and(is_redis_unreachable_error);
-
-                if is_redis_unreachable {
-                    // Redis itself is unreachable — do NOT count toward publisher cleanup threshold.
-                    // Use a separate (higher) counter to eventually clean up if Redis stays down.
+            let failure_reason = match self
+                .registry
+                .refresh_publisher_ttl(room_id, media_id, user_id, &self.local_node_id, entry.epoch)
+                .await
+            {
+                Ok(PublisherRefreshOutcome::Refreshed) => {
                     entry
                         .consecutive_heartbeat_failures
                         .store(0, Ordering::Release);
-                    let redis_failures = entry
-                        .redis_unreachable_cycles
-                        .fetch_add(1, Ordering::AcqRel)
-                        + 1;
-                    if redis_failures >= MAX_CONSECUTIVE_REDIS_UNREACHABLE {
-                        error!(
-                            "Redis unreachable for {} consecutive heartbeat cycles for room={} media={}. \
-                             Cleaning up publisher as last resort (Redis may be permanently down).",
-                            redis_failures, room_id, media_id
-                        );
-                        self.spawn_cleanup_publisher(
-                            room_id.to_string(),
-                            media_id.to_string(),
-                            entry.epoch,
-                            format!("Redis unreachable for {redis_failures} consecutive cycles"),
-                        );
-                    } else {
-                        warn!(
-                            "Redis unreachable for heartbeat room={} media={} ({}/{} consecutive). \
-                             NOT counting toward publisher cleanup threshold.",
-                            room_id, media_id, redis_failures, MAX_CONSECUTIVE_REDIS_UNREACHABLE
-                        );
-                    }
-                } else if publisher_missing {
-                    entry.redis_unreachable_cycles.store(0, Ordering::Release);
-                    let failures = entry
-                        .consecutive_heartbeat_failures
-                        .fetch_add(1, Ordering::AcqRel)
-                        + 1;
-                    if failures >= MAX_CONSECUTIVE_HEARTBEAT_FAILURES {
-                        error!(
-                            "Publisher room={} media={} missing from registry for {} consecutive heartbeat cycles, cleaning up",
-                            room_id, media_id, failures
-                        );
-                        self.spawn_cleanup_publisher(
-                            room_id.to_string(),
-                            media_id.to_string(),
-                            entry.epoch,
-                            format!(
-                                "publisher missing from registry for {failures} consecutive cycles"
-                            ),
-                        );
-                    } else {
-                        warn!(
-                            "Publisher room={} media={} missing from registry ({}/{} consecutive cycles)",
-                            room_id, media_id, failures, MAX_CONSECUTIVE_HEARTBEAT_FAILURES
-                        );
-                    }
-                } else {
-                    let failures = entry
-                        .consecutive_heartbeat_failures
-                        .fetch_add(1, Ordering::AcqRel)
-                        + 1;
-                    entry.redis_unreachable_cycles.store(0, Ordering::Release);
+                    trace!(
+                        "Heartbeat cycle succeeded for room {} / media {}",
+                        room_id,
+                        media_id
+                    );
+                    continue;
+                }
+                Ok(PublisherRefreshOutcome::Missing) => {
+                    "publisher missing from registry".to_string()
+                }
+                Ok(PublisherRefreshOutcome::OwnershipChanged) => {
                     warn!(
-                        "Heartbeat cycle failed for room={} media={} due to persistent registry error (counting toward cleanup threshold) ({}/{} consecutive): {}",
+                        "Publisher room={} media={} no longer matches local owner/epoch; cleaning up immediately",
+                        room_id, media_id
+                    );
+                    self.cleanup_publisher(
                         room_id,
                         media_id,
-                        failures,
-                        MAX_CONSECUTIVE_HEARTBEAT_FAILURES,
-                        last_error
-                            .as_ref()
-                            .map_or_else(|| "unknown error".to_string(), ToString::to_string)
-                    );
-                    if failures >= MAX_CONSECUTIVE_HEARTBEAT_FAILURES {
-                        error!(
-                            "Publisher room={} media={} failed heartbeat with persistent registry error for {} consecutive cycles, cleaning up",
-                            room_id, media_id, failures
-                        );
-                        self.spawn_cleanup_publisher(
-                            room_id.to_string(),
-                            media_id.to_string(),
-                            entry.epoch,
-                            format!(
-                                "persistent registry heartbeat failure for {failures} consecutive cycles"
-                            ),
-                        );
-                    }
+                        entry.epoch,
+                        "publisher ownership changed in registry",
+                    )
+                    .await;
+                    continue;
                 }
+                Err(e) => format!("registry heartbeat error: {e}"),
+            };
+
+            synctv_core::metrics::livestream::PUBLISHER_HEARTBEAT_FAILURES.inc();
+            let failures = entry
+                .consecutive_heartbeat_failures
+                .fetch_add(1, Ordering::AcqRel)
+                + 1;
+            if failures >= MAX_CONSECUTIVE_HEARTBEAT_FAILURES {
+                error!(
+                    "Publisher room={} media={} failed heartbeat for {} consecutive cycles, cleaning up: {}",
+                    room_id, media_id, failures, failure_reason
+                );
+                self.cleanup_publisher(
+                    room_id,
+                    media_id,
+                    entry.epoch,
+                    &format!("heartbeat failed for {failures} consecutive cycles"),
+                )
+                .await;
+            } else {
+                warn!(
+                    "Heartbeat failed for room={} media={} ({}/{} consecutive): {}",
+                    room_id, media_id, failures, MAX_CONSECUTIVE_HEARTBEAT_FAILURES, failure_reason
+                );
             }
         }
 

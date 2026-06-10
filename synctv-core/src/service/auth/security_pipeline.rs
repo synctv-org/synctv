@@ -55,11 +55,11 @@ pub struct SecurityPipeline {
     key_builder: KeyBuilder,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SecurityPipelineRuntime {
     pub user_cache: Option<Arc<UserCache>>,
-    pub token_blacklist: Option<Arc<dyn TokenBlacklistStore>>,
-    pub key_builder: Option<KeyBuilder>,
+    pub token_blacklist: Arc<dyn TokenBlacklistStore>,
+    pub key_builder: KeyBuilder,
 }
 
 impl SecurityPipeline {
@@ -78,8 +78,15 @@ impl SecurityPipeline {
 
     /// Create a new security pipeline.
     #[must_use]
-    pub fn new(user_service: Arc<UserService>) -> Self {
-        Self::new_with_runtime(user_service, SecurityPipelineRuntime::default())
+    pub fn new(user_service: &Arc<UserService>) -> Self {
+        Self::new_with_runtime(
+            user_service.clone(),
+            SecurityPipelineRuntime {
+                user_cache: None,
+                token_blacklist: user_service.token_blacklist_store(),
+                key_builder: user_service.key_builder().clone(),
+            },
+        )
     }
 
     /// Create a security pipeline with explicit runtime dependencies.
@@ -88,18 +95,11 @@ impl SecurityPipeline {
         user_service: Arc<UserService>,
         runtime: SecurityPipelineRuntime,
     ) -> Self {
-        let token_blacklist = runtime
-            .token_blacklist
-            .unwrap_or_else(|| user_service.token_blacklist_store());
-        let key_builder = runtime
-            .key_builder
-            .unwrap_or_else(|| user_service.key_builder().clone());
-
         Self {
             user_service,
             user_cache: runtime.user_cache,
-            token_blacklist,
-            key_builder,
+            token_blacklist: runtime.token_blacklist,
+            key_builder: runtime.key_builder,
         }
     }
 
@@ -129,12 +129,22 @@ impl SecurityPipeline {
         let user_id = claims.user_id()?;
 
         if let Some(cache) = &self.user_cache {
-            if let Ok(Some(cached)) = cache.get(&user_id).await {
-                if cached.is_banned()
-                    || cached.status() == UserStatus::Banned
-                    || cached.is_deleted()
-                {
-                    return Err(Error::Authentication("Authentication failed".to_string()));
+            match cache.get(&user_id).await {
+                Ok(Some(cached)) => {
+                    if cached.is_banned()
+                        || cached.status() == UserStatus::Banned
+                        || cached.is_deleted()
+                    {
+                        return Err(Error::Authentication("Authentication failed".to_string()));
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        user_id = %user_id,
+                        "Failed to read user cache in SecurityPipeline"
+                    );
                 }
             }
         }

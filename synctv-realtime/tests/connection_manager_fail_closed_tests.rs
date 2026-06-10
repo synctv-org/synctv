@@ -64,7 +64,7 @@ fn distributed_manager(
 ) -> ConnectionManager {
     build_connection_manager(
         limits,
-        &SharedStateProfile::from_runtime(
+        &SharedStateProfile::for_cluster_runtime(
             Some(synctv_core::direct_runtime(conn)),
             key_prefix,
             true,
@@ -89,7 +89,7 @@ impl RedisConnectionRuntime for HangingRedisRuntime {
 fn manager_with_unavailable_redis(key_prefix: &str) -> ConnectionManager {
     build_connection_manager(
         ConnectionLimits::default(),
-        &SharedStateProfile::from_runtime(
+        &SharedStateProfile::for_cluster_runtime(
             Some(std::sync::Arc::new(HangingRedisRuntime)),
             key_prefix,
             true,

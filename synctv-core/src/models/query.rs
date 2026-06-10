@@ -45,13 +45,17 @@ impl std::fmt::Display for SortDirection {
 mod tests {
     use super::SortDirection;
 
+    fn parse_sort_direction(value: &str) -> SortDirection {
+        match value.parse::<SortDirection>() {
+            Ok(direction) => direction,
+            Err(error) => std::panic::panic_any(format!("sort direction should parse: {error}")),
+        }
+    }
+
     #[test]
     fn parse_sort_direction_values() {
-        assert_eq!("asc".parse::<SortDirection>().unwrap(), SortDirection::Asc);
-        assert_eq!(
-            "desc".parse::<SortDirection>().unwrap(),
-            SortDirection::Desc
-        );
+        assert_eq!(parse_sort_direction("asc"), SortDirection::Asc);
+        assert_eq!(parse_sort_direction("desc"), SortDirection::Desc);
         assert!("ascending".parse::<SortDirection>().is_err());
         assert!("descending".parse::<SortDirection>().is_err());
     }

@@ -181,7 +181,7 @@ impl Provider for LogtoProvider {
             .await
             .internal_with_err("Failed to parse user info")?;
 
-        let username = user.username.or(user.name).unwrap_or_default();
+        let username = username_from_profile(user.username, user.name, &user.sub);
 
         Ok(OAuth2UserInfo {
             provider_user_id: user.sub,
@@ -191,6 +191,18 @@ impl Provider for LogtoProvider {
             email_verified: user.email_verified,
         })
     }
+}
+
+fn username_from_profile(
+    username: Option<String>,
+    name: Option<String>,
+    provider_user_id: &str,
+) -> String {
+    username
+        .or(name)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| provider_user_id.to_string())
 }
 
 /// Factory function for Logto provider
@@ -217,6 +229,7 @@ pub fn logto_factory_with_ssrf_guard(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::TestResultExt;
 
     #[test]
     fn test_create_provider_valid_config() {
@@ -237,7 +250,7 @@ mod tests {
             "https://example.com/cb".to_string(),
             "https://logto.example.com/",
         )
-        .unwrap();
+        .checked("operation should succeed");
         // The endpoint should have trailing slash trimmed
         assert_eq!(provider.endpoint, "https://logto.example.com");
     }
@@ -253,8 +266,8 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(Error::InvalidInput(msg)) => assert!(msg.contains("redirect URL")),
-            Ok(_) => panic!("Expected error but got Ok"),
-            Err(e) => panic!("Expected InvalidInput error, got: {e}"),
+            Ok(_) => std::panic::panic_any("Expected error but got Ok"),
+            Err(e) => std::panic::panic_any(format!("Expected InvalidInput error, got: {e}")),
         }
     }
 
@@ -304,7 +317,7 @@ mod tests {
             "https://example.com/cb".to_string(),
             "https://logto.example.com",
         )
-        .unwrap();
+        .checked("operation should succeed");
         assert_eq!(provider.provider_type(), "logto");
     }
 
@@ -316,10 +329,13 @@ mod tests {
             "https://example.com/callback".to_string(),
             "https://auth.logto.io",
         )
-        .unwrap();
+        .checked("operation should succeed");
 
         let state = "logto_state_xyz";
-        let auth = provider.new_auth_url(state, None).await.unwrap();
+        let auth = provider
+            .new_auth_url(state, None)
+            .await
+            .checked("operation should succeed");
         let auth_url = auth.auth_url;
         let pkce_verifier = auth.pkce_verifier;
 
@@ -349,9 +365,13 @@ mod tests {
             "https://example.com/cb".to_string(),
             "https://logto.example.com/",
         )
-        .unwrap();
+        .checked("operation should succeed");
 
-        let auth_url = provider.new_auth_url("state", None).await.unwrap().auth_url;
+        let auth_url = provider
+            .new_auth_url("state", None)
+            .await
+            .checked("operation should succeed")
+            .auth_url;
         // Should not have double slashes
         assert!(auth_url.starts_with("https://logto.example.com/oidc/auth"));
         assert!(!auth_url.contains("//oidc"));
@@ -367,7 +387,10 @@ mod tests {
         });
         let provider = logto_factory(&config);
         assert!(provider.is_ok());
-        assert_eq!(provider.unwrap().provider_type(), "logto");
+        assert_eq!(
+            provider.checked("operation should succeed").provider_type(),
+            "logto"
+        );
     }
 
     #[test]
@@ -409,6 +432,14 @@ mod tests {
     }
 
     #[test]
+    fn test_username_from_profile_uses_provider_user_id_when_profile_names_missing() {
+        assert_eq!(
+            username_from_profile(None, Some("  ".to_string()), "logto-subject"),
+            "logto-subject"
+        );
+    }
+
+    #[test]
     fn test_logto_config_deserialize() {
         let json = serde_json::json!({
             "client_id": "logto_abc",
@@ -416,7 +447,7 @@ mod tests {
             "redirect_url": "https://example.com/cb",
             "endpoint": "https://logto.example.com"
         });
-        let config: LogtoConfig = serde_json::from_value(json).unwrap();
+        let config: LogtoConfig = serde_json::from_value(json).checked("operation should succeed");
         assert_eq!(config.client_id, "logto_abc");
         assert_eq!(config.client_secret, "logto_def");
         assert_eq!(config.redirect_url, "https://example.com/cb");

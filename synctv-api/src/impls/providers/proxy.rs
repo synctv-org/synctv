@@ -11,25 +11,43 @@ use synctv_proto::providers::common::ProviderProxyPathRequest;
 
 use crate::impls::ApiError;
 
-pub struct ProviderProxyResolution<'a> {
-    pub path: ProviderProxyPathRequest,
-    pub query_string: &'a str,
-    pub request_headers: &'a HeaderMap,
-    pub public_id_codec: &'a crate::PublicIdCodec,
-    pub proxy_signing_key: &'a ProxySigningKey,
-    pub proxy_provider_registry: &'a ProxyProviderRegistry,
-    pub provider_stores: &'a dyn ProviderStoreResolver,
-    pub proxy_services: &'a ProxyServices,
-    pub user_service: &'a UserService,
-    pub request_control: &'a ExecutionControl,
+pub(crate) struct ProviderProxyResolution<'a> {
+    pub(crate) path: ProviderProxyPathRequest,
+    pub(crate) query_string: &'a str,
+    pub(crate) request_headers: &'a HeaderMap,
+    pub(crate) public_id_codec: &'a synctv_core::PublicIdCodec,
+    pub(crate) proxy_signing_key: &'a ProxySigningKey,
+    pub(crate) proxy_provider_registry: &'a ProxyProviderRegistry,
+    pub(crate) provider_stores: &'a dyn ProviderStoreResolver,
+    pub(crate) proxy_services: &'a ProxyServices,
+    pub(crate) user_service: &'a UserService,
+    pub(crate) request_control: &'a ExecutionControl,
 }
 
-fn parse_proxy_user_id(codec: &crate::PublicIdCodec, value: &str) -> Result<UserId, ApiError> {
+fn parse_proxy_user_id(
+    codec: &synctv_core::PublicIdCodec,
+    value: &str,
+) -> Result<UserId, ApiError> {
     crate::impls::parse_user_id_param(value, "user_id", codec)
 }
 
-fn parse_proxy_room_id(codec: &crate::PublicIdCodec, value: &str) -> Result<RoomId, ApiError> {
+fn parse_proxy_room_id(
+    codec: &synctv_core::PublicIdCodec,
+    value: &str,
+) -> Result<RoomId, ApiError> {
     crate::impls::parse_room_id_param(value, "room_id", codec)
+}
+
+fn proxy_version_from_sub_path(sub_path: &str) -> Result<&str, ApiError> {
+    let version = sub_path
+        .split_once('/')
+        .map_or(sub_path, |(version, _)| version);
+    if version.trim().is_empty() {
+        return Err(ApiError::InvalidInput(
+            "provider proxy path must include a version".to_string(),
+        ));
+    }
+    Ok(version)
 }
 
 pub(crate) fn map_proxy_membership_probe_error(err: synctv_core::Error) -> ApiError {
@@ -46,7 +64,7 @@ pub(crate) fn map_proxy_membership_probe_error(err: synctv_core::Error) -> ApiEr
     }
 }
 
-pub async fn validate_fresh_provider_proxy_access(
+pub(crate) async fn validate_fresh_provider_proxy_access(
     user_service: &UserService,
     proxy_services: &ProxyServices,
     room_id: &RoomId,
@@ -80,7 +98,7 @@ pub async fn validate_fresh_provider_proxy_access(
         .map_err(map_proxy_membership_probe_error)
 }
 
-pub async fn resolve_provider_proxy_action(
+pub(crate) async fn resolve_provider_proxy_action(
     resolution: ProviderProxyResolution<'_>,
 ) -> Result<ProxyAction, ApiError> {
     crate::impls::validate_proto_request(&resolution.path)?;
@@ -89,7 +107,7 @@ pub async fn resolve_provider_proxy_action(
         sub_path,
     } = resolution.path;
 
-    let version = sub_path.split('/').next().unwrap_or("");
+    let version = proxy_version_from_sub_path(&sub_path)?;
     let claims = resolution
         .proxy_signing_key
         .parse_and_verify_query(resolution.query_string, &provider_name, version)
@@ -132,4 +150,43 @@ pub async fn resolve_provider_proxy_action(
     };
 
     proxy.resolve_proxy(&ctx).await.map_err(ApiError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::proxy_version_from_sub_path;
+
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    #[test]
+    fn proxy_version_from_sub_path_requires_version() -> TestResult {
+        for sub_path in ["", "/stream", " /stream"] {
+            let error =
+                proxy_version_from_sub_path(sub_path).expect_err("sub_path should require version");
+            assert!(
+                error.to_string().contains("version"),
+                "error should mention version, got: {error:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proxy_version_from_sub_path_returns_first_segment() -> TestResult {
+        let version = proxy_version_from_sub_path("v1/stream/master.m3u8")
+            .map_err(|error| test_error(format!("{error:?}")))?;
+        assert_eq!(version, "v1");
+        Ok(())
+    }
+
+    #[test]
+    fn proxy_version_from_sub_path_accepts_version_only_signed_rewrite_path() {
+        let version = proxy_version_from_sub_path("version-only")
+            .expect("version-only proxy rewrite path should expose version");
+        assert_eq!(version, "version-only");
+    }
 }

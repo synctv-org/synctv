@@ -1,8 +1,9 @@
-use std::collections::HashMap;
 use std::time::Duration;
 
 use bytes::Bytes;
 use synctv_common::ExecutionControl;
+
+use crate::ProviderHeaders;
 
 use super::status::CacheStatus;
 
@@ -55,7 +56,7 @@ pub(super) struct HeadResourceResult {
 
 pub(super) struct SliceFetchRequest<'a> {
     pub url: &'a str,
-    pub provider_headers: &'a HashMap<String, String>,
+    pub provider_headers: &'a ProviderHeaders,
     pub slice_index: u64,
     pub known_total_size: Option<u64>,
     pub request_control: Option<&'a ExecutionControl>,

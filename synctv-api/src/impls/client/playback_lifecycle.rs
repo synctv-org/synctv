@@ -57,7 +57,7 @@ pub(crate) struct ProviderPlaybackRegistration<'a> {
 pub(crate) trait ProviderPlaybackLifecycleApi {
     fn lifecycle_room_service(&self) -> &RoomService;
 
-    fn lifecycle_provider_stores(&self) -> Option<&Arc<dyn ProviderStoreResolver>>;
+    fn lifecycle_provider_stores(&self) -> &Arc<dyn ProviderStoreResolver>;
 
     fn lifecycle_providers_manager(&self) -> Arc<ProvidersManager>;
 
@@ -67,9 +67,8 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
         room_id: RoomId,
     ) -> Result<ProviderContext<'a>, ApiError>;
 
-    fn lifecycle_store(&self) -> Option<Arc<dyn ProviderStore>> {
-        self.lifecycle_provider_stores()
-            .map(|stores| stores.load(LIFECYCLE_STORE_NAME))
+    fn lifecycle_store(&self) -> Arc<dyn ProviderStore> {
+        self.lifecycle_provider_stores().load(LIFECYCLE_STORE_NAME)
     }
 
     async fn load_lifecycle_sessions(
@@ -114,10 +113,10 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
         room_id: RoomId,
     ) -> Result<synctv_core::provider::ProviderContext<'a>, ApiError> {
         let ctx = self.lifecycle_provider_context(session, room_id)?;
-        Ok(match self.lifecycle_provider_stores() {
-            Some(stores) => ctx.with_store(stores.load(session.provider.as_str())),
-            None => ctx,
-        })
+        Ok(ctx.with_store(
+            self.lifecycle_provider_stores()
+                .load(session.provider.as_str()),
+        ))
     }
 
     async fn resolve_lifecycle_provider(
@@ -249,14 +248,7 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
         let Some(room_target_key) = playback_target_key(state) else {
             return Ok(());
         };
-        let Some(store) = self.lifecycle_store() else {
-            tracing::debug!(
-                provider = provider_name,
-                session_id = %provider_session_id,
-                "Provider playback lifecycle store is unavailable; lifecycle hooks disabled"
-            );
-            return Ok(());
-        };
+        let store = self.lifecycle_store();
 
         let room_id = state.room_id;
         let lock_key = room_lock_key(room_id);
@@ -324,9 +316,7 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
         let Some(target_key) = playback_target_key(state) else {
             return Ok(());
         };
-        let Some(store) = self.lifecycle_store() else {
-            return Ok(());
-        };
+        let store = self.lifecycle_store();
 
         let room_id = state.room_id;
         let lock_key = room_lock_key(room_id);
@@ -367,9 +357,7 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
         let Some(target_key) = playback_target_key(state) else {
             return Ok(());
         };
-        let Some(store) = self.lifecycle_store() else {
-            return Ok(());
-        };
+        let store = self.lifecycle_store();
 
         let room_id = state.room_id;
         let lock_key = room_lock_key(room_id);
@@ -552,17 +540,15 @@ impl ProviderPlaybackLifecycleApi for ClientApiImpl {
         self.room_service.as_ref()
     }
 
-    fn lifecycle_provider_stores(&self) -> Option<&Arc<dyn ProviderStoreResolver>> {
-        self.provider_stores.as_ref()
+    fn lifecycle_provider_stores(&self) -> &Arc<dyn ProviderStoreResolver> {
+        &self.provider_stores
     }
 
     fn lifecycle_providers_manager(&self) -> Arc<ProvidersManager> {
-        self.providers_manager.clone().unwrap_or_else(|| {
-            self.room_service
-                .media_service()
-                .providers_manager()
-                .clone()
-        })
+        self.room_service
+            .media_service()
+            .providers_manager()
+            .clone()
     }
 
     fn lifecycle_provider_context<'a>(
@@ -587,8 +573,8 @@ impl ProviderPlaybackLifecycleApi for AdminApiImpl {
         self.room_service.as_ref()
     }
 
-    fn lifecycle_provider_stores(&self) -> Option<&Arc<dyn ProviderStoreResolver>> {
-        self.provider_stores.as_ref()
+    fn lifecycle_provider_stores(&self) -> &Arc<dyn ProviderStoreResolver> {
+        &self.provider_stores
     }
 
     fn lifecycle_providers_manager(&self) -> Arc<ProvidersManager> {
@@ -639,9 +625,7 @@ impl ProviderPlaybackLifecycleApi for AdminApiImpl {
         if let Some(enc) = self.room_service.media_service().credential_encryption() {
             ctx = ctx.with_credential_encryption(enc);
         }
-        if let Some(access_service) = &self.provider_access_service {
-            ctx = ctx.with_provider_access_service(access_service.clone());
-        }
+        ctx = ctx.with_provider_access_service(self.provider_access_service.clone());
         Ok(ctx)
     }
 }
@@ -657,6 +641,29 @@ mod tests {
     use synctv_core::provider::{
         PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, ProviderStoreRegistry,
     };
+    use synctv_core_testing::{TestOptionExt, TestResultExt};
+
+    fn locked_clone<T: Clone>(mutex: &std::sync::Mutex<T>) -> T {
+        mutex
+            .lock()
+            .unwrap_or_else(|_| panic!("test mutex lock"))
+            .clone()
+    }
+
+    fn unwrap_ok<T, E: std::fmt::Debug>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("{context}: {error:?}"),
+        }
+    }
+
+    fn locked_push<T>(mutex: &std::sync::Mutex<Vec<T>>, value: T) -> Result<(), ProviderError> {
+        mutex
+            .lock()
+            .map_err(|_| ProviderError::ApiError("test mutex was poisoned".to_string()))?
+            .push(value);
+        Ok(())
+    }
 
     #[derive(Debug)]
     struct LifecycleTestProvider {
@@ -716,11 +723,7 @@ mod tests {
                     "injected start failure".to_string(),
                 ));
             }
-            self.start_calls
-                .lock()
-                .expect("start calls lock")
-                .push(session_id.to_string());
-            Ok(())
+            locked_push(&self.start_calls, session_id.to_string())
         }
 
         async fn on_playback_stop(
@@ -730,11 +733,7 @@ mod tests {
             _source_config: &Value,
             position: f64,
         ) -> Result<(), ProviderError> {
-            self.stop_calls
-                .lock()
-                .expect("stop calls lock")
-                .push((session_id.to_string(), position));
-            Ok(())
+            locked_push(&self.stop_calls, (session_id.to_string(), position))
         }
 
         fn playback_lifecycle_session_id(&self, result: &PlaybackResult) -> Option<String> {
@@ -784,7 +783,7 @@ mod tests {
                 synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
             )));
         let mut providers_manager = synctv_core::service::ProvidersManager::new(instance_manager)
-            .expect("providers manager should build");
+            .checked("providers manager should build");
         providers_manager.register_factory(
             "lifecycle_test",
             Box::new(move |_instance_id, _config, _instance_manager| {
@@ -794,11 +793,12 @@ mod tests {
         providers_manager
             .create_provider("lifecycle_test", "lifecycle_test", &Value::Null)
             .await
-            .expect("create lifecycle test provider");
+            .map(|_| ())
+            .checked("create lifecycle test provider");
 
         let jwt_service =
             synctv_core::service::JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
-                .expect("test jwt service");
+                .checked("test jwt service");
         let username_cache =
             synctv_core::cache::UsernameCache::local_only("lifecycle:user:".to_string(), 100, 60);
         let token_blacklist = Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
@@ -815,8 +815,13 @@ mod tests {
             ),
         ));
         let room_service = Arc::new(
-            synctv_core::service::RoomService::new_for_tests(pool, (*user_service).clone())
-                .expect("room service should build"),
+            synctv_core::service::RoomService::new_with_providers_and_options(
+                pool.clone(),
+                (*user_service).clone(),
+                Arc::new(providers_manager),
+                synctv_core::service::room::RoomServiceOptions::test_defaults_with_settings(pool),
+            )
+            .checked("room service should build"),
         );
 
         ClientApiImpl::new_with_runtime(
@@ -829,18 +834,16 @@ mod tests {
                 jwt_service: synctv_core::service::JwtService::new(
                     "Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
                 )
-                .expect("test jwt service"),
+                .checked("test jwt service"),
                 live_streaming_infrastructure: None,
-                providers_manager: Some(Arc::new(providers_manager)),
                 settings_registry: None,
-                public_id_codec: Arc::new(crate::PublicIdCodec::plain()),
+                public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
                 chat_service: None,
-                credential_encryption: None,
-                provider_stores: Some(stores),
+                provider_stores: stores,
                 email_api: None,
                 passkey_service: None,
             },
-            crate::impls::ClientApiRuntime::test_disabled(),
+            crate::test_support::client_api_runtime(),
         )
     }
 
@@ -854,10 +857,10 @@ mod tests {
         state.playing_media_id = None;
         state.playing_playlist_id = Some(synctv_core::models::PlaylistId::expect_positive(3));
         state.target = b"target-a".to_vec();
-        let first = playback_target_key(&state).expect("dynamic target key");
+        let first = playback_target_key(&state).checked("dynamic target key");
 
         state.target = b"target-b".to_vec();
-        let second = playback_target_key(&state).expect("dynamic target key");
+        let second = playback_target_key(&state).checked("dynamic target key");
         assert_ne!(first, second);
         assert!(first.starts_with("playlist:3:"));
     }
@@ -910,9 +913,10 @@ mod tests {
             last_paused: None,
         };
 
-        let ctx = api
-            .lifecycle_context(&session, room_id)
-            .expect("lifecycle context");
+        let ctx = unwrap_ok(
+            api.lifecycle_context(&session, room_id),
+            "lifecycle context",
+        );
 
         assert_eq!(ctx.user_id(), Some(&actor_user_id));
         assert_eq!(ctx.credential_owner_id(), Some(&credential_owner_id));
@@ -951,7 +955,7 @@ mod tests {
             result: &result,
         })
         .await
-        .expect("register initial lifecycle session");
+        .checked("register initial lifecycle session");
         api.register_provider_playback_session(ProviderPlaybackRegistration {
             state: &state,
             actor_user_id: &second_actor,
@@ -963,12 +967,12 @@ mod tests {
             result: &result,
         })
         .await
-        .expect("refresh lifecycle session");
+        .checked("refresh lifecycle session");
 
         let lifecycle_store = stores.load(LIFECYCLE_STORE_NAME);
         let sessions = ClientApiImpl::load_lifecycle_sessions(lifecycle_store.as_ref(), room_id)
             .await
-            .expect("load lifecycle sessions");
+            .checked("load lifecycle sessions");
         assert_eq!(sessions.sessions.len(), 1);
         let session = &sessions.sessions[0];
         assert_eq!(session.actor_user_id, second_actor);
@@ -1010,30 +1014,27 @@ mod tests {
             result: &result,
         })
         .await
-        .expect("register lifecycle session");
+        .checked("register lifecycle session");
 
         let lifecycle_store = stores.load(LIFECYCLE_STORE_NAME);
         let sessions = ClientApiImpl::load_lifecycle_sessions(lifecycle_store.as_ref(), room_id)
             .await
-            .expect("load lifecycle sessions after failed start");
+            .checked("load lifecycle sessions after failed start");
         assert_eq!(sessions.sessions.len(), 1);
         assert!(
             !sessions.sessions[0].started,
             "failed start hook must leave lifecycle session retryable"
         );
-        assert!(start_calls.lock().expect("start calls lock").is_empty());
+        assert!(locked_clone(start_calls.as_ref()).is_empty());
 
         api.report_provider_progress_for_state(&state, 1.0, false, true)
             .await
-            .expect("progress should retry lifecycle start");
+            .checked("progress should retry lifecycle start");
 
-        assert_eq!(
-            start_calls.lock().expect("start calls lock").as_slice(),
-            ["session-retry"]
-        );
+        assert_eq!(locked_clone(start_calls.as_ref()), vec!["session-retry"]);
         let sessions = ClientApiImpl::load_lifecycle_sessions(lifecycle_store.as_ref(), room_id)
             .await
-            .expect("load lifecycle sessions after retry");
+            .checked("load lifecycle sessions after retry");
         assert!(sessions.sessions[0].started);
     }
 
@@ -1069,11 +1070,11 @@ mod tests {
             result: &result,
         })
         .await
-        .expect("register lifecycle session");
+        .checked("register lifecycle session");
 
         assert_eq!(
-            start_calls.lock().expect("start calls lock").as_slice(),
-            ["session-a"],
+            locked_clone(start_calls.as_ref()),
+            vec!["session-a"],
             "registering an actively playing provider result must call provider start"
         );
 
@@ -1083,9 +1084,9 @@ mod tests {
 
         api.handle_provider_lifecycle_transition(Some(&first_state), &second_state)
             .await
-            .expect("handle lifecycle transition");
+            .checked("handle lifecycle transition");
 
-        let stops = stop_calls.lock().expect("stop calls lock").clone();
+        let stops = locked_clone(stop_calls.as_ref());
         assert_eq!(
             stops.len(),
             1,
@@ -1101,7 +1102,7 @@ mod tests {
         let lifecycle_store = stores.load(LIFECYCLE_STORE_NAME);
         let sessions = ClientApiImpl::load_lifecycle_sessions(lifecycle_store.as_ref(), room_id)
             .await
-            .expect("load lifecycle sessions");
+            .checked("load lifecycle sessions");
         assert!(
             sessions.sessions.is_empty(),
             "stopped lifecycle sessions must be removed from the store"

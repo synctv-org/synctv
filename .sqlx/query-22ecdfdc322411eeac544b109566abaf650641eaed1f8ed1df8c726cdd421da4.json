@@ -6,7 +6,8 @@
       {
         "ordinal": 0,
         "name": "current_date!",
-        "type_info": "Date"
+        "type_info": "Date",
+        "origin": "Expression"
       }
     ],
     "parameters": {

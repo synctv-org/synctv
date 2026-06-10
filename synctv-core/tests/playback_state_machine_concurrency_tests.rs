@@ -1,11 +1,9 @@
 //! Playback state machine concurrency and versioning tests.
 
-#![allow(clippy::unwrap_used)]
-
 use std::sync::Arc;
 
 use synctv_core::repository::UserRepository;
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, TestResultExt};
 
 mod playback_state_machine_support;
 
@@ -18,7 +16,10 @@ async fn test_concurrent_play_pause_operations() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("sm_concurrent")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("sm_concurrent"))
+        .await
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -29,7 +30,7 @@ async fn test_concurrent_play_pause_operations() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let mut handles = vec![];
     let barrier = Arc::new(tokio::sync::Barrier::new(10));
@@ -55,18 +56,20 @@ async fn test_concurrent_play_pause_operations() {
         match result {
             Ok(Ok(_)) => success_count += 1,
             Ok(Err(_)) => error_count += 1,
-            Err(e) => panic!("Task panicked: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("Task panicked: {e:?}")),
         }
     }
 
-    println!("Concurrent play/pause: success={success_count}/10, errors={error_count}");
-    assert!(success_count >= 3);
+    assert!(
+        success_count >= 3,
+        "concurrent play/pause should have enough successful updates, got {success_count} successes and {error_count} errors"
+    );
 
     let state = room_service
         .playback_service()
         .get_state(&room.id)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     let _ = state.is_playing;
 }
 
@@ -77,7 +80,10 @@ async fn test_version_increments_on_state_change() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("sm_version")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("sm_version"))
+        .await
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -88,36 +94,39 @@ async fn test_version_increments_on_state_change() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let playback_service = room_service.playback_service();
     set_current_test_media(&pool, room.id, owner.id, "Version Test Video").await;
 
-    let state = playback_service.get_state(&room.id).await.unwrap();
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("operation should succeed");
     let initial_version = state.version;
 
     let state = playback_service
         .set_playing(room.id, owner.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(state.version, initial_version + 1);
 
     let state = playback_service
         .set_playing(room.id, owner.id, false)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(state.version, initial_version + 2);
 
     let state = playback_service
         .seek(room.id, owner.id, 50.0)
         .await
-        .unwrap()
+        .checked("operation should succeed")
         .state;
     assert_eq!(state.version, initial_version + 3);
 
     let state = playback_service
         .change_speed(room.id, owner.id, 1.5)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(state.version, initial_version + 4);
 }

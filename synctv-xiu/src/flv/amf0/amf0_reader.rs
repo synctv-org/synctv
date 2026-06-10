@@ -198,8 +198,8 @@ impl Amf0Reader {
 
         let mut properties = IndexMap::new();
 
-        //here we do not use length to traverse the map, because in some
-        //other media server, the length is 0 which is not correct.
+        // Some encoders write an unreliable ECMA array length. The AMF0 object
+        // terminator is the authoritative boundary.
         while !self.is_read_object_eof()? {
             // Check key count limit
             if properties.len() >= MAX_KEYS {
@@ -217,7 +217,11 @@ impl Amf0Reader {
         }
 
         if u32::try_from(properties.len()) != Ok(len) {
-            tracing::warn!("the ecma array length is not correct!");
+            tracing::warn!(
+                declared_len = len,
+                parsed_len = properties.len(),
+                "AMF0 ECMA array declared length differs from parsed property count"
+            );
         }
 
         Ok(Amf0ValueType::Object(properties))
@@ -270,10 +274,6 @@ impl Amf0Reader {
         let val = String::from_utf8(buff.to_vec())?;
         Ok(Amf0ValueType::LongUTF8String(val))
     }
-
-    // pub fn get_remaining_bytes(&mut self) -> BytesMut {
-    //     return self.reader.get_remaining_bytes();
-    // }
 }
 
 #[cfg(test)]
@@ -287,7 +287,6 @@ mod tests {
         let mut buf = [0; 8];
         BigEndian::write_f64(&mut buf, phi);
         assert_eq!(phi.to_bits(), BigEndian::read_f64(&buf).to_bits());
-        println!("tsetstt");
     }
 
     use super::amf0_markers;
@@ -350,27 +349,12 @@ mod tests {
         );
         assert_eq!(command_obj_raw, Amf0ValueType::Object(properties));
 
-        let _ = amf_reader.read_all();
-
-        print!("test");
+        let remaining_values = amf_reader.read_all().unwrap();
+        assert!(
+            remaining_values.is_empty(),
+            "connect command should consume the full AMF payload"
+        );
     }
-
-    // fn uint32_to_int24(num: u32) -> i32 {
-    //     // Keep only the lower 24 bits
-    //     let mut result = num & 0xFFFFFF;
-
-    //     let mut result2: i32 = result as i32;
-
-    //     // Check whether the highest bit is set
-    //     if (result & 0x800000) == 0x800000 {
-    //         // Convert from two's complement form
-    //         result = (result ^ 0xFFFFFF) + 1;
-
-    //         result2 = result as i32 * -1;
-    //     }
-
-    //     result2
-    // }
 
     fn bytes_to_i24(bytes: [u8; 3]) -> i32 {
         let sign_extend_mask = 0xff_ff << 23;
@@ -395,12 +379,10 @@ mod tests {
 
         for _ in 0..3 {
             let time = bytes_reader.read_u8().unwrap();
-            //print!("==time0=={}\n", time);
-            //print!("==time1=={}\n", self.tag.composition_time);
             t = (t << 8) + u32::from(time);
         }
 
-        println!("number: {}", bytes_to_i24(data));
+        assert_eq!(bytes_to_i24(data), -16);
     }
 
     #[test]
@@ -455,10 +437,6 @@ mod tests {
         assert_eq!(transaction_id, Amf0ValueType::Number(1.0));
 
         let command_obj_raw = amf_reader.read_with_type(amf0_markers::OBJECT);
-
-        if let Err(err) = &command_obj_raw {
-            println!("adfa{err}");
-        }
 
         let mut properties = IndexMap::new();
 

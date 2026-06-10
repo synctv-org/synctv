@@ -14,7 +14,7 @@ use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::SharedStateProfile;
 use synctv_core_testing::redis_connection_manager;
 use synctv_realtime::sync::{
-    build_room_message_runtime, room_hub::RoomLifecycleEvent, ConnectionId, RoomMessageRuntime,
+    build_room_message_runtime, ConnectionId, RoomLifecycleEvent, RoomMessageRuntime,
 };
 mod integration_test_helpers;
 use integration_test_helpers::TestRedis;
@@ -23,7 +23,7 @@ use integration_test_helpers::TestRedis;
 async fn create_hub(redis_url: &str, key_prefix: &str) -> std::sync::Arc<dyn RoomMessageRuntime> {
     let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let conn = redis_connection_manager(&client).await;
-    build_room_message_runtime(&SharedStateProfile::from_runtime(
+    build_room_message_runtime(&SharedStateProfile::for_cluster_runtime(
         Some(synctv_core::direct_runtime(conn)),
         key_prefix,
         true,
@@ -508,74 +508,7 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
     }
 }
 
-// Test 7: Local stale cleanup must not delete active subscriptions on other replicas
-
-#[tokio::test]
-#[ignore = "requires Docker"]
-async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions() {
-    let redis = TestRedis::start().await;
-
-    let hub_a = create_hub(&redis.redis_url, "test7:").await;
-    let hub_b = create_hub(&redis.redis_url, "test7:").await;
-
-    let room_id = RoomId::expect_positive(10_000_011);
-
-    let _rx_a = hub_a
-        .subscribe(
-            room_id,
-            UserId::expect_positive(10_000_003),
-            "conn_a".to_string().into(),
-        )
-        .await
-        .expect("subscribe should succeed");
-    let _rx_b = hub_b
-        .subscribe(
-            room_id,
-            UserId::expect_positive(10_000_004),
-            "conn_b".to_string().into(),
-        )
-        .await
-        .expect("subscribe should succeed");
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    hub_a.unsubscribe("conn_a");
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let before_cleanup = hub_b
-        .get_room_subscribers_replicas_wide(&room_id)
-        .await
-        .expect("distributed subscriber lookup should succeed");
-    assert_eq!(
-        before_cleanup.len(),
-        1,
-        "Only hub B's active subscriber should remain after hub A unsubscribes"
-    );
-    assert_eq!(before_cleanup[0].1, ConnectionId::new("conn_b"));
-
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let cleanup_task = hub_a
-        .spawn_shared_subscription_cleanup_task(Duration::from_millis(10), cancel.clone())
-        .expect("shared subscription cleanup task should spawn inside Tokio runtime");
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    cancel.cancel();
-    let _ = cleanup_task.await;
-
-    let after_cleanup = hub_b
-        .get_room_subscribers_replicas_wide(&room_id)
-        .await
-        .expect("distributed subscriber lookup should succeed");
-    assert_eq!(
-        after_cleanup.len(),
-        1,
-        "Hub A cleanup must not delete hub B's active Redis subscription"
-    );
-    assert_eq!(after_cleanup[0].1, ConnectionId::new("conn_b"));
-
-    hub_b.unsubscribe("conn_b");
-}
-
-// Test 8: Distributed room lookups prune stale hash members on read
+// Test 7: Distributed room lookups prune stale hash members on read
 
 #[tokio::test]
 #[ignore = "requires Docker"]

@@ -454,9 +454,10 @@ mod tests {
         let status: tonic::Status = Error::Internal("boom".to_string()).into();
         assert_eq!(status.code(), tonic::Code::Internal);
 
-        let status: tonic::Status =
-            Error::Serialization(serde_json::from_str::<serde_json::Value>("invalid").unwrap_err())
-                .into();
+        let Err(serialization_error) = serde_json::from_str::<serde_json::Value>("invalid") else {
+            std::panic::panic_any("invalid JSON should fail to deserialize");
+        };
+        let status: tonic::Status = Error::Serialization(serialization_error).into();
         assert_eq!(status.code(), tonic::Code::Internal);
     }
 

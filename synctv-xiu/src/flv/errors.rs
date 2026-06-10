@@ -10,7 +10,7 @@ pub enum TagParseErrorValue {
     BytesReadError(BytesReadError),
     #[error("tag data length error")]
     TagDataLength,
-    #[error("unknow tag type error")]
+    #[error("unknown tag type")]
     UnknownTagType,
 }
 #[derive(Debug, thiserror::Error)]
@@ -35,8 +35,6 @@ pub struct FlvMuxerError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum MuxerErrorValue {
-    // #[error("server error")]
-    // Error,
     #[error("bytes write error")]
     BytesWriteError(BytesWriteError),
 }
@@ -57,8 +55,6 @@ pub struct FlvDemuxerError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DemuxerErrorValue {
-    // #[error("server error")]
-    // Error,
     #[error("bytes write error:{0}")]
     BytesWriteError(#[source] BytesWriteError),
     #[error("bytes read error:{0}")]
@@ -113,14 +109,26 @@ pub enum MpegErrorValue {
     H264Error(#[source] H264Error),
     #[error("there is not enough bits to read")]
     NotEnoughBitsToRead,
-    #[error("should not come here")]
-    ShouldNotComeHere,
-    #[error("the sps nal unit type is not correct")]
+    #[error("integer value {value} exceeds {target} range")]
+    IntegerRange { value: u128, target: &'static str },
+    #[error("unsupported AAC epConfig value {0}")]
+    UnsupportedAacEpConfig(u64),
+    #[error("empty NAL unit")]
+    EmptyNalu,
+    #[error("invalid NAL unit length size {0}; expected 1..=4")]
+    InvalidNaluLength(u8),
+    #[error("invalid SPS NAL unit type")]
     SPSNalunitTypeNotCorrect,
     #[error("not supported sampling frequency")]
     NotSupportedSamplingFrequency,
     #[error("SPS/PPS count {count} exceeds maximum allowed {max}")]
     SpsPpsCountExceeded { count: u8, max: u8 },
+    #[error("{kind} count {declared} exceeds available parameter sets {available}")]
+    ParameterSetCountMismatch {
+        kind: &'static str,
+        declared: u8,
+        available: usize,
+    },
 }
 #[derive(Debug, thiserror::Error)]
 #[error("{value}")]

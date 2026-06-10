@@ -2,7 +2,6 @@
 //!
 //! Tests: encryption of sensitive fields and relational constraints.
 //!
-#![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
 use synctv_core::{
@@ -11,7 +10,7 @@ use synctv_core::{
     repository::ProviderInstanceRepository,
     Error,
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, err, ok, some};
 
 fn provider_codes(providers: &[ProviderType]) -> Vec<i16> {
     providers
@@ -173,42 +172,50 @@ async fn test_delete_referenced_provider_instance_is_rejected() {
     let (_container, pool) = create_test_pool().await;
     let repo = ProviderInstanceRepository::new(pool.clone());
     let instance = make_instance("referenced_instance", None, None);
-    repo.create(&instance).await.unwrap();
+    ok(
+        repo.create(&instance).await,
+        "referenced provider instance should be created",
+    );
 
-    let user_id: i64 = sqlx::query_scalar(
-        "INSERT INTO users (username, signup_method, role) VALUES ($1, $2, 3) RETURNING id",
-    )
-    .bind("provider_ref_owner")
-    .bind(i16::from(SignupMethod::Email))
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    let room_id: i64 =
+    let user_id: i64 = ok(
+        sqlx::query_scalar(
+            "INSERT INTO users (username, signup_method, role) VALUES ($1, $2, 3) RETURNING id",
+        )
+        .bind("provider_ref_owner")
+        .bind(i16::from(SignupMethod::Email))
+        .fetch_one(&pool)
+        .await,
+        "provider reference owner should be inserted",
+    );
+    let room_id: i64 = ok(
         sqlx::query_scalar("INSERT INTO rooms (name, created_by) VALUES ($1, $2) RETURNING id")
             .bind("Provider Ref Room")
             .bind(user_id)
             .fetch_one(&pool)
-            .await
-            .unwrap();
-    sqlx::query(
-        "INSERT INTO playlists (room_id, creator_id, name, position, source_provider, source_config, provider_instance_name) \
+            .await,
+        "provider reference room should be inserted",
+    );
+    ok(
+        sqlx::query(
+            "INSERT INTO playlists (room_id, creator_id, name, position, source_provider, source_config, provider_instance_name) \
          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)",
-    )
-    .bind(room_id)
-    .bind(user_id)
-    .bind("Remote Folder")
-    .bind(1.0_f64)
-    .bind(ProviderType::Bilibili.as_i16())
-    .bind("{}")
-    .bind("referenced_instance")
-    .execute(&pool)
-    .await
-    .unwrap();
+        )
+        .bind(room_id)
+        .bind(user_id)
+        .bind("Remote Folder")
+        .bind(1.0_f64)
+        .bind(ProviderType::Bilibili.as_i16())
+        .bind("{}")
+        .bind("referenced_instance")
+        .execute(&pool)
+        .await,
+        "referencing playlist should be inserted",
+    );
 
-    let error = repo
-        .delete("referenced_instance")
-        .await
-        .expect_err("referenced provider instances must not be deleted");
+    let error = err(
+        repo.delete("referenced_instance").await,
+        "referenced provider instances should be rejected during delete",
+    );
     assert!(
         matches!(&error, Error::InvalidInput(message) if message.contains("still referenced")),
         "expected referenced instance delete to be rejected clearly, got: {error}"
@@ -221,20 +228,30 @@ async fn test_delete_referenced_provider_instance_is_rejected() {
 #[ignore = "Requires Docker"]
 async fn test_create_and_read_with_encryption() {
     let (_container, pool) = create_test_pool().await;
-    let enc = CredentialEncryption::new(&test_key()).unwrap();
+    let enc = ok(
+        CredentialEncryption::new(&test_key()),
+        "test credential encryption should initialize",
+    );
     let enc_repo = ProviderInstanceRepository::new_with_encryption(pool.clone(), enc);
 
     let instance = make_instance("enc_create_test", Some("secret_jwt"), Some("secret_ca"));
-    enc_repo.create(&instance).await.unwrap();
+    ok(
+        enc_repo.create(&instance).await,
+        "encrypted provider instance should be created",
+    );
 
     // Verify the stored value is encrypted (not plaintext)
-    let raw: Option<(Option<String>,)> =
+    let raw: Option<(Option<String>,)> = ok(
         sqlx::query_as("SELECT jwt_secret FROM media_provider_instances WHERE name = $1")
             .bind("enc_create_test")
             .fetch_optional(&pool)
-            .await
-            .unwrap();
-    let raw_jwt = raw.unwrap().0.unwrap();
+            .await,
+        "encrypted provider instance row should be queried",
+    );
+    let raw_jwt = some(
+        some(raw, "encrypted provider instance row should exist").0,
+        "encrypted JWT secret should exist",
+    );
     assert!(
         raw_jwt.starts_with("enc:"),
         "Stored value should be encrypted, got: {}",
@@ -242,11 +259,11 @@ async fn test_create_and_read_with_encryption() {
     );
 
     // Read back with decryption
-    let fetched = enc_repo
-        .get_by_name("enc_create_test")
-        .await
-        .unwrap()
-        .unwrap();
+    let fetched = ok(
+        enc_repo.get_by_name("enc_create_test").await,
+        "encrypted provider instance should be fetched",
+    );
+    let fetched = some(fetched, "encrypted provider instance should exist");
     assert_eq!(fetched.jwt_secret.as_deref(), Some("secret_jwt"));
     assert_eq!(fetched.custom_ca.as_deref(), Some("secret_ca"));
 }

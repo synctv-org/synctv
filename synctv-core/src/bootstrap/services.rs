@@ -7,11 +7,15 @@ use tracing::{info, warn};
 
 use crate::{
     cache::{
-        build_l2_cache_backend_from_profile, version_fence_store_from_shared_state_profile,
+        build_l2_cache_backend, version_fence_store_from_shared_state_profile,
         CacheInvalidationRuntime, CacheL2Backend, CacheManager, ConsistencyCoordinator, RoomCache,
         UserCache, UsernameCache, VersionFenceStore,
     },
     config::FileStorageBackendType,
+    provider::{
+        AlistProvider, CachedProviderAccessService, ProviderAccessService, ProviderStoreRegistry,
+        ProviderStoreResolver,
+    },
     repository::{
         realtime_outbox::RealtimeOutboxRepository, ChatRepository, FileStorageRepository,
         NotificationRepository, ProviderInstanceRepository, RoomMemberRepository, RoomRepository,
@@ -23,11 +27,12 @@ use crate::{
         notification::NotificationService as RoomNotificationService, AuditFlushHandle,
         AuditService, ChatService, ContentFilter, DatabaseFileStorageService,
         DisabledFileStorageService, EmailService, EmailTokenService, FileStorageBackendRegistry,
-        FileStorageService, JwtService, OAuth2Service, OAuth2ServiceRuntime, PasskeyService,
-        PermissionService, ProvidersManager, RateLimitConfig, RemoteProviderManager,
+        FileStorageService, JwtService, OAuth2Service, PasskeyService, PermissionService,
+        PgTokenBlacklistStore, ProvidersManager, RateLimitConfig, RemoteProviderManager,
         RequestRateLimiterService, RoomService, RoomSettingsService, RuntimeEmailConfigProvider,
         S3CompatibleFileStorageService, S3FileStorageConfig, SettingsRegistry, SettingsService,
-        StreamingPublishKeyService, UserNotificationService, UserService,
+        StreamingPublishKeyService, TieredTokenBlacklistStore, UserNotificationService,
+        UserService,
     },
     Config, SharedStateMode, SharedStateProfile,
 };
@@ -74,6 +79,10 @@ pub struct Services {
     pub provider_instance_repo: Arc<ProviderInstanceRepository>,
     /// User provider credential repository
     pub user_provider_credential_repo: Arc<UserProviderCredentialRepository>,
+    /// Typed provider credential/session access cache.
+    pub provider_access_service: Arc<dyn ProviderAccessService>,
+    /// Shared provider cache/lock stores.
+    pub provider_stores: Arc<dyn ProviderStoreResolver>,
     /// Providers manager
     pub providers_manager: Arc<ProvidersManager>,
     /// `OAuth2` service (optional, requires configuration)
@@ -187,15 +196,17 @@ fn build_email_token_service(
     Arc::new(EmailTokenService::new_with_runtime(
         pool,
         rate_limiter,
-        None,
+        Some(crate::service::email_token::EmailTokenRateLimitConfig::default()),
     ))
 }
 
 fn build_brute_force_protection(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn crate::service::auth::BruteForceProtectionService>, anyhow::Error> {
-    let service = crate::service::brute_force_protection_from_shared_state_profile(profile)
-        .map_err(anyhow::Error::from)?;
+    let service: Arc<dyn crate::service::auth::BruteForceProtectionService> = Arc::new(
+        crate::service::auth::BruteForceProtection::from_shared_state_profile(profile)
+            .map_err(anyhow::Error::from)?,
+    );
     match profile.state_mode() {
         SharedStateMode::SharedRequired => {
             info!("Brute-force protection initialized (shared state required)");
@@ -213,8 +224,10 @@ fn build_brute_force_protection(
 fn build_request_rate_limiter(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn RequestRateLimiterService>, anyhow::Error> {
-    crate::service::request_rate_limiter_from_shared_state_profile(profile)
-        .map_err(anyhow::Error::from)
+    Ok(Arc::new(
+        crate::service::RateLimiter::from_shared_state_profile(profile)
+            .map_err(anyhow::Error::from)?,
+    ))
 }
 
 fn build_refresh_token_rate_limiter(
@@ -244,8 +257,10 @@ fn build_refresh_token_rate_limiter(
 fn build_ws_ticket_service(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn crate::service::WebSocketTicketService>, anyhow::Error> {
-    crate::service::web_socket_ticket_service_from_shared_state_profile(profile, None)
-        .map_err(anyhow::Error::from)
+    Ok(Arc::new(
+        crate::service::WsTicketService::from_shared_state_profile(profile, None)
+            .map_err(anyhow::Error::from)?,
+    ))
 }
 
 fn handle_provider_invalidation_listener_result(
@@ -356,7 +371,7 @@ pub async fn init_services_with_options(
     // the L2 backend automatically follows Sentinel failover without holding a
     // stale snapshot.
     let cache_l2: Arc<dyn CacheL2Backend> =
-        build_l2_cache_backend_from_profile(&shared_state_profile);
+        build_l2_cache_backend(shared_state_profile.shared_runtime());
     info!(
         l2_cache_enabled = cache_l2.is_active(),
         "Cache L2 initialized"
@@ -406,11 +421,11 @@ pub async fn init_services_with_options(
     let brute_force = build_brute_force_protection(&shared_state_profile)?;
 
     // Initialize token blacklist store (tiered: L1 moka + optional L2 Redis + PG primary)
-    let token_blacklist =
-        crate::service::auth::token_blacklist::token_blacklist_store_from_shared_state_profile(
-            pool.clone(),
+    let token_blacklist: Arc<dyn crate::service::auth::TokenBlacklistStore> =
+        Arc::new(TieredTokenBlacklistStore::from_shared_state_profile(
+            PgTokenBlacklistStore::new(pool.clone()),
             &shared_state_profile,
-        );
+        ));
     info!(
         "Token blacklist store initialized (tiered: PG primary{})",
         if shared_runtime.is_some() {
@@ -509,6 +524,29 @@ pub async fn init_services_with_options(
     let providers_manager =
         build_providers_manager(config, provider_instance_manager.clone()).await?;
     info!("ProvidersManager initialized");
+    let provider_access_http_client =
+        synctv_media_providers::build_provider_http_client(config.security.ssrf_guard())
+            .map_err(|error| anyhow::anyhow!("Failed to build provider HTTP client: {error}"))?;
+    let provider_stores: Arc<dyn ProviderStoreResolver> =
+        Arc::new(ProviderStoreRegistry::from_runtime(
+            shared_state_profile.shared_runtime(),
+            shared_state_profile.key_prefix().to_string(),
+        ));
+    let provider_access_service: Arc<dyn ProviderAccessService> = Arc::new(
+        CachedProviderAccessService::new(
+            user_provider_credential_repo.clone(),
+            Arc::new(AlistProvider::with_client_manager(
+                provider_instance_manager.clone(),
+                Arc::new(
+                    crate::provider::ProviderClientManager::new_with_provider_http_client(
+                        provider_access_http_client,
+                    ),
+                ),
+            )),
+        )
+        .with_store(provider_stores.load("credentials"))
+        .with_credential_encryption(credential_encryption_for_services.clone()),
+    );
 
     // Prepare RoomService runtime dependencies after ProvidersManager so
     // media/playback paths use the same provider graph and HTTP client
@@ -549,11 +587,12 @@ pub async fn init_services_with_options(
         settings_repo,
         pool.clone(),
         crate::service::settings::SettingsServiceRuntime {
-            version_fence: Some(version_fence.clone()),
-            l2_cache: Some(cache_l2.clone()),
+            version_fence: version_fence.clone(),
+            l2_cache: cache_l2.clone(),
             cache_key_prefix: format!("{}runtime_settings:", config.redis.key_prefix),
+            cache_max_capacity: 512,
+            cache_ttl_secs: 300,
             cache_l2_ttl_secs: config.cache.l2_ttl_seconds,
-            ..crate::service::settings::SettingsServiceRuntime::default()
         },
     );
     settings_service.initialize().await?;
@@ -697,6 +736,26 @@ pub async fn init_services_with_options(
         ),
     );
 
+    let user_permission_service = PermissionService::new_with_runtime(
+        RoomMemberRepository::new(pool.clone()),
+        RoomRepository::new(pool.clone()),
+        crate::service::permission::PermissionServiceRuntime {
+            settings_registry: Some(Arc::clone(&settings_registry)),
+            cache_size: PermissionService::DEFAULT_CACHE_SIZE,
+            cache_ttl_secs: PermissionService::DEFAULT_CACHE_TTL_SECS,
+            room_settings_repo: Some(RoomSettingsRepo::new(pool.clone())),
+            invalidation_service: Some(cache_invalidation.clone()),
+            version_fence: version_fence.clone(),
+            member_permission_l2_cache: cache_l2.clone(),
+            member_permission_cache_key_prefix: format!(
+                "{}member_permission:",
+                config.redis.key_prefix
+            ),
+            room_settings_l2_cache: room_settings_l2_cache_for_chat.clone(),
+            room_settings_cache_key_prefix: format!("{}room_settings:", config.redis.key_prefix),
+        },
+    )?;
+
     let user_service = Arc::new(UserService::new_with_brute_force_service_and_runtime(
         &pool,
         crate::service::user::UserServiceDependencies {
@@ -709,54 +768,29 @@ pub async fn init_services_with_options(
         },
         crate::service::user::UserServiceRuntimeOptions {
             cache_invalidation: Some(cache_invalidation.clone()),
-            refresh_rate_limiter: Some(refresh_rate_limiter),
-            refresh_rate_limit_config: None,
+            refresh_rate_limiter,
+            refresh_rate_limit_config: crate::service::user::RefreshRateLimitConfig::default(),
             settings_registry: Some(Arc::clone(&settings_registry)),
             password_registration_policy_override: None,
             realtime_outbox: options.realtime_outbox.clone(),
             opaque_password_service: opaque_password_service.clone(),
-            opaque_login_session_store: Some(
+            opaque_login_session_store:
                 crate::service::user::opaque_login_session_store_from_shared_state_profile(
                     &shared_state_profile,
                 )?,
-            ),
-            opaque_registration_session_store: Some(
+            opaque_registration_session_store:
                 crate::service::user::opaque_registration_session_store_from_shared_state_profile(
                     &shared_state_profile,
                 )?,
-            ),
-            mfa_session_store: Some(
-                crate::service::user::mfa_session_store_from_shared_state_profile(
-                    &shared_state_profile,
-                )?,
-            ),
-            sensitive_verification_session_store: Some(
+            mfa_session_store: crate::service::user::mfa_session_store_from_shared_state_profile(
+                &shared_state_profile,
+            )?,
+            sensitive_verification_session_store:
                 crate::service::user::sensitive_verification_session_store_from_shared_state_profile(
                     &shared_state_profile,
                 )?,
-            ),
-            version_fence: Some(version_fence.clone()),
-            permission_service: Some(PermissionService::new_with_runtime(
-                RoomMemberRepository::new(pool.clone()),
-                RoomRepository::new(pool.clone()),
-                crate::service::permission::PermissionServiceRuntime {
-                    settings_registry: Some(Arc::clone(&settings_registry)),
-                    room_settings_repo: Some(RoomSettingsRepo::new(pool.clone())),
-                    invalidation_service: Some(cache_invalidation.clone()),
-                    version_fence: Some(version_fence.clone()),
-                    member_permission_l2_cache: Some(cache_l2.clone()),
-                    member_permission_cache_key_prefix: format!(
-                        "{}member_permission:",
-                        config.redis.key_prefix
-                    ),
-                    room_settings_l2_cache: room_settings_l2_cache_for_chat.clone(),
-                    room_settings_cache_key_prefix: format!(
-                        "{}room_settings:",
-                        config.redis.key_prefix
-                    ),
-                    ..crate::service::permission::PermissionServiceRuntime::default()
-                },
-            )?),
+            version_fence: version_fence.clone(),
+            permission_service: Some(user_permission_service),
             file_storage_service: Some(user_avatar_file_storage),
         },
     ));
@@ -764,7 +798,9 @@ pub async fn init_services_with_options(
 
     let passkey_service = if config.webauthn.enabled {
         let session_store =
-            crate::service::passkey_session_store_from_shared_state_profile(&shared_state_profile)?;
+            crate::service::passkey::passkey_session_store_from_shared_state_profile(
+                &shared_state_profile,
+            )?;
         Some(Arc::new(PasskeyService::new(
             &config.webauthn,
             WebAuthnCredentialRepository::new(pool.clone()),
@@ -788,22 +824,21 @@ pub async fn init_services_with_options(
             .map(|_| user_provider_credential_repo.clone()),
         credential_encryption: credential_encryption_for_services.clone(),
         providers_manager: providers_manager.clone(),
+        provider_access_service: provider_access_service.clone(),
         cache_invalidation: cache_invalidation.clone(),
         brute_force: brute_force.clone(),
         audit_service: Some(Arc::clone(&audit_service)),
-        settings_registry: Some(Arc::clone(&settings_registry)),
+        settings_registry: Arc::clone(&settings_registry),
         user_notification_service: Some(Arc::clone(&notification_service)),
         opaque_password_service,
-        room_opaque_password_registration_session_store: Some(
-            crate::service::room_opaque_password_registration_session_store_from_shared_state_profile(
+        room_opaque_password_registration_session_store:
+            crate::service::room::room_opaque_password_registration_session_store_from_shared_state_profile(
                 &shared_state_profile,
             )?,
-        ),
-        room_opaque_password_login_session_store: Some(
-            crate::service::room_opaque_password_login_session_store_from_shared_state_profile(
+        room_opaque_password_login_session_store:
+            crate::service::room::room_opaque_password_login_session_store_from_shared_state_profile(
                 &shared_state_profile,
             )?,
-        ),
         realtime_outbox: options.realtime_outbox.clone(),
         media_file_storage_service: Some(video_cover_file_storage),
         room_file_storage_service: Some(room_cover_file_storage),
@@ -825,10 +860,11 @@ pub async fn init_services_with_options(
         Some(cache_invalidation.clone()),
         room_notification_service.clone(),
         crate::service::room_settings::RoomSettingsRuntime {
-            version_fence: Some(version_fence),
+            cache_ttl_secs: Some(300),
+            cache_max_capacity: Some(10_000),
+            version_fence,
             l2_cache: room_settings_l2_cache_for_chat,
             cache_key_prefix: format!("{}room_settings:", shared_state_profile.key_prefix()),
-            ..crate::service::room_settings::RoomSettingsRuntime::default()
         },
     );
     let permission_service_for_chat = room_service.permission_service().clone();
@@ -866,6 +902,8 @@ pub async fn init_services_with_options(
         provider_instance_manager,
         provider_instance_repo,
         user_provider_credential_repo,
+        provider_access_service,
+        provider_stores,
         providers_manager,
         oauth2_service,
         passkey_service,
@@ -912,9 +950,9 @@ fn init_oauth2_service(
         provider_registry.clone(),
         ssrf_guard,
         matches!(profile.state_mode(), SharedStateMode::SharedRequired),
-        OAuth2ServiceRuntime {
+        crate::service::oauth2::OAuth2ServiceRuntime {
+            allowed_redirect_domains: Vec::new(),
             settings_registry: Some(settings_registry),
-            ..OAuth2ServiceRuntime::default()
         },
     )
     .map_err(|e| anyhow::anyhow!("Failed to create OAuth2 service: {e}"))?;
@@ -966,17 +1004,18 @@ struct RoomServiceBuildArgs {
     user_service: UserService,
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
+    provider_access_service: Arc<dyn ProviderAccessService>,
     providers_manager: Arc<ProvidersManager>,
     cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
     brute_force: Arc<dyn crate::service::auth::BruteForceProtectionService>,
     audit_service: Option<Arc<AuditService>>,
-    settings_registry: Option<Arc<SettingsRegistry>>,
+    settings_registry: Arc<SettingsRegistry>,
     user_notification_service: Option<Arc<UserNotificationService>>,
     opaque_password_service: Arc<crate::service::auth::OpaquePasswordService>,
     room_opaque_password_registration_session_store:
-        Option<Arc<dyn crate::service::room::RoomOpaquePasswordRegistrationSessionStore>>,
+        Arc<dyn crate::service::room::RoomOpaquePasswordRegistrationSessionStore>,
     room_opaque_password_login_session_store:
-        Option<Arc<dyn crate::service::room::RoomOpaquePasswordLoginSessionStore>>,
+        Arc<dyn crate::service::room::RoomOpaquePasswordLoginSessionStore>,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     media_file_storage_service: Option<Arc<dyn FileStorageService>>,
     room_file_storage_service: Option<Arc<dyn FileStorageService>>,
@@ -987,11 +1026,36 @@ struct RoomServiceBuildArgs {
 
 struct RoomServiceRuntime {
     distributed_lock: Option<Arc<dyn crate::service::distributed_lock::CoordinationLock>>,
-    playback_l2_cache: Option<crate::cache::PlaybackStateCache>,
-    room_settings_l2_cache: Option<Arc<dyn crate::cache::CacheL2Backend>>,
+    playback_l2_cache: crate::cache::PlaybackStateCache,
+    room_settings_l2_cache: Arc<dyn crate::cache::CacheL2Backend>,
     room_settings_cache_key_prefix: String,
-    member_permission_l2_cache: Option<Arc<dyn crate::cache::CacheL2Backend>>,
+    member_permission_l2_cache: Arc<dyn crate::cache::CacheL2Backend>,
     member_permission_cache_key_prefix: String,
+}
+
+fn cache_l2_backend_for_profile(
+    profile: &SharedStateProfile,
+    purpose: &'static str,
+) -> Result<Arc<dyn crate::cache::CacheL2Backend>, anyhow::Error> {
+    match profile.state_mode() {
+        SharedStateMode::SharedRequired => {
+            let redis_runtime = profile
+                .require_shared_runtime(purpose)
+                .map_err(anyhow::Error::from)?;
+            Ok(Arc::new(crate::cache::RedisCacheL2::from_runtime(
+                redis_runtime,
+            )))
+        }
+        SharedStateMode::SharedBestEffort => {
+            let redis_runtime = profile
+                .shared_runtime()
+                .expect("SharedBestEffort profile must carry a shared runtime");
+            Ok(Arc::new(crate::cache::RedisCacheL2::from_runtime(
+                redis_runtime,
+            )))
+        }
+        SharedStateMode::LocalOnly => Ok(Arc::new(crate::cache::NoopCacheL2)),
+    }
 }
 
 fn build_room_service_runtime(
@@ -1016,24 +1080,18 @@ fn build_room_service_runtime(
         None
     };
 
-    let playback_l2_cache = profile.shared_runtime().map(|redis_runtime| {
-        crate::cache::PlaybackStateCache::new(
-            Arc::new(crate::cache::RedisCacheL2::from_runtime(redis_runtime)),
-            crate::service::PlaybackService::DEFAULT_CACHE_SIZE,
-            crate::service::PlaybackService::DEFAULT_CACHE_TTL_SECS,
-            cache_l2_ttl_seconds,
-            format!("{}playback:", profile.key_prefix()),
-        )
-    });
+    let playback_l2_backend = cache_l2_backend_for_profile(profile, "playback cache L2")?;
+    let playback_l2_cache = crate::cache::PlaybackStateCache::new(
+        playback_l2_backend,
+        crate::service::PlaybackService::DEFAULT_CACHE_SIZE,
+        crate::service::PlaybackService::DEFAULT_CACHE_TTL_SECS,
+        cache_l2_ttl_seconds,
+        format!("{}playback:", profile.key_prefix()),
+    );
 
-    let room_settings_l2_cache = profile.shared_runtime().map(|redis_runtime| {
-        Arc::new(crate::cache::RedisCacheL2::from_runtime(redis_runtime))
-            as Arc<dyn crate::cache::CacheL2Backend>
-    });
-    let member_permission_l2_cache = profile.shared_runtime().map(|redis_runtime| {
-        Arc::new(crate::cache::RedisCacheL2::from_runtime(redis_runtime))
-            as Arc<dyn crate::cache::CacheL2Backend>
-    });
+    let room_settings_l2_cache = cache_l2_backend_for_profile(profile, "room settings cache L2")?;
+    let member_permission_l2_cache =
+        cache_l2_backend_for_profile(profile, "member permission cache L2")?;
 
     Ok(RoomServiceRuntime {
         distributed_lock,
@@ -1051,6 +1109,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
         user_service,
         credential_repo,
         credential_encryption,
+        provider_access_service,
         providers_manager,
         cache_invalidation,
         brute_force,
@@ -1071,15 +1130,16 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
         RoomMemberRepository::new(pool.clone()),
         RoomRepository::new(pool.clone()),
         crate::service::permission::PermissionServiceRuntime {
-            settings_registry: settings_registry.clone(),
+            settings_registry: Some(settings_registry.clone()),
+            cache_size: PermissionService::DEFAULT_CACHE_SIZE,
+            cache_ttl_secs: PermissionService::DEFAULT_CACHE_TTL_SECS,
             room_settings_repo: Some(RoomSettingsRepo::new(pool.clone())),
             invalidation_service: Some(cache_invalidation.clone()),
-            version_fence: Some(version_fence.clone()),
+            version_fence: version_fence.clone(),
             member_permission_l2_cache: runtime.member_permission_l2_cache.clone(),
             member_permission_cache_key_prefix: runtime.member_permission_cache_key_prefix.clone(),
             room_settings_l2_cache: runtime.room_settings_l2_cache.clone(),
             room_settings_cache_key_prefix: runtime.room_settings_cache_key_prefix.clone(),
-            ..crate::service::permission::PermissionServiceRuntime::default()
         },
     )?;
     Ok(
@@ -1091,15 +1151,16 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
             crate::service::room::RoomServiceOptions {
                 distributed_lock: runtime.distributed_lock,
                 cache_invalidation: Some(cache_invalidation),
-                version_fence: Some(version_fence),
+                version_fence,
                 playback_l2_cache: runtime.playback_l2_cache,
                 room_settings_l2_cache: runtime.room_settings_l2_cache,
-                room_settings_cache_key_prefix: Some(runtime.room_settings_cache_key_prefix),
+                room_settings_cache_key_prefix: runtime.room_settings_cache_key_prefix,
                 credential_encryption,
                 credential_repo,
+                provider_access_service: Some(provider_access_service),
                 audit_service,
                 brute_force_service: Some(brute_force),
-                settings_registry,
+                settings_registry: Some(settings_registry),
                 user_notification_service,
                 opaque_password_service,
                 opaque_password_registration_session_store:
@@ -1125,12 +1186,10 @@ fn build_publish_key_service(
     jwt_service: JwtService,
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn StreamingPublishKeyService>, anyhow::Error> {
-    let service = crate::service::streaming_publish_key_service_from_shared_state_profile(
-        jwt_service,
-        24,
-        profile,
-    )
-    .map_err(anyhow::Error::from)?;
+    let service: Arc<dyn StreamingPublishKeyService> = Arc::new(
+        crate::service::PublishKeyService::from_shared_state_profile(jwt_service, 24, profile)
+            .map_err(anyhow::Error::from)?,
+    );
     match profile.state_mode() {
         SharedStateMode::SharedRequired => {
             info!("Publish key service initialized with shared JTI deduplication (required)");
@@ -1189,8 +1248,10 @@ fn init_credential_encryption(
 mod tests {
     use super::*;
     use crate::cache::CacheInvalidationService;
+    use crate::models::{UserId, UserProviderCredential};
     use crate::service::RateLimiter;
-    use crate::test_helpers::failing_redis_runtime;
+    use crate::test_helpers::{failing_redis_runtime, TestResultExt};
+    use async_trait::async_trait;
 
     fn test_user_service(pool: &PgPool) -> UserService {
         let jwt_service = JwtService::with_durations(
@@ -1200,7 +1261,7 @@ mod tests {
             24,
             60,
         )
-        .expect("jwt service");
+        .checked("jwt service");
         let username_cache = UsernameCache::local_only("test:user:".to_string(), 100, 60);
         let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
             crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
@@ -1223,16 +1284,54 @@ mod tests {
         ))
     }
 
+    fn test_settings_registry(pool: &PgPool) -> Arc<SettingsRegistry> {
+        Arc::new(SettingsRegistry::new(Arc::new(SettingsService::new(
+            SettingsRepository::new(pool.clone()),
+            pool.clone(),
+        ))))
+    }
+
+    fn test_room_opaque_registration_store(
+    ) -> Arc<dyn crate::service::room::RoomOpaquePasswordRegistrationSessionStore> {
+        crate::service::room::local_room_opaque_password_registration_session_store()
+    }
+
+    fn test_room_opaque_login_store(
+    ) -> Arc<dyn crate::service::room::RoomOpaquePasswordLoginSessionStore> {
+        crate::service::room::local_room_opaque_password_login_session_store()
+    }
+
     fn test_room_brute_force() -> Arc<dyn crate::service::auth::BruteForceProtectionService> {
         Arc::new(crate::service::auth::BruteForceProtection::in_memory(
             "test:room".to_string(),
         ))
     }
 
+    struct EmptyProviderCredentialReader;
+
+    #[async_trait]
+    impl crate::provider::ProviderCredentialReader for EmptyProviderCredentialReader {
+        async fn get_by_provider_and_server(
+            &self,
+            _user_id: UserId,
+            _provider: &str,
+            _server_id: &str,
+        ) -> crate::Result<Option<UserProviderCredential>> {
+            Ok(None)
+        }
+    }
+
+    fn test_provider_access_service() -> Arc<dyn ProviderAccessService> {
+        Arc::new(CachedProviderAccessService::new(
+            Arc::new(EmptyProviderCredentialReader),
+            Arc::new(AlistProvider::new_local_only().checked("provider should build")),
+        ))
+    }
+
     #[test]
     fn test_shared_state_profile_requires_shared_runtime_in_cluster() {
         assert_eq!(
-            SharedStateProfile::from_runtime(None, "test:", true).state_mode(),
+            SharedStateProfile::for_cluster_runtime(None, "test:", true).state_mode(),
             SharedStateMode::SharedRequired
         );
     }
@@ -1250,7 +1349,7 @@ mod tests {
     #[test]
     fn test_shared_state_profile_uses_local_mode_without_shared_runtime() {
         assert_eq!(
-            SharedStateProfile::from_runtime(None, "test:", false).state_mode(),
+            SharedStateProfile::for_cluster_runtime(None, "test:", false).state_mode(),
             SharedStateMode::LocalOnly
         );
     }
@@ -1264,11 +1363,11 @@ mod tests {
             24,
             60,
         )
-        .expect("jwt service");
+        .checked("jwt service");
 
-        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
         let Err(error) = build_publish_key_service(jwt_service, &profile) else {
-            panic!("cluster runtime must reject local publish-key deduplication");
+            std::panic::panic_any("cluster runtime must reject local publish-key deduplication");
         };
 
         assert!(
@@ -1281,9 +1380,9 @@ mod tests {
 
     #[test]
     fn test_build_brute_force_protection_returns_error_without_shared_runtime_in_cluster_mode() {
-        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
         let Err(error) = build_brute_force_protection(&profile) else {
-            panic!("cluster runtime must reject local brute-force tracking");
+            std::panic::panic_any("cluster runtime must reject local brute-force tracking");
         };
 
         assert!(
@@ -1296,9 +1395,9 @@ mod tests {
 
     #[test]
     fn test_build_request_rate_limiter_returns_error_without_shared_runtime_in_cluster_mode() {
-        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
         let Err(error) = build_request_rate_limiter(&profile) else {
-            panic!("cluster runtime must reject local rate limiting");
+            std::panic::panic_any("cluster runtime must reject local rate limiting");
         };
 
         assert!(
@@ -1311,9 +1410,9 @@ mod tests {
 
     #[test]
     fn test_build_request_rate_limiter_uses_local_backend_without_runtime() {
-        let profile = SharedStateProfile::from_runtime(None, "test:", false);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "test:", false);
         let limiter = build_request_rate_limiter(&profile)
-            .expect("standalone mode should allow local rate limiting");
+            .checked("standalone mode should allow local rate limiting");
 
         assert!(
             limiter.check_rate_limit_sync("test-user", 1, 60).is_ok(),
@@ -1324,9 +1423,9 @@ mod tests {
     #[tokio::test]
     async fn test_configure_refresh_token_rate_limiter_returns_error_without_shared_runtime_in_cluster_mode(
     ) {
-        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
         let Err(error) = build_refresh_token_rate_limiter(&profile) else {
-            panic!("cluster runtime must reject local refresh-token rate limiting");
+            std::panic::panic_any("cluster runtime must reject local refresh-token rate limiting");
         };
 
         assert!(
@@ -1345,7 +1444,7 @@ mod tests {
             )),
             true,
         )
-        .expect_err("cluster mode must fail closed on provider invalidation wiring");
+        .failed("cluster mode must fail closed on provider invalidation wiring");
         assert!(
             err.to_string()
                 .contains("distributed mode requires provider invalidation listener"),
@@ -1361,14 +1460,14 @@ mod tests {
             )),
             false,
         )
-        .expect("standalone mode may continue with local-only provider invalidation");
+        .checked("standalone mode may continue with local-only provider invalidation");
     }
 
     #[test]
     fn test_build_ws_ticket_service_uses_memory_backend_without_runtime() {
-        let profile = SharedStateProfile::from_runtime(None, "test:", false);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "test:", false);
         let service = build_ws_ticket_service(&profile)
-            .expect("standalone mode should allow local WebSocket ticket storage");
+            .checked("standalone mode should allow local WebSocket ticket storage");
 
         assert!(!service.supports_cluster_runtime());
     }
@@ -1379,24 +1478,26 @@ mod tests {
         let (_redis_container, redis_client) = synctv_core_testing::start_redis_with_client().await;
         let redis_conn = redis::aio::ConnectionManager::new(redis_client.clone())
             .await
-            .expect("redis connection manager");
+            .checked("redis connection manager");
         let redis_runtime = Arc::new(ManagedRedisRuntime::new(
             redis_client,
             Arc::new(tokio::sync::RwLock::new(redis_conn)),
         ));
 
-        let profile = SharedStateProfile::from_runtime(Some(redis_runtime), "test:", false);
+        let profile = SharedStateProfile::for_cluster_runtime(Some(redis_runtime), "test:", false);
         let service = build_ws_ticket_service(&profile)
-            .expect("distributed ticket storage should be accepted");
+            .checked("distributed ticket storage should be accepted");
 
         assert!(service.supports_cluster_runtime());
     }
 
     #[test]
     fn test_build_ws_ticket_service_rejects_local_backend_in_cluster_mode() {
-        let profile = SharedStateProfile::from_runtime(None, "test:", true);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
         let Err(error) = build_ws_ticket_service(&profile) else {
-            panic!("cluster runtime must reject local-only WebSocket ticket storage");
+            std::panic::panic_any(
+                "cluster runtime must reject local-only WebSocket ticket storage",
+            );
         };
 
         assert!(
@@ -1412,7 +1513,7 @@ mod tests {
         let err = handle_provider_manager_init_result(Err(crate::Error::Internal(
             "provider init failed".to_string(),
         )))
-        .expect_err("provider manager init must fail closed");
+        .failed("provider manager init must fail closed");
 
         assert!(
             err.to_string()
@@ -1423,7 +1524,7 @@ mod tests {
 
     #[test]
     fn test_provider_manager_init_success_passthrough() {
-        handle_provider_manager_init_result(Ok(())).expect("successful provider init should pass");
+        handle_provider_manager_init_result(Ok(())).checked("successful provider init should pass");
     }
 
     #[tokio::test]
@@ -1438,30 +1539,31 @@ mod tests {
             user_service,
             credential_repo: None,
             credential_encryption: None,
-            providers_manager: test_providers_manager().expect("providers manager should build"),
+            provider_access_service: test_provider_access_service(),
+            providers_manager: test_providers_manager().checked("providers manager should build"),
             cache_invalidation,
             brute_force: test_room_brute_force(),
             audit_service: None,
-            settings_registry: None,
+            settings_registry: test_settings_registry(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
                 crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
             ),
-            room_opaque_password_registration_session_store: None,
-            room_opaque_password_login_session_store: None,
+            room_opaque_password_registration_session_store: test_room_opaque_registration_store(),
+            room_opaque_password_login_session_store: test_room_opaque_login_store(),
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,
             playlist_file_storage_service: None,
             runtime: build_room_service_runtime(
-                &SharedStateProfile::from_runtime(None, "test:", false),
+                &SharedStateProfile::for_cluster_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
             )
-            .expect("room service runtime should build"),
-            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
+            .checked("room service runtime should build"),
+            version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
         })
-        .expect("room service should build");
+        .checked("room service should build");
 
         assert!(room_service.has_brute_force_service());
         assert!(!room_service.has_distributed_lock());
@@ -1470,8 +1572,8 @@ mod tests {
             "room service must wire permission invalidation even without Redis so local subscribers stay consistent"
         );
         assert!(
-            !room_service.has_playback_l2_cache(),
-            "room service should not wire playback L2 cache without Redis"
+            room_service.has_playback_l2_cache(),
+            "room service should wire playback L2 cache with the local runtime"
         );
     }
 
@@ -1486,7 +1588,7 @@ mod tests {
         let (_redis_container, redis_client) = synctv_core_testing::start_redis_with_client().await;
         let redis_conn = redis::aio::ConnectionManager::new(redis_client.clone())
             .await
-            .expect("redis connection manager");
+            .checked("redis connection manager");
         let redis_runtime = Arc::new(ManagedRedisRuntime::new(
             redis_client,
             Arc::new(tokio::sync::RwLock::new(redis_conn)),
@@ -1501,30 +1603,35 @@ mod tests {
             user_service: user_service.clone(),
             credential_repo: None,
             credential_encryption: None,
-            providers_manager: test_providers_manager().expect("providers manager should build"),
+            provider_access_service: test_provider_access_service(),
+            providers_manager: test_providers_manager().checked("providers manager should build"),
             cache_invalidation: cache_invalidation.clone(),
             brute_force: test_room_brute_force(),
             audit_service: None,
-            settings_registry: None,
+            settings_registry: test_settings_registry(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
                 crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
             ),
-            room_opaque_password_registration_session_store: None,
-            room_opaque_password_login_session_store: None,
+            room_opaque_password_registration_session_store: test_room_opaque_registration_store(),
+            room_opaque_password_login_session_store: test_room_opaque_login_store(),
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,
             playlist_file_storage_service: None,
             runtime: build_room_service_runtime(
-                &SharedStateProfile::from_runtime(Some(redis_runtime.clone()), "test:", false),
+                &SharedStateProfile::for_cluster_runtime(
+                    Some(redis_runtime.clone()),
+                    "test:",
+                    false,
+                ),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
             )
-            .expect("room service runtime should build"),
-            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
+            .checked("room service runtime should build"),
+            version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
         })
-        .expect("room service should build");
+        .checked("room service should build");
         assert!(
             !standalone_room_service.has_distributed_lock(),
             "standalone mode should not enable distributed lock just because Redis is configured"
@@ -1539,30 +1646,31 @@ mod tests {
             user_service,
             credential_repo: None,
             credential_encryption: None,
-            providers_manager: test_providers_manager().expect("providers manager should build"),
+            provider_access_service: test_provider_access_service(),
+            providers_manager: test_providers_manager().checked("providers manager should build"),
             cache_invalidation,
             brute_force: test_room_brute_force(),
             audit_service: None,
-            settings_registry: None,
+            settings_registry: test_settings_registry(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
                 crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
             ),
-            room_opaque_password_registration_session_store: None,
-            room_opaque_password_login_session_store: None,
+            room_opaque_password_registration_session_store: test_room_opaque_registration_store(),
+            room_opaque_password_login_session_store: test_room_opaque_login_store(),
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,
             playlist_file_storage_service: None,
             runtime: build_room_service_runtime(
-                &SharedStateProfile::from_runtime(Some(redis_runtime), "test:", true),
+                &SharedStateProfile::for_cluster_runtime(Some(redis_runtime), "test:", true),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
             )
-            .expect("room service runtime should build"),
-            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
+            .checked("room service runtime should build"),
+            version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
         })
-        .expect("room service should build");
+        .checked("room service should build");
         assert!(
             cluster_room_service.has_distributed_lock(),
             "cluster mode should enable distributed lock when Redis is configured"
@@ -1596,30 +1704,31 @@ mod tests {
             user_service: user_service.clone(),
             credential_repo: None,
             credential_encryption: None,
-            providers_manager: test_providers_manager().expect("providers manager should build"),
+            provider_access_service: test_provider_access_service(),
+            providers_manager: test_providers_manager().checked("providers manager should build"),
             cache_invalidation,
             brute_force: test_room_brute_force(),
             audit_service: None,
-            settings_registry: Some(Arc::clone(&settings_registry)),
+            settings_registry: Arc::clone(&settings_registry),
             user_notification_service: None,
             opaque_password_service: Arc::new(
                 crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
             ),
-            room_opaque_password_registration_session_store: None,
-            room_opaque_password_login_session_store: None,
+            room_opaque_password_registration_session_store: test_room_opaque_registration_store(),
+            room_opaque_password_login_session_store: test_room_opaque_login_store(),
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,
             playlist_file_storage_service: None,
             runtime: build_room_service_runtime(
-                &SharedStateProfile::from_runtime(None, "test:", false),
+                &SharedStateProfile::for_cluster_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
             )
-            .expect("room service runtime should build"),
-            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
+            .checked("room service runtime should build"),
+            version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
         })
-        .expect("room service should build");
+        .checked("room service should build");
 
         assert!(room_service.has_settings_registry());
         assert!(
@@ -1634,37 +1743,38 @@ mod tests {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let user_service = test_user_service(&pool);
         let cache_invalidation = test_cache_invalidation();
-        let providers_manager = test_providers_manager().expect("providers manager should build");
+        let providers_manager = test_providers_manager().checked("providers manager should build");
 
         let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
             user_service,
             credential_repo: None,
             credential_encryption: None,
+            provider_access_service: test_provider_access_service(),
             providers_manager: Arc::clone(&providers_manager),
             cache_invalidation,
             brute_force: test_room_brute_force(),
             audit_service: None,
-            settings_registry: None,
+            settings_registry: test_settings_registry(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
                 crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
             ),
-            room_opaque_password_registration_session_store: None,
-            room_opaque_password_login_session_store: None,
+            room_opaque_password_registration_session_store: test_room_opaque_registration_store(),
+            room_opaque_password_login_session_store: test_room_opaque_login_store(),
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,
             playlist_file_storage_service: None,
             runtime: build_room_service_runtime(
-                &SharedStateProfile::from_runtime(None, "test:", false),
+                &SharedStateProfile::for_cluster_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
             )
-            .expect("room service runtime should build"),
-            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
+            .checked("room service runtime should build"),
+            version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
         })
-        .expect("room service should build");
+        .checked("room service should build");
 
         assert!(
             Arc::ptr_eq(
@@ -1681,9 +1791,9 @@ mod tests {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let user_service = test_user_service(&pool);
         let cache_invalidation = test_cache_invalidation();
-        let providers_manager = test_providers_manager().expect("providers manager should build");
+        let providers_manager = test_providers_manager().checked("providers manager should build");
         let encryption = crate::credential_encryption::CredentialEncryption::new(&[7u8; 32])
-            .expect("credential encryption should construct");
+            .checked("credential encryption should construct");
         let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
             user_service,
@@ -1694,30 +1804,31 @@ mod tests {
                 ),
             )),
             credential_encryption: Some(encryption),
+            provider_access_service: test_provider_access_service(),
             providers_manager: Arc::clone(&providers_manager),
             cache_invalidation,
             brute_force: test_room_brute_force(),
             audit_service: None,
-            settings_registry: None,
+            settings_registry: test_settings_registry(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
                 crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
             ),
-            room_opaque_password_registration_session_store: None,
-            room_opaque_password_login_session_store: None,
+            room_opaque_password_registration_session_store: test_room_opaque_registration_store(),
+            room_opaque_password_login_session_store: test_room_opaque_login_store(),
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,
             playlist_file_storage_service: None,
             runtime: build_room_service_runtime(
-                &SharedStateProfile::from_runtime(None, "test:", false),
+                &SharedStateProfile::for_cluster_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
             )
-            .expect("room service runtime should build"),
-            version_fence: Arc::new(crate::cache::NoopVersionFenceStore),
+            .checked("room service runtime should build"),
+            version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
         })
-        .expect("room service should build");
+        .checked("room service should build");
 
         assert!(
             Arc::ptr_eq(
@@ -1737,7 +1848,7 @@ mod tests {
 
         let errors = config
             .validate()
-            .expect_err("cluster.enabled=true without Redis must fail config validation");
+            .failed("cluster.enabled=true without Redis must fail config validation");
 
         assert!(
             errors
@@ -1765,9 +1876,11 @@ mod tests {
     #[tokio::test]
     async fn test_init_oauth2_service_rejects_cluster_mode_without_shared_state_at_bootstrap_layer()
     {
-        let profile = SharedStateProfile::from_runtime(None, "synctv:", true);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "synctv:", true);
         let Err(error) = build_oauth_state_store(&profile) else {
-            panic!("cluster bootstrap must not fall back to in-memory OAuth2 state store");
+            std::panic::panic_any(
+                "cluster bootstrap must not fall back to in-memory OAuth2 state store",
+            );
         };
 
         assert!(
@@ -1782,22 +1895,16 @@ mod tests {
     #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_init_oauth2_service_starts_without_runtime_providers() {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
-        let settings_registry = test_settings_registry(pool.clone());
-        let profile = SharedStateProfile::from_runtime(None, "synctv:", false);
+        let settings_registry = test_settings_registry(&pool);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "synctv:", false);
         let service = init_oauth2_service(
             &pool,
             settings_registry,
             &profile,
             synctv_common::ssrf::SsrfGuard::strict_policy(),
         )
-        .expect("OAuth2 service should start before runtime providers are configured");
+        .checked("OAuth2 service should start before runtime providers are configured");
         assert!(service.is_some());
-    }
-
-    fn test_settings_registry(pool: PgPool) -> Arc<SettingsRegistry> {
-        let settings_repo = SettingsRepository::new(pool.clone());
-        let settings_service = Arc::new(SettingsService::new(settings_repo, pool));
-        Arc::new(SettingsRegistry::new(settings_service))
     }
 
     #[test]
@@ -1868,7 +1975,7 @@ mod tests {
 
         let providers_manager = build_providers_manager(&config, provider_instance_manager)
             .await
-            .expect("provider manager builder should load default providers");
+            .checked("provider manager builder should load default providers");
 
         assert!(
             providers_manager.get("direct_url").await.is_some(),
@@ -1879,7 +1986,7 @@ mod tests {
     #[test]
     fn test_init_credential_encryption_allows_missing_key() {
         let encryption = init_credential_encryption(Some(""))
-            .expect("empty credential encryption key should mean disabled");
+            .checked("empty credential encryption key should mean disabled");
 
         assert!(encryption.is_none());
     }
@@ -1887,7 +1994,7 @@ mod tests {
     #[test]
     fn test_init_credential_encryption_rejects_invalid_key() {
         let error = init_credential_encryption(Some("not-a-64-character-hex-key"))
-            .expect_err("invalid explicit credential encryption key must fail closed");
+            .failed("invalid explicit credential encryption key must fail closed");
 
         assert!(error
             .to_string()

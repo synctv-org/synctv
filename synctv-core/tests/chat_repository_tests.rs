@@ -3,8 +3,6 @@
 //! Tests: `list_by_room_cursor` pagination, `get_by_id` without time restriction,
 //! `cleanup_old_messages` `keep_count=0` no-op, `cleanup_all_rooms` `activity_window_minutes=0`.
 //!
-#![allow(clippy::unwrap_used)]
-
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use synctv_core::{
@@ -14,7 +12,7 @@ use synctv_core::{
     },
     repository::{ChatRepository, RoomRepository, UserRepository},
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, ok, some};
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -57,11 +55,14 @@ fn make_room(name: &str, owner: &UserId) -> Room {
 async fn setup_room(pool: &PgPool, username: &str, room_name: &str) -> (User, Room) {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
-    let user = user_repo.create(&make_user(username)).await.unwrap();
-    let room = room_repo
-        .create(&make_room(room_name, &user.id))
-        .await
-        .unwrap();
+    let user = ok(
+        user_repo.create(&make_user(username)).await,
+        "chat test user should be created",
+    );
+    let room = ok(
+        room_repo.create(&make_room(room_name, &user.id)).await,
+        "chat test room should be created",
+    );
     (user, room)
 }
 
@@ -82,17 +83,22 @@ async fn test_list_by_room_cursor_pagination() {
     let mut created_ids = Vec::new();
     for i in 0..5 {
         let msg = make_chat_message(&room.id, &user.id, &format!("msg_{i}"));
-        let created = chat_repo.create(&msg).await.unwrap();
+        let created = ok(
+            chat_repo.create(&msg).await,
+            "chat message should be created",
+        );
         created_ids.push(created.id);
         // Small delay to ensure ordering
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
 
     // Page 1: newest 2 messages (no cursor)
-    let (page1, cursor1) = chat_repo
-        .list_by_room_cursor(&room.id, None, 2, false)
-        .await
-        .unwrap();
+    let (page1, cursor1) = ok(
+        chat_repo
+            .list_by_room_cursor(&room.id, None, 2, false)
+            .await,
+        "first chat cursor page should load",
+    );
     assert_eq!(page1.len(), 2);
     assert!(
         cursor1.is_some(),
@@ -103,11 +109,13 @@ async fn test_list_by_room_cursor_pagination() {
     assert_eq!(page1[1].message.content, "msg_3");
 
     // Page 2: next 2 messages
-    let cursor1_val = cursor1.unwrap();
-    let (page2, cursor2) = chat_repo
-        .list_by_room_cursor(&room.id, Some(cursor1_val), 2, false)
-        .await
-        .unwrap();
+    let cursor1_val = some(cursor1, "first cursor should exist");
+    let (page2, cursor2) = ok(
+        chat_repo
+            .list_by_room_cursor(&room.id, Some(cursor1_val), 2, false)
+            .await,
+        "second chat cursor page should load",
+    );
     assert_eq!(page2.len(), 2);
     assert!(
         cursor2.is_some(),
@@ -117,11 +125,13 @@ async fn test_list_by_room_cursor_pagination() {
     assert_eq!(page2[1].message.content, "msg_1");
 
     // Page 3: last page (1 message)
-    let cursor2_val = cursor2.unwrap();
-    let (page3, cursor3) = chat_repo
-        .list_by_room_cursor(&room.id, Some(cursor2_val), 2, false)
-        .await
-        .unwrap();
+    let cursor2_val = some(cursor2, "second cursor should exist");
+    let (page3, cursor3) = ok(
+        chat_repo
+            .list_by_room_cursor(&room.id, Some(cursor2_val), 2, false)
+            .await,
+        "third chat cursor page should load",
+    );
     assert_eq!(page3.len(), 1);
     assert!(cursor3.is_none(), "Last page should have no next cursor");
     assert_eq!(page3[0].message.content, "msg_0");
@@ -176,23 +186,28 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
                 "position_seconds": position_seconds
             }
         });
-        chat_repo.create(&msg).await.unwrap();
+        ok(
+            chat_repo.create(&msg).await,
+            "playback chat message should be created",
+        );
     }
 
-    let messages = chat_repo
-        .list_playback_messages(&ChatPlaybackMessagesQuery {
-            room_id: room.id,
-            media_id: Some(media_id),
-            playlist_id: Some(playlist_id),
-            target: Some(target),
-            position_seconds: 11.0,
-            before_seconds: 1.0,
-            after_seconds: 1.0,
-            limit: 100,
-            include_deleted: false,
-        })
-        .await
-        .unwrap();
+    let messages = ok(
+        chat_repo
+            .list_playback_messages(&ChatPlaybackMessagesQuery {
+                room_id: room.id,
+                media_id: Some(media_id),
+                playlist_id: Some(playlist_id),
+                target: Some(target),
+                position_seconds: 11.0,
+                before_seconds: 1.0,
+                after_seconds: 1.0,
+                limit: 100,
+                include_deleted: false,
+            })
+            .await,
+        "playback chat messages should list",
+    );
 
     let contents = messages
         .into_iter()
@@ -211,11 +226,20 @@ async fn test_get_by_id_recent_message() {
     let (user, room) = setup_room(&pool, "chat_get_user", "chat_get_room").await;
 
     let msg = make_chat_message(&room.id, &user.id, "recent message");
-    let created = chat_repo.create(&msg).await.unwrap();
+    let created = ok(
+        chat_repo.create(&msg).await,
+        "recent chat message should be created",
+    );
 
-    let fetched = chat_repo.get_by_id(created.id).await.unwrap();
+    let fetched = ok(
+        chat_repo.get_by_id(created.id).await,
+        "recent chat message should be fetched",
+    );
     assert!(fetched.is_some());
-    assert_eq!(fetched.unwrap().content, "recent message");
+    assert_eq!(
+        some(fetched, "recent chat message should exist").content,
+        "recent message"
+    );
 }
 
 #[tokio::test]
@@ -231,25 +255,33 @@ async fn test_get_by_id_old_message_succeeds() {
     let msg_id = synctv_core::models::generate_id();
 
     // Insert directly with backdated created_at
-    sqlx::query(
-        r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
+    ok(
+        sqlx::query(
+            r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
           VALUES ($1, $2, $3, 'old message', 1, $4)",
-    )
-    .bind(msg_id)
-    .bind(room.id)
-    .bind(user.id)
-    .bind(old_date)
-    .execute(&pool)
-    .await
-    .unwrap();
+        )
+        .bind(msg_id)
+        .bind(room.id)
+        .bind(user.id)
+        .bind(old_date)
+        .execute(&pool)
+        .await,
+        "old chat message should be inserted",
+    );
 
     // get_by_id should now successfully retrieve messages older than 90 days
-    let fetched = chat_repo.get_by_id(msg_id).await.unwrap();
+    let fetched = ok(
+        chat_repo.get_by_id(msg_id).await,
+        "old chat message should be fetched",
+    );
     assert!(
         fetched.is_some(),
         "get_by_id should return messages older than 90 days for audit purposes"
     );
-    assert_eq!(fetched.unwrap().content, "old message");
+    assert_eq!(
+        some(fetched, "old chat message should exist").content,
+        "old message"
+    );
 }
 
 #[tokio::test]
@@ -265,25 +297,33 @@ async fn test_get_by_id_very_old_message_succeeds() {
     let msg_id = synctv_core::models::generate_id();
 
     // Insert directly with backdated created_at (1 year ago)
-    sqlx::query(
-        r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
+    ok(
+        sqlx::query(
+            r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
           VALUES ($1, $2, $3, 'very old message from a year ago', 1, $4)",
-    )
-    .bind(msg_id)
-    .bind(room.id)
-    .bind(user.id)
-    .bind(very_old_date)
-    .execute(&pool)
-    .await
-    .unwrap();
+        )
+        .bind(msg_id)
+        .bind(room.id)
+        .bind(user.id)
+        .bind(very_old_date)
+        .execute(&pool)
+        .await,
+        "very old chat message should be inserted",
+    );
 
     // get_by_id should retrieve very old messages for audit purposes
-    let fetched = chat_repo.get_by_id(msg_id).await.unwrap();
+    let fetched = ok(
+        chat_repo.get_by_id(msg_id).await,
+        "very old chat message should be fetched",
+    );
     assert!(
         fetched.is_some(),
         "get_by_id should return messages from any time period"
     );
-    assert_eq!(fetched.unwrap().content, "very old message from a year ago");
+    assert_eq!(
+        some(fetched, "very old chat message should exist").content,
+        "very old message from a year ago"
+    );
 }
 
 #[tokio::test]
@@ -293,7 +333,10 @@ async fn test_get_by_id_nonexistent_returns_none() {
     let (_container, pool) = create_test_pool().await;
     let chat_repo = ChatRepository::new(pool.clone());
 
-    let fetched = chat_repo.get_by_id(i64::MAX).await.unwrap();
+    let fetched = ok(
+        chat_repo.get_by_id(i64::MAX).await,
+        "missing chat message lookup should succeed",
+    );
     assert!(
         fetched.is_none(),
         "get_by_id should return None for non-existent messages"
@@ -312,15 +355,24 @@ async fn test_cleanup_old_messages_keep_count_zero_is_noop() {
     // Insert some messages
     for i in 0..3 {
         let msg = make_chat_message(&room.id, &user.id, &format!("keep_{i}"));
-        chat_repo.create(&msg).await.unwrap();
+        ok(
+            chat_repo.create(&msg).await,
+            "chat message should be created",
+        );
     }
 
     // keep_count=0 should return 0 and delete nothing
-    let deleted = chat_repo.cleanup_old_messages(&room.id, 0).await.unwrap();
+    let deleted = ok(
+        chat_repo.cleanup_old_messages(&room.id, 0).await,
+        "chat cleanup with keep_count zero should succeed",
+    );
     assert_eq!(deleted, 0, "keep_count=0 should be a no-op");
 
     // All messages should still exist
-    let count = chat_repo.count_by_room(&room.id).await.unwrap();
+    let count = ok(
+        chat_repo.count_by_room(&room.id).await,
+        "chat message count should load",
+    );
     assert_eq!(count, 3);
 }
 
@@ -336,7 +388,10 @@ async fn test_cleanup_all_rooms_activity_window_zero() {
     // Insert messages
     for i in 0..5 {
         let msg = make_chat_message(&room.id, &user.id, &format!("msg_{i}"));
-        chat_repo.create(&msg).await.unwrap();
+        ok(
+            chat_repo.create(&msg).await,
+            "chat message should be created",
+        );
     }
 
     // activity_window_minutes=0 with keep_count=2 --
@@ -345,7 +400,10 @@ async fn test_cleanup_all_rooms_activity_window_zero() {
     // at exactly NOW() are in the activity window. Recently inserted
     // messages may or may not be selected depending on sub-second timing.
     // The key test is that it doesn't error and doesn't delete everything.
-    let deleted = chat_repo.cleanup_all_rooms(2, 0).await.unwrap();
+    let deleted = ok(
+        chat_repo.cleanup_all_rooms(2, 0).await,
+        "all-room chat cleanup should succeed",
+    );
     // With 0-minute window, rooms with messages only at exactly NOW() match.
     // The result may vary, so just assert no error and that the total is <= 3
     assert!(
@@ -363,14 +421,23 @@ async fn test_cleanup_all_rooms_keep_count_zero_is_noop() {
 
     for i in 0..3 {
         let msg = make_chat_message(&room.id, &user.id, &format!("msg_{i}"));
-        chat_repo.create(&msg).await.unwrap();
+        ok(
+            chat_repo.create(&msg).await,
+            "chat message should be created",
+        );
     }
 
     // keep_count=0 means unlimited, so no cleanup
-    let deleted = chat_repo.cleanup_all_rooms(0, 60).await.unwrap();
+    let deleted = ok(
+        chat_repo.cleanup_all_rooms(0, 60).await,
+        "all-room chat cleanup with keep_count zero should succeed",
+    );
     assert_eq!(deleted, 0, "keep_count=0 should be a no-op");
 
-    let count = chat_repo.count_by_room(&room.id).await.unwrap();
+    let count = ok(
+        chat_repo.count_by_room(&room.id).await,
+        "chat message count should load",
+    );
     assert_eq!(count, 3);
 }
 
@@ -388,8 +455,9 @@ async fn test_created_at_index_exists_for_partition_pruning() {
 
     // Check that the index exists on at least one partition (they all have the same structure)
     // The index should be created as part of partition creation
-    let index_exists: bool = sqlx::query_scalar(
-        r"
+    let index_exists: bool = ok(
+        sqlx::query_scalar(
+            r"
         SELECT EXISTS (
             SELECT 1
             FROM pg_indexes
@@ -398,10 +466,11 @@ async fn test_created_at_index_exists_for_partition_pruning() {
               AND indexname LIKE '%created_at%'
         )
         ",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Failed to query pg_indexes");
+        )
+        .fetch_one(&pool)
+        .await,
+        "pg_indexes query should succeed",
+    );
 
     assert!(
         index_exists,
@@ -419,20 +488,25 @@ async fn test_time_range_query_uses_index() {
     let chat_repo = ChatRepository::new(pool.clone());
 
     let msg = make_chat_message(&room.id, &user.id, "test message");
-    chat_repo.create(&msg).await.unwrap();
+    ok(
+        chat_repo.create(&msg).await,
+        "chat message should be created",
+    );
 
     // Run a query that should use the created_at index
     // (delete_messages_older_than_retention uses this pattern)
-    let plan: serde_json::Value = sqlx::query_scalar(
-        r"
+    let plan: serde_json::Value = ok(
+        sqlx::query_scalar(
+            r"
         EXPLAIN (FORMAT JSON)
         DELETE FROM chat_messages
         WHERE created_at <= NOW() - INTERVAL '90 days'
         ",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Failed to get query plan");
+        )
+        .fetch_one(&pool)
+        .await,
+        "time-range query plan should load",
+    );
 
     // The plan should be an array (EXPLAIN FORMAT JSON returns an array)
     assert!(
@@ -459,8 +533,9 @@ async fn test_cleanup_all_rooms_has_partition_pruning_filter() {
     let (_container, pool) = create_test_pool().await;
 
     // Get the EXPLAIN plan for cleanup_all_rooms
-    let plan: serde_json::Value = sqlx::query_scalar(
-        r"
+    let plan: serde_json::Value = ok(
+        sqlx::query_scalar(
+            r"
         EXPLAIN (FORMAT JSON)
         DELETE FROM chat_messages
         WHERE created_at > NOW() - INTERVAL '90 days'
@@ -479,10 +554,11 @@ async fn test_cleanup_all_rooms_has_partition_pruning_filter() {
             WHERE rn > 100
         )
         ",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Failed to get query plan");
+        )
+        .fetch_one(&pool)
+        .await,
+        "cleanup-all-rooms query plan should load",
+    );
 
     // Verify the plan is valid JSON
     assert!(
@@ -508,12 +584,16 @@ async fn test_cleanup_old_messages_partition_pruning_detailed() {
 
     for i in 0..10 {
         let msg = make_chat_message(&room.id, &user.id, &format!("prune_detail_{i}"));
-        chat_repo.create(&msg).await.unwrap();
+        ok(
+            chat_repo.create(&msg).await,
+            "partition pruning message should be created",
+        );
     }
 
     // Get detailed query plan using EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
-    let plan: serde_json::Value = sqlx::query_scalar(
-        r"
+    let plan: serde_json::Value = ok(
+        sqlx::query_scalar(
+            r"
         EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
         DELETE FROM chat_messages
         WHERE room_id = $1
@@ -529,22 +609,17 @@ async fn test_cleanup_old_messages_partition_pruning_detailed() {
             WHERE rn > 5
         )
         ",
-    )
-    .bind(room.id)
-    .fetch_one(&pool)
-    .await
-    .expect("Failed to get query plan");
+        )
+        .bind(room.id)
+        .fetch_one(&pool)
+        .await,
+        "cleanup-old-messages query plan should load",
+    );
 
     // Verify plan structure
     assert!(
         plan.is_array(),
         "Query plan should be a JSON array, got: {plan:?}"
-    );
-
-    // Log the plan for debugging
-    println!(
-        "Query plan: {}",
-        serde_json::to_string_pretty(&plan).unwrap()
     );
 
     // Check for partition pruning indicators
@@ -572,12 +647,16 @@ async fn test_cleanup_all_rooms_partition_pruning_detailed() {
 
     for i in 0..15 {
         let msg = make_chat_message(&room.id, &user.id, &format!("batch_{i}"));
-        chat_repo.create(&msg).await.unwrap();
+        ok(
+            chat_repo.create(&msg).await,
+            "batch pruning message should be created",
+        );
     }
 
     // Get detailed query plan
-    let plan: serde_json::Value = sqlx::query_scalar(
-        r"
+    let plan: serde_json::Value = ok(
+        sqlx::query_scalar(
+            r"
         EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
         DELETE FROM chat_messages
         WHERE created_at > NOW() - INTERVAL '90 days'
@@ -596,19 +675,15 @@ async fn test_cleanup_all_rooms_partition_pruning_detailed() {
             WHERE rn > 5
         )
         ",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Failed to get query plan");
+        )
+        .fetch_one(&pool)
+        .await,
+        "cleanup-all-rooms detailed query plan should load",
+    );
 
     assert!(
         plan.is_array(),
         "Query plan should be a JSON array, got: {plan:?}"
-    );
-
-    println!(
-        "Batch cleanup plan: {}",
-        serde_json::to_string_pretty(&plan).unwrap()
     );
 
     // Verify no full table scan
@@ -632,38 +707,28 @@ async fn test_delete_old_messages_partition_pruning() {
     let (_container, pool) = create_test_pool().await;
 
     // Get query plan for retention cleanup
-    let plan: serde_json::Value = sqlx::query_scalar(
-        r"
+    let plan: serde_json::Value = ok(
+        sqlx::query_scalar(
+            r"
         EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
         DELETE FROM chat_messages
         WHERE created_at <= NOW() - INTERVAL '90 days'
         ",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Failed to get query plan");
+        )
+        .fetch_one(&pool)
+        .await,
+        "retention cleanup query plan should load",
+    );
 
     assert!(
         plan.is_array(),
         "Query plan should be a JSON array, got: {plan:?}"
     );
 
-    println!(
-        "Retention cleanup plan: {}",
-        serde_json::to_string_pretty(&plan).unwrap()
+    assert!(
+        !plan.to_string().is_empty(),
+        "retention cleanup query plan should contain a plan body"
     );
-
-    // The query should use an index or partition-aware scan
-    // A sequential scan would indicate missing indexes or partition issues
-    let plan_str = plan.to_string().to_lowercase();
-
-    // Log if we see concerning patterns
-    if plan_str.contains("seq scan") {
-        println!(
-            "WARNING: Sequential scan detected in retention cleanup. \
-                  This may indicate missing indexes or partition misconfiguration."
-        );
-    }
 }
 
 // ─── list_by_room initial load needs partition lower bound ──
@@ -681,27 +746,32 @@ async fn test_list_by_room_initial_load_has_partition_lower_bound() {
     // Insert a message older than 90 days via raw SQL
     let old_date = Utc::now() - Duration::days(100);
     let old_msg_id = synctv_core::models::generate_id();
-    sqlx::query(
-        r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
+    ok(
+        sqlx::query(
+            r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
           VALUES ($1, $2, $3, 'old message', 1, $4)",
-    )
-    .bind(old_msg_id)
-    .bind(room.id)
-    .bind(user.id)
-    .bind(old_date)
-    .execute(&pool)
-    .await
-    .unwrap();
+        )
+        .bind(old_msg_id)
+        .bind(room.id)
+        .bind(user.id)
+        .bind(old_date)
+        .execute(&pool)
+        .await,
+        "old initial-load chat message should be inserted",
+    );
 
-    // Insert a recent message
     let msg = make_chat_message(&room.id, &user.id, "recent message");
-    chat_repo.create(&msg).await.unwrap();
+    ok(
+        chat_repo.create(&msg).await,
+        "recent chat message should be created",
+    );
 
-    // Initial load (no cursor) should only return recent messages
-    let (messages, next_cursor) = chat_repo
-        .list_by_room_cursor(&room.id, None, 100, false)
-        .await
-        .unwrap();
+    let (messages, next_cursor) = ok(
+        chat_repo
+            .list_by_room_cursor(&room.id, None, 100, false)
+            .await,
+        "initial chat load should succeed",
+    );
 
     // The old message (>90 days) should NOT be returned due to partition pruning filter
     assert_eq!(
@@ -728,27 +798,32 @@ async fn test_list_by_room_cursor_initial_load_has_partition_lower_bound() {
     // Insert a message older than 90 days via raw SQL
     let old_date = Utc::now() - Duration::days(100);
     let old_msg_id = synctv_core::models::generate_id();
-    sqlx::query(
-        r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
+    ok(
+        sqlx::query(
+            r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
           VALUES ($1, $2, $3, 'old cursor message', 1, $4)",
-    )
-    .bind(old_msg_id)
-    .bind(room.id)
-    .bind(user.id)
-    .bind(old_date)
-    .execute(&pool)
-    .await
-    .unwrap();
+        )
+        .bind(old_msg_id)
+        .bind(room.id)
+        .bind(user.id)
+        .bind(old_date)
+        .execute(&pool)
+        .await,
+        "old cursor chat message should be inserted",
+    );
 
-    // Insert a recent message
     let msg = make_chat_message(&room.id, &user.id, "recent cursor message");
-    chat_repo.create(&msg).await.unwrap();
+    ok(
+        chat_repo.create(&msg).await,
+        "recent cursor chat message should be created",
+    );
 
-    // Initial load (no cursor) should only return recent messages
-    let (messages, _cursor) = chat_repo
-        .list_by_room_cursor(&room.id, None, 100, false)
-        .await
-        .unwrap();
+    let (messages, _cursor) = ok(
+        chat_repo
+            .list_by_room_cursor(&room.id, None, 100, false)
+            .await,
+        "initial cursor chat load should succeed",
+    );
 
     assert_eq!(
         messages.len(),
@@ -769,12 +844,16 @@ async fn test_cleanup_query_keeps_partition_pruning_filter() {
 
     for i in 0..20 {
         let msg = make_chat_message(&room.id, &user.id, &format!("perf_{i}"));
-        chat_repo.create(&msg).await.unwrap();
+        ok(
+            chat_repo.create(&msg).await,
+            "performance guard chat message should be created",
+        );
     }
 
     // Query WITH partition pruning filter (correct implementation)
-    let plan_with_filter: serde_json::Value = sqlx::query_scalar(
-        r"
+    let plan_with_filter: serde_json::Value = ok(
+        sqlx::query_scalar(
+            r"
         EXPLAIN (FORMAT JSON)
         DELETE FROM chat_messages
         WHERE created_at > NOW() - INTERVAL '90 days'
@@ -790,15 +869,17 @@ async fn test_cleanup_query_keeps_partition_pruning_filter() {
             WHERE rn > 10
         )
         ",
-    )
-    .bind(room.id)
-    .fetch_one(&pool)
-    .await
-    .expect("Failed to get plan with filter");
+        )
+        .bind(room.id)
+        .fetch_one(&pool)
+        .await,
+        "query plan with partition filter should load",
+    );
 
     // Query WITHOUT partition pruning filter (buggy reference shape)
-    let plan_without_filter: serde_json::Value = sqlx::query_scalar(
-        r"
+    let plan_without_filter: serde_json::Value = ok(
+        sqlx::query_scalar(
+            r"
         EXPLAIN (FORMAT JSON)
         DELETE FROM chat_messages
         WHERE room_id = $1
@@ -813,11 +894,12 @@ async fn test_cleanup_query_keeps_partition_pruning_filter() {
             WHERE rn > 10
         )
         ",
-    )
-    .bind(room.id)
-    .fetch_one(&pool)
-    .await
-    .expect("Failed to get plan without filter");
+        )
+        .bind(room.id)
+        .fetch_one(&pool)
+        .await,
+        "query plan without partition filter should load",
+    );
 
     // Both plans should be valid
     assert!(

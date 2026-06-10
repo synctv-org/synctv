@@ -1,6 +1,6 @@
 use {
     super::errors::NetStreamError,
-    crate::bytesio::bytesio::TNetIO,
+    crate::bytesio::net_io::TNetIO,
     crate::flv::amf0::{amf0_writer::Amf0Writer, define::Amf0ValueType},
     crate::rtmp::{
         chunk::{define as chunk_define, packetizer::ChunkPacketizer, ChunkInfo},
@@ -166,8 +166,8 @@ impl NetStreamWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytesio::bytesio::{NetType, TNetIO};
-    use crate::bytesio::bytesio_errors::BytesIOError;
+    use crate::bytesio::bytesio_errors::{BytesIOError, BytesIOErrorValue};
+    use crate::bytesio::net_io::{NetType, TNetIO};
     use crate::flv::amf0::define::Amf0ValueType;
     use crate::rtmp::chunk::unpacketizer::{ChunkUnpacketizer, UnpackResult};
     use crate::rtmp::messages::{define::RtmpMessageData, parser::MessageParser};
@@ -194,7 +194,9 @@ mod tests {
         }
 
         async fn read(&mut self) -> Result<BytesMut, BytesIOError> {
-            Ok(self.reads.pop_front().unwrap_or_default())
+            self.reads.pop_front().ok_or(BytesIOError {
+                value: BytesIOErrorValue::ConnectionClosed,
+            })
         }
 
         async fn read_timeout(&mut self, _duration: Duration) -> Result<BytesMut, BytesIOError> {
@@ -208,6 +210,22 @@ mod tests {
         fn get_net_type(&self) -> NetType {
             NetType::TCP
         }
+    }
+
+    fn expect_chunks(result: UnpackResult) -> Vec<crate::rtmp::chunk::ChunkInfo> {
+        let UnpackResult::Chunks(chunks) = result else {
+            panic!("expected publish command chunks, got {result:?}");
+        };
+        chunks
+    }
+
+    fn expect_amf0_command(
+        message: RtmpMessageData,
+    ) -> Box<crate::rtmp::messages::define::Amf0CommandMessage> {
+        let RtmpMessageData::Amf0Command(command) = message else {
+            panic!("expected AMF0 publish command, got {message:?}");
+        };
+        command
     }
 
     #[tokio::test]
@@ -242,13 +260,11 @@ mod tests {
             .extend_data(&payload)
             .expect("serialized publish should be readable");
 
-        let chunks = match unpackizer
-            .read_chunks()
-            .expect("serialized publish should unpack")
-        {
-            UnpackResult::Chunks(chunks) => chunks,
-            _ => panic!("expected publish command chunks"),
-        };
+        let chunks = expect_chunks(
+            unpackizer
+                .read_chunks()
+                .expect("serialized publish should unpack"),
+        );
         assert_eq!(
             chunks.len(),
             1,
@@ -259,36 +275,27 @@ mod tests {
             .parse()
             .expect("publish chunk should parse")
             .expect("publish chunk should contain a message");
-        match parsed {
-            RtmpMessageData::Amf0Command {
-                command_name,
-                transaction_id,
-                others,
-                ..
-            } => {
-                assert!(matches!(
-                    command_name,
-                    Amf0ValueType::UTF8String(ref value) if value == "publish"
-                ));
-                assert!(matches!(
-                    transaction_id,
-                    Amf0ValueType::Number(value) if (value - 3.0).abs() < f64::EPSILON
-                ));
-                assert_eq!(
-                    others.len(),
-                    2,
-                    "publish should preserve stream name and type"
-                );
-                assert!(matches!(
-                    &others[0],
-                    Amf0ValueType::UTF8String(value) if value == "room-1/media-2?key=secret"
-                ));
-                assert!(matches!(
-                    &others[1],
-                    Amf0ValueType::UTF8String(value) if value == "live"
-                ));
-            }
-            _ => panic!("expected AMF0 publish command"),
-        }
+        let command = expect_amf0_command(parsed);
+        assert!(matches!(
+            command.command_name,
+            Amf0ValueType::UTF8String(ref value) if value == "publish"
+        ));
+        assert!(matches!(
+            command.transaction_id,
+            Amf0ValueType::Number(value) if (value - 3.0).abs() < f64::EPSILON
+        ));
+        assert_eq!(
+            command.others.len(),
+            2,
+            "publish should preserve stream name and type"
+        );
+        assert!(matches!(
+            &command.others[0],
+            Amf0ValueType::UTF8String(value) if value == "room-1/media-2?key=secret"
+        ));
+        assert!(matches!(
+            &command.others[1],
+            Amf0ValueType::UTF8String(value) if value == "live"
+        ));
     }
 }

@@ -6,6 +6,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use std::future::{ready, Future};
 use std::sync::LazyLock;
 
 use super::{optional_header_str, AppError, AppState};
@@ -33,41 +34,48 @@ where
 {
     type Rejection = AppError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let app_state = AppState::from_ref(state);
-        let peer_ip = parts
-            .extensions
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|info| info.0.ip());
-        let client_ip = peer_ip
-            .map(|peer_ip| {
-                crate::client_ip::extract_client_ip_from_headers(
-                    &app_state.config,
-                    peer_ip,
-                    &parts.headers,
-                )
-                .map_err(|error| AppError::bad_request(error.to_string()))
-            })
-            .transpose()?;
-        let authorization = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .map(|value| {
-                value
-                    .to_str()
-                    .map(str::to_owned)
-                    .map_err(|_| AppError::invalid_authorization_header_non_utf8())
-            })
-            .transpose()?;
-        let user_agent = optional_header_str(&parts.headers, &axum::http::header::USER_AGENT)?
-            .map(str::to_owned);
+    fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        let result = (|| {
+            let app_state = AppState::from_ref(state);
+            let peer_ip = parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|info| info.0.ip());
+            let client_ip = peer_ip
+                .map(|peer_ip| {
+                    crate::client_ip::extract_client_ip_from_headers(
+                        &app_state.config,
+                        peer_ip,
+                        &parts.headers,
+                    )
+                    .map_err(|error| AppError::bad_request(error.to_string()))
+                })
+                .transpose()?;
+            let authorization = parts
+                .headers
+                .get(axum::http::header::AUTHORIZATION)
+                .map(|value| {
+                    value
+                        .to_str()
+                        .map(str::to_owned)
+                        .map_err(|_| AppError::invalid_authorization_header_non_utf8())
+                })
+                .transpose()?;
+            let user_agent = optional_header_str(&parts.headers, &axum::http::header::USER_AGENT)?
+                .map(str::to_owned);
 
-        Ok(Self(
-            crate::impls::RequestMetadata::new(crate::impls::TransportProtocol::Http)
-                .with_authorization(authorization)
-                .with_client_ip(client_ip)
-                .with_user_agent(user_agent),
-        ))
+            Ok(Self(
+                crate::impls::RequestMetadata::new(crate::impls::TransportProtocol::Http)
+                    .with_authorization(authorization)
+                    .with_client_ip(client_ip)
+                    .with_user_agent(user_agent),
+            ))
+        })();
+
+        ready(result)
     }
 }
 
@@ -265,6 +273,30 @@ mod tests {
     use synctv_core::service::SecurityPipeline;
     use tower::ServiceExt;
 
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
+    }
+
+    fn request(uri: &str) -> TestResult<Request<Body>> {
+        Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .map_err(|err| test_error(format!("request should build: {err}")))
+    }
+
+    fn header_str<'a>(
+        headers: &'a axum::http::HeaderMap,
+        name: &'static str,
+    ) -> TestResult<&'a str> {
+        headers
+            .get(name)
+            .ok_or_else(|| test_error(format!("{name} header should exist")))?
+            .to_str()
+            .map_err(|err| test_error(format!("{name} header should be valid ascii: {err}")))
+    }
+
     #[test]
     fn test_hsts_header_basic() {
         let header = hsts_header(31_536_000, false, false);
@@ -296,28 +328,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_security_headers_adds_all_headers() {
+    async fn test_security_headers_adds_all_headers() -> TestResult {
         let app = axum::Router::new()
             .route("/test", axum::routing::get(|| async { "ok" }))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(request("/test")?).await?;
 
         assert_eq!(response.status(), StatusCode::OK);
 
         let headers = response.headers();
-        assert_eq!(headers.get("X-Frame-Options").unwrap(), "DENY");
-        assert_eq!(headers.get("X-Content-Type-Options").unwrap(), "nosniff");
+        assert_eq!(header_str(headers, "X-Frame-Options")?, "DENY");
+        assert_eq!(header_str(headers, "X-Content-Type-Options")?, "nosniff");
         assert!(headers.contains_key("Content-Security-Policy"));
         assert!(headers.contains_key("Referrer-Policy"));
         assert!(headers.contains_key("Permissions-Policy"));
         assert!(headers.contains_key("Cache-Control"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_security_headers_does_not_overwrite_existing() {
+    async fn test_security_headers_does_not_overwrite_existing() -> TestResult {
         let app = axum::Router::new()
             .route(
                 "/test",
@@ -333,61 +364,47 @@ mod tests {
             )
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        let response = app.oneshot(request("/test")?).await?;
 
-        let response = app.oneshot(request).await.unwrap();
-
-        // Should not overwrite the existing X-Frame-Options header
         assert_eq!(
-            response.headers().get("X-Frame-Options").unwrap(),
+            header_str(response.headers(), "X-Frame-Options")?,
             "SAMEORIGIN"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_security_headers_csp_policy() {
+    async fn test_security_headers_csp_policy() -> TestResult {
         let app = axum::Router::new()
             .route("/test", axum::routing::get(|| async { "ok" }))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        let response = app.oneshot(request("/test")?).await?;
 
-        let response = app.oneshot(request).await.unwrap();
-
-        let csp = response
-            .headers()
-            .get("Content-Security-Policy")
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let csp = header_str(response.headers(), "Content-Security-Policy")?;
 
         assert!(csp.contains("default-src 'self'"));
         assert!(csp.contains("media-src 'none'"));
         assert!(csp.contains("frame-src 'none'"));
         assert!(csp.contains("style-src 'self'"));
         assert!(csp.contains("frame-ancestors 'none'"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_security_headers_cache_control() {
+    async fn test_security_headers_cache_control() -> TestResult {
         let app = axum::Router::new()
             .route("/test", axum::routing::get(|| async { "ok" }))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        let response = app.oneshot(request("/test")?).await?;
 
-        let response = app.oneshot(request).await.unwrap();
-
-        let cache_control = response
-            .headers()
-            .get("Cache-Control")
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let cache_control = header_str(response.headers(), "Cache-Control")?;
 
         assert!(cache_control.contains("no-store"));
         assert!(cache_control.contains("no-cache"));
         assert!(cache_control.contains("must-revalidate"));
+        Ok(())
     }
 
     #[test]
@@ -436,33 +453,14 @@ mod tests {
         );
     }
 
-    // The shared auth pipeline performs security checks in order:
-    // 1. JWT verification (validate signature, expiration, and access token type)
-    // 2. Password invalidation check (reject tokens issued before password change)
-    // 3. Banned/deleted user check (reject banned or soft-deleted users)
-    // These checks now execute inside the shared impl-level request executor,
-    // keeping HTTP and gRPC behavior aligned without transport-side auth
-    // extractors. Full integration tests require AppState with real services;
-    // the tests below verify the structural aspects that can be tested in
-    // isolation.
-
     #[tokio::test]
-    async fn test_security_headers_frame_ancestors_none() {
-        // Verify CSP includes frame-ancestors 'none' to prevent clickjacking
-        // (parity with X-Frame-Options: DENY)
+    async fn test_security_headers_frame_ancestors_none() -> TestResult {
         let app = axum::Router::new()
             .route("/test", axum::routing::get(|| async { "ok" }))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
-        let csp = response
-            .headers()
-            .get("Content-Security-Policy")
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let response = app.oneshot(request("/test")?).await?;
+        let csp = header_str(response.headers(), "Content-Security-Policy")?;
 
         assert!(
             csp.contains("frame-ancestors 'none'"),
@@ -472,12 +470,11 @@ mod tests {
             csp.contains("base-uri 'none'"),
             "CSP must include base-uri 'none' to prevent base tag injection"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_security_headers_no_store_cache_control() {
-        // Verify that API responses include no-store to prevent caching of
-        // sensitive authentication data
+    async fn test_security_headers_no_store_cache_control() -> TestResult {
         let app = axum::Router::new()
             .route(
                 "/api/test",
@@ -485,21 +482,12 @@ mod tests {
             )
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let request = Request::builder()
-            .uri("/api/test")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
-        let cache_control = response
-            .headers()
-            .get("Cache-Control")
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let response = app.oneshot(request("/api/test")?).await?;
+        let cache_control = header_str(response.headers(), "Cache-Control")?;
 
         assert!(cache_control.contains("no-store"));
         assert!(cache_control.contains("proxy-revalidate"));
+        Ok(())
     }
 
     #[test]
@@ -518,17 +506,8 @@ mod tests {
         assert_eq!(header, "max-age=31536000; includeSubDomains; preload");
     }
 
-    // Provider routes rely on the global security_headers_middleware applied in
-    // apply_global_layers(). These tests verify that nested routes still
-    // receive the shared headers.
-
     #[tokio::test]
-    async fn test_nested_routes_receive_security_headers() {
-        // Simulate the Provider routes architecture:
-        // 1. Inner router with a simple handler (no security layer)
-        // 2. Outer router that nests the inner router
-        // 3. Global security layer applied to the outer router
-
+    async fn test_nested_routes_receive_security_headers() -> TestResult {
         let inner_router = axum::Router::new().route(
             "/api/providers/test",
             axum::routing::get(|| async { "provider response" }),
@@ -536,27 +515,21 @@ mod tests {
 
         let outer_router = axum::Router::new()
             .merge(inner_router)
-            // Global security layer applied AFTER route registration
-            // (in Tower/Axum, layers are applied in reverse order)
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let request = Request::builder()
-            .uri("/api/providers/test")
-            .body(Body::empty())
-            .unwrap();
+        let response = outer_router
+            .oneshot(request("/api/providers/test")?)
+            .await?;
 
-        let response = outer_router.oneshot(request).await.unwrap();
-
-        // Verify the nested route receives all security headers
         assert_eq!(response.status(), StatusCode::OK);
         let headers = response.headers();
         assert_eq!(
-            headers.get("X-Frame-Options").unwrap(),
+            header_str(headers, "X-Frame-Options")?,
             "DENY",
             "Provider routes must have X-Frame-Options header"
         );
         assert_eq!(
-            headers.get("X-Content-Type-Options").unwrap(),
+            header_str(headers, "X-Content-Type-Options")?,
             "nosniff",
             "Provider routes must have X-Content-Type-Options header"
         );
@@ -572,19 +545,16 @@ mod tests {
             headers.contains_key("Permissions-Policy"),
             "Provider routes must have Permissions-Policy header"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_nested_routes_with_additional_route_layers_still_get_security_headers() {
-        // Simulate nested provider routes wrapped with an additional
-        // route-local transport layer, while the outer router still applies the
-        // global security headers middleware.
-
+    async fn test_nested_routes_with_additional_route_layers_still_get_security_headers(
+    ) -> TestResult {
         async fn mock_rate_limit(
             request: axum::extract::Request,
             next: axum::middleware::Next,
         ) -> Result<Response, std::convert::Infallible> {
-            // Mock route-local layer that always passes
             Ok(next.run(request).await)
         }
 
@@ -603,11 +573,10 @@ mod tests {
             .method("POST")
             .uri("/api/providers/bilibili/parse")
             .body(Body::empty())
-            .unwrap();
+            .map_err(|err| test_error(format!("request should build: {err}")))?;
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(request).await?;
 
-        // Verify security headers are present even with the extra route layer
         assert_eq!(response.status(), StatusCode::OK);
         assert!(
             response.headers().contains_key("X-Frame-Options"),
@@ -621,5 +590,6 @@ mod tests {
             response.headers().contains_key("Content-Security-Policy"),
             "Provider routes with extra route layers must still have Content-Security-Policy"
         );
+        Ok(())
     }
 }

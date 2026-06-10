@@ -34,7 +34,11 @@ pub struct UdpIO {
 }
 
 impl UdpIO {
-    pub async fn new(remote_domain: String, remote_port: u16, local_port: u16) -> Option<Self> {
+    pub async fn new(
+        remote_domain: String,
+        remote_port: u16,
+        local_port: u16,
+    ) -> Result<Self, BytesIOError> {
         let remote_address = if remote_domain == "localhost" {
             format!("127.0.0.1:{remote_port}")
         } else {
@@ -42,31 +46,32 @@ impl UdpIO {
         };
         tracing::info!("remote address: {remote_address}");
         let local_address = format!("0.0.0.0:{local_port}");
-        if let Ok(local_socket) = UdpSocket::bind(local_address).await {
-            if let Ok(remote_socket_addr) = remote_address.parse::<SocketAddr>() {
-                if let Err(err) = local_socket.connect(remote_socket_addr).await {
-                    tracing::info!("connect to remote udp socket error: {err}");
-                }
 
-                return Some(Self {
-                    socket: local_socket,
-                });
-            }
-            tracing::error!("remote_address parse error: {remote_address:?}");
-        }
+        let local_socket = UdpSocket::bind(local_address).await?;
+        let remote_socket_addr =
+            remote_address
+                .parse::<SocketAddr>()
+                .map_err(|source| BytesIOError {
+                    value: BytesIOErrorValue::InvalidSocketAddress {
+                        address: remote_address,
+                        source,
+                    },
+                })?;
 
-        None
+        local_socket.connect(remote_socket_addr).await?;
+
+        Ok(Self {
+            socket: local_socket,
+        })
     }
 
-    pub async fn new_with_local_port(local_port: u16) -> Option<Self> {
+    pub async fn new_with_local_port(local_port: u16) -> Result<Self, BytesIOError> {
         let local_address = format!("0.0.0.0:{local_port}");
 
-        if let Ok(local_socket) = UdpSocket::bind(local_address).await {
-            return Some(Self {
-                socket: local_socket,
-            });
-        }
-        None
+        let local_socket = UdpSocket::bind(local_address).await?;
+        Ok(Self {
+            socket: local_socket,
+        })
     }
 
     pub fn get_local_port(&self) -> Option<u16> {
@@ -79,24 +84,24 @@ impl UdpIO {
     }
 }
 
-pub async fn new_udpio_pair() -> Option<(UdpIO, UdpIO)> {
+pub async fn new_udpio_pair() -> Result<(UdpIO, UdpIO), BytesIOError> {
     let mut next_local_port = 0;
     let first_local_port;
 
-    // get the first available port
     {
         let udpio_0 = UdpIO::new_with_local_port(next_local_port).await?;
         if let Some(local_port_0) = udpio_0.get_local_port() {
             first_local_port = local_port_0;
         } else {
-            tracing::error!("cannot get local port");
-            return None;
+            return Err(BytesIOError {
+                value: BytesIOErrorValue::NoAvailableUdpPortPair,
+            });
         }
 
         if first_local_port == 65535 {
             next_local_port = 1;
-        } else if let Some(udpio_1) = UdpIO::new_with_local_port(first_local_port + 1).await {
-            return Some((udpio_0, udpio_1));
+        } else if let Ok(udpio_1) = UdpIO::new_with_local_port(first_local_port + 1).await {
+            return Ok((udpio_0, udpio_1));
         } else if first_local_port + 1 == 65535 {
             next_local_port = 1;
         } else {
@@ -113,23 +118,23 @@ pub async fn new_udpio_pair() -> Option<(UdpIO, UdpIO)> {
         }
 
         if next_local_port == first_local_port {
-            return None;
+            return Err(BytesIOError {
+                value: BytesIOErrorValue::NoAvailableUdpPortPair,
+            });
         }
 
-        if let Some(udpio_0) = UdpIO::new_with_local_port(next_local_port).await {
-            if let Some(udpio_1) = UdpIO::new_with_local_port(next_local_port + 1).await {
-                return Some((udpio_0, udpio_1));
+        if let Ok(udpio_0) = UdpIO::new_with_local_port(next_local_port).await {
+            if let Ok(udpio_1) = UdpIO::new_with_local_port(next_local_port + 1).await {
+                return Ok((udpio_0, udpio_1));
             } else if next_local_port + 1 == 65535 {
                 next_local_port = 1;
             } else {
                 next_local_port += 2;
             }
         } else {
-            // try next port
             next_local_port += 1;
         }
     }
-    //None
 }
 
 #[async_trait]
@@ -168,14 +173,12 @@ impl TNetIO for UdpIO {
 
 pub struct TcpIO {
     stream: Framed<TcpStream, BytesCodec>,
-    //timeout: Duration,
 }
 
 impl TcpIO {
     pub fn new(stream: TcpStream) -> Self {
         Self {
             stream: Framed::new(stream, BytesCodec::new()),
-            // timeout: ms,
         }
     }
 }
@@ -207,7 +210,7 @@ impl TNetIO for TcpIO {
         message.map_or_else(
             || {
                 Err(BytesIOError {
-                    value: BytesIOErrorValue::NoneReturn,
+                    value: BytesIOErrorValue::ConnectionClosed,
                 })
             },
             |data| match data {
@@ -236,9 +239,9 @@ mod tests {
     #[tokio::test]
     async fn test_new_udpio_pair() {
         let pair = new_udpio_pair().await;
-        assert!(pair.is_some(), "UDP IO pair creation should succeed");
+        assert!(pair.is_ok(), "UDP IO pair creation should succeed");
 
-        let (udpio1, udpio2) = pair.unwrap();
+        let (udpio1, udpio2) = pair.expect("UDP IO pair creation should succeed");
         let port1 = udpio1.get_local_port();
         let port2 = udpio2.get_local_port();
 
@@ -253,39 +256,18 @@ mod tests {
         // then confirm new_udpio_pair still works with ports occupied.
         let mut sockets: Vec<UdpIO> = Vec::new();
         for port in [10000, 10001, 10002, 10003, 10004] {
-            if let Some(udpio) = UdpIO::new_with_local_port(port).await {
+            if let Ok(udpio) = UdpIO::new_with_local_port(port).await {
                 sockets.push(udpio);
             }
         }
 
-        if let Some((udpio1, udpio2)) = new_udpio_pair().await {
-            let port1 = udpio1.get_local_port();
-            let port2 = udpio2.get_local_port();
-            assert!(port1.is_some(), "First UDP socket should have valid port");
-            assert!(port2.is_some(), "Second UDP socket should have valid port");
-            assert_ne!(port1, port2, "UDP sockets should have different ports");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_new_udpio_pair3() {
-        // get the first available port
-
-        let mut first_local_port = 0;
-        if let Some(udpio_0) = UdpIO::new_with_local_port(0).await {
-            if let Some(local_port_0) = udpio_0.get_local_port() {
-                first_local_port = local_port_0;
-            }
-
-            // std::mem::drop(udpio_0);
-        }
-        //The object udpio_0 is automatically cleared and released when it goes out of scope here.
-        println!("first_local_port: {first_local_port}");
-
-        if (UdpIO::new_with_local_port(first_local_port).await).is_some() {
-            println!("success");
-        } else {
-            println!("fail");
-        }
+        let (udpio1, udpio2) = new_udpio_pair()
+            .await
+            .expect("UDP IO pair creation should succeed with occupied high ports");
+        let port1 = udpio1.get_local_port();
+        let port2 = udpio2.get_local_port();
+        assert!(port1.is_some(), "First UDP socket should have valid port");
+        assert!(port2.is_some(), "Second UDP socket should have valid port");
+        assert_ne!(port1, port2, "UDP sockets should have different ports");
     }
 }

@@ -569,13 +569,19 @@ mod tests {
     use serde_json::Value;
     use utoipa::OpenApi;
 
-    fn openapi_json() -> Value {
-        serde_json::to_value(super::ApiDoc::openapi()).expect("serialize openapi")
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn openapi_json() -> TestResult<Value> {
+        Ok(serde_json::to_value(super::ApiDoc::openapi())?)
     }
 
     #[test]
-    fn openapi_keeps_bearer_auth_off_public_routes() {
-        let doc = openapi_json();
+    fn openapi_keeps_bearer_auth_off_public_routes() -> TestResult {
+        let doc = openapi_json()?;
 
         assert!(
             doc.get("security").is_none(),
@@ -599,16 +605,17 @@ mod tests {
 
         let notifications_security = doc["paths"]["/api/notifications"]["get"]["security"]
             .as_array()
-            .expect("authenticated endpoints should declare security");
+            .ok_or_else(|| test_error("authenticated endpoints should declare security"))?;
         assert!(
             !notifications_security.is_empty(),
             "authenticated endpoints should keep bearer auth requirements"
         );
+        Ok(())
     }
 
     #[test]
-    fn openapi_matches_public_room_error_contracts() {
-        let doc = openapi_json();
+    fn openapi_matches_public_room_error_contracts() -> TestResult {
+        let doc = openapi_json()?;
 
         assert!(
             doc["paths"]["/api/rooms/hot"]["get"]["responses"]["400"].is_object(),
@@ -624,11 +631,12 @@ mod tests {
                 .is_none(),
             "check room returns 200 with exists=false for missing rooms"
         );
+        Ok(())
     }
 
     #[test]
-    fn openapi_documents_oauth2_unconfigured_as_service_unavailable() {
-        let doc = openapi_json();
+    fn openapi_documents_oauth2_unconfigured_as_service_unavailable() -> TestResult {
+        let doc = openapi_json()?;
         let responses = &doc["paths"]["/api/oauth2/providers"]["get"]["responses"];
 
         assert!(
@@ -639,11 +647,12 @@ mod tests {
             responses.get("400").is_none(),
             "OAuth2 provider listing should not document missing service as a bad request"
         );
+        Ok(())
     }
 
     #[test]
-    fn openapi_marks_notifications_read_all_body_optional() {
-        let doc = openapi_json();
+    fn openapi_marks_notifications_read_all_body_optional() -> TestResult {
+        let doc = openapi_json()?;
 
         let request_body = &doc["paths"]["/api/notifications/read-all"]["post"]["requestBody"];
         assert!(
@@ -658,11 +667,12 @@ mod tests {
             Some(true),
             "mark-all-as-read should not document its request body as required"
         );
+        Ok(())
     }
 
     #[test]
-    fn openapi_documents_admin_user_preferences_routes() {
-        let doc = openapi_json();
+    fn openapi_documents_admin_user_preferences_routes() -> TestResult {
+        let doc = openapi_json()?;
 
         let path = &doc["paths"]["/api/admin/users/{user_id}/preferences"];
         assert!(
@@ -679,11 +689,12 @@ mod tests {
             request_body.is_object(),
             "admin update-user-preferences should document its request body"
         );
+        Ok(())
     }
 
     #[test]
-    fn openapi_documents_provider_proxy_routes() {
-        let doc = openapi_json();
+    fn openapi_documents_provider_proxy_routes() -> TestResult {
+        let doc = openapi_json()?;
 
         let path = &doc["paths"]["/api/providers/proxy/{provider_name}/{sub_path}"];
         assert!(
@@ -698,11 +709,12 @@ mod tests {
             path["options"].is_object(),
             "provider proxy OPTIONS route should be documented"
         );
+        Ok(())
     }
 
     #[test]
-    fn openapi_documents_chat_routes() {
-        let doc = openapi_json();
+    fn openapi_documents_chat_routes() -> TestResult {
+        let doc = openapi_json()?;
 
         for (path, method, responses) in [
             (
@@ -751,7 +763,7 @@ mod tests {
                 &["200", "400", "401", "403", "503"][..],
             ),
         ] {
-            assert_response_codes(&doc, path, method, responses);
+            assert_response_codes(&doc, path, method, responses)?;
         }
 
         assert_parameter_location(
@@ -760,20 +772,26 @@ mod tests {
             "get",
             "include_deleted",
             "query",
-        );
+        )?;
         assert_parameter_location(
             &doc,
             "/api/rooms/{room_id}/watch/chat-events",
             "get",
             "after_event_sequence",
             "query",
-        );
+        )?;
+        Ok(())
     }
 
-    fn assert_response_codes(doc: &Value, path: &str, method: &str, expected: &[&str]) {
+    fn assert_response_codes(
+        doc: &Value,
+        path: &str,
+        method: &str,
+        expected: &[&str],
+    ) -> TestResult {
         let responses = doc["paths"][path][method]["responses"]
             .as_object()
-            .unwrap_or_else(|| panic!("{method} {path} should document responses"));
+            .ok_or_else(|| test_error(format!("{method} {path} should document responses")))?;
 
         for code in expected {
             assert!(
@@ -782,6 +800,7 @@ mod tests {
                 responses.keys().collect::<Vec<_>>()
             );
         }
+        Ok(())
     }
 
     fn assert_parameter_location(
@@ -790,10 +809,10 @@ mod tests {
         method: &str,
         name: &str,
         expected_location: &str,
-    ) {
+    ) -> TestResult {
         let params = doc["paths"][path][method]["parameters"]
             .as_array()
-            .unwrap_or_else(|| panic!("{method} {path} should document parameters"));
+            .ok_or_else(|| test_error(format!("{method} {path} should document parameters")))?;
         let locations = params
             .iter()
             .filter(|param| param["name"] == name)
@@ -805,11 +824,12 @@ mod tests {
             vec![expected_location],
             "{method} {path} should document {name} only as {expected_location}; got {locations:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn openapi_documents_query_struct_params_as_query() {
-        let doc = openapi_json();
+    fn openapi_documents_query_struct_params_as_query() -> TestResult {
+        let doc = openapi_json()?;
 
         for name in [
             "page",
@@ -819,7 +839,7 @@ mod tests {
             "sort_by",
             "sort_direction",
         ] {
-            assert_parameter_location(&doc, "/api/rooms/{room_id}/members", "get", name, "query");
+            assert_parameter_location(&doc, "/api/rooms/{room_id}/members", "get", name, "query")?;
         }
         assert_parameter_location(
             &doc,
@@ -827,7 +847,7 @@ mod tests {
             "get",
             "room_id",
             "path",
-        );
+        )?;
 
         for name in [
             "page",
@@ -844,7 +864,7 @@ mod tests {
                 "get",
                 name,
                 "query",
-            );
+            )?;
         }
         assert_parameter_location(
             &doc,
@@ -852,7 +872,7 @@ mod tests {
             "get",
             "user_id",
             "path",
-        );
+        )?;
 
         for name in [
             "page",
@@ -868,7 +888,7 @@ mod tests {
                 "get",
                 name,
                 "query",
-            );
+            )?;
         }
         assert_parameter_location(
             &doc,
@@ -876,7 +896,7 @@ mod tests {
             "get",
             "room_id",
             "path",
-        );
+        )?;
 
         assert_parameter_location(
             &doc,
@@ -884,19 +904,20 @@ mod tests {
             "post",
             "instance_name",
             "query",
-        );
+        )?;
         assert_parameter_location(
             &doc,
             "/api/rooms/{room_id}/playback",
             "get",
             "delivery_preference",
             "query",
-        );
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn openapi_documents_provider_endpoint_error_contracts() {
-        let doc = openapi_json();
+    fn openapi_documents_provider_endpoint_error_contracts() -> TestResult {
+        let doc = openapi_json()?;
 
         let provider_operation_errors = ["400", "401", "403", "404", "408", "409", "429", "503"];
         for (path, method) in [
@@ -907,7 +928,7 @@ mod tests {
             ("/api/providers/emby/login", "post"),
             ("/api/providers/emby/list", "post"),
         ] {
-            assert_response_codes(&doc, path, method, &provider_operation_errors);
+            assert_response_codes(&doc, path, method, &provider_operation_errors)?;
         }
 
         let provider_binds_errors = ["400", "401", "403", "408", "429", "503"];
@@ -916,7 +937,7 @@ mod tests {
             "/api/providers/bilibili/binds",
             "/api/providers/emby/binds",
         ] {
-            assert_response_codes(&doc, path, "get", &provider_binds_errors);
+            assert_response_codes(&doc, path, "get", &provider_binds_errors)?;
         }
 
         let admin_provider_errors = ["400", "401", "403", "408", "429", "503"];
@@ -924,7 +945,7 @@ mod tests {
             ("/api/providers/instances", "get"),
             ("/api/providers/instances", "post"),
         ] {
-            assert_response_codes(&doc, path, method, &admin_provider_errors);
+            assert_response_codes(&doc, path, method, &admin_provider_errors)?;
         }
 
         let admin_provider_mutation_errors =
@@ -936,7 +957,7 @@ mod tests {
             ("/api/providers/instances/{name}/enable", "post"),
             ("/api/providers/instances/{name}/disable", "post"),
         ] {
-            assert_response_codes(&doc, path, method, &admin_provider_mutation_errors);
+            assert_response_codes(&doc, path, method, &admin_provider_mutation_errors)?;
         }
 
         assert_response_codes(
@@ -944,15 +965,16 @@ mod tests {
             "/api/providers/emby/thumbnail/{item_id}",
             "get",
             &["400", "401", "403", "404", "408", "429", "503"],
-        );
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn openapi_documents_playlist_source_fields() {
-        let doc = openapi_json();
+    fn openapi_documents_playlist_source_fields() -> TestResult {
+        let doc = openapi_json()?;
         let playlist = doc
             .pointer("/components/schemas/synctv_client_Playlist/properties")
-            .expect("Playlist schema properties should exist");
+            .ok_or_else(|| test_error("Playlist schema properties should exist"))?;
 
         for field in ["source_config", "source_provider", "provider_instance_name"] {
             assert!(
@@ -960,11 +982,12 @@ mod tests {
                 "Playlist schema should document {field}: {playlist:?}"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn openapi_documents_websocket_handshake_endpoint() {
-        let doc = openapi_json();
+    fn openapi_documents_websocket_handshake_endpoint() -> TestResult {
+        let doc = openapi_json()?;
         let operation = &doc["paths"]["/ws/rooms/{room_id}"]["get"];
 
         assert!(
@@ -975,7 +998,7 @@ mod tests {
 
         let params = operation["parameters"]
             .as_array()
-            .expect("WebSocket route should describe handshake parameters");
+            .ok_or_else(|| test_error("WebSocket route should describe handshake parameters"))?;
         assert!(
             params.iter().any(|param| {
                 param["name"] == "room_id" && param["in"] == "path" && param["required"] == true
@@ -1013,5 +1036,6 @@ mod tests {
             operation["responses"]["503"].is_object(),
             "runtime dependency failures should be documented"
         );
+        Ok(())
     }
 }

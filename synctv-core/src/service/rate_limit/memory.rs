@@ -80,14 +80,14 @@ impl InMemoryGovernorLimiter {
 /// In-memory rate limiter using `governor` (GCRA algorithm).
 ///
 /// Per-instance only — not shared across replicas.
-pub struct InMemoryRateLimitBackend {
+pub(super) struct InMemoryRateLimitBackend {
     key_prefix: String,
     governor: InMemoryGovernorLimiter,
 }
 
 impl InMemoryRateLimitBackend {
     #[must_use]
-    pub fn new(key_prefix: String) -> Self {
+    pub(super) fn new(key_prefix: String) -> Self {
         Self {
             key_prefix,
             governor: InMemoryGovernorLimiter::new(),

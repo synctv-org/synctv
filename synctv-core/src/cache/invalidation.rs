@@ -218,20 +218,6 @@ pub trait CacheInvalidationRuntime: Send + Sync {
     async fn invalidate_and_broadcast_room_permission(&self, room_id: &RoomId) -> Result<()>;
 }
 
-/// Build a cache invalidation runtime behind the service abstraction.
-///
-/// Callers should depend on the returned trait object instead of selecting the
-/// concrete local or shared implementation directly.
-pub fn cache_invalidation_runtime_from_shared_state_profile(
-    profile: &SharedStateProfile,
-    node_id: String,
-    stream_key: String,
-) -> Result<Arc<dyn CacheInvalidationRuntime>> {
-    Ok(Arc::new(
-        CacheInvalidationService::from_shared_state_profile(profile, node_id, stream_key)?,
-    ))
-}
-
 /// Service for broadcasting and receiving cache invalidation messages
 ///
 /// Uses Redis Streams instead of Pub/Sub for reliable message delivery:
@@ -278,6 +264,14 @@ impl Clone for CacheInvalidationService {
 }
 
 impl CacheInvalidationService {
+    fn redis_value_as_str(value: &redis::Value) -> Option<&str> {
+        match value {
+            redis::Value::BulkString(bytes) => std::str::from_utf8(bytes).ok(),
+            redis::Value::SimpleString(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
     /// Create a new cache invalidation service.
     ///
     /// # Arguments
@@ -783,11 +777,7 @@ impl CacheInvalidationService {
     fn extract_integer_field(group_info: &[redis::Value], field_name: &str) -> Option<i64> {
         let mut iter = group_info.iter();
         while let Some(key) = iter.next() {
-            let key_str = match key {
-                redis::Value::BulkString(bytes) => std::str::from_utf8(bytes).ok(),
-                redis::Value::SimpleString(s) => Some(s.as_str()),
-                _ => None,
-            };
+            let key_str = Self::redis_value_as_str(key);
             let value = iter.next()?;
             if key_str == Some(field_name) {
                 return match value {
@@ -806,20 +796,10 @@ impl CacheInvalidationService {
     fn extract_group_name(group_info: &[redis::Value]) -> Option<String> {
         let mut iter = group_info.iter();
         while let Some(key) = iter.next() {
-            let key_str = match key {
-                redis::Value::BulkString(bytes) => std::str::from_utf8(bytes).ok(),
-                redis::Value::SimpleString(s) => Some(s.as_str()),
-                _ => None,
-            };
+            let key_str = Self::redis_value_as_str(key);
             let value = iter.next()?;
             if key_str == Some("name") {
-                return match value {
-                    redis::Value::BulkString(bytes) => {
-                        std::str::from_utf8(bytes).ok().map(String::from)
-                    }
-                    redis::Value::SimpleString(s) => Some(s.clone()),
-                    _ => None,
-                };
+                return Self::redis_value_as_str(value).map(str::to_owned);
             }
         }
         None
@@ -1074,12 +1054,7 @@ impl CacheInvalidationService {
     {
         // Check origin node to skip self-originated messages
         if let Some(origin_value) = entry.map.get("origin") {
-            let origin_str = match origin_value {
-                redis::Value::BulkString(bytes) => std::str::from_utf8(bytes).ok(),
-                redis::Value::SimpleString(s) => Some(s.as_str()),
-                _ => None,
-            };
-            if origin_str == Some(context.node_id) {
+            if Self::redis_value_as_str(origin_value) == Some(context.node_id) {
                 // Acknowledge but don't broadcast -- this node originated the message
                 Self::ack_stream_entry(
                     conn,
@@ -1094,11 +1069,7 @@ impl CacheInvalidationService {
         }
 
         // Extract the message payload
-        let payload_str = entry.map.get("payload").and_then(|v| match v {
-            redis::Value::BulkString(bytes) => std::str::from_utf8(bytes).ok(),
-            redis::Value::SimpleString(s) => Some(s.as_str()),
-            _ => None,
-        });
+        let payload_str = entry.map.get("payload").and_then(Self::redis_value_as_str);
 
         let Some(payload_str) = payload_str else {
             // No payload field - malformed entry. Track delivery count and
@@ -1816,7 +1787,7 @@ impl std::fmt::Debug for CacheInvalidationService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::failing_redis_runtime;
+    use crate::test_helpers::{failing_redis_runtime, TestResultExt};
 
     #[test]
     fn test_invalidation_message_serialization() {
@@ -1825,10 +1796,11 @@ mod tests {
             user_id: "user456".to_string(),
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&msg).checked("operation should succeed");
         assert!(json.contains("user_permission"));
 
-        let decoded: InvalidationMessage = serde_json::from_str(&json).unwrap();
+        let decoded: InvalidationMessage =
+            serde_json::from_str(&json).checked("operation should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -1838,8 +1810,9 @@ mod tests {
             room_id: "room123".to_string(),
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
-        let decoded: InvalidationMessage = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&msg).checked("operation should succeed");
+        let decoded: InvalidationMessage =
+            serde_json::from_str(&json).checked("operation should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -1874,9 +1847,12 @@ mod tests {
         };
 
         // broadcast_all sends to local + Redis; broadcast only sends to Redis
-        service.broadcast_all(msg.clone()).await.unwrap();
+        service
+            .broadcast_all(msg.clone())
+            .await
+            .checked("operation should succeed");
 
-        let received = receiver.recv().await.unwrap();
+        let received = receiver.recv().await.checked("operation should succeed");
         assert_eq!(msg, received);
     }
 
@@ -1884,13 +1860,13 @@ mod tests {
     fn test_from_shared_state_profile_uses_shared_runtime() {
         let runtime = failing_redis_runtime();
         let profile =
-            SharedStateProfile::from_runtime(Some(runtime.clone()), "synctv:test:", false);
+            SharedStateProfile::for_cluster_runtime(Some(runtime.clone()), "synctv:test:", false);
         let service = CacheInvalidationService::from_shared_state_profile(
             &profile,
             "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         )
-        .expect("shared-state profile constructor should accept injected runtime");
+        .checked("shared-state profile constructor should accept injected runtime");
 
         assert!(
             service
@@ -1902,14 +1878,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cache_invalidation_runtime_from_shared_state_profile_returns_live_trait_object() {
-        let profile = SharedStateProfile::from_runtime(None, "synctv:test:", false);
-        let runtime = cache_invalidation_runtime_from_shared_state_profile(
+    async fn test_cache_invalidation_shared_state_builder_returns_live_runtime() {
+        let profile = SharedStateProfile::for_cluster_runtime(None, "synctv:test:", false);
+        let runtime = CacheInvalidationService::from_shared_state_profile(
             &profile,
             "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         )
-        .expect("standalone mode should allow local cache invalidation");
+        .checked("standalone mode should allow local cache invalidation");
         let mut receiver = runtime.subscribe();
         let message = InvalidationMessage::Room {
             room_id: "room-1".to_string(),
@@ -1917,25 +1893,24 @@ mod tests {
 
         runtime
             .broadcast_local(message.clone())
-            .expect("trait-object cache invalidation runtime should broadcast locally");
+            .checked("cache invalidation runtime should broadcast locally");
 
         let received = receiver
             .recv()
             .await
-            .expect("subscriber should receive local broadcast");
+            .checked("subscriber should receive local broadcast");
         assert_eq!(received, message);
     }
 
     #[test]
-    fn test_cache_invalidation_runtime_from_shared_state_profile_requires_shared_runtime_in_cluster_mode(
-    ) {
-        let profile = SharedStateProfile::from_runtime(None, "synctv:test:", true);
-        let Err(error) = cache_invalidation_runtime_from_shared_state_profile(
+    fn test_cache_invalidation_shared_state_builder_requires_shared_runtime_in_cluster_mode() {
+        let profile = SharedStateProfile::for_cluster_runtime(None, "synctv:test:", true);
+        let Err(error) = CacheInvalidationService::from_shared_state_profile(
             &profile,
             "test-node".to_string(),
             "synctv:cache:invalidate:stream".to_string(),
         ) else {
-            panic!("cluster runtime must reject local-only cache invalidation");
+            std::panic::panic_any("cluster runtime must reject local-only cache invalidation");
         };
 
         assert!(
@@ -2128,7 +2103,8 @@ mod tests {
             loop {
                 tokio::select! {
                     _ = state_sync_interval.tick() => {
-                        let _ = needs_state_sync.swap(false, std::sync::atomic::Ordering::Relaxed);
+                        let _previous_sync_requested =
+                            needs_state_sync.swap(false, std::sync::atomic::Ordering::Relaxed);
                     }
                     _ = orphan_cleanup_interval.tick() => {
                         cleanup_ticks_for_task.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2178,11 +2154,12 @@ mod tests {
             room_id: "room_abc".to_string(),
         };
 
-        let json = serde_json::to_string(&msg).unwrap();
+        let json = serde_json::to_string(&msg).checked("operation should succeed");
         assert!(json.contains("room_settings"));
         assert!(json.contains("room_abc"));
 
-        let decoded: InvalidationMessage = serde_json::from_str(&json).unwrap();
+        let decoded: InvalidationMessage =
+            serde_json::from_str(&json).checked("operation should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -2223,14 +2200,14 @@ mod tests {
         service
             .invalidate_and_broadcast_room_settings(&room_id)
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
-        let received = receiver.recv().await.unwrap();
+        let received = receiver.recv().await.checked("operation should succeed");
         match received {
             InvalidationMessage::RoomSettings { room_id } => {
                 assert_eq!(room_id, "95001");
             }
-            other => panic!("Expected RoomSettings, got: {other:?}"),
+            other => std::panic::panic_any(format!("Expected RoomSettings, got: {other:?}")),
         }
     }
 
@@ -2297,6 +2274,34 @@ mod tests {
     }
 
     #[test]
+    fn test_redis_value_as_str_handles_supported_string_values() {
+        assert_eq!(
+            CacheInvalidationService::redis_value_as_str(&redis::Value::SimpleString(
+                "node-a".to_string()
+            )),
+            Some("node-a")
+        );
+        assert_eq!(
+            CacheInvalidationService::redis_value_as_str(&redis::Value::BulkString(
+                b"node-b".to_vec()
+            )),
+            Some("node-b")
+        );
+    }
+
+    #[test]
+    fn test_redis_value_as_str_rejects_non_string_values() {
+        assert_eq!(
+            CacheInvalidationService::redis_value_as_str(&redis::Value::BulkString(vec![0xff])),
+            None
+        );
+        assert_eq!(
+            CacheInvalidationService::redis_value_as_str(&redis::Value::Int(42)),
+            None
+        );
+    }
+
+    #[test]
     fn test_extract_consumer_idle_ms_prefers_inactive_field() {
         let consumer = vec![
             redis::Value::SimpleString("name".to_string()),
@@ -2321,7 +2326,7 @@ mod tests {
             redis::Value::SimpleString("idle".to_string()),
             redis::Value::Int(
                 i64::try_from(STALE_CONSUMER_IDLE_MS)
-                    .expect("stale consumer idle threshold should fit i64"),
+                    .checked("stale consumer idle threshold should fit i64"),
             ),
         ]];
 
@@ -2343,7 +2348,7 @@ mod tests {
                 redis::Value::SimpleString("idle".to_string()),
                 redis::Value::Int(
                     i64::try_from(STALE_CONSUMER_IDLE_MS)
-                        .expect("stale consumer idle threshold should fit i64"),
+                        .checked("stale consumer idle threshold should fit i64"),
                 ),
             ],
         ];

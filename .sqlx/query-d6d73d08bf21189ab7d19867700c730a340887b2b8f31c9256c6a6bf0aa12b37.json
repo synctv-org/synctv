@@ -6,82 +6,178 @@
       {
         "ordinal": 0,
         "name": "id!",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "room_id!: RoomId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "room_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "user_id?: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "user_id"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "client_message_id",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "client_message_id"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "content!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "content"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "message_type!: ChatMessageType",
-        "type_info": "Int2"
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "message_type"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "status!: ChatMessageStatus",
-        "type_info": "Int2"
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "status"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "version!",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "version"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "reply_to_message_id",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "reply_to_message_id"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "reply_to_message_created_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "reply_to_message_created_at"
+          }
+        }
       },
       {
         "ordinal": 10,
         "name": "metadata!: serde_json::Value",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "metadata"
+          }
+        }
       },
       {
         "ordinal": 11,
         "name": "edited_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "edited_at"
+          }
+        }
       },
       {
         "ordinal": 12,
         "name": "deleted_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "deleted_at"
+          }
+        }
       },
       {
         "ordinal": 13,
         "name": "deleted_by?: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "deleted_by"
+          }
+        }
       },
       {
         "ordinal": 14,
         "name": "delete_reason",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "delete_reason"
+          }
+        }
       },
       {
         "ordinal": 15,
         "name": "created_at!",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {

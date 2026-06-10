@@ -15,11 +15,6 @@ use synctv_proto::providers::alist::{
 
 use super::{get_provider_binds, publish_provider_credential_changed, resolve_bound_instance_name};
 
-fn non_empty_string(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then_some(trimmed.to_string())
-}
-
 fn otp_code_from_secret(
     otp_secret: Option<&str>,
 ) -> Result<String, synctv_core::provider::ProviderError> {
@@ -52,13 +47,13 @@ fn resolve_alist_login_otp_code(
 pub struct AlistApiImpl {
     provider: Arc<AlistProvider>,
     credential_repo: Arc<UserProviderCredentialRepository>,
-    access_service: Option<Arc<dyn ProviderAccessService>>,
+    access_service: Arc<dyn ProviderAccessService>,
     event_service: Arc<dyn crate::runtime::RealtimeEventService>,
 }
 
 #[derive(Clone)]
 pub struct ProviderApiRuntime {
-    pub access_service: Option<Arc<dyn ProviderAccessService>>,
+    pub access_service: Arc<dyn ProviderAccessService>,
     pub event_service: Arc<dyn crate::runtime::RealtimeEventService>,
 }
 
@@ -88,81 +83,11 @@ impl AlistApiImpl {
         server_id: &str,
         request_context: Option<&ExecutionControl>,
     ) -> Result<(String, String, Option<String>), synctv_core::provider::ProviderError> {
-        if let Some(access_service) = &self.access_service {
-            let access = access_service
-                .alist_access(*caller_user_id, server_id, None, request_context)
-                .await?;
-            return Ok((access.host, access.token, access.provider_instance_name));
-        }
-
-        let cred = self
-            .credential_repo
-            .get_by_provider_and_server(
-                *caller_user_id,
-                synctv_core::provider::AlistProvider::NAME,
-                server_id,
-            )
-            .await
-            .map_err(|e| {
-                synctv_core::provider::ProviderError::Internal(format!(
-                    "Failed to query alist credential: {e}"
-                ))
-            })?
-            .ok_or(synctv_core::provider::ProviderError::CredentialNotFound(
-                format!("No alist credential found for server_id '{server_id}'"),
-            ))?;
-
-        if cred.is_expired() {
-            return Err(synctv_core::provider::ProviderError::CredentialExpired(
-                "Alist credential has expired".to_string(),
-            ));
-        }
-
-        let instance_name = cred.provider_instance_name.clone();
-
-        match cred.get_credential() {
-            Ok(ProviderCredential::Alist {
-                host,
-                username,
-                password,
-                otp_secret,
-            }) => {
-                let otp_code = otp_code_from_secret(otp_secret.as_deref())?;
-                // Re-login with stored credentials to get a fresh token
-                let login_req = synctv_media_providers::grpc::alist::LoginReq {
-                    host: host.clone(),
-                    username,
-                    credential: Some(
-                        synctv_media_providers::grpc::alist::login_req::Credential::HashedPassword(
-                            password,
-                        ),
-                    ),
-                    otp_code,
-                };
-
-                let token = self
-                    .provider
-                    .login_with_context(login_req, instance_name.as_deref(), request_context)
-                    .await?;
-
-                Ok((host, token, instance_name))
-            }
-            Ok(_) => Err(synctv_core::provider::ProviderError::InvalidCredentialType),
-            Err(e) => Err(synctv_core::provider::ProviderError::Internal(format!(
-                "Failed to parse alist credential: {e}"
-            ))),
-        }
-    }
-
-    /// Login to Alist and persist credentials
-    pub async fn login(
-        &self,
-        caller_user_id: &UserId,
-        req: LoginRequest,
-        instance_name: Option<&str>,
-    ) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
-        self.login_with_context(caller_user_id, req, instance_name, None)
-            .await
+        let access = self
+            .access_service
+            .alist_access(*caller_user_id, server_id, None, request_context)
+            .await?;
+        Ok((access.host, access.token, access.provider_instance_name))
     }
 
     pub async fn login_with_context(
@@ -174,8 +99,10 @@ impl AlistApiImpl {
     ) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
         let host = req.host.clone();
         let (password, hashed) = Self::resolve_login_credential(&req)?;
-        let otp_secret =
-            ProviderCredential::normalize_alist_otp_secret(non_empty_string(&req.otp_secret));
+        let trimmed_otp_secret = req.otp_secret.trim();
+        let otp_secret = ProviderCredential::normalize_alist_otp_secret(
+            (!trimmed_otp_secret.is_empty()).then_some(trimmed_otp_secret.to_string()),
+        );
         let otp_code = resolve_alist_login_otp_code(req.otp_code.as_str(), otp_secret.as_deref())?;
 
         let login_req = synctv_media_providers::grpc::alist::LoginReq {
@@ -237,15 +164,13 @@ impl AlistApiImpl {
                 ))
             })?;
 
-        if let Some(access_service) = &self.access_service {
-            access_service
-                .invalidate(
-                    *caller_user_id,
-                    synctv_core::provider::AlistProvider::NAME,
-                    &server_id,
-                )
-                .await?;
-        }
+        self.access_service
+            .invalidate(
+                *caller_user_id,
+                synctv_core::provider::AlistProvider::NAME,
+                &server_id,
+            )
+            .await?;
         publish_provider_credential_changed(
             &self.event_service,
             *caller_user_id,
@@ -293,17 +218,6 @@ impl AlistApiImpl {
         hex::encode(Sha256::digest(
             format!("{password}-{}", Self::ALIST_PASSWORD_HASH_SALT).as_bytes(),
         ))
-    }
-
-    /// List Alist directory using stored credential
-    pub async fn list(
-        &self,
-        caller_user_id: &UserId,
-        req: ListRequest,
-        requested_instance_name: Option<&str>,
-    ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
-        self.list_with_context(caller_user_id, req, requested_instance_name, None)
-            .await
     }
 
     pub async fn list_with_context(
@@ -358,17 +272,6 @@ impl AlistApiImpl {
             content,
             total: resp.total,
         })
-    }
-
-    /// Search Alist files and directories using stored credential.
-    pub async fn search(
-        &self,
-        caller_user_id: &UserId,
-        req: SearchRequest,
-        requested_instance_name: Option<&str>,
-    ) -> Result<SearchResponse, synctv_core::provider::ProviderError> {
-        self.search_with_context(caller_user_id, req, requested_instance_name, None)
-            .await
     }
 
     pub async fn search_with_context(
@@ -428,17 +331,6 @@ impl AlistApiImpl {
             content,
             total: resp.total,
         })
-    }
-
-    /// Get Alist user info using stored credential
-    pub async fn get_me(
-        &self,
-        caller_user_id: &UserId,
-        req: GetMeRequest,
-        requested_instance_name: Option<&str>,
-    ) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
-        self.get_me_with_context(caller_user_id, req, requested_instance_name, None)
-            .await
     }
 
     pub async fn get_me_with_context(
@@ -503,15 +395,13 @@ impl AlistApiImpl {
                         "Failed to delete credential: {e}"
                     ))
                 })?;
-            if let Some(access_service) = &self.access_service {
-                access_service
-                    .invalidate(
-                        *caller_user_id,
-                        synctv_core::provider::AlistProvider::NAME,
-                        &req.server_id,
-                    )
-                    .await?;
-            }
+            self.access_service
+                .invalidate(
+                    *caller_user_id,
+                    synctv_core::provider::AlistProvider::NAME,
+                    &req.server_id,
+                )
+                .await?;
             publish_provider_credential_changed(
                 &self.event_service,
                 *caller_user_id,
@@ -558,86 +448,106 @@ mod tests {
     use super::{resolve_alist_login_otp_code, AlistApiImpl, ProviderApiRuntime};
     use std::sync::Arc;
     use synctv_core::provider::{AlistProvider, ProviderError};
-    use synctv_core::repository::UserProviderCredentialRepository;
+    use synctv_core::repository::{ProviderInstanceRepository, UserProviderCredentialRepository};
     use synctv_core_testing::create_test_pool;
     use synctv_proto::providers::alist::LoginRequest;
 
-    fn provider() -> Arc<AlistProvider> {
-        Arc::new(AlistProvider::new_local_only().expect("provider should build"))
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
     }
 
-    fn test_provider_runtime() -> ProviderApiRuntime {
-        ProviderApiRuntime {
-            access_service: None,
-            event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
+    fn provider_ok<T>(result: Result<T, ProviderError>) -> TestResult<T> {
+        result.map_err(|error| test_error(error.to_string()))
+    }
+
+    fn invalid_config<T>(result: Result<T, ProviderError>) -> TestResult<String> {
+        match result {
+            Ok(_) => Err(test_error("expected provider invalid config")),
+            Err(ProviderError::InvalidConfig(message)) => Ok(message),
+            Err(other) => Err(test_error(format!("expected InvalidConfig, got {other:?}"))),
         }
     }
 
-    fn test_api(
-        provider: Arc<AlistProvider>,
-        credential_repo: Arc<UserProviderCredentialRepository>,
-    ) -> AlistApiImpl {
-        AlistApiImpl::new_with_runtime(provider, credential_repo, test_provider_runtime())
+    fn test_api(pool: sqlx::PgPool) -> TestResult<AlistApiImpl> {
+        let instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(
+            Arc::new(ProviderInstanceRepository::new(pool.clone())),
+        ));
+        let provider = Arc::new(AlistProvider::with_client_manager(
+            instance_manager,
+            Arc::new(synctv_core::provider::ProviderClientManager::new()?),
+        ));
+        let credential_repo = Arc::new(UserProviderCredentialRepository::new(pool));
+        let runtime = ProviderApiRuntime {
+            access_service: Arc::new(synctv_core::provider::CachedProviderAccessService::new(
+                credential_repo.clone(),
+                provider.clone(),
+            )),
+            event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
+        };
+        Ok(AlistApiImpl::new_with_runtime(
+            provider,
+            credential_repo,
+            runtime,
+        ))
     }
 
     #[test]
-    fn resolve_login_credential_rejects_missing_password_and_hash() {
-        let err = AlistApiImpl::resolve_login_credential(&LoginRequest {
+    fn resolve_login_credential_rejects_missing_password_and_hash() -> TestResult {
+        let message = invalid_config(AlistApiImpl::resolve_login_credential(&LoginRequest {
             host: "https://alist.example.com".to_string(),
             username: "alice".to_string(),
             credential: None,
             otp_code: String::new(),
             otp_secret: String::new(),
             instance_name: String::new(),
-        })
-        .expect_err("missing both credential forms must fail");
+        }))?;
 
-        match err {
-            ProviderError::InvalidConfig(message) => {
-                assert!(message.contains("exactly one credential"));
-            }
-            other => panic!("expected InvalidConfig, got {other:?}"),
-        }
+        assert!(message.contains("exactly one credential"));
+        Ok(())
     }
 
     #[test]
-    fn resolve_login_credential_accepts_plaintext_password_without_hash() {
-        let (credential, hashed) = AlistApiImpl::resolve_login_credential(&LoginRequest {
-            host: "https://alist.example.com".to_string(),
-            username: "alice".to_string(),
-            credential: Some(
-                synctv_proto::providers::alist::login_request::Credential::Password(
-                    "secret123".to_string(),
+    fn resolve_login_credential_accepts_plaintext_password_without_hash() -> TestResult {
+        let (credential, hashed) =
+            provider_ok(AlistApiImpl::resolve_login_credential(&LoginRequest {
+                host: "https://alist.example.com".to_string(),
+                username: "alice".to_string(),
+                credential: Some(
+                    synctv_proto::providers::alist::login_request::Credential::Password(
+                        "secret123".to_string(),
+                    ),
                 ),
-            ),
-            otp_code: String::new(),
-            otp_secret: String::new(),
-            instance_name: String::new(),
-        })
-        .expect("plaintext password must remain valid");
+                otp_code: String::new(),
+                otp_secret: String::new(),
+                instance_name: String::new(),
+            }))?;
 
         assert_eq!(credential, "secret123");
         assert!(!hashed);
+        Ok(())
     }
 
     #[test]
-    fn resolve_login_credential_accepts_hashed_password_without_plaintext() {
-        let (credential, hashed) = AlistApiImpl::resolve_login_credential(&LoginRequest {
-            host: "https://alist.example.com".to_string(),
-            username: "alice".to_string(),
-            credential: Some(
-                synctv_proto::providers::alist::login_request::Credential::HashedPassword(
-                    "sha256:abc123".to_string(),
+    fn resolve_login_credential_accepts_hashed_password_without_plaintext() -> TestResult {
+        let (credential, hashed) =
+            provider_ok(AlistApiImpl::resolve_login_credential(&LoginRequest {
+                host: "https://alist.example.com".to_string(),
+                username: "alice".to_string(),
+                credential: Some(
+                    synctv_proto::providers::alist::login_request::Credential::HashedPassword(
+                        "sha256:abc123".to_string(),
+                    ),
                 ),
-            ),
-            otp_code: String::new(),
-            otp_secret: String::new(),
-            instance_name: String::new(),
-        })
-        .expect("hashed password must remain valid");
+                otp_code: String::new(),
+                otp_secret: String::new(),
+                instance_name: String::new(),
+            }))?;
 
         assert_eq!(credential, "sha256:abc123");
         assert!(hashed);
+        Ok(())
     }
 
     #[test]
@@ -649,47 +559,46 @@ mod tests {
     }
 
     #[test]
-    fn resolve_alist_login_otp_prefers_explicit_code_over_secret() {
-        let code = resolve_alist_login_otp_code("654321", Some("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"))
-            .expect("explicit OTP code should be accepted");
+    fn resolve_alist_login_otp_prefers_explicit_code_over_secret() -> TestResult {
+        let code = provider_ok(resolve_alist_login_otp_code(
+            "654321",
+            Some("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"),
+        ))?;
 
         assert_eq!(code, "654321");
+        Ok(())
     }
 
     #[test]
-    fn resolve_alist_login_otp_generates_code_from_secret_when_code_missing() {
-        let code = resolve_alist_login_otp_code("", Some("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"))
-            .expect("OTP secret should generate a current code");
+    fn resolve_alist_login_otp_generates_code_from_secret_when_code_missing() -> TestResult {
+        let code = provider_ok(resolve_alist_login_otp_code(
+            "",
+            Some("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"),
+        ))?;
 
         assert_eq!(code.len(), 6);
         assert!(code.chars().all(|ch| ch.is_ascii_digit()));
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn logout_rejects_empty_server_id() {
+    async fn logout_rejects_empty_server_id() -> TestResult {
         let (_postgres, pool) = create_test_pool().await;
-        let api = test_api(
-            provider(),
-            Arc::new(UserProviderCredentialRepository::new(pool)),
-        );
+        let api = test_api(pool)?;
 
-        let err = api
-            .logout(
+        let message = invalid_config(
+            api.logout(
                 &synctv_core::models::UserId::new(),
                 synctv_proto::providers::alist::LogoutRequest {
                     server_id: String::new(),
                     instance_name: String::new(),
                 },
             )
-            .await
-            .expect_err("empty server_id must fail before credential lookup");
+            .await,
+        )?;
 
-        match err {
-            ProviderError::InvalidConfig(message) => {
-                assert!(message.contains("explicit server_id"));
-            }
-            other => panic!("expected InvalidConfig, got {other:?}"),
-        }
+        assert!(message.contains("explicit server_id"));
+        Ok(())
     }
 }

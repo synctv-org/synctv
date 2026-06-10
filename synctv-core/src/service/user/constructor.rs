@@ -10,17 +10,13 @@ use crate::{
     },
     service::{
         auth::{BruteForceProtectionService, JwtService, TokenBlacklistStore},
-        rate_limit::{RateLimiter, RequestRateLimiterService},
-        user::{
-            local_mfa_session_store, local_opaque_login_session_store,
-            local_opaque_registration_session_store, local_sensitive_verification_session_store,
-            UserService, UserServiceDependencies, UserServiceRuntimeOptions,
-        },
+        user::{UserService, UserServiceDependencies, UserServiceRuntimeOptions},
     },
 };
 
 impl UserService {
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new_for_tests(
         pool: &PgPool,
         jwt_service: JwtService,
@@ -29,13 +25,17 @@ impl UserService {
         key_builder: crate::cache::KeyBuilder,
         brute_force: impl BruteForceProtectionService + 'static,
     ) -> Self {
-        Self::new_with_brute_force_service_for_tests(
+        Self::new_with_brute_force_service_and_runtime(
             pool,
-            jwt_service,
-            username_cache,
-            token_blacklist,
-            key_builder,
-            Arc::new(brute_force),
+            UserServiceDependencies {
+                jwt_service,
+                username_cache,
+                token_blacklist,
+                key_builder,
+                brute_force: Arc::new(brute_force),
+                password_complexity: PasswordComplexityConfig::default(),
+            },
+            UserServiceRuntimeOptions::test_defaults(),
         )
     }
 
@@ -64,29 +64,6 @@ impl UserService {
     }
 
     #[must_use]
-    pub fn new_with_brute_force_service_for_tests(
-        pool: &PgPool,
-        jwt_service: JwtService,
-        username_cache: crate::cache::UsernameCache,
-        token_blacklist: Arc<dyn TokenBlacklistStore>,
-        key_builder: crate::cache::KeyBuilder,
-        brute_force: Arc<dyn BruteForceProtectionService>,
-    ) -> Self {
-        Self::new_with_brute_force_service_and_runtime(
-            pool,
-            UserServiceDependencies {
-                jwt_service,
-                username_cache,
-                token_blacklist,
-                key_builder,
-                brute_force,
-                password_complexity: PasswordComplexityConfig::default(),
-            },
-            UserServiceRuntimeOptions::test_defaults(),
-        )
-    }
-
-    #[must_use]
     pub fn new_with_brute_force_service_and_runtime(
         pool: &PgPool,
         dependencies: UserServiceDependencies,
@@ -100,13 +77,6 @@ impl UserService {
             brute_force,
             password_complexity,
         } = dependencies;
-
-        let refresh_rate_limiter: Arc<dyn RequestRateLimiterService> = runtime
-            .refresh_rate_limiter
-            .unwrap_or_else(|| Arc::new(RateLimiter::local_only("synctv:".to_string())));
-        let version_fence = runtime
-            .version_fence
-            .unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore));
 
         Self {
             repository: UserRepository::new(pool.clone()),
@@ -123,28 +93,20 @@ impl UserService {
             brute_force,
             token_blacklist,
             key_builder,
-            refresh_rate_limiter,
-            refresh_rate_limit_config: runtime.refresh_rate_limit_config.unwrap_or_default(),
+            refresh_rate_limiter: runtime.refresh_rate_limiter,
+            refresh_rate_limit_config: runtime.refresh_rate_limit_config,
             realtime_outbox: runtime.realtime_outbox,
             settings_registry: runtime.settings_registry,
             password_registration_policy_override: runtime.password_registration_policy_override,
             password_complexity,
             opaque_password_service: runtime.opaque_password_service,
-            opaque_login_session_store: runtime
-                .opaque_login_session_store
-                .unwrap_or_else(local_opaque_login_session_store),
-            opaque_registration_session_store: runtime
-                .opaque_registration_session_store
-                .unwrap_or_else(local_opaque_registration_session_store),
-            mfa_session_store: runtime
-                .mfa_session_store
-                .unwrap_or_else(local_mfa_session_store),
-            sensitive_verification_session_store: runtime
-                .sensitive_verification_session_store
-                .unwrap_or_else(local_sensitive_verification_session_store),
+            opaque_login_session_store: runtime.opaque_login_session_store,
+            opaque_registration_session_store: runtime.opaque_registration_session_store,
+            mfa_session_store: runtime.mfa_session_store,
+            sensitive_verification_session_store: runtime.sensitive_verification_session_store,
             permission_service: runtime.permission_service,
             file_storage_service: runtime.file_storage_service,
-            consistency: ConsistencyCoordinator::new(version_fence),
+            consistency: ConsistencyCoordinator::new(runtime.version_fence),
         }
     }
 }

@@ -1,8 +1,6 @@
 //! Alist `ProviderProxy` tests
 //!
 //! Tests for `AlistProvider::resolve_proxy` sub_path parsing and dispatch.
-//!
-#![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,11 +10,18 @@ use synctv_core::provider::{
     proxy::{ProviderProxy, ProxyAction, ProxyRequestContext},
     sign_playback_urls,
     store::{InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback},
-    AlistProvider, PlaybackInfo, PlaybackResult, SubtitleTrack,
+    AlistProvider, PlaybackInfo, PlaybackResult, ProviderClientManager, SubtitleTrack,
 };
+use synctv_core_testing::{create_empty_provider_instance_manager, err, ok, some};
 
 fn provider() -> AlistProvider {
-    AlistProvider::new_local_only().expect("proxy-only provider should build")
+    AlistProvider::with_client_manager(
+        create_empty_provider_instance_manager(),
+        Arc::new(ok(
+            ProviderClientManager::new(),
+            "provider client manager should build",
+        )),
+    )
 }
 
 fn new_store() -> Arc<dyn ProviderStore> {
@@ -52,10 +57,39 @@ fn make_versioned(
 }
 
 async fn store_versioned(store: &Arc<dyn ProviderStore>, vp: &VersionedPlayback) {
-    store
-        .set(&format!("v:{}", vp.version), vp, Duration::from_mins(5))
-        .await
-        .unwrap();
+    ok(
+        store
+            .set(&format!("v:{}", vp.version), vp, Duration::from_mins(5))
+            .await,
+        "versioned playback should be cached",
+    );
+}
+
+fn range_header(value: &'static str) -> http::HeaderValue {
+    ok(value.parse(), "range header should parse")
+}
+
+fn expect_fetch(action: ProxyAction) -> (String, HashMap<String, String>, Option<String>) {
+    match action {
+        ProxyAction::FetchAndForward {
+            url,
+            headers,
+            range_header,
+        } => (url, headers, range_header),
+        other => std::panic::panic_any(format!("expected FetchAndForward, got {other:?}")),
+    }
+}
+
+fn expect_m3u8(action: ProxyAction) -> (String, HashMap<String, String>, String) {
+    match action {
+        ProxyAction::M3u8Rewrite {
+            url,
+            headers,
+            proxy_base,
+            ..
+        } => (url, headers, proxy_base),
+        other => std::panic::panic_any(format!("expected M3u8Rewrite, got {other:?}")),
+    }
 }
 
 #[tokio::test]
@@ -72,7 +106,7 @@ async fn test_stream_proxy() {
 
     let p = provider();
     let mut request_headers = http::HeaderMap::new();
-    request_headers.insert(http::header::RANGE, "bytes=10-20".parse().unwrap());
+    request_headers.insert(http::header::RANGE, range_header("bytes=10-20"));
     let ctx = ProxyRequestContext {
         sub_path: "a1/stream",
         store: Some(&store),
@@ -84,19 +118,19 @@ async fn test_stream_proxy() {
         request_context: None,
         request_headers: &request_headers,
     };
-    let action = p.resolve_proxy(&ctx).await.unwrap();
-    match action {
-        ProxyAction::FetchAndForward {
-            url,
-            headers,
-            range_header,
-        } => {
-            assert_eq!(url, "https://alist.example.com/d/movie.mp4");
-            assert_eq!(headers.get("Authorization").unwrap(), "Bearer tok");
-            assert_eq!(range_header.as_deref(), Some("bytes=10-20"));
-        }
-        other => panic!("Expected FetchAndForward, got {other:?}"),
-    }
+    let (url, headers, range_header) = expect_fetch(ok(
+        p.resolve_proxy(&ctx).await,
+        "stream proxy should resolve",
+    ));
+    assert_eq!(url, "https://alist.example.com/d/movie.mp4");
+    assert_eq!(
+        some(
+            headers.get("Authorization"),
+            "authorization header should exist"
+        ),
+        "Bearer tok"
+    );
+    assert_eq!(range_header.as_deref(), Some("bytes=10-20"));
 }
 
 #[tokio::test]
@@ -127,22 +161,28 @@ async fn test_thumbnail_proxy_uses_cached_playback_metadata() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let action = p.resolve_proxy(&ctx).await.unwrap();
-    match action {
-        ProxyAction::FetchAndForward { url, headers, .. } => {
-            assert_eq!(url, "https://alist.example.com/thumb/movie.jpg");
-            assert_eq!(headers.get("Authorization").unwrap(), "Bearer tok");
-        }
-        other => panic!("Expected FetchAndForward, got {other:?}"),
-    }
+    let (url, headers, _) = expect_fetch(ok(
+        p.resolve_proxy(&ctx).await,
+        "thumbnail proxy should resolve",
+    ));
+    assert_eq!(url, "https://alist.example.com/thumb/movie.jpg");
+    assert_eq!(
+        some(
+            headers.get("Authorization"),
+            "authorization header should exist"
+        ),
+        "Bearer tok"
+    );
 }
 
 #[test]
 fn test_signed_alist_playback_rewrites_thumbnail_metadata() {
-    let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-        b"test-jwt-secret-that-is-long-enough",
-    )
-    .expect("test proxy signing key should derive");
+    let signing_key = ok(
+        synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+            b"test-jwt-secret-that-is-long-enough",
+        ),
+        "test proxy signing key should derive",
+    );
     let mut result = PlaybackResult {
         playback_infos: HashMap::from([(
             "direct".to_string(),
@@ -172,9 +212,10 @@ fn test_signed_alist_playback_rewrites_thumbnail_metadata() {
         chrono::Utc::now().timestamp() + 3600,
     );
 
-    let thumbnail = result.metadata["thumbnail"]
-        .as_str()
-        .expect("thumbnail metadata should remain a string");
+    let thumbnail = some(
+        result.metadata["thumbnail"].as_str(),
+        "thumbnail metadata should remain a string",
+    );
     assert!(
         thumbnail.starts_with("/api/providers/proxy/alist/"),
         "signed Alist thumbnail should use provider proxy: {thumbnail}"
@@ -209,16 +250,10 @@ async fn test_m3u8_proxy() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let action = p.resolve_proxy(&ctx).await.unwrap();
-    match action {
-        ProxyAction::M3u8Rewrite {
-            url, proxy_base, ..
-        } => {
-            assert_eq!(url, "https://alist.example.com/d/video.m3u8");
-            assert_eq!(proxy_base, "/api/providers/proxy/alist/a2");
-        }
-        other => panic!("Expected M3u8Rewrite, got {other:?}"),
-    }
+    let (url, _, proxy_base) =
+        expect_m3u8(ok(p.resolve_proxy(&ctx).await, "m3u8 proxy should resolve"));
+    assert_eq!(url, "https://alist.example.com/d/video.m3u8");
+    assert_eq!(proxy_base, "/api/providers/proxy/alist/a2");
 }
 
 #[tokio::test]
@@ -260,10 +295,12 @@ async fn test_hls_modes_sign_and_resolve_to_their_own_m3u8_urls() {
     };
     store_versioned(&store, &stored).await;
 
-    let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-        b"test-jwt-secret-that-is-long-enough",
-    )
-    .expect("test proxy signing key should derive");
+    let signing_key = ok(
+        synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+            b"test-jwt-secret-that-is-long-enough",
+        ),
+        "test proxy signing key should derive",
+    );
     sign_playback_urls(
         &mut result,
         "alist",
@@ -295,16 +332,12 @@ async fn test_hls_modes_sign_and_resolve_to_their_own_m3u8_urls() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let action = p.resolve_proxy(&ctx).await.unwrap();
-    match action {
-        ProxyAction::M3u8Rewrite {
-            url, proxy_base, ..
-        } => {
-            assert_eq!(url, "https://aliyun.example.com/sd/master.m3u8");
-            assert_eq!(proxy_base, "/api/providers/proxy/alist/alist-hls");
-        }
-        other => panic!("Expected M3u8Rewrite, got {other:?}"),
-    }
+    let (url, _, proxy_base) = expect_m3u8(ok(
+        p.resolve_proxy(&ctx).await,
+        "mode-specific m3u8 proxy should resolve",
+    ));
+    assert_eq!(url, "https://aliyun.example.com/sd/master.m3u8");
+    assert_eq!(proxy_base, "/api/providers/proxy/alist/alist-hls");
 }
 
 #[tokio::test]
@@ -321,7 +354,7 @@ async fn test_m3u8_rewritten_segment_query_fetches_target_url() {
 
     let p = provider();
     let mut request_headers = http::HeaderMap::new();
-    request_headers.insert(http::header::RANGE, "bytes=512-1023".parse().unwrap());
+    request_headers.insert(http::header::RANGE, range_header("bytes=512-1023"));
     let ctx = ProxyRequestContext {
         sub_path: "alist-segment",
         store: Some(&store),
@@ -333,19 +366,13 @@ async fn test_m3u8_rewritten_segment_query_fetches_target_url() {
         request_context: None,
         request_headers: &request_headers,
     };
-    let action = p.resolve_proxy(&ctx).await.unwrap();
-    match action {
-        ProxyAction::FetchAndForward {
-            url,
-            headers,
-            range_header,
-        } => {
-            assert_eq!(url, "https://aliyun.example.com/hd/seg-1.ts");
-            assert!(headers.is_empty());
-            assert_eq!(range_header.as_deref(), Some("bytes=512-1023"));
-        }
-        other => panic!("Expected FetchAndForward, got {other:?}"),
-    }
+    let (url, headers, range_header) = expect_fetch(ok(
+        p.resolve_proxy(&ctx).await,
+        "m3u8 segment proxy should resolve",
+    ));
+    assert_eq!(url, "https://aliyun.example.com/hd/seg-1.ts");
+    assert!(headers.is_empty());
+    assert_eq!(range_header.as_deref(), Some("bytes=512-1023"));
 }
 
 #[tokio::test]
@@ -372,7 +399,10 @@ async fn test_unknown_sub_path() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    let err = err(
+        p.resolve_proxy(&ctx).await,
+        "unknown sub path should be rejected",
+    );
     assert!(matches!(
         err,
         synctv_core::provider::ProviderError::NotFound
@@ -382,10 +412,12 @@ async fn test_unknown_sub_path() {
 #[tokio::test]
 async fn test_signed_subtitle_url_round_trips_for_matching_mode() {
     let store = new_store();
-    let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-        b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-    )
-    .expect("test proxy signing key should derive");
+    let signing_key = ok(
+        synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+            b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+        ),
+        "test proxy signing key should derive",
+    );
     let version = "asub";
     let mut result = PlaybackResult {
         playback_infos: HashMap::from([
@@ -441,20 +473,22 @@ async fn test_signed_subtitle_url_round_trips_for_matching_mode() {
     let subtitle_url = result.playback_infos["transcoded_720p"].subtitles[0]
         .url
         .clone();
-    let sub_path_with_query = subtitle_url
-        .strip_prefix("/api/providers/proxy/alist/")
-        .expect("signed subtitle url should use alist proxy prefix");
-    let sub_path = urlencoding::decode(
-        sub_path_with_query
-            .split('?')
-            .next()
-            .expect("signed subtitle url should include sub_path"),
-    )
-    .expect("signed subtitle path should be valid percent-encoding");
-    let sub_path = sub_path
-        .split('?')
-        .next()
-        .expect("decoded subtitle path should still be present");
+    let sub_path_with_query = some(
+        subtitle_url.strip_prefix("/api/providers/proxy/alist/"),
+        "signed subtitle url should use alist proxy prefix",
+    );
+    let sub_path = urlencoding::decode(some(
+        sub_path_with_query.split('?').next(),
+        "signed subtitle url should include sub_path",
+    ));
+    let sub_path = ok(
+        sub_path,
+        "signed subtitle path should be valid percent-encoding",
+    );
+    let sub_path = some(
+        sub_path.split('?').next(),
+        "decoded subtitle path should still be present",
+    );
 
     let p = provider();
     let ctx = ProxyRequestContext {
@@ -469,18 +503,12 @@ async fn test_signed_subtitle_url_round_trips_for_matching_mode() {
         request_headers: &http::HeaderMap::new(),
     };
 
-    let action = p
-        .resolve_proxy(&ctx)
-        .await
-        .expect("signed subtitle path should resolve to the same playback mode");
-
-    match action {
-        ProxyAction::FetchAndForward { url, headers, .. } => {
-            assert_eq!(url, "https://alist.example.com/subtitles/movie-en.srt");
-            assert!(headers.is_empty());
-        }
-        other => panic!("Expected FetchAndForward, got {other:?}"),
-    }
+    let (url, headers, _) = expect_fetch(ok(
+        p.resolve_proxy(&ctx).await,
+        "signed subtitle path should resolve to the same playback mode",
+    ));
+    assert_eq!(url, "https://alist.example.com/subtitles/movie-en.srt");
+    assert!(headers.is_empty());
 }
 
 #[tokio::test]
@@ -508,7 +536,10 @@ async fn test_expired_version() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    let err = err(
+        p.resolve_proxy(&ctx).await,
+        "expired version should be rejected",
+    );
     assert!(matches!(
         err,
         synctv_core::provider::ProviderError::NotFound
@@ -529,7 +560,10 @@ async fn test_no_store() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    let err = err(
+        p.resolve_proxy(&ctx).await,
+        "missing store should be rejected",
+    );
     assert!(matches!(
         err,
         synctv_core::provider::ProviderError::ApiError(_)
@@ -551,7 +585,10 @@ async fn test_no_slash_in_sub_path() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    let err = err(
+        p.resolve_proxy(&ctx).await,
+        "sub path without slash should be rejected",
+    );
     assert!(matches!(
         err,
         synctv_core::provider::ProviderError::NotFound
@@ -573,7 +610,10 @@ async fn test_version_not_in_store() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let err = p.resolve_proxy(&ctx).await.unwrap_err();
+    let err = err(
+        p.resolve_proxy(&ctx).await,
+        "missing version should be rejected",
+    );
     assert!(matches!(
         err,
         synctv_core::provider::ProviderError::NotFound
@@ -608,11 +648,9 @@ async fn test_m3u8_preserves_headers() {
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-    let action = p.resolve_proxy(&ctx).await.unwrap();
-    match action {
-        ProxyAction::M3u8Rewrite { headers: h, .. } => {
-            assert_eq!(h, headers);
-        }
-        other => panic!("Expected M3u8Rewrite, got {other:?}"),
-    }
+    let (_, resolved_headers, _) = expect_m3u8(ok(
+        p.resolve_proxy(&ctx).await,
+        "m3u8 proxy should resolve with headers",
+    ));
+    assert_eq!(resolved_headers, headers);
 }

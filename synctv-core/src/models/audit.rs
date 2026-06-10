@@ -353,6 +353,13 @@ impl fmt::Display for AuditTargetType {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn audit_action_conversions_are_stable() {
         let action = AuditAction::RoomOwnershipTransferred;
@@ -360,10 +367,19 @@ mod tests {
         assert_eq!(action.as_str(), "room_ownership_transferred");
         assert_eq!(action.to_string(), "room_ownership_transferred");
         assert_eq!(
-            "ROOM_OWNERSHIP_TRANSFERRED".parse::<AuditAction>().unwrap(),
+            ok(
+                "ROOM_OWNERSHIP_TRANSFERRED".parse::<AuditAction>(),
+                "audit action should parse"
+            ),
             action
         );
-        assert_eq!(AuditAction::try_from(action.as_i16()).unwrap(), action);
+        assert_eq!(
+            ok(
+                AuditAction::try_from(action.as_i16()),
+                "audit action code should convert"
+            ),
+            action
+        );
         assert!("unknown_action".parse::<AuditAction>().is_err());
         assert!(AuditAction::try_from(i16::MAX).is_err());
     }
@@ -375,27 +391,48 @@ mod tests {
         assert_eq!(target.as_str(), "provider_instance");
         assert_eq!(target.to_string(), "provider_instance");
         assert_eq!(
-            "PROVIDER_INSTANCE".parse::<AuditTargetType>().unwrap(),
+            ok(
+                "PROVIDER_INSTANCE".parse::<AuditTargetType>(),
+                "audit target should parse"
+            ),
             target
         );
-        assert_eq!(AuditTargetType::try_from(target.as_i16()).unwrap(), target);
+        assert_eq!(
+            ok(
+                AuditTargetType::try_from(target.as_i16()),
+                "audit target code should convert"
+            ),
+            target
+        );
         assert!("unknown_target".parse::<AuditTargetType>().is_err());
         assert!(AuditTargetType::try_from(i16::MAX).is_err());
     }
 
     #[test]
     fn audit_enums_serde_roundtrip() {
-        let action_json = serde_json::to_string(&AuditAction::TokenFamilyRevoked).unwrap();
+        let action_json = ok(
+            serde_json::to_string(&AuditAction::TokenFamilyRevoked),
+            "audit action should serialize",
+        );
         assert_eq!(action_json, "\"token_family_revoked\"");
         assert_eq!(
-            serde_json::from_str::<AuditAction>(&action_json).unwrap(),
+            ok(
+                serde_json::from_str::<AuditAction>(&action_json),
+                "audit action should deserialize"
+            ),
             AuditAction::TokenFamilyRevoked
         );
 
-        let target_json = serde_json::to_string(&AuditTargetType::ChatMessage).unwrap();
+        let target_json = ok(
+            serde_json::to_string(&AuditTargetType::ChatMessage),
+            "audit target should serialize",
+        );
         assert_eq!(target_json, "\"chat_message\"");
         assert_eq!(
-            serde_json::from_str::<AuditTargetType>(&target_json).unwrap(),
+            ok(
+                serde_json::from_str::<AuditTargetType>(&target_json),
+                "audit target should deserialize"
+            ),
             AuditTargetType::ChatMessage
         );
     }

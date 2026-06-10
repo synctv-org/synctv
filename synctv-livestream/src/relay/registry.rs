@@ -5,7 +5,6 @@ use redis::aio::ConnectionManager as RedisConnectionManager;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use super::registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome};
@@ -13,7 +12,7 @@ use crate::util::{validate_stream_id_component, validate_stream_ids};
 
 /// Heartbeat interval in seconds for publisher liveness.
 /// The publisher manager sends a heartbeat every this many seconds.
-pub const HEARTBEAT_INTERVAL_SECS: u64 = 60;
+pub(crate) const HEARTBEAT_INTERVAL_SECS: u64 = 60;
 
 /// TTL multiplier: TTL = `HEARTBEAT_INTERVAL_SECS` * `TTL_MULTIPLIER`.
 /// A multiplier of 5 means up to 4 consecutive missed heartbeats are tolerated
@@ -24,7 +23,7 @@ const TTL_MULTIPLIER_I64: i64 = 5;
 
 /// Publisher TTL in seconds, derived from heartbeat interval.
 /// This is the Redis key expiration set on publisher entries.
-pub const PUBLISHER_TTL_SECS_U64: u64 = HEARTBEAT_INTERVAL_SECS * TTL_MULTIPLIER_U64;
+const PUBLISHER_TTL_SECS_U64: u64 = HEARTBEAT_INTERVAL_SECS * TTL_MULTIPLIER_U64;
 pub const PUBLISHER_TTL_SECS: i64 = HEARTBEAT_INTERVAL_SECS_I64 * TTL_MULTIPLIER_I64;
 
 /// Default timeout for Redis operations (5 seconds).
@@ -41,12 +40,12 @@ const NODE_PUBLISHERS_KEY_PREFIX: &str = "stream:node_publishers";
 
 #[derive(Debug, thiserror::Error)]
 #[error("Redis operation timed out after {timeout_secs}s")]
-pub struct RedisOperationTimeout {
+pub(crate) struct RedisOperationTimeout {
     timeout_secs: u64,
 }
 
 impl RedisOperationTimeout {
-    pub const fn new(timeout_secs: u64) -> Self {
+    pub(crate) const fn new(timeout_secs: u64) -> Self {
         Self { timeout_secs }
     }
 }
@@ -274,40 +273,6 @@ pub trait RegistryConnectionRuntime: Send + Sync {
     async fn snapshot(&self) -> redis::RedisResult<RedisConnectionManager>;
 }
 
-struct DirectRegistryConnectionRuntime {
-    redis: RedisConnectionManager,
-}
-
-impl DirectRegistryConnectionRuntime {
-    const fn new(redis: RedisConnectionManager) -> Self {
-        Self { redis }
-    }
-}
-
-#[async_trait]
-impl RegistryConnectionRuntime for DirectRegistryConnectionRuntime {
-    async fn snapshot(&self) -> redis::RedisResult<RedisConnectionManager> {
-        Ok(self.redis.clone())
-    }
-}
-
-struct SharedRegistryConnectionRuntime {
-    redis: Arc<RwLock<RedisConnectionManager>>,
-}
-
-impl SharedRegistryConnectionRuntime {
-    const fn new(redis: Arc<RwLock<RedisConnectionManager>>) -> Self {
-        Self { redis }
-    }
-}
-
-#[async_trait]
-impl RegistryConnectionRuntime for SharedRegistryConnectionRuntime {
-    async fn snapshot(&self) -> redis::RedisResult<RedisConnectionManager> {
-        Ok(self.redis.read().await.clone())
-    }
-}
-
 /// Helper function to wrap async Redis operations with a timeout.
 /// Returns an error if the operation exceeds the specified duration.
 async fn with_redis_timeout<T, F, Fut>(future: F) -> Result<T>
@@ -388,48 +353,15 @@ impl PublisherInfo {
 /// - Both use Redis; this one is Redis-only (no local cache) because publisher
 ///   ownership must always be authoritative from Redis.
 #[derive(Clone)]
-pub struct StreamRegistry {
+pub(crate) struct StreamRegistry {
     redis: Arc<dyn RegistryConnectionRuntime>,
     key_prefix: String,
 }
 
 impl StreamRegistry {
-    /// Create a new stream registry
-    #[must_use]
-    pub fn new(redis: RedisConnectionManager) -> Self {
-        Self::from_runtime(Arc::new(DirectRegistryConnectionRuntime::new(redis)), "")
-    }
-
-    /// Create a new stream registry backed by a shared Redis connection handle.
-    #[must_use]
-    pub fn new_with_shared_conn(redis: Arc<RwLock<RedisConnectionManager>>) -> Self {
-        Self::from_runtime(Arc::new(SharedRegistryConnectionRuntime::new(redis)), "")
-    }
-
-    /// Create a new stream registry with a Redis namespace prefix.
-    #[must_use]
-    pub fn with_key_prefix(redis: RedisConnectionManager, key_prefix: impl Into<String>) -> Self {
-        Self::from_runtime(
-            Arc::new(DirectRegistryConnectionRuntime::new(redis)),
-            key_prefix,
-        )
-    }
-
-    /// Create a new stream registry with a shared Redis handle and key prefix.
-    #[must_use]
-    pub fn with_shared_conn_and_key_prefix(
-        redis: Arc<RwLock<RedisConnectionManager>>,
-        key_prefix: impl Into<String>,
-    ) -> Self {
-        Self::from_runtime(
-            Arc::new(SharedRegistryConnectionRuntime::new(redis)),
-            key_prefix,
-        )
-    }
-
     /// Create a new stream registry from an abstract Redis runtime provider.
     #[must_use]
-    pub fn from_runtime(
+    pub(crate) fn from_runtime(
         redis: Arc<dyn RegistryConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {
@@ -600,36 +532,6 @@ impl StreamRegistry {
         Ok(publishers)
     }
 
-    /// Register a publisher for a media in a room (atomic operation).
-    /// Returns `true` if registered successfully, `false` if already exists.
-    ///
-    /// Delegates to the atomic Lua-based `try_register_publisher_with_user()`
-    /// to prevent epoch inflation on failed registration attempts.
-    pub async fn register_publisher(
-        &self,
-        room_id: &str,
-        media_id: &str,
-        node_id: &str,
-        _app_name: &str,
-        api_address: &str,
-    ) -> anyhow::Result<bool> {
-        self.try_register_publisher_with_user(room_id, media_id, node_id, "", api_address)
-            .await
-    }
-
-    /// Try to register as publisher (simplified version for `PublisherManager`)
-    /// Returns true if registered successfully, false if already exists
-    pub async fn try_register_publisher(
-        &self,
-        room_id: &str,
-        media_id: &str,
-        node_id: &str,
-        api_address: &str,
-    ) -> anyhow::Result<bool> {
-        self.try_register_publisher_with_user(room_id, media_id, node_id, "", api_address)
-            .await
-    }
-
     /// Try to register as publisher with `user_id`
     /// Returns true if registered successfully, false if already exists
     ///
@@ -732,27 +634,6 @@ impl StreamRegistry {
         Ok(registered)
     }
 
-    /// Refresh TTL for a publisher (called by heartbeat)
-    pub async fn refresh_publisher_ttl(
-        &self,
-        room_id: &str,
-        media_id: &str,
-    ) -> Result<PublisherRefreshOutcome> {
-        self.refresh_publisher_ttl_with_owner(room_id, media_id, "", "", None)
-            .await
-    }
-
-    /// Refresh TTL for a publisher and its user reverse-index (called by heartbeat)
-    pub async fn refresh_publisher_ttl_with_user(
-        &self,
-        room_id: &str,
-        media_id: &str,
-        user_id: &str,
-    ) -> Result<PublisherRefreshOutcome> {
-        self.refresh_publisher_ttl_with_owner(room_id, media_id, user_id, "", None)
-            .await
-    }
-
     /// Refresh TTL for a publisher plus its user/node reverse indexes.
     pub async fn refresh_publisher_ttl_with_owner(
         &self,
@@ -808,15 +689,7 @@ impl StreamRegistry {
     }
 
     /// Unregister a publisher.
-    ///
-    /// Delegates to `unregister_publisher_immut` which correctly cleans up
-    /// both the publisher entry and the user reverse index.
     pub async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
-        self.unregister_publisher_immut(room_id, media_id).await
-    }
-
-    /// Unregister a publisher (non-mut version for `PublisherManager`)
-    pub async fn unregister_publisher_immut(&self, room_id: &str, media_id: &str) -> Result<()> {
         self.unregister_publisher_with_epoch(room_id, media_id, None)
             .await
     }
@@ -945,26 +818,8 @@ impl StreamRegistry {
             .collect())
     }
 
-    /// Remove all publisher entries for a user (via reverse index)
-    pub async fn unregister_all_user_publishers(&self, user_id: &str) -> Result<()> {
-        let publishers = self.get_user_publishers(user_id).await?;
-        for (room_id, media_id) in publishers {
-            self.unregister_publisher_immut(&room_id, &media_id).await?;
-        }
-        Ok(())
-    }
-
     /// Get publisher info for a media in a room.
     pub async fn get_publisher(
-        &self,
-        room_id: &str,
-        media_id: &str,
-    ) -> Result<Option<PublisherInfo>> {
-        self.get_publisher_immut(room_id, media_id).await
-    }
-
-    /// Get publisher info for a media in a room (immutable version)
-    pub async fn get_publisher_immut(
         &self,
         room_id: &str,
         media_id: &str,
@@ -994,15 +849,6 @@ impl StreamRegistry {
 
     /// Check if a stream is active (has a publisher).
     pub async fn is_stream_active(&self, room_id: &str, media_id: &str) -> anyhow::Result<bool> {
-        self.is_stream_active_immut(room_id, media_id).await
-    }
-
-    /// Check if a stream is active (immutable version)
-    pub async fn is_stream_active_immut(
-        &self,
-        room_id: &str,
-        media_id: &str,
-    ) -> anyhow::Result<bool> {
         validate_stream_ids(room_id, media_id)?;
         let key = self.publisher_key(room_id, media_id);
 
@@ -1019,26 +865,7 @@ impl StreamRegistry {
         .await
     }
 
-    /// List all active streams (returns tuples of (`room_id`, `media_id`)).
-    pub async fn list_active_streams(&self) -> Result<Vec<(String, String)>> {
-        self.list_active_streams_immut().await
-    }
-
     pub async fn list_active_publishers(&self) -> Result<Vec<ActivePublisherEntry>> {
-        self.list_active_publishers_immut().await
-    }
-
-    /// List all active streams (immutable version)
-    pub async fn list_active_streams_immut(&self) -> Result<Vec<(String, String)>> {
-        Ok(self
-            .list_active_publishers_immut()
-            .await?
-            .into_iter()
-            .map(|entry| (entry.room_id, entry.media_id))
-            .collect())
-    }
-
-    pub async fn list_active_publishers_immut(&self) -> Result<Vec<ActivePublisherEntry>> {
         self.load_publishers_from_index(&self.active_publishers_key())
             .await
     }
@@ -1087,37 +914,16 @@ impl StreamRegistry {
         .await
     }
 
-    /// Get the current epoch for a stream without publisher info.
-    /// Returns None if no publisher exists.
-    pub async fn get_current_epoch(&self, room_id: &str, media_id: &str) -> Result<Option<u64>> {
-        validate_stream_ids(room_id, media_id)?;
-        let publisher = self.get_publisher_immut(room_id, media_id).await?;
-        Ok(publisher.map(|p| p.epoch))
-    }
-
-    /// Clean up all publisher registrations for a specific node.
-    /// Used when a node restarts to remove stale entries from Redis.
-    ///
-    /// This walks the node reverse index and removes only entries that still
-    /// belong to the specified `node_id`, using epoch validation to avoid
-    /// deleting publishers that were re-registered by a new node between the
-    /// index read and the delete (TOCTOU race).
-    ///
-    /// Each Redis operation has its own timeout to prevent indefinite blocking.
+    /// Clean up publisher registrations tracked by the node reverse index.
+    /// Epoch validation protects newer publishers for the same stream.
     pub async fn cleanup_all_publishers_for_node(&self, node_id: &str) -> Result<()> {
         if node_id.is_empty() {
             return Ok(());
         }
 
-        let mut members = self
+        let members = self
             .load_index_members(&self.node_publishers_key(node_id))
             .await?;
-        let mut active_members = self
-            .load_index_members(&self.active_publishers_key())
-            .await?;
-        members.append(&mut active_members);
-        members.sort();
-        members.dedup();
 
         self.cleanup_publisher_members_for_node(node_id, members)
             .await
@@ -1261,6 +1067,7 @@ mod tests {
     use synctv_core_testing::{
         start_redis_client_manager_with_label, test_redis_key_prefix, RedisContainer,
     };
+    use tokio::sync::RwLock;
 
     async fn setup_redis() -> (
         RedisContainer,
@@ -1278,13 +1085,65 @@ mod tests {
         )
     }
 
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
+    }
+
+    fn require_publisher(
+        publisher: Option<PublisherInfo>,
+    ) -> std::result::Result<PublisherInfo, Box<dyn std::error::Error + Send + Sync>> {
+        publisher.ok_or_else(|| test_error("publisher should exist"))
+    }
+
+    struct TestRegistryConnectionRuntime {
+        redis: RwLock<RedisConnectionManager>,
+    }
+
+    #[async_trait]
+    impl RegistryConnectionRuntime for TestRegistryConnectionRuntime {
+        async fn snapshot(&self) -> redis::RedisResult<RedisConnectionManager> {
+            Ok(self.redis.read().await.clone())
+        }
+    }
+
+    fn test_registry(redis: RedisConnectionManager, prefix: impl Into<String>) -> StreamRegistry {
+        StreamRegistry::from_runtime(
+            Arc::new(TestRegistryConnectionRuntime {
+                redis: RwLock::new(redis),
+            }),
+            prefix,
+        )
+    }
+
+    struct SharedTestRegistryConnectionRuntime {
+        redis: Arc<RwLock<RedisConnectionManager>>,
+    }
+
+    #[async_trait]
+    impl RegistryConnectionRuntime for SharedTestRegistryConnectionRuntime {
+        async fn snapshot(&self) -> redis::RedisResult<RedisConnectionManager> {
+            Ok(self.redis.read().await.clone())
+        }
+    }
+
+    fn shared_test_registry(
+        redis: Arc<RwLock<RedisConnectionManager>>,
+        prefix: impl Into<String>,
+    ) -> StreamRegistry {
+        StreamRegistry::from_runtime(
+            Arc::new(SharedTestRegistryConnectionRuntime { redis }),
+            prefix,
+        )
+    }
+
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_register_publisher_success() {
+    async fn test_register_publisher_success() -> TestResult {
         let (_container, _client, redis, prefix) = setup_redis().await;
-        let registry = StreamRegistry::with_key_prefix(redis, prefix);
+        let registry = test_registry(redis, prefix);
 
-        // First registration should succeed (use with_user variant with api_address)
         let registered = registry
             .try_register_publisher_with_user(
                 "room123",
@@ -1293,23 +1152,16 @@ mod tests {
                 "user1",
                 "localhost:50051",
             )
-            .await
-            .unwrap();
+            .await?;
         assert!(registered);
 
-        // Verify publisher exists
-        let publisher = registry.get_publisher("room123", "media456").await.unwrap();
-        assert!(publisher.is_some());
-
-        let pub_info = publisher.unwrap();
+        let publisher = registry.get_publisher("room123", "media456").await?;
+        let pub_info = require_publisher(publisher)?;
         assert_eq!(pub_info.node_id, "node1");
         assert_eq!(pub_info.api_address, "localhost:50051");
 
-        // Cleanup
-        registry
-            .unregister_publisher("room123", "media456")
-            .await
-            .unwrap();
+        registry.unregister_publisher("room123", "media456").await?;
+        Ok(())
     }
 
     #[test]
@@ -1334,11 +1186,11 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_key_prefix_isolation_prevents_cross_instance_pollution() {
+    async fn test_key_prefix_isolation_prevents_cross_instance_pollution() -> TestResult {
         use redis::AsyncCommands;
 
         let (_container, client, redis, prefix) = setup_redis().await;
-        let registry = StreamRegistry::with_key_prefix(redis, prefix.clone());
+        let registry = test_registry(redis, prefix.clone());
 
         registry
             .try_register_publisher_with_user(
@@ -1348,18 +1200,15 @@ mod tests {
                 "user1",
                 "localhost:50051",
             )
-            .await
-            .unwrap();
+            .await?;
 
-        let mut verify_conn = RedisConnectionManager::new(client).await.unwrap();
+        let mut verify_conn = RedisConnectionManager::new(client).await?;
         let namespaced_exists: bool = verify_conn
             .exists(format!("{prefix}stream:publisher:room123:media456"))
-            .await
-            .unwrap();
+            .await?;
         let unprefixed_exists: bool = verify_conn
             .exists("stream:publisher:room123:media456")
-            .await
-            .unwrap();
+            .await?;
 
         assert!(
             namespaced_exists,
@@ -1369,15 +1218,16 @@ mod tests {
             !unprefixed_exists,
             "registry must not leak publisher keys into the global Redis namespace"
         );
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_refresh_publisher_ttl_repairs_missing_reverse_indexes() {
+    async fn test_refresh_publisher_ttl_repairs_missing_reverse_indexes() -> TestResult {
         use redis::AsyncCommands;
 
         let (_container, client, redis, prefix) = setup_redis().await;
-        let registry = StreamRegistry::with_key_prefix(redis, prefix);
+        let registry = test_registry(redis, prefix);
 
         registry
             .try_register_publisher_with_user(
@@ -1387,14 +1237,9 @@ mod tests {
                 "user1",
                 "localhost:50051",
             )
-            .await
-            .expect("publisher registration should succeed");
+            .await?;
 
-        let publisher = registry
-            .get_publisher("room1", "media1")
-            .await
-            .expect("publisher lookup should succeed")
-            .expect("publisher should exist");
+        let publisher = require_publisher(registry.get_publisher("room1", "media1").await?)?;
 
         let member = StreamRegistry::publisher_member("room1", "media1");
         let user_key = registry.user_publishers_key("user1");
@@ -1402,26 +1247,11 @@ mod tests {
         let room_key = registry.room_publishers_key("room1");
         let active_key = registry.active_publishers_key();
 
-        let mut conn = client
-            .get_multiplexed_async_connection()
-            .await
-            .expect("redis connection");
-        let _: () = conn
-            .srem(&user_key, &member)
-            .await
-            .expect("user index removal");
-        let _: () = conn
-            .srem(&node_key, &member)
-            .await
-            .expect("node index removal");
-        let _: () = conn
-            .srem(&room_key, &member)
-            .await
-            .expect("room index removal");
-        let _: () = conn
-            .srem(&active_key, &member)
-            .await
-            .expect("active index removal");
+        let mut conn = client.get_multiplexed_async_connection().await?;
+        let _: () = conn.srem(&user_key, &member).await?;
+        let _: () = conn.srem(&node_key, &member).await?;
+        let _: () = conn.srem(&room_key, &member).await?;
+        let _: () = conn.srem(&active_key, &member).await?;
 
         let outcome = registry
             .refresh_publisher_ttl_with_owner(
@@ -1431,26 +1261,13 @@ mod tests {
                 "node1",
                 Some(publisher.epoch),
             )
-            .await
-            .expect("publisher refresh should succeed");
+            .await?;
         assert_eq!(outcome, PublisherRefreshOutcome::Refreshed);
 
-        let user_indexed: bool = conn
-            .sismember(&user_key, &member)
-            .await
-            .expect("user index lookup should succeed");
-        let node_indexed: bool = conn
-            .sismember(&node_key, &member)
-            .await
-            .expect("node index lookup should succeed");
-        let room_indexed: bool = conn
-            .sismember(&room_key, &member)
-            .await
-            .expect("room index lookup should succeed");
-        let active_indexed: bool = conn
-            .sismember(&active_key, &member)
-            .await
-            .expect("active index lookup should succeed");
+        let user_indexed: bool = conn.sismember(&user_key, &member).await?;
+        let node_indexed: bool = conn.sismember(&node_key, &member).await?;
+        let room_indexed: bool = conn.sismember(&room_key, &member).await?;
+        let active_indexed: bool = conn.sismember(&active_key, &member).await?;
 
         assert!(
             user_indexed,
@@ -1468,17 +1285,18 @@ mod tests {
             active_indexed,
             "refresh must restore missing global active index"
         );
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_shared_redis_handle_hot_swap_keeps_registry_operational() {
+    async fn test_shared_redis_handle_hot_swap_keeps_registry_operational() -> TestResult {
         use std::sync::Arc;
         use tokio::sync::RwLock;
 
         let (_container, client, redis, prefix) = setup_redis().await;
         let shared = Arc::new(RwLock::new(redis));
-        let registry = StreamRegistry::with_shared_conn_and_key_prefix(shared.clone(), prefix);
+        let registry = shared_test_registry(shared.clone(), prefix);
 
         let registered = registry
             .try_register_publisher_with_user(
@@ -1488,35 +1306,25 @@ mod tests {
                 "user1",
                 "localhost:50051",
             )
-            .await
-            .expect("initial registration should succeed");
+            .await?;
         assert!(registered);
 
-        let replacement = RedisConnectionManager::new(client.clone())
-            .await
-            .expect("replacement connection manager should build");
+        let replacement = RedisConnectionManager::new(client.clone()).await?;
         *shared.write().await = replacement;
 
-        let publisher = registry
-            .get_publisher("room1", "media1")
-            .await
-            .expect("registry must read via the hot-swapped shared connection")
-            .expect("publisher should still exist after connection swap");
+        let publisher = require_publisher(registry.get_publisher("room1", "media1").await?)?;
         assert_eq!(publisher.node_id, "node1");
 
-        registry
-            .unregister_publisher("room1", "media1")
-            .await
-            .expect("unregister after connection swap should succeed");
+        registry.unregister_publisher("room1", "media1").await?;
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_register_publisher_duplicate() {
+    async fn test_register_publisher_duplicate() -> TestResult {
         let (_container, _client, redis, prefix) = setup_redis().await;
-        let registry = StreamRegistry::with_key_prefix(redis, prefix);
+        let registry = test_registry(redis, prefix);
 
-        // First registration should succeed
         let registered = registry
             .try_register_publisher_with_user(
                 "room123",
@@ -1525,11 +1333,9 @@ mod tests {
                 "user1",
                 "localhost:50051",
             )
-            .await
-            .unwrap();
+            .await?;
         assert!(registered);
 
-        // Second registration should fail (already exists)
         let registered = registry
             .try_register_publisher_with_user(
                 "room123",
@@ -1538,24 +1344,19 @@ mod tests {
                 "user2",
                 "localhost:50052",
             )
-            .await
-            .unwrap();
+            .await?;
         assert!(!registered);
 
-        // Cleanup
-        registry
-            .unregister_publisher("room123", "media456")
-            .await
-            .unwrap();
+        registry.unregister_publisher("room123", "media456").await?;
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_try_register_publisher() {
+    async fn test_try_register_publisher() -> TestResult {
         let (_container, _client, redis, prefix) = setup_redis().await;
-        let registry = StreamRegistry::with_key_prefix(redis, prefix);
+        let registry = test_registry(redis, prefix);
 
-        // First try_register should succeed
         let result = registry
             .try_register_publisher_with_user(
                 "room123",
@@ -1564,11 +1365,9 @@ mod tests {
                 "user1",
                 "localhost:50051",
             )
-            .await
-            .unwrap();
+            .await?;
         assert!(result);
 
-        // Second try_register should return false (already exists)
         let result = registry
             .try_register_publisher_with_user(
                 "room123",
@@ -1577,24 +1376,19 @@ mod tests {
                 "user2",
                 "localhost:50052",
             )
-            .await
-            .unwrap();
+            .await?;
         assert!(!result);
 
-        // Cleanup
-        registry
-            .unregister_publisher("room123", "media456")
-            .await
-            .unwrap();
+        registry.unregister_publisher("room123", "media456").await?;
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_unregister_publisher() {
+    async fn test_unregister_publisher() -> TestResult {
         let (_container, _client, redis, prefix) = setup_redis().await;
-        let registry = StreamRegistry::with_key_prefix(redis, prefix);
+        let registry = test_registry(redis, prefix);
 
-        // Register publisher
         registry
             .try_register_publisher_with_user(
                 "room123",
@@ -1603,92 +1397,32 @@ mod tests {
                 "user1",
                 "localhost:50051",
             )
-            .await
-            .unwrap();
+            .await?;
 
-        // Verify exists
-        assert!(registry
-            .is_stream_active("room123", "media456")
-            .await
-            .unwrap());
+        assert!(registry.is_stream_active("room123", "media456").await?);
 
-        // Unregister
-        registry
-            .unregister_publisher("room123", "media456")
-            .await
-            .unwrap();
+        registry.unregister_publisher("room123", "media456").await?;
 
-        // Verify removed
-        assert!(!registry
-            .is_stream_active("room123", "media456")
-            .await
-            .unwrap());
+        assert!(!registry.is_stream_active("room123", "media456").await?);
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_get_publisher_not_found() {
+    async fn test_get_publisher_not_found() -> TestResult {
         let (_container, _client, redis, prefix) = setup_redis().await;
-        let registry = StreamRegistry::with_key_prefix(redis, prefix);
+        let registry = test_registry(redis, prefix);
 
-        // Non-existent publisher should return None
-        let result = registry
-            .get_publisher("nonexistent", "media")
-            .await
-            .unwrap();
+        let result = registry.get_publisher("nonexistent", "media").await?;
         assert!(result.is_none());
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_list_active_streams() {
-        let (_container, _client, redis, prefix) = setup_redis().await;
-        let registry = StreamRegistry::with_key_prefix(redis, prefix);
-
-        // Register multiple publishers
-        registry
-            .try_register_publisher_with_user(
-                "room1",
-                "media1",
-                "node1",
-                "user1",
-                "localhost:50051",
-            )
-            .await
-            .unwrap();
-        registry
-            .try_register_publisher_with_user(
-                "room2",
-                "media2",
-                "node1",
-                "user1",
-                "localhost:50051",
-            )
-            .await
-            .unwrap();
-
-        // List active streams
-        let streams = registry.list_active_streams().await.unwrap();
-        assert_eq!(streams.len(), 2);
-        assert!(streams.contains(&(String::from("room1"), String::from("media1"))));
-        assert!(streams.contains(&(String::from("room2"), String::from("media2"))));
-
-        // Cleanup
-        registry
-            .unregister_publisher("room1", "media1")
-            .await
-            .unwrap();
-        registry
-            .unregister_publisher("room2", "media2")
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    async fn test_unregister_publisher_cleans_node_reverse_index() {
+    async fn test_unregister_publisher_cleans_node_reverse_index() -> TestResult {
         let (_container, client, redis, prefix) = setup_redis().await;
-        let registry = StreamRegistry::with_key_prefix(redis, prefix);
+        let registry = test_registry(redis, prefix);
 
         registry
             .try_register_publisher_with_user(
@@ -1698,31 +1432,28 @@ mod tests {
                 "user1",
                 "localhost:50051",
             )
-            .await
-            .unwrap();
+            .await?;
 
-        registry
-            .unregister_publisher("room1", "media1")
-            .await
-            .unwrap();
+        registry.unregister_publisher("room1", "media1").await?;
 
-        let mut verify_conn = RedisConnectionManager::new(client).await.unwrap();
+        let mut verify_conn = RedisConnectionManager::new(client).await?;
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(registry.node_publishers_key("node1"))
             .query_async(&mut verify_conn)
-            .await
-            .unwrap();
+            .await?;
         assert!(
             members.is_empty(),
             "node reverse index should be empty after unregister"
         );
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_cleanup_all_publishers_for_node_prunes_stale_reverse_index_members() {
+    async fn test_cleanup_all_publishers_for_node_prunes_stale_reverse_index_members() -> TestResult
+    {
         let (_container, client, redis, prefix) = setup_redis().await;
-        let registry = StreamRegistry::with_key_prefix(redis, prefix);
+        let registry = test_registry(redis, prefix);
 
         registry
             .try_register_publisher_with_user(
@@ -1732,8 +1463,7 @@ mod tests {
                 "user1",
                 "localhost:50051",
             )
-            .await
-            .unwrap();
+            .await?;
         registry
             .try_register_publisher_with_user(
                 "room2",
@@ -1742,41 +1472,36 @@ mod tests {
                 "user2",
                 "localhost:50052",
             )
-            .await
-            .unwrap();
+            .await?;
 
-        let mut verify_conn = RedisConnectionManager::new(client).await.unwrap();
+        let mut verify_conn = RedisConnectionManager::new(client).await?;
         let _: () = redis::cmd("SADD")
             .arg(registry.node_publishers_key("node1"))
             .arg("room2:media2")
             .query_async(&mut verify_conn)
-            .await
-            .unwrap();
+            .await?;
 
-        registry
-            .cleanup_all_publishers_for_node("node1")
-            .await
-            .unwrap();
+        registry.cleanup_all_publishers_for_node("node1").await?;
 
-        assert!(!registry.is_stream_active("room1", "media1").await.unwrap());
-        assert!(registry.is_stream_active("room2", "media2").await.unwrap());
+        assert!(!registry.is_stream_active("room1", "media1").await?);
+        assert!(registry.is_stream_active("room2", "media2").await?);
 
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(registry.node_publishers_key("node1"))
             .query_async(&mut verify_conn)
-            .await
-            .unwrap();
+            .await?;
         assert!(
             members.is_empty(),
             "cleanup should prune stale node reverse-index members"
         );
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_list_queries_prune_stale_active_room_and_user_indexes() {
+    async fn test_list_queries_prune_stale_active_room_and_user_indexes() -> TestResult {
         let (_container, client, redis, prefix) = setup_redis().await;
-        let registry = StreamRegistry::with_key_prefix(redis, prefix);
+        let registry = test_registry(redis, prefix);
 
         registry
             .try_register_publisher_with_user(
@@ -1786,10 +1511,9 @@ mod tests {
                 "user1",
                 "localhost:50051",
             )
-            .await
-            .unwrap();
+            .await?;
 
-        let mut verify_conn = RedisConnectionManager::new(client).await.unwrap();
+        let mut verify_conn = RedisConnectionManager::new(client).await?;
         let stale_member = "room1:media-stale";
         let invalid_member = "malformed-member";
 
@@ -1798,35 +1522,32 @@ mod tests {
             .arg(stale_member)
             .arg(invalid_member)
             .query_async(&mut verify_conn)
-            .await
-            .unwrap();
+            .await?;
         let _: () = redis::cmd("SADD")
             .arg(registry.room_publishers_key("room1"))
             .arg(stale_member)
             .arg(invalid_member)
             .query_async(&mut verify_conn)
-            .await
-            .unwrap();
+            .await?;
         let _: () = redis::cmd("SADD")
             .arg(registry.user_publishers_key("user1"))
             .arg(stale_member)
             .arg(invalid_member)
             .query_async(&mut verify_conn)
-            .await
-            .unwrap();
+            .await?;
 
-        let active = registry.list_active_publishers().await.unwrap();
+        let active = registry.list_active_publishers().await?;
         assert_eq!(active.len(), 1, "stale active index members must be pruned");
         assert_eq!(active[0].room_id, "room1");
         assert_eq!(active[0].media_id, "media1");
 
-        let room_streams = registry.list_streams_for_room("room1").await.unwrap();
+        let room_streams = registry.list_streams_for_room("room1").await?;
         assert_eq!(
             room_streams,
             vec!["media1".to_string()],
             "stale room index members must be pruned"
         );
-        let user_publishers = registry.get_user_publishers("user1").await.unwrap();
+        let user_publishers = registry.get_user_publishers("user1").await?;
         assert_eq!(
             user_publishers,
             vec![("room1".to_string(), "media1".to_string())],
@@ -1836,18 +1557,15 @@ mod tests {
         let active_members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(registry.active_publishers_key())
             .query_async(&mut verify_conn)
-            .await
-            .unwrap();
+            .await?;
         let room_members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(registry.room_publishers_key("room1"))
             .query_async(&mut verify_conn)
-            .await
-            .unwrap();
+            .await?;
         let user_members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(registry.user_publishers_key("user1"))
             .query_async(&mut verify_conn)
-            .await
-            .unwrap();
+            .await?;
 
         assert_eq!(
             active_members,
@@ -1864,15 +1582,15 @@ mod tests {
             vec!["room1:media1".to_string()],
             "user publisher index should retain only valid members"
         );
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_publisher_info_serialization() {
+    async fn test_publisher_info_serialization() -> TestResult {
         let (_container, _client, redis, prefix) = setup_redis().await;
-        let registry = StreamRegistry::with_key_prefix(redis, prefix);
+        let registry = test_registry(redis, prefix);
 
-        // Register publisher
         registry
             .try_register_publisher_with_user(
                 "room123",
@@ -1881,25 +1599,16 @@ mod tests {
                 "user1",
                 "localhost:50051",
             )
-            .await
-            .unwrap();
+            .await?;
 
-        // Get publisher and verify serialization/deserialization
-        let publisher = registry
-            .get_publisher("room123", "media456")
-            .await
-            .unwrap()
-            .unwrap();
+        let publisher = require_publisher(registry.get_publisher("room123", "media456").await?)?;
 
         assert_eq!(publisher.node_id, "node1");
         assert_eq!(publisher.api_address, "localhost:50051");
         assert!(publisher.started_at <= chrono::Utc::now());
 
-        // Cleanup
-        registry
-            .unregister_publisher("room123", "media456")
-            .await
-            .unwrap();
+        registry.unregister_publisher("room123", "media456").await?;
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
@@ -1918,7 +1627,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_with_redis_timeout_does_not_block_fast_operations() {
+    async fn test_with_redis_timeout_does_not_block_fast_operations() -> TestResult {
         let fast = with_redis_timeout(|| async { Ok::<u32, anyhow::Error>(7) });
         let slow = with_redis_timeout(|| async {
             tokio::time::sleep(Duration::from_secs(REDIS_OPERATION_TIMEOUT_SECS + 1)).await;
@@ -1928,7 +1637,8 @@ mod tests {
         tokio::time::advance(Duration::from_secs(REDIS_OPERATION_TIMEOUT_SECS + 1)).await;
         let (fast_result, slow_result) = tokio::join!(fast, slow);
 
-        assert_eq!(fast_result.unwrap(), 7);
+        assert_eq!(fast_result?, 7);
         assert!(slow_result.is_err(), "slow operation should time out");
+        Ok(())
     }
 }

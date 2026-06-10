@@ -1,7 +1,7 @@
 //! Emby/Jellyfin HTTP Client
 
 use std::collections::HashSet;
-use std::fmt::Write;
+use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -476,11 +476,14 @@ impl EmbyClient {
         );
 
         if let Some(pid) = parent_id {
-            let _ = write!(url, "&ParentId={}", url_encode(pid));
+            url.push_str("&ParentId=");
+            url.push_str(&url_encode(pid));
         }
 
         if let Some(term) = search_term {
-            let _ = write!(url, "&SearchTerm={}&Recursive=true", url_encode(term));
+            url.push_str("&SearchTerm=");
+            url.push_str(&url_encode(term));
+            url.push_str("&Recursive=true");
         } else {
             url.push_str("&Filters=IsNotFolder");
         }
@@ -580,11 +583,14 @@ impl EmbyClient {
         let _ = write!(url, "?StartIndex={start_index}&Limit={limit}");
 
         if let Some(p) = path {
-            let _ = write!(url, "&ParentId={}", url_encode(p));
+            url.push_str("&ParentId=");
+            url.push_str(&url_encode(p));
         }
 
         if let Some(term) = search_term {
-            let _ = write!(url, "&SearchTerm={}&Recursive=true", url_encode(term));
+            url.push_str("&SearchTerm=");
+            url.push_str(&url_encode(term));
+            url.push_str("&Recursive=true");
         }
 
         let headers = self.build_headers()?;
@@ -724,7 +730,8 @@ impl EmbyClient {
         validate_item_id(play_session_id)?;
 
         let mut url = self.endpoint_url("Videos/ActiveEncodings").await?;
-        let _ = write!(url, "?PlaySessionId={}", url_encode(play_session_id));
+        url.push_str("?PlaySessionId=");
+        url.push_str(&url_encode(play_session_id));
         let mut headers = self.build_headers()?;
         headers.insert(AUTHORIZATION, self.build_emby_auth_header()?);
         let client = self.client.clone();

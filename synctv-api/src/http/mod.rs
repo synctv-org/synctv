@@ -24,7 +24,7 @@ pub mod websocket;
 pub mod providers;
 
 use crate::realtime_fanout::RealtimeFanoutService;
-use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
+use crate::runtime::RealtimeEventService;
 use axum::{
     http::{HeaderMap, HeaderName, HeaderValue, Method},
     middleware as axum_middleware,
@@ -38,7 +38,8 @@ use synctv_core::provider::ProviderSet;
 use synctv_core::proxy_signature::ProxySigningKey;
 use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_core::service::{RemoteProviderManager, RoomService, UserService};
-use synctv_livestream::api::LiveStreamingInfrastructure;
+use synctv_livestream::LiveStreamingInfrastructure;
+use synctv_realtime::sync::ConnectionRuntime;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
@@ -95,7 +96,7 @@ pub struct RouterConfig {
     pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
     pub providers: ProviderSet,
     pub event_service: Arc<dyn RealtimeEventService>,
-    pub connection_manager: Arc<dyn RealtimeConnectionService>,
+    pub connection_manager: Arc<dyn ConnectionRuntime>,
     pub jwt_service: synctv_core::service::JwtService,
     pub realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
@@ -114,11 +115,10 @@ pub struct RouterConfig {
     pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
     /// Shared runtime for playback caching and other shared-state lookups.
     pub redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
-    /// Shared provider playback store registry reused across transports when available.
-    pub shared_provider_stores:
-        Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
-    /// Shared proxy signing key reused across transports when available.
-    pub shared_proxy_signing_key: Option<Arc<ProxySigningKey>>,
+    /// Shared provider playback store registry reused across transports.
+    pub shared_provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
+    /// Shared proxy signing key reused across transports.
+    pub shared_proxy_signing_key: Arc<ProxySigningKey>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
@@ -139,8 +139,8 @@ pub struct RouterConfig {
     /// Heartbeat/cache timing for real-time messaging. Production defaults are
     /// conservative; tests may inject a shorter schedule.
     pub heartbeat_schedule: crate::impls::HeartbeatSchedule,
-    /// Providers manager for playback generation (media provider lookup)
-    pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
+    /// Providers manager for playback generation and provider HTTP APIs.
+    pub providers_manager: Arc<synctv_core::service::ProvidersManager>,
 }
 
 /// Shared transport-agnostic API runtime derived from `RouterConfig`.
@@ -163,7 +163,7 @@ pub struct SharedApiRuntime {
     /// Shared security pipeline for post-JWT checks (password, user status)
     pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
     /// Shared sqids codec for API-facing resource identifiers.
-    pub public_id_codec: Arc<crate::PublicIdCodec>,
+    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
     /// Shared impl-level request executor for auth, rate limiting, and timeout.
     pub request_executor: Arc<crate::impls::RequestExecutor>,
     // Unified API implementation layer
@@ -247,10 +247,12 @@ impl AppState {
         self,
         lease: synctv_core_testing::TestDatabase,
     ) -> Self {
-        self.test_database_leases
-            .lock()
-            .expect("test database lease lock should not be poisoned")
-            .push(lease);
+        match self.test_database_leases.lock() {
+            Ok(mut leases) => leases.push(lease),
+            Err(error) => {
+                tracing::warn!(error = %error, "test database lease lock was poisoned");
+            }
+        }
         self
     }
 
@@ -286,7 +288,7 @@ pub fn create_app_state_from_config(config: RouterConfig) -> anyhow::Result<AppS
 /// Create the HTTP router from an already constructed shared `AppState`.
 pub fn create_router_from_shared_state(state: &AppState) -> anyhow::Result<axum::Router> {
     let state = state.clone();
-    let router = register_all_routes(&state);
+    let router = register_all_routes();
     apply_global_layers(router, &state)
 }
 
@@ -314,21 +316,8 @@ fn build_app_state(config: RouterConfig) -> anyhow::Result<AppState> {
 
 pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<SharedApiRuntime> {
     let redis_runtime = config.redis_runtime.clone();
-    let proxy_signing_key = match config.shared_proxy_signing_key.clone() {
-        Some(key) => key,
-        None => Arc::new(
-            ProxySigningKey::try_derive_from(config.config.jwt.secret.as_bytes())
-                .map_err(|error| anyhow::anyhow!("Failed to derive proxy signing key: {error}"))?,
-        ),
-    };
-    let provider_stores = config.shared_provider_stores.clone().unwrap_or_else(|| {
-        synctv_core::provider::store::build_provider_store_resolver_from_profile(
-            &synctv_core::SharedStateProfile::best_effort(
-                redis_runtime.clone(),
-                config.config.redis.key_prefix.clone(),
-            ),
-        )
-    });
+    let proxy_signing_key = config.shared_proxy_signing_key.clone();
+    let provider_stores = config.shared_provider_stores.clone();
     let credential_repo = config.user_provider_credential_repository.clone();
     let provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService> = Arc::new(
         synctv_core::provider::CachedProviderAccessService::new(
@@ -343,8 +332,8 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
         config.user_service.clone(),
         synctv_core::service::SecurityPipelineRuntime {
             user_cache: Some(config.user_cache.clone()),
-            token_blacklist: Some(config.user_service.token_blacklist_store()),
-            key_builder: Some(config.user_service.key_builder().clone()),
+            token_blacklist: config.user_service.token_blacklist_store(),
+            key_builder: config.user_service.key_builder().clone(),
         },
     ));
 
@@ -352,7 +341,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
         config.jwt_service.clone(),
     )));
     let public_id_codec = Arc::new(
-        crate::PublicIdCodec::from_config(&config.config.public_ids)
+        synctv_core::PublicIdCodec::from_config(&config.config.public_ids)
             .map_err(|error| anyhow::anyhow!("Invalid public ID configuration: {error}"))?,
     );
     let request_executor = Arc::new(crate::impls::RequestExecutor::new(
@@ -382,12 +371,10 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
             publish_key_service: config.publish_key_service.clone(),
             jwt_service: config.jwt_service.clone(),
             live_streaming_infrastructure: config.live_streaming_infrastructure.clone(),
-            providers_manager: config.providers_manager.clone(),
             settings_registry: config.settings_registry.clone(),
             public_id_codec: public_id_codec.clone(),
             chat_service: config.chat_service.clone(),
-            credential_encryption: config.credential_encryption.clone(),
-            provider_stores: Some(provider_stores.clone()),
+            provider_stores: provider_stores.clone(),
             email_api: email_api.clone(),
             passkey_service: config.passkey_service.clone(),
         },
@@ -396,14 +383,12 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
             realtime_event_service: realtime_event_service.clone(),
             chat_event_dispatcher,
             redis_runtime: redis_runtime.clone(),
-            rate_limiter: Some(config.rate_limiter.clone()),
             builtin_stun_url: config.builtin_stun_url.clone(),
-            webrtc_status: Some(config.webrtc_status.clone()),
-            credential_repo: Some(config.user_provider_credential_repository.clone()),
-            provider_access_service: Some(provider_access_service.clone()),
-            signing_key: Some(proxy_signing_key.clone()),
-            request_executor: Some(request_executor.clone()),
-            ws_ticket_service: Some(config.ws_ticket_service.clone()),
+            webrtc_status: config.webrtc_status.clone(),
+            provider_access_service: provider_access_service.clone(),
+            signing_key: proxy_signing_key.clone(),
+            request_executor: request_executor.clone(),
+            ws_ticket_service: config.ws_ticket_service.clone(),
         },
     ));
 
@@ -441,9 +426,10 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
             crate::impls::AdminApiRuntime {
                 realtime_fanout: config.realtime_fanout_service.clone(),
                 realtime_event_service: realtime_event_service.clone(),
-                provider_stores: Some(provider_stores.clone()),
-                provider_access_service: Some(provider_access_service.clone()),
-                request_executor: Some(request_executor.clone()),
+                provider_stores: provider_stores.clone(),
+                provider_access_service: provider_access_service.clone(),
+                signing_key: proxy_signing_key.clone(),
+                request_executor: request_executor.clone(),
             },
         );
         Some(Arc::new(admin_api))
@@ -473,12 +459,12 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
         config.audit_service.clone(),
         crate::impls::ProviderCommonApiRuntime {
             providers_manager: config.providers_manager.clone(),
-            request_executor: Some(request_executor.clone()),
+            request_executor: request_executor.clone(),
         },
     ));
 
     let provider_api_runtime = crate::impls::ProviderApiRuntime {
-        access_service: Some(provider_access_service.clone()),
+        access_service: provider_access_service.clone(),
         event_service: config.event_service.clone(),
     };
 
@@ -512,17 +498,14 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
     // Prefer the provider graph built by ProvidersManager so playback and proxy
     // resolution share the same provider instances. Tests and fallback
     // transports without a manager still use the explicitly supplied ProviderSet.
-    let proxy_provider_registry = config.providers_manager.as_ref().map_or_else(
-        || Arc::new(config.providers.build_proxy_registry()),
-        |manager| manager.proxy_registry(),
-    );
+    let proxy_provider_registry = config.providers_manager.proxy_registry();
 
     // Create ProxyServices for unified proxy handler (gives providers DB access)
     let proxy_services = Arc::new(ProxyServices {
         room_service: config.room_service.clone(),
         credential_encryption: config.credential_encryption.clone(),
         credential_repo: credential_repo.clone(),
-        provider_access_service: Some(provider_access_service.clone()),
+        provider_access_service: provider_access_service.clone(),
         signing_key: proxy_signing_key.clone(),
         public_id_codec: public_id_codec.clone(),
     });
@@ -598,7 +581,7 @@ pub(crate) mod body_limits {
 
 /// Authentication routes that are mounted inside the strict rate-limit group.
 /// Strict rate limiting: 5 req/min. Body limit: 64 KB.
-fn register_auth_routes(_state: &AppState) -> Router<AppState> {
+fn register_auth_routes() -> Router<AppState> {
     Router::new()
         .route(
             "/api/oauth2/{provider}/exchange",
@@ -683,7 +666,7 @@ fn register_extracted_auth_routes() -> Router<AppState> {
 
 /// Media mutation routes (add, delete, reorder, edit, batch operations).
 /// Moderate rate limiting: 20 req/min. Body limit: 512 KB.
-fn register_media_routes(_state: &AppState) -> Router<AppState> {
+fn register_media_routes() -> Router<AppState> {
     Router::new()
         .route("/api/rooms/{room_id}/media", post(room::add_media))
         .route(
@@ -733,7 +716,7 @@ fn register_media_routes(_state: &AppState) -> Router<AppState> {
 
 /// Write routes (room CRUD, membership, playback control, playlists, user updates).
 /// Moderate rate limiting: 30 req/min. Room create/update body limit: 64 KB.
-fn register_write_routes(_state: &AppState) -> Router<AppState> {
+fn register_write_routes() -> Router<AppState> {
     let router = Router::new()
         .route("/api/rooms", post(room::create_room))
         .route(
@@ -848,7 +831,7 @@ fn register_write_routes(_state: &AppState) -> Router<AppState> {
 
 /// Read routes (user info, room discovery, room details, playlists, chat, media, playback).
 /// Rate limited: 100 req/min.
-fn register_read_routes(_state: &AppState) -> Router<AppState> {
+fn register_read_routes() -> Router<AppState> {
     Router::new()
         .route("/api/rooms", get(room::list_or_get_rooms))
         .route("/api/rooms/hot", get(room::get_hot_rooms))
@@ -1050,20 +1033,20 @@ fn register_user_avatar_object_routes() -> Router<AppState> {
 }
 
 /// Assemble all route groups into a single router.
-fn register_websocket_routes(_state: &AppState) -> Router<AppState> {
+fn register_websocket_routes() -> Router<AppState> {
     Router::new().route(
         "/ws/rooms/{room_id}",
         axum::routing::get(websocket::websocket_handler),
     )
 }
 
-fn register_all_routes(state: &AppState) -> Router<AppState> {
+fn register_all_routes() -> Router<AppState> {
     let mut router = Router::new()
         .merge(health::create_health_router())
         .merge(openapi_router())
         .merge(public::create_public_router())
         .merge(register_extracted_auth_routes())
-        .merge(register_auth_routes(state))
+        .merge(register_auth_routes())
         .merge(register_extracted_user_routes())
         .merge(register_user_avatar_object_routes())
         .merge(
@@ -1103,9 +1086,9 @@ fn register_all_routes(state: &AppState) -> Router<AppState> {
                 )
                 .route("/api/oauth2/linked", get(oauth2::get_linked_providers)),
         )
-        .merge(register_media_routes(state))
-        .merge(register_write_routes(state))
-        .merge(register_read_routes(state))
+        .merge(register_media_routes())
+        .merge(register_write_routes())
+        .merge(register_read_routes())
         .merge(register_chat_image_object_routes())
         .merge(register_video_cover_object_routes())
         .merge(register_room_cover_object_routes())
@@ -1120,14 +1103,19 @@ fn register_all_routes(state: &AppState) -> Router<AppState> {
         // Provider routes
         .merge(
             Router::new()
-                .merge(register_provider_management_routes(state))
+                .merge(register_provider_management_routes())
                 .merge(Router::new().nest(
                     "/api/providers",
                     providers::common::register_common_routes(),
                 )),
         )
-        .merge(register_provider_proxy_routes(state))
-        .merge(register_websocket_routes(state));
+        .route(
+            "/api/providers/proxy/{provider_name}/{*sub_path}",
+            get(providers::unified_proxy_handler)
+                .head(providers::unified_proxy_head_handler)
+                .options(providers::proxy_options_preflight),
+        )
+        .merge(register_websocket_routes());
 
     router = router
         .merge(notifications::create_notification_read_router())
@@ -1164,7 +1152,7 @@ fn openapi_router() -> Router<AppState> {
     Router::new()
 }
 
-fn register_provider_management_routes(_state: &AppState) -> Router<AppState> {
+fn register_provider_management_routes() -> Router<AppState> {
     Router::new()
         .merge(
             Router::new()
@@ -1190,16 +1178,6 @@ fn register_provider_management_routes(_state: &AppState) -> Router<AppState> {
                 )
                 .nest("/api/providers/emby", providers::emby::emby_read_routes()),
         )
-}
-
-fn register_provider_proxy_routes(state: &AppState) -> Router<AppState> {
-    let _ = state;
-    Router::new().route(
-        "/api/providers/proxy/{provider_name}/{*sub_path}",
-        get(providers::unified_proxy_handler)
-            .head(providers::unified_proxy_head_handler)
-            .options(providers::proxy_options_preflight),
-    )
 }
 
 /// Build CORS layer based on configuration.

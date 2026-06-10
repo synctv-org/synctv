@@ -16,60 +16,31 @@ use {
     bytes::BytesMut,
 };
 
-/*
- ** Flv Struct **
- +-------------------------------------------------------------------------------+
- | FLV header(9 bytes) | FLV body                                                |
- +-------------------------------------------------------------------------------+
- |                     | PreviousTagSize0(4 bytes)| Tag1|PreviousTagSize1|Tag2|...
- +-------------------------------------------------------------------------------+
+const FLV_HEADER_LEN: usize = 9;
 
- *** Flv Tag ***
- +-------------------------------------------------------------------------------------------------------------------------------+
- |                                                    Tag1                                                                       |
- +-------------------------------------------------------------------------------------------------------------------------------+
- |     Tag Header                                                                                                   |  Tag Data  |
- +-------------------------------------------------------------------------------------------------------------------------------+
- | Tag Type(1 byte) | Data Size(3 bytes) | Timestamp(3 bytes dts) | Timestamp Extended(1 byte) | Stream ID(3 bytes) |  Tag Data  |
- +-------------------------------------------------------------------------------------------------------------------------------+
+struct FlvTagHeader {
+    tag_type: u8,
+    data_size: u32,
+    timestamp: u32,
+}
 
+impl FlvTagHeader {
+    fn read_from(reader: &mut BytesReader) -> Result<Self, FlvDemuxerError> {
+        reader.read_u32::<BigEndian>()?;
 
-  The Tag Data contains
-  - video tag data
-  - audio tag data
+        let tag_type = reader.read_u8()?;
+        let data_size = reader.read_u24::<BigEndian>()?;
+        let timestamp_lower = reader.read_u24::<BigEndian>()?;
+        let timestamp_extended = reader.read_u8()?;
+        reader.read_u24::<BigEndian>()?;
 
- **** Video Tag ****
- +-------------------------------------------------+
- |    Tag Data  (Video Tag)                        |
- +-------------------------------------------------+
- | FrameType(4 bits) | CodecID(4 bits) | Video Data|
- +-------------------------------------------------+
-
-  The contents of Video Data depends on the codecID:
-  2: H263VIDEOPACKET
-  3: SCREENVIDEOPACKET
-  4: VP6FLVVIDEOPACKET
-  5: VP6FLVALPHAVIDEOPACKET
-  6: SCREENV2VIDEOPACKET
-  7: AVCVIDEOPACKE
-
- When the codecid equals 7, the Video Data's struct is as follows:
-
- +------------------------------------------------------------+
- |    Video Data  (codecID == 7)                              |
- +------------------------------------------------------------+
- | AVCPacketType(1 byte) | CompositionTime(3 bytes) | Payload |
- +------------------------------------------------------------+
-
- **** Audio Tag ****
- +----------------------------------------------------------------------------------------+
- |    Tag Data  (Audio Tag)                                                               |
- +----------------------------------------------------------------------------------------+
- | SoundFormat(4 bits) | SoundRate(2 bits) | SoundSize(1 bit) | SoundType(1 bit)| Payload |
- +----------------------------------------------------------------------------------------+
-
- reference: https://www.cnblogs.com/chyingp/p/flv-getting-started.html
-*/
+        Ok(Self {
+            tag_type,
+            data_size,
+            timestamp: timestamp_lower | (u32::from(timestamp_extended) << 24),
+        })
+    }
+}
 
 #[derive(Default)]
 pub struct FlvDemuxerAudioData {
@@ -92,7 +63,7 @@ impl FlvDemuxerAudioData {
         }
     }
 }
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct FlvDemuxerVideoData {
     pub frame_type: u8,
     pub codec_id: u8,
@@ -264,41 +235,24 @@ impl FlvDemuxer {
     }
 
     pub fn read_flv_header(&mut self) -> Result<(), FlvDemuxerError> {
-        /*flv header*/
-        self.bytes_reader.read_bytes(9)?;
+        self.bytes_reader.read_bytes(FLV_HEADER_LEN)?;
         Ok(())
     }
 
     pub fn read_flv_tag(&mut self) -> Result<Option<FlvData>, FlvDemuxerError> {
-        /*previous_tag_size*/
-        self.bytes_reader.read_u32::<BigEndian>()?;
+        let header = FlvTagHeader::read_from(&mut self.bytes_reader)?;
+        let body = self.bytes_reader.read_bytes(header.data_size as usize)?;
 
-        /*tag type*/
-        let tag_type = self.bytes_reader.read_u8()?;
-        /*data size*/
-        let data_size = self.bytes_reader.read_u24::<BigEndian>()?;
-        /*timestamp*/
-        let timestamp = self.bytes_reader.read_u24::<BigEndian>()?;
-        /*timestamp extended*/
-        let timestamp_ext = self.bytes_reader.read_u8()?;
-        /*stream id*/
-        self.bytes_reader.read_u24::<BigEndian>()?;
-
-        let dts: u32 = (timestamp & 0x00ff_ffff) | (u32::from(timestamp_ext) << 24);
-
-        /*data*/
-        let body = self.bytes_reader.read_bytes(data_size as usize)?;
-
-        match tag_type {
+        match header.tag_type {
             tag_type::VIDEO => {
                 return Ok(Some(FlvData::Video {
-                    timestamp: dts,
+                    timestamp: header.timestamp,
                     data: body,
                 }));
             }
             tag_type::AUDIO => {
                 return Ok(Some(FlvData::Audio {
-                    timestamp: dts,
+                    timestamp: header.timestamp,
                     data: body,
                 }));
             }
@@ -313,6 +267,20 @@ impl FlvDemuxer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn expect_video_tag(tag: Option<FlvData>) -> (u32, BytesMut) {
+        match tag {
+            Some(FlvData::Video { timestamp, data }) => (timestamp, data),
+            other => panic!("expected video tag, got {other:?}"),
+        }
+    }
+
+    fn expect_audio_tag(tag: Option<FlvData>) -> (u32, BytesMut) {
+        match tag {
+            Some(FlvData::Audio { timestamp, data }) => (timestamp, data),
+            other => panic!("expected audio tag, got {other:?}"),
+        }
+    }
 
     #[test]
     fn test_flv_demuxer_audio_data_new() {
@@ -337,23 +305,20 @@ mod tests {
     #[test]
     fn test_flv_video_tag_demuxer_new() {
         let demuxer = FlvVideoTagDemuxer::new();
-        // Just verify it can be created
-        let _ = demuxer;
+        assert!(demuxer.avc_processor.mpeg4_avc.sps.is_empty());
     }
 
     #[test]
     fn test_flv_audio_tag_demuxer_new() {
         let demuxer = FlvAudioTagDemuxer::new();
-        // Just verify it can be created
-        let _ = demuxer;
+        assert_eq!(demuxer.aac_processor.mpeg4_aac.channels, 0);
     }
 
     #[test]
     fn test_flv_demuxer_new() {
         let data = BytesMut::new();
         let demuxer = FlvDemuxer::new(data);
-        // Just verify it can be created
-        let _ = demuxer;
+        assert!(demuxer.bytes_reader.is_empty());
     }
 
     #[test]
@@ -411,16 +376,9 @@ mod tests {
         assert!(result.is_ok());
         let tag = result.unwrap();
         assert!(tag.is_some());
-        if let Some(FlvData::Video {
-            timestamp,
-            data: video_data,
-        }) = tag
-        {
-            assert_eq!(timestamp, 0);
-            assert_eq!(video_data.len(), 5);
-        } else {
-            panic!("Expected video tag");
-        }
+        let (timestamp, video_data) = expect_video_tag(tag);
+        assert_eq!(timestamp, 0);
+        assert_eq!(video_data.len(), 5);
     }
 
     #[test]
@@ -444,16 +402,9 @@ mod tests {
         assert!(result.is_ok());
         let tag = result.unwrap();
         assert!(tag.is_some());
-        if let Some(FlvData::Audio {
-            timestamp,
-            data: audio_data,
-        }) = tag
-        {
-            assert_eq!(timestamp, 0);
-            assert_eq!(audio_data.len(), 4);
-        } else {
-            panic!("Expected audio tag");
-        }
+        let (timestamp, audio_data) = expect_audio_tag(tag);
+        assert_eq!(timestamp, 0);
+        assert_eq!(audio_data.len(), 4);
     }
 
     #[test]
@@ -501,12 +452,9 @@ mod tests {
 
         assert!(result.is_ok());
         let tag = result.unwrap();
-        if let Some(FlvData::Video { timestamp, .. }) = tag {
-            // Expected: (0x123456 & 0xffffff) | (0x78 << 24) = 0x78123456 = 2014734422
-            assert_eq!(timestamp, 0x7812_3456);
-        } else {
-            panic!("Expected video tag");
-        }
+        let (timestamp, _) = expect_video_tag(tag);
+        // Expected: (0x123456 & 0xffffff) | (0x78 << 24) = 0x78123456 = 2014734422
+        assert_eq!(timestamp, 0x7812_3456);
     }
 
     #[test]
@@ -555,6 +503,7 @@ mod tests {
     #[test]
     fn test_flv_video_tag_demuxer_hevc_nalu() {
         let mut demuxer = FlvVideoTagDemuxer::new();
+        load_minimal_hevc_sequence_header(&mut demuxer);
 
         // Create a minimal HEVC NALU data:
         // VideoTagHeader: FrameType(4) | CodecID(4) | AVCPacketType(1) | CompositionTime(3)
@@ -616,16 +565,18 @@ mod tests {
         let result = demuxer.demux(1000, data);
 
         // Sequence header should return None (no video data to output)
-        if let Err(ref e) = result {
-            eprintln!("Error: {e:?}");
-        }
-        assert!(result.is_ok(), "demux should succeed");
+        assert!(
+            result.is_ok(),
+            "demux should succeed: {:?}",
+            result.as_ref().err()
+        );
         assert!(result.unwrap().is_none());
     }
 
     #[test]
     fn test_flv_video_tag_demuxer_hevc_multiple_nalus() {
         let mut demuxer = FlvVideoTagDemuxer::new();
+        load_minimal_hevc_sequence_header(&mut demuxer);
 
         // Create HEVC data with multiple NAL units
         let mut data = BytesMut::new();
@@ -653,5 +604,33 @@ mod tests {
         assert_eq!(&video_data.data[4..6], &[0x02, 0xAA]);
         assert_eq!(&video_data.data[6..10], &[0x00, 0x00, 0x00, 0x01]);
         assert_eq!(&video_data.data[10..12], &[0x02, 0xBB]);
+    }
+
+    fn load_minimal_hevc_sequence_header(demuxer: &mut FlvVideoTagDemuxer) {
+        let mut data = BytesMut::new();
+        data.extend_from_slice(&[0x1C]);
+        data.extend_from_slice(&[0x00]);
+        data.extend_from_slice(&[0x00, 0x00, 0x00]);
+        data.extend_from_slice(&[0x01]);
+        data.extend_from_slice(&[0x01]);
+        data.extend_from_slice(&[0x60, 0x00, 0x00, 0x00]);
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        data.extend_from_slice(&[0x5D]);
+        data.extend_from_slice(&[0xF0, 0x00]);
+        data.extend_from_slice(&[0xFC]);
+        data.extend_from_slice(&[0xFD]);
+        data.extend_from_slice(&[0xFA]);
+        data.extend_from_slice(&[0xFB]);
+        data.extend_from_slice(&[0x00, 0x00]);
+        data.extend_from_slice(&[0x0F]);
+        data.extend_from_slice(&[0x00]);
+
+        match demuxer.demux(0, data) {
+            Ok(None) => {}
+            Ok(Some(video_data)) => {
+                panic!("HEVC sequence header emitted video data: {video_data:?}")
+            }
+            Err(err) => panic!("HEVC sequence header should initialize demuxer: {err}"),
+        }
     }
 }

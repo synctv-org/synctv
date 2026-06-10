@@ -3,7 +3,7 @@ use super::{
     register_all_routes, required_header_str, start_proxy_cache_lifecycle, RouterConfig,
 };
 use axum::body::Body;
-use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Request, Response, StatusCode};
 use axum::{routing::get, Router};
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
@@ -13,153 +13,215 @@ use synctv_core::cache::{KeyBuilder, UsernameCache};
 use synctv_core::provider::ProviderSet;
 use synctv_core::proxy_signature::ProxySigningKey;
 use synctv_core::service::{
-    AuditService, ContentFilter, InMemoryTokenBlacklistStore, RateLimitConfig, RateLimiter,
-    RoomService, UserService,
+    AuditService, ContentFilter, InMemoryTokenBlacklistStore, ProvidersManager, RateLimitConfig,
+    RateLimiter, RoomService, UserService,
 };
 use synctv_proxy::slice_cache::{SliceCache, SliceCacheBackend, SliceCacheConfig, StoredEntry};
 use tower::ServiceExt;
 
+type TestResult<T = ()> = anyhow::Result<T>;
+
+fn test_error(message: impl Into<String>) -> anyhow::Error {
+    anyhow::anyhow!(message.into())
+}
+
+fn app_ok<T>(result: Result<T, super::AppError>) -> TestResult<T> {
+    result.map_err(|error| test_error(format!("{error:?}")))
+}
+
+fn app_err<T>(result: Result<T, super::AppError>) -> TestResult<super::AppError> {
+    match result {
+        Ok(_) => Err(test_error("expected HTTP app error")),
+        Err(error) => Ok(error),
+    }
+}
+
+fn test_request(result: Result<Request<Body>, axum::http::Error>) -> TestResult<Request<Body>> {
+    result.map_err(|error| test_error(error.to_string()))
+}
+
+fn test_response<E>(result: Result<Response<Body>, E>) -> TestResult<Response<Body>>
+where
+    E: std::fmt::Display,
+{
+    result.map_err(|error| test_error(error.to_string()))
+}
+
+fn core_ok<T>(result: synctv_core::Result<T>) -> TestResult<T> {
+    result.map_err(|error| test_error(error.to_string()))
+}
+
+fn api_ok<T>(result: Result<T, crate::impls::ApiError>) -> TestResult<T> {
+    result.map_err(|error| test_error(format!("{error:?}")))
+}
+
+fn test_fixture<T, E>(result: Result<T, E>) -> T
+where
+    E: std::fmt::Display,
+{
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("test fixture setup failed: {error}")),
+    }
+}
+
 fn http_test_database() -> synctv_core_testing::TestDatabase {
-    std::thread::spawn(|| {
-        tokio::runtime::Builder::new_current_thread()
+    let handle = std::thread::spawn(|| {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("test database runtime should build")
-            .block_on(synctv_core_testing::create_test_database_with_db_and_label(
-                "http_test",
-                "http_test",
-            ))
-    })
-    .join()
-    .expect("test database init thread should finish")
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                std::panic::panic_any(format!("test database runtime should build: {error}"))
+            }
+        };
+        runtime.block_on(synctv_core_testing::create_test_database_with_db_and_label(
+            "http_test",
+            "http_test",
+        ))
+    });
+    match handle.join() {
+        Ok(database) => database,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 #[test]
-fn required_header_str_rejects_missing_header() {
+fn required_header_str_rejects_missing_header() -> TestResult {
     let headers = HeaderMap::new();
 
-    let error = required_header_str(&headers, "x-upload-token", "missing token")
-        .expect_err("missing required header should fail");
+    let error = app_err(required_header_str(
+        &headers,
+        "x-upload-token",
+        "missing token",
+    ))?;
 
     assert_eq!(error.status, StatusCode::BAD_REQUEST);
     assert_eq!(error.message, "missing token");
+    Ok(())
 }
 
 #[test]
-fn required_header_str_rejects_blank_header() {
+fn required_header_str_rejects_blank_header() -> TestResult {
     let mut headers = HeaderMap::new();
     headers.insert("x-upload-token", HeaderValue::from_static("   "));
 
-    let error = required_header_str(&headers, "x-upload-token", "missing token")
-        .expect_err("blank required header should fail");
+    let error = app_err(required_header_str(
+        &headers,
+        "x-upload-token",
+        "missing token",
+    ))?;
 
     assert_eq!(error.status, StatusCode::BAD_REQUEST);
     assert_eq!(error.message, "missing token");
+    Ok(())
 }
 
 #[test]
-fn required_header_str_rejects_non_utf8_header() {
+fn required_header_str_rejects_non_utf8_header() -> TestResult {
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-upload-token",
-        HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
-    );
+    headers.insert("x-upload-token", HeaderValue::from_bytes(&[0xff])?);
 
-    let error = required_header_str(&headers, "x-upload-token", "missing token")
-        .expect_err("invalid required header should fail");
+    let error = app_err(required_header_str(
+        &headers,
+        "x-upload-token",
+        "missing token",
+    ))?;
 
     assert_eq!(error.status, StatusCode::BAD_REQUEST);
     assert!(error.message.contains("x-upload-token"));
+    Ok(())
 }
 
 #[test]
-fn optional_header_str_rejects_non_utf8_header() {
+fn optional_header_str_rejects_non_utf8_header() -> TestResult {
     let mut headers = HeaderMap::new();
     headers.insert(
         axum::http::header::CONTENT_TYPE,
-        HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
+        HeaderValue::from_bytes(&[0xff])?,
     );
 
-    let error = optional_header_str(&headers, &axum::http::header::CONTENT_TYPE)
-        .expect_err("invalid optional header should fail");
+    let error = app_err(optional_header_str(
+        &headers,
+        &axum::http::header::CONTENT_TYPE,
+    ))?;
 
     assert_eq!(error.status, StatusCode::BAD_REQUEST);
     assert!(error.message.contains("content-type"));
+    Ok(())
 }
 
 #[test]
-fn forwarded_proto_is_https_accepts_trusted_proxy_https() {
+fn forwarded_proto_is_https_accepts_trusted_proxy_https() -> TestResult {
     let mut server = synctv_core::config::ServerConfig::default();
     server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
     let mut headers = HeaderMap::new();
     headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
 
-    let result =
-        super::forwarded_proto_is_https(&server, &headers, Some("10.1.2.3".parse().expect("ip")))
-            .expect("forwarded proto should parse");
-
-    assert!(result);
-}
-
-#[test]
-fn forwarded_proto_is_https_ignores_untrusted_peer() {
-    let mut server = synctv_core::config::ServerConfig::default();
-    server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
-    let mut headers = HeaderMap::new();
-    headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
-
-    let result = super::forwarded_proto_is_https(
+    let result = app_ok(super::forwarded_proto_is_https(
         &server,
         &headers,
-        Some("192.168.1.10".parse().expect("ip")),
-    )
-    .expect("untrusted peer should ignore forwarded proto");
+        Some("10.1.2.3".parse()?),
+    ))?;
 
-    assert!(!result);
+    assert!(result);
+    Ok(())
 }
 
 #[test]
-fn forwarded_proto_is_https_rejects_non_utf8_from_trusted_proxy() {
+fn forwarded_proto_is_https_ignores_untrusted_peer() -> TestResult {
     let mut server = synctv_core::config::ServerConfig::default();
     server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-forwarded-proto",
-        HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
-    );
+    headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
 
-    let error =
-        super::forwarded_proto_is_https(&server, &headers, Some("10.1.2.3".parse().expect("ip")))
-            .expect_err("invalid forwarded proto should fail");
+    let result = super::forwarded_proto_is_https(&server, &headers, Some("192.168.1.10".parse()?))?;
+
+    assert!(!result);
+    Ok(())
+}
+
+#[test]
+fn forwarded_proto_is_https_rejects_non_utf8_from_trusted_proxy() -> TestResult {
+    let mut server = synctv_core::config::ServerConfig::default();
+    server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
+    let mut headers = HeaderMap::new();
+    headers.insert("x-forwarded-proto", HeaderValue::from_bytes(&[0xff])?);
+
+    let error = app_err(super::forwarded_proto_is_https(
+        &server,
+        &headers,
+        Some("10.1.2.3".parse()?),
+    ))?;
 
     assert_eq!(error.status, StatusCode::BAD_REQUEST);
     assert!(error.message.contains("x-forwarded-proto"));
+    Ok(())
 }
 
 #[test]
-fn test_path_injected_json_proto_requests_deserialize_without_injected_fields() {
-    let join_room: synctv_proto::client::JoinRoomRequest =
-        serde_json::from_str(r"{}").expect("join room body");
+fn test_path_injected_json_proto_requests_deserialize_without_injected_fields() -> TestResult {
+    let join_room: synctv_proto::client::JoinRoomRequest = serde_json::from_str(r"{}")?;
     assert!(join_room.room_id.is_empty());
 
     let room_password_login: synctv_proto::client::StartRoomPasswordLoginRequest =
-        serde_json::from_str(r#"{"credential_request":"AQID"}"#).expect("room password login body");
+        serde_json::from_str(r#"{"credential_request":"AQID"}"#)?;
     assert!(room_password_login.room_id.is_empty());
     assert_eq!(room_password_login.credential_request, vec![1, 2, 3]);
 
     let edit_media: synctv_proto::client::EditMediaRequest =
-        serde_json::from_str(r#"{"name":"Episode 1"}"#).expect("edit media body");
+        serde_json::from_str(r#"{"name":"Episode 1"}"#)?;
     assert_eq!(edit_media.name, "Episode 1");
     assert!(edit_media.media_id.is_empty());
 
     let update_playlist: synctv_proto::client::UpdatePlaylistRequest =
-        serde_json::from_str(r#"{"name":"Season 1"}"#).expect("update playlist body");
+        serde_json::from_str(r#"{"name":"Season 1"}"#)?;
     assert_eq!(update_playlist.name, "Season 1");
     assert!(update_playlist.playlist_id.is_empty());
 
     let move_playlist: synctv_proto::client::MovePlaylistRequest =
-        serde_json::from_str(r#"{"after_playlist_id":"pl_anchor123"}"#)
-            .expect("move playlist body");
+        serde_json::from_str(r#"{"after_playlist_id":"pl_anchor123"}"#)?;
     assert!(move_playlist.playlist_id.is_empty());
     assert!(matches!(
         move_playlist.anchor,
@@ -169,78 +231,76 @@ fn test_path_injected_json_proto_requests_deserialize_without_injected_fields() 
     ));
 
     let member_permissions: synctv_proto::client::UpdateMemberPermissionsRequest =
-        serde_json::from_str(r#"{"role":2,"added_permissions":1}"#)
-            .expect("member permissions body");
+        serde_json::from_str(r#"{"role":2,"added_permissions":1}"#)?;
     assert!(member_permissions.user_id.is_empty());
     assert_eq!(member_permissions.role, 2);
     assert_eq!(member_permissions.added_permissions, 1);
 
     let delete_passkey: synctv_proto::client::DeletePasskeyRequest =
-        serde_json::from_str(r#"{"verification_id":"verify_123"}"#).expect("delete passkey body");
+        serde_json::from_str(r#"{"verification_id":"verify_123"}"#)?;
     assert!(delete_passkey.credential_id.is_empty());
     assert_eq!(delete_passkey.verification_id, "verify_123");
+    Ok(())
 }
 
 #[test]
-fn test_admin_path_injected_json_proto_requests_deserialize_without_injected_fields() {
+fn test_admin_path_injected_json_proto_requests_deserialize_without_injected_fields() -> TestResult
+{
     let user_preferences: synctv_proto::admin::UpdateUserPreferencesRequest =
-        serde_json::from_str(r#"{"two_factor_enabled":true}"#)
-            .expect("admin user preferences body");
+        serde_json::from_str(r#"{"two_factor_enabled":true}"#)?;
     assert!(user_preferences.user_id.is_empty());
     assert_eq!(user_preferences.two_factor_enabled, Some(true));
 
     let user_role: synctv_proto::admin::UpdateUserRoleRequest =
-        serde_json::from_str(r#"{"role":1}"#).expect("admin user role body");
+        serde_json::from_str(r#"{"role":1}"#)?;
     assert!(user_role.user_id.is_empty());
     assert_eq!(user_role.role, 1);
 
     let user_password: synctv_proto::admin::SetUserPasswordRequest =
-        serde_json::from_str(r#"{"password":"NewPassword123!","reason":"support reset"}"#)
-            .expect("admin user password body");
+        serde_json::from_str(r#"{"password":"NewPassword123!","reason":"support reset"}"#)?;
     assert!(user_password.user_id.is_empty());
     assert_eq!(user_password.password, "NewPassword123!");
     assert_eq!(user_password.reason, "support reset");
 
     let user_username: synctv_proto::admin::UpdateUserUsernameRequest =
-        serde_json::from_str(r#"{"new_username":"new_admin_name"}"#)
-            .expect("admin user username body");
+        serde_json::from_str(r#"{"new_username":"new_admin_name"}"#)?;
     assert!(user_username.user_id.is_empty());
     assert_eq!(user_username.new_username, "new_admin_name");
 
     let ban_user: synctv_proto::admin::BanUserRequest =
-        serde_json::from_str(r#"{"reason":"spam"}"#).expect("admin ban user body");
+        serde_json::from_str(r#"{"reason":"spam"}"#)?;
     assert!(ban_user.user_id.is_empty());
     assert_eq!(ban_user.reason, "spam");
 
     let room_password: synctv_proto::admin::UpdateRoomPasswordRequest =
-        serde_json::from_str(r#"{"new_password":""}"#).expect("admin room password body");
+        serde_json::from_str(r#"{"new_password":""}"#)?;
     assert!(room_password.room_id.is_empty());
     assert!(room_password.new_password.is_empty());
 
     let ban_room: synctv_proto::admin::BanRoomRequest =
-        serde_json::from_str(r#"{"reason":"abuse"}"#).expect("admin ban room body");
+        serde_json::from_str(r#"{"reason":"abuse"}"#)?;
     assert!(ban_room.room_id.is_empty());
     assert_eq!(ban_room.reason, "abuse");
 
     let room_settings: synctv_proto::admin::UpdateRoomSettingsRequest =
-        serde_json::from_str(r#"{"settings":{"room":"settings"}}"#)
-            .expect("admin room settings body");
-    let settings: serde_json::Value =
-        serde_json::from_slice(&room_settings.settings).expect("settings json");
+        serde_json::from_str(r#"{"settings":{"room":"settings"}}"#)?;
+    let settings: serde_json::Value = serde_json::from_slice(&room_settings.settings)?;
     assert_eq!(settings, serde_json::json!({"room":"settings"}));
+    Ok(())
 }
 
 #[test]
-fn test_provider_path_injected_json_proto_requests_deserialize_without_injected_fields() {
+fn test_provider_path_injected_json_proto_requests_deserialize_without_injected_fields(
+) -> TestResult {
     let update_provider: synctv_proto::providers::common::UpdateProviderInstanceRequest =
-        serde_json::from_str(r#"{"endpoint":"https://provider.internal","providers":["alist"]}"#)
-            .expect("update provider instance body");
+        serde_json::from_str(r#"{"endpoint":"https://provider.internal","providers":["alist"]}"#)?;
 
     assert_eq!(
         update_provider.endpoint.as_deref(),
         Some("https://provider.internal")
     );
     assert_eq!(update_provider.providers, vec!["alist".to_string()]);
+    Ok(())
 }
 
 pub(crate) fn test_app_state() -> super::AppState {
@@ -255,29 +315,30 @@ fn test_app_state_with_rate_limits(
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
     let user_service = Arc::new(UserService::new_for_tests(
         &pool,
-        synctv_core::service::JwtService::new(
+        test_fixture(synctv_core::service::JwtService::new(
             "test-secret-key-for-http-router-tests-minimum-32-chars",
-        )
-        .expect("jwt"),
+        )),
         username_cache,
         Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
         KeyBuilder::new("test"),
         synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
     ));
-    let room_service = Arc::new(
-        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
-            .expect("room service should build"),
-    );
+    let room_service = Arc::new(test_fixture(RoomService::new_for_tests(
+        pool.clone(),
+        (*user_service).clone(),
+    )));
     let provider_instance_manager = synctv_core_testing::create_empty_provider_instance_manager();
+    let providers_manager = Arc::new(test_fixture(ProvidersManager::new(
+        provider_instance_manager.clone(),
+    )));
     let providers = ProviderSet::new_with_ssrf_guard(
         provider_instance_manager.clone(),
         synctv_common::ssrf::SsrfGuard::strict_policy(),
-    )
-    .expect("provider set should build");
-    let jwt_service = synctv_core::service::JwtService::new(
+    );
+    let providers = test_fixture(providers);
+    let jwt_service = test_fixture(synctv_core::service::JwtService::new(
         "test-secret-key-for-http-router-tests-minimum-32-chars",
-    )
-    .expect("jwt");
+    ));
     let (audit_service, _audit_handle) = AuditService::new(pool.clone());
     let config = synctv_core::Config {
         request_rate_limits,
@@ -319,26 +380,28 @@ fn test_app_state_with_rate_limits(
         rate_limiter: Arc::new(RateLimiter::local_only("test:".to_string())),
         ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
         redis_runtime: None,
-        shared_provider_stores: None,
-        shared_proxy_signing_key: None,
+        shared_provider_stores: Arc::new(
+            synctv_core::provider::store::ProviderStoreRegistry::local_only("test:provider:"),
+        ),
+        shared_proxy_signing_key: Arc::new(
+            synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+                b"test-proxy-signing-key-minimum-32-bytes!!",
+            )
+            .expect("test proxy signing key should derive"),
+        ),
         builtin_stun_url: None,
         webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
         credential_encryption: None,
         ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
-        proxy_slice_cache: Arc::new(
-            SliceCache::new(SliceCacheConfig::default()).expect("test slice cache should build"),
-        ),
-        proxy_http_client: synctv_proxy::build_proxy_http_client(
+        proxy_slice_cache: Arc::new(test_fixture(SliceCache::new(SliceCacheConfig::default()))),
+        proxy_http_client: test_fixture(synctv_proxy::build_proxy_http_client(
             synctv_common::ssrf::SsrfGuard::strict_policy(),
-        )
-        .expect("proxy HTTP client should build for tests"),
+        )),
         messaging_rate_limit_config: RateLimitConfig::default(),
         heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
-        providers_manager: None,
+        providers_manager,
     };
-    build_app_state(router_config)
-        .expect("test HTTP app state should build")
-        .with_test_database_leases(vec![database])
+    test_fixture(build_app_state(router_config)).with_test_database_leases(vec![database])
 }
 
 async fn test_app_state_with_websocket_runtime(
@@ -377,7 +440,7 @@ async fn test_app_state_with_websocket_runtime(
         },
     );
     router_config.chat_service = Some(Arc::new(chat_service));
-    let realtime_manager = Arc::new(
+    let realtime_manager =
         synctv_realtime::sync::RealtimeManager::new(synctv_realtime::sync::RealtimeConfig {
             distributed_transport_factory: None,
             message_runtime: Arc::new(synctv_realtime::sync::RoomMessageHub::new()),
@@ -392,12 +455,10 @@ async fn test_app_state_with_websocket_runtime(
             event_handler: None,
             parent_cancel_token: None,
         })
-        .await
-        .expect("realtime manager"),
-    );
+        .await;
+    let realtime_manager = Arc::new(test_fixture(realtime_manager));
     router_config.event_service = realtime_manager;
-    build_app_state(router_config)
-        .expect("test websocket HTTP app state should build")
+    test_fixture(build_app_state(router_config))
         .with_shared_test_database_leases(state.test_database_leases())
         .with_added_test_database_lease(database)
 }
@@ -417,8 +478,10 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
     );
     let user_service = Arc::new(user_service);
 
-    let room_service = RoomService::new_for_tests(pool.clone(), (*user_service).clone())
-        .expect("room service should build");
+    let room_service = test_fixture(RoomService::new_for_tests(
+        pool.clone(),
+        (*user_service).clone(),
+    ));
     let room_service = Arc::new(room_service);
 
     let room_settings_repo = synctv_core::repository::RoomSettingsRepository::new(pool.clone());
@@ -427,10 +490,10 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
         synctv_core::repository::RoomRepository::new(pool.clone()),
         synctv_core::service::permission::PermissionServiceRuntime {
             room_settings_repo: Some(room_settings_repo.clone()),
-            ..synctv_core::service::permission::PermissionServiceRuntime::default()
+            ..synctv_core::service::permission::PermissionServiceRuntime::local_only()
         },
-    )
-    .expect("permission service should build");
+    );
+    let permission_service = test_fixture(permission_service);
     let notification_service = synctv_core::service::NotificationService::default();
     let room_settings_service = synctv_core::service::RoomSettingsService::new(
         room_settings_repo,
@@ -456,7 +519,7 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
         },
     );
 
-    let realtime_manager = Arc::new(
+    let realtime_manager =
         synctv_realtime::sync::RealtimeManager::new(synctv_realtime::sync::RealtimeConfig {
             distributed_transport_factory: None,
             message_runtime: Arc::new(synctv_realtime::sync::RoomMessageHub::new()),
@@ -471,9 +534,8 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
             event_handler: None,
             parent_cancel_token: None,
         })
-        .await
-        .expect("realtime manager"),
-    );
+        .await;
+    let realtime_manager = Arc::new(test_fixture(realtime_manager));
 
     router_config.user_service = user_service;
     router_config.room_service = room_service;
@@ -486,18 +548,19 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
     router_config.user_provider_credential_repository =
         Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool));
 
-    build_app_state(router_config).expect("test chat HTTP app state should build")
+    test_fixture(build_app_state(router_config))
 }
 
 #[tokio::test]
-async fn test_start_proxy_cache_lifecycle_evicts_expired_entries_and_stops_on_cancel() {
+async fn test_start_proxy_cache_lifecycle_evicts_expired_entries_and_stops_on_cancel() -> TestResult
+{
     let cache = Arc::new(
         SliceCache::new(SliceCacheConfig {
             eviction_interval: Duration::from_millis(20),
             max_cache_size: 1024,
             ..SliceCacheConfig::default()
         })
-        .expect("test slice cache should build"),
+        .map_err(|error| test_error(error.to_string()))?,
     );
     let key = "expired-slice".to_string();
     cache
@@ -512,7 +575,7 @@ async fn test_start_proxy_cache_lifecycle_evicts_expired_entries_and_stops_on_ca
             },
         )
         .await
-        .expect("seed expired slice");
+        .map_err(|error| test_error(error.to_string()))?;
 
     let lifecycle = start_proxy_cache_lifecycle(&cache);
 
@@ -524,37 +587,38 @@ async fn test_start_proxy_cache_lifecycle_evicts_expired_entries_and_stops_on_ca
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
-    .await
-    .expect("lifecycle task should evict expired slices");
+    .await?;
 
     lifecycle.cancel.cancel();
 
     tokio::time::timeout(Duration::from_secs(1), lifecycle.handle)
         .await
-        .expect("lifecycle task should stop after cancellation")
-        .expect("lifecycle join should succeed");
+        .map_err(|error| test_error(error.to_string()))?
+        .map_err(|error| test_error(error.to_string()))?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_start_proxy_cache_lifecycle_starts_even_when_runtime_toggle_is_off() {
+async fn test_start_proxy_cache_lifecycle_starts_even_when_runtime_toggle_is_off() -> TestResult {
     let cache = Arc::new(
         SliceCache::new(SliceCacheConfig {
             enabled: false,
             ..SliceCacheConfig::default()
         })
-        .expect("test slice cache should build"),
+        .map_err(|error| test_error(error.to_string()))?,
     );
 
     let lifecycle = start_proxy_cache_lifecycle(&cache);
     lifecycle.cancel.cancel();
     tokio::time::timeout(Duration::from_secs(1), lifecycle.handle)
         .await
-        .expect("lifecycle task should stop after cancellation")
-        .expect("lifecycle join should succeed");
+        .map_err(|error| test_error(error.to_string()))?
+        .map_err(|error| test_error(error.to_string()))?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_build_app_state_reuses_injected_proxy_cache() {
+async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
     let database = http_test_database();
     let pool = database.pool.clone();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
@@ -563,7 +627,7 @@ async fn test_build_app_state_reuses_injected_proxy_cache() {
         synctv_core::service::JwtService::new(
             "test-secret-key-for-http-router-tests-minimum-32-chars",
         )
-        .expect("jwt"),
+        .map_err(|error| test_error(error.to_string()))?,
         username_cache,
         Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
         KeyBuilder::new("test"),
@@ -571,35 +635,39 @@ async fn test_build_app_state_reuses_injected_proxy_cache() {
     ));
     let room_service = Arc::new(
         RoomService::new_for_tests(pool.clone(), (*user_service).clone())
-            .expect("room service should build"),
+            .map_err(|error| test_error(error.to_string()))?,
     );
     let provider_instance_manager = synctv_core_testing::create_empty_provider_instance_manager();
+    let providers_manager = Arc::new(
+        ProvidersManager::new(provider_instance_manager.clone())
+            .map_err(|error| test_error(error.to_string()))?,
+    );
     let providers = ProviderSet::new_with_ssrf_guard(
         provider_instance_manager.clone(),
         synctv_common::ssrf::SsrfGuard::strict_policy(),
     )
-    .expect("provider set should build");
+    .map_err(|error| test_error(error.to_string()))?;
     let jwt_service = synctv_core::service::JwtService::new(
         "test-secret-key-for-http-router-tests-minimum-32-chars",
     )
-    .expect("jwt");
+    .map_err(|error| test_error(error.to_string()))?;
     let (audit_service, _audit_handle) = AuditService::new(pool.clone());
     let injected_cache = Arc::new(
         SliceCache::new(SliceCacheConfig {
             enabled: false,
             ..SliceCacheConfig::default()
         })
-        .expect("test slice cache should build"),
+        .map_err(|error| test_error(error.to_string()))?,
     );
     let injected_provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver> =
         Arc::new(synctv_core::provider::store::ProviderStoreRegistry::local_only("shared:test:"));
     let injected_proxy_signing_key = Arc::new(
         ProxySigningKey::try_derive_from(b"test-secret-key-for-http-router-tests-minimum-32-chars")
-            .expect("test proxy signing key should derive"),
+            .map_err(|error| test_error(error.to_string()))?,
     );
     let injected_proxy_http_client =
         synctv_proxy::build_proxy_http_client(synctv_common::ssrf::SsrfGuard::strict_policy())
-            .expect("proxy HTTP client should build for tests");
+            .map_err(|error| test_error(error.to_string()))?;
 
     let state = build_app_state(RouterConfig {
         config: Arc::new(synctv_core::Config::default()),
@@ -637,8 +705,8 @@ async fn test_build_app_state_reuses_injected_proxy_cache() {
         rate_limiter: Arc::new(RateLimiter::local_only("test:".to_string())),
         ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
         redis_runtime: None,
-        shared_provider_stores: Some(injected_provider_stores.clone()),
-        shared_proxy_signing_key: Some(injected_proxy_signing_key.clone()),
+        shared_provider_stores: injected_provider_stores.clone(),
+        shared_proxy_signing_key: injected_proxy_signing_key.clone(),
         builtin_stun_url: None,
         webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
         credential_encryption: None,
@@ -647,9 +715,8 @@ async fn test_build_app_state_reuses_injected_proxy_cache() {
         proxy_http_client: injected_proxy_http_client,
         messaging_rate_limit_config: RateLimitConfig::default(),
         heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
-        providers_manager: None,
-    })
-    .expect("test HTTP app state should build")
+        providers_manager,
+    })?
     .with_test_database_leases(vec![database]);
 
     assert!(
@@ -686,24 +753,22 @@ async fn test_build_app_state_reuses_injected_proxy_cache() {
         state.shared_api_runtime.security_pipeline.has_user_cache(),
         "AppState security pipeline should carry the shared user cache"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_playback_patch_route_is_reachable_via_project_router() {
+async fn test_playback_patch_route_is_reachable_via_project_router() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/rooms/room_123/playback")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"state":1}"#))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("PATCH")
+            .uri("/api/rooms/room_123/playback")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"state":1}"#)),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_ne!(
         response.status(),
@@ -720,24 +785,22 @@ async fn test_playback_patch_route_is_reachable_via_project_router() {
         StatusCode::UNAUTHORIZED,
         "request should reach the registered route and follow the normal auth path; playback PATCH is not gated by websocket-runtime-only middleware"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_chat_message_patch_route_is_reachable_via_project_router() {
+async fn test_chat_message_patch_route_is_reachable_via_project_router() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/rooms/room_123/chat/messages/msg_456")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"content":"edited","expected_version":"1"}"#))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("PATCH")
+            .uri("/api/rooms/room_123/chat/messages/msg_456")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"content":"edited","expected_version":"1"}"#)),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_ne!(
         response.status(),
@@ -756,24 +819,22 @@ async fn test_chat_message_patch_route_is_reachable_via_project_router() {
         ),
         "request should reach the registered route and be handled by the normal request pipeline"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_chat_message_delete_route_is_reachable_via_project_router() {
+async fn test_chat_message_delete_route_is_reachable_via_project_router() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri("/api/rooms/room_123/chat/messages/msg_456")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"expected_version":"1","reason":"cleanup"}"#))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("DELETE")
+            .uri("/api/rooms/room_123/chat/messages/msg_456")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"expected_version":"1","reason":"cleanup"}"#)),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_ne!(
         response.status(),
@@ -792,112 +853,108 @@ async fn test_chat_message_delete_route_is_reachable_via_project_router() {
         ),
         "request should reach the registered route and be handled by the normal request pipeline"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_chat_events_sse_receives_live_send_event() {
+async fn test_chat_events_sse_receives_live_send_event() -> TestResult {
     let (_container, pool) = synctv_core_testing::create_test_pool().await;
     let state = test_app_state_with_real_chat_runtime(pool.clone()).await;
     let now = chrono::Utc::now();
-    let owner = synctv_core::repository::UserRepository::new(pool)
-        .create(&synctv_core::models::User {
-            id: synctv_core::models::UserId::new(),
-            username: "http_sse_chat_live_owner".to_string(),
-            role: synctv_core::models::UserRole::User,
-            avatar_file_reference_id: None,
-            status: synctv_core::models::UserStatus::Active,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: now,
-            updated_at: now,
-            version: 0,
-            deleted_at: None,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-        })
-        .await
-        .expect("owner should be created");
-    let access_token = state
-        .jwt_service
-        .sign_access_token(&owner.id, 0)
-        .expect("access token should sign");
-    let (room, _) = state
-        .room_service
-        .create_room(
-            "HTTP SSE Chat Live Room".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created");
+    let owner = core_ok(
+        synctv_core::repository::UserRepository::new(pool)
+            .create(&synctv_core::models::User {
+                id: synctv_core::models::UserId::new(),
+                username: "http_sse_chat_live_owner".to_string(),
+                role: synctv_core::models::UserRole::User,
+                avatar_file_reference_id: None,
+                status: synctv_core::models::UserStatus::Active,
+                signup_method: synctv_core::models::SignupMethod::Email,
+                created_at: now,
+                updated_at: now,
+                version: 0,
+                deleted_at: None,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
+            })
+            .await,
+    )?;
+    let access_token = core_ok(state.jwt_service.sign_access_token(&owner.id, 0))?;
+    let (room, _) = core_ok(
+        state
+            .room_service
+            .create_room(
+                "HTTP SSE Chat Live Room".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?;
     let public_room_id = state
         .shared_api_runtime
         .public_id_codec
         .encode_room_id(room.id)
-        .expect("room id should encode");
-    let app = register_all_routes(&state).with_state(state.clone());
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!(
-                    "/api/rooms/{public_room_id}/watch/chat-events?format=json"
-                ))
-                .header(
-                    axum::http::header::AUTHORIZATION,
-                    format!("Bearer {access_token}"),
-                )
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+        .map_err(test_error)?;
+    let app = register_all_routes().with_state(state.clone());
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/rooms/{public_room_id}/watch/chat-events?format=json"
+            ))
+            .header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {access_token}"),
+            )
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(response.status(), StatusCode::OK);
     let mut body = response.into_body();
     let first_frame = tokio::time::timeout(Duration::from_secs(2), body.frame())
-        .await
-        .expect("initial SSE frame should arrive")
-        .expect("SSE stream should remain open")
-        .expect("SSE frame should be readable");
+        .await?
+        .ok_or_else(|| test_error("SSE stream ended before initial frame"))?
+        .map_err(|error| test_error(error.to_string()))?;
     let mut rendered = String::new();
     if let Some(data) = first_frame.data_ref() {
-        rendered.push_str(std::str::from_utf8(data).expect("SSE frame should be utf-8"));
+        rendered.push_str(std::str::from_utf8(data)?);
     }
     assert!(rendered.contains("event: observed\n"));
 
-    let sent = state
-        .shared_api_runtime
-        .client_api
-        .send_chat_message_for_actor(
-            &crate::impls::client::RoomActor::User {
-                room_id: room.id,
-                user_id: owner.id,
-            },
-            synctv_proto::client::SendChatMessageRequest {
-                client_message_id: "http-sse-live-send-1".to_string(),
-                content: "live push event".to_string(),
-                metadata: br"{}".to_vec(),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("chat send should succeed")
-        .event
-        .expect("chat send should return event");
+    let sent = api_ok(
+        state
+            .shared_api_runtime
+            .client_api
+            .send_chat_message_for_actor(
+                &crate::impls::client::RoomActor::User {
+                    room_id: room.id,
+                    user_id: owner.id,
+                },
+                synctv_proto::client::SendChatMessageRequest {
+                    client_message_id: "http-sse-live-send-1".to_string(),
+                    content: "live push event".to_string(),
+                    metadata: br"{}".to_vec(),
+                    ..Default::default()
+                },
+            )
+            .await,
+    )?
+    .event
+    .ok_or_else(|| test_error("chat send should return event"))?;
 
     for _ in 0..8 {
         let frame = tokio::time::timeout(Duration::from_secs(2), body.frame())
-            .await
-            .expect("SSE frame should arrive")
-            .expect("SSE stream should remain open")
-            .expect("SSE frame should be readable");
+            .await?
+            .ok_or_else(|| test_error("SSE stream ended before expected frame"))?
+            .map_err(|error| test_error(error.to_string()))?;
         if let Some(data) = frame.data_ref() {
-            rendered.push_str(std::str::from_utf8(data).expect("SSE frame should be utf-8"));
+            rendered.push_str(std::str::from_utf8(data)?);
         }
         if rendered.contains("live push event") {
             break;
@@ -907,125 +964,128 @@ async fn test_chat_events_sse_receives_live_send_event() {
     assert!(rendered.contains("event: changed\n"));
     assert!(rendered.contains(&format!("id: {}\n", sent.sequence)));
     assert!(rendered.contains("live push event"));
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_chat_events_sse_replays_after_last_event_id_header() {
+async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult {
     let (_container, pool) = synctv_core_testing::create_test_pool().await;
     let state = test_app_state_with_real_chat_runtime(pool.clone()).await;
     let now = chrono::Utc::now();
-    let owner = synctv_core::repository::UserRepository::new(pool)
-        .create(&synctv_core::models::User {
-            id: synctv_core::models::UserId::new(),
-            username: "http_sse_chat_owner".to_string(),
-            role: synctv_core::models::UserRole::User,
-            avatar_file_reference_id: None,
-            status: synctv_core::models::UserStatus::Active,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: now,
-            updated_at: now,
-            version: 0,
-            deleted_at: None,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-        })
-        .await
-        .expect("owner should be created");
-    let access_token = state
-        .jwt_service
-        .sign_access_token(&owner.id, 0)
-        .expect("access token should sign");
-    let (room, _) = state
-        .room_service
-        .create_room(
-            "HTTP SSE Chat Replay Room".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created");
-    let chat_service = state.chat_service.as_ref().expect("chat service").clone();
+    let owner = core_ok(
+        synctv_core::repository::UserRepository::new(pool)
+            .create(&synctv_core::models::User {
+                id: synctv_core::models::UserId::new(),
+                username: "http_sse_chat_owner".to_string(),
+                role: synctv_core::models::UserRole::User,
+                avatar_file_reference_id: None,
+                status: synctv_core::models::UserStatus::Active,
+                signup_method: synctv_core::models::SignupMethod::Email,
+                created_at: now,
+                updated_at: now,
+                version: 0,
+                deleted_at: None,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
+            })
+            .await,
+    )?;
+    let access_token = core_ok(state.jwt_service.sign_access_token(&owner.id, 0))?;
+    let (room, _) = core_ok(
+        state
+            .room_service
+            .create_room(
+                "HTTP SSE Chat Replay Room".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?;
+    let chat_service = state
+        .chat_service
+        .as_ref()
+        .ok_or_else(|| test_error("chat service should be present"))?
+        .clone();
 
-    let first = chat_service
-        .send_message_event(synctv_core::models::SendChatMessage {
-            room_id: room.id,
-            user_id: owner.id,
-            client_message_id: Some("http-sse-chat-1".to_string()),
-            content: "first replay".to_string(),
-            message_type: synctv_core::models::ChatMessageType::Text,
-            reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
-        })
-        .await
-        .expect("first message should be stored");
-    chat_service
-        .send_message_event(synctv_core::models::SendChatMessage {
-            room_id: room.id,
-            user_id: owner.id,
-            client_message_id: Some("http-sse-chat-2".to_string()),
-            content: "second replay".to_string(),
-            message_type: synctv_core::models::ChatMessageType::Text,
-            reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
-        })
-        .await
-        .expect("second message should be stored");
-    chat_service
-        .send_message_event(synctv_core::models::SendChatMessage {
-            room_id: room.id,
-            user_id: owner.id,
-            client_message_id: Some("http-sse-chat-3".to_string()),
-            content: "third replay".to_string(),
-            message_type: synctv_core::models::ChatMessageType::Text,
-            reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
-        })
-        .await
-        .expect("third message should be stored");
+    let first = core_ok(
+        chat_service
+            .send_message_event(synctv_core::models::SendChatMessage {
+                room_id: room.id,
+                user_id: owner.id,
+                client_message_id: Some("http-sse-chat-1".to_string()),
+                content: "first replay".to_string(),
+                message_type: synctv_core::models::ChatMessageType::Text,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                images: Vec::new(),
+            })
+            .await,
+    )?;
+    core_ok(
+        chat_service
+            .send_message_event(synctv_core::models::SendChatMessage {
+                room_id: room.id,
+                user_id: owner.id,
+                client_message_id: Some("http-sse-chat-2".to_string()),
+                content: "second replay".to_string(),
+                message_type: synctv_core::models::ChatMessageType::Text,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                images: Vec::new(),
+            })
+            .await,
+    )?;
+    core_ok(
+        chat_service
+            .send_message_event(synctv_core::models::SendChatMessage {
+                room_id: room.id,
+                user_id: owner.id,
+                client_message_id: Some("http-sse-chat-3".to_string()),
+                content: "third replay".to_string(),
+                message_type: synctv_core::models::ChatMessageType::Text,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                images: Vec::new(),
+            })
+            .await,
+    )?;
 
     let public_room_id = state
         .shared_api_runtime
         .public_id_codec
         .encode_room_id(room.id)
-        .expect("room id should encode");
-    let app = register_all_routes(&state).with_state(state.clone());
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!(
-                    "/api/rooms/{public_room_id}/watch/chat-events?format=json"
-                ))
-                .header(
-                    axum::http::header::AUTHORIZATION,
-                    format!("Bearer {access_token}"),
-                )
-                .header("last-event-id", first.sequence.to_string())
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+        .map_err(test_error)?;
+    let app = register_all_routes().with_state(state.clone());
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/rooms/{public_room_id}/watch/chat-events?format=json"
+            ))
+            .header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {access_token}"),
+            )
+            .header("last-event-id", first.sequence.to_string())
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(response.status(), StatusCode::OK);
     let mut body = response.into_body();
     let mut rendered = String::new();
     for _ in 0..8 {
         let frame = tokio::time::timeout(Duration::from_secs(2), body.frame())
-            .await
-            .expect("SSE frame should arrive")
-            .expect("SSE stream should remain open")
-            .expect("SSE frame should be readable");
+            .await?
+            .ok_or_else(|| test_error("SSE stream ended before expected frame"))?
+            .map_err(|error| test_error(error.to_string()))?;
         if let Some(data) = frame.data_ref() {
-            rendered.push_str(std::str::from_utf8(data).expect("SSE frame should be utf-8"));
+            rendered.push_str(std::str::from_utf8(data)?);
         }
         if rendered.contains("second replay") && rendered.contains("third replay") {
             break;
@@ -1041,91 +1101,86 @@ async fn test_chat_events_sse_replays_after_last_event_id_header() {
         !rendered.contains("first replay"),
         "Last-Event-ID should replay events strictly after the supplied sequence"
     );
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_chat_events_sse_unknown_last_event_id_returns_bad_request() {
+async fn test_chat_events_sse_unknown_last_event_id_returns_bad_request() -> TestResult {
     let (_container, pool) = synctv_core_testing::create_test_pool().await;
     let state = test_app_state_with_real_chat_runtime(pool.clone()).await;
     let now = chrono::Utc::now();
-    let owner = synctv_core::repository::UserRepository::new(pool)
-        .create(&synctv_core::models::User {
-            id: synctv_core::models::UserId::new(),
-            username: "http_sse_chat_bad_cursor_owner".to_string(),
-            role: synctv_core::models::UserRole::User,
-            avatar_file_reference_id: None,
-            status: synctv_core::models::UserStatus::Active,
-            signup_method: synctv_core::models::SignupMethod::Email,
-            created_at: now,
-            updated_at: now,
-            version: 0,
-            deleted_at: None,
-            is_banned: false,
-            banned_at: None,
-            banned_by: None,
-            banned_reason: None,
-        })
-        .await
-        .expect("owner should be created");
-    let access_token = state
-        .jwt_service
-        .sign_access_token(&owner.id, 0)
-        .expect("access token should sign");
-    let (room, _) = state
-        .room_service
-        .create_room(
-            "HTTP SSE Chat Bad Cursor Room".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-        )
-        .await
-        .expect("room should be created");
+    let owner = core_ok(
+        synctv_core::repository::UserRepository::new(pool)
+            .create(&synctv_core::models::User {
+                id: synctv_core::models::UserId::new(),
+                username: "http_sse_chat_bad_cursor_owner".to_string(),
+                role: synctv_core::models::UserRole::User,
+                avatar_file_reference_id: None,
+                status: synctv_core::models::UserStatus::Active,
+                signup_method: synctv_core::models::SignupMethod::Email,
+                created_at: now,
+                updated_at: now,
+                version: 0,
+                deleted_at: None,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
+            })
+            .await,
+    )?;
+    let access_token = core_ok(state.jwt_service.sign_access_token(&owner.id, 0))?;
+    let (room, _) = core_ok(
+        state
+            .room_service
+            .create_room(
+                "HTTP SSE Chat Bad Cursor Room".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?;
     let public_room_id = state
         .shared_api_runtime
         .public_id_codec
         .encode_room_id(room.id)
-        .expect("room id should encode");
-    let app = register_all_routes(&state).with_state(state.clone());
+        .map_err(test_error)?;
+    let app = register_all_routes().with_state(state.clone());
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!(
-                    "/api/rooms/{public_room_id}/watch/chat-events?format=json"
-                ))
-                .header(
-                    axum::http::header::AUTHORIZATION,
-                    format!("Bearer {access_token}"),
-                )
-                .header("last-event-id", "missing-chat-sequence")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/rooms/{public_room_id}/watch/chat-events?format=json"
+            ))
+            .header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {access_token}"),
+            )
+            .header("last-event-id", "missing-chat-sequence")
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_public_rooms_route_is_reachable_without_auth() {
+async fn test_public_rooms_route_is_reachable_without_auth() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/rooms?page=1&page_size=10")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/rooms?page=1&page_size=10")
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_ne!(
         response.status(),
@@ -1137,29 +1192,26 @@ async fn test_public_rooms_route_is_reachable_without_auth() {
         StatusCode::NOT_FOUND,
         "public room listing route must be registered"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_opaque_login_routes_are_registered() {
+async fn test_opaque_login_routes_are_registered() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
     for uri in [
         "/api/auth/opaque/login/start",
         "/api/auth/opaque/login/finish",
     ] {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(uri)
-                    .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from("{"))
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
+        let request = test_request(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{")),
+        )?;
+        let response = test_response(app.clone().oneshot(request).await)?;
 
         assert_ne!(response.status(), StatusCode::NOT_FOUND, "{uri} is missing");
         assert_ne!(
@@ -1168,12 +1220,13 @@ async fn test_opaque_login_routes_are_registered() {
             "{uri} must accept POST"
         );
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_direct_password_and_email_registration_routes_are_registered() {
+async fn test_direct_password_and_email_registration_routes_are_registered() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
     for uri in [
         "/api/auth/direct-password/register",
@@ -1181,18 +1234,14 @@ async fn test_direct_password_and_email_registration_routes_are_registered() {
         "/api/auth/email/registration/request",
         "/api/auth/email/registration/confirm",
     ] {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(uri)
-                    .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from("{"))
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
+        let request = test_request(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{")),
+        )?;
+        let response = test_response(app.clone().oneshot(request).await)?;
 
         assert_ne!(response.status(), StatusCode::NOT_FOUND, "{uri} is missing");
         assert_ne!(
@@ -1201,47 +1250,42 @@ async fn test_direct_password_and_email_registration_routes_are_registered() {
             "{uri} must accept POST"
         );
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_passkey_login_routes_fail_closed_when_service_missing() {
+async fn test_passkey_login_routes_fail_closed_when_service_missing() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let start_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/auth/passkeys/login/start")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r"{}"))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let start_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/auth/passkeys/login/start")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r"{}")),
+    )?;
+    let start_response = test_response(app.clone().oneshot(start_request).await)?;
     assert_eq!(start_response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
-    let finish_response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/auth/passkeys/login/finish")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    r#"{"session_id":"session","credential":{"id":"cred","type":"public-key"}}"#,
-                ))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let finish_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/auth/passkeys/login/finish")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"session_id":"session","credential":{"id":"cred","type":"public-key"}}"#,
+            )),
+    )?;
+    let finish_response = test_response(app.oneshot(finish_request).await)?;
     assert_eq!(finish_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_passkey_user_routes_are_registered_and_require_authentication() {
+async fn test_passkey_user_routes_are_registered_and_require_authentication() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
     for (method, uri, body) in [
         ("GET", "/api/user/preferences", None),
@@ -1288,15 +1332,8 @@ async fn test_passkey_user_routes_are_registered_and_require_authentication() {
         if body.is_some() {
             builder = builder.header(axum::http::header::CONTENT_TYPE, "application/json");
         }
-        let response = app
-            .clone()
-            .oneshot(
-                builder
-                    .body(body.map_or_else(Body::empty, Body::from))
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
+        let request = test_request(builder.body(body.map_or_else(Body::empty, Body::from)))?;
+        let response = test_response(app.clone().oneshot(request).await)?;
 
         assert_ne!(response.status(), StatusCode::NOT_FOUND, "{uri} is missing");
         assert_ne!(
@@ -1310,12 +1347,13 @@ async fn test_passkey_user_routes_are_registered_and_require_authentication() {
             "{uri} should follow the normal authenticated user route path"
         );
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_member_approval_routes_are_reachable_via_project_router() {
+async fn test_member_approval_routes_are_reachable_via_project_router() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
     for (method, uri, body) in [
         (
@@ -1341,15 +1379,10 @@ async fn test_member_approval_routes_are_reachable_via_project_router() {
         } else {
             builder
         };
-        let response = app
-            .clone()
-            .oneshot(
-                builder
-                    .body(Body::from(body.unwrap_or_default().to_string()))
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
+        let request = test_request(builder.body(Body::from(
+            body.map_or_else(String::new, ToString::to_string),
+        )))?;
+        let response = test_response(app.clone().oneshot(request).await)?;
 
         assert_ne!(
             response.status(),
@@ -1362,48 +1395,43 @@ async fn test_member_approval_routes_are_reachable_via_project_router() {
             "{uri} must accept its documented HTTP method"
         );
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_oauth2_unlink_route_is_reachable() {
+async fn test_oauth2_unlink_route_is_reachable() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let new_route_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri("/api/oauth2/type/github/unlink")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("DELETE")
+            .uri("/api/oauth2/type/github/unlink")
+            .body(Body::empty()),
+    )?;
+    let new_route_response = test_response(app.clone().oneshot(request).await)?;
     assert_ne!(new_route_response.status(), StatusCode::NOT_FOUND);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_delete_all_read_notifications_route_is_reachable() {
+async fn test_delete_all_read_notifications_route_is_reachable() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let new_route_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri("/api/notifications/read")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("DELETE")
+            .uri("/api/notifications/read")
+            .body(Body::empty()),
+    )?;
+    let new_route_response = test_response(app.clone().oneshot(request).await)?;
     assert_ne!(new_route_response.status(), StatusCode::NOT_FOUND);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_main_router_does_not_expose_metrics_endpoint() {
+async fn test_main_router_does_not_expose_metrics_endpoint() -> TestResult {
     let mut state = test_app_state();
     Arc::make_mut(&mut state.router_config).config = Arc::new({
         let mut config = (*state.config).clone();
@@ -1412,23 +1440,17 @@ async fn test_main_router_does_not_expose_metrics_endpoint() {
         config.metrics.auth.bearer_token = "metrics-secret".to_string();
         config
     });
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/metrics")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(Request::builder().uri("/metrics").body(Body::empty()))?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_provider_login_routes_reject_invalid_tokens_before_rate_limiting() {
+async fn test_provider_login_routes_reject_invalid_tokens_before_rate_limiting() -> TestResult {
     let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
         auth_max_requests: 1,
         auth_window_seconds: 60,
@@ -1436,48 +1458,42 @@ async fn test_provider_login_routes_reject_invalid_tokens_before_rate_limiting()
         read_window_seconds: 60,
         ..synctv_core::RequestRateLimitConfig::default()
     });
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let first = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/providers/alist/login")
-                .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    r#"{"host":"https://alist.example.com","username":"demo","password":"demo"}"#,
-                ))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let first_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/providers/alist/login")
+            .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"host":"https://alist.example.com","username":"demo","password":"demo"}"#,
+            )),
+    )?;
+    let first = test_response(app.clone().oneshot(first_request).await)?;
     assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
 
-    let second = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/providers/alist/login")
-                .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    r#"{"host":"https://alist.example.com","username":"demo","password":"demo"}"#,
-                ))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let second_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/providers/alist/login")
+            .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"host":"https://alist.example.com","username":"demo","password":"demo"}"#,
+            )),
+    )?;
+    let second = test_response(app.oneshot(second_request).await)?;
     assert_eq!(
         second.status(),
         StatusCode::TOO_MANY_REQUESTS,
         "provider login routes should consume the auth rate-limit bucket before invalid-token authentication fails"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_auth_login_malformed_json_still_consumes_auth_rate_limit_bucket() {
+async fn test_auth_login_malformed_json_still_consumes_auth_rate_limit_bucket() -> TestResult {
     let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
         auth_max_requests: 1,
         auth_window_seconds: 60,
@@ -1485,65 +1501,57 @@ async fn test_auth_login_malformed_json_still_consumes_auth_rate_limit_bucket() 
         read_window_seconds: 60,
         ..synctv_core::RequestRateLimitConfig::default()
     });
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let first = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/auth/email/confirm")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from("{invalid json"))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let first_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/auth/email/confirm")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{invalid json")),
+    )?;
+    let first = test_response(app.clone().oneshot(first_request).await)?;
     assert_eq!(first.status(), StatusCode::BAD_REQUEST);
 
-    let second = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/auth/email/confirm")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from("{invalid json"))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let second_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/auth/email/confirm")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{invalid json")),
+    )?;
+    let second = test_response(app.oneshot(second_request).await)?;
     assert_eq!(
         second.status(),
         StatusCode::TOO_MANY_REQUESTS,
         "malformed auth payloads should still consume the auth rate-limit bucket"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_bilibili_me_route_requires_post() {
+async fn test_bilibili_me_route_requires_post() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/providers/bilibili/me")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/providers/bilibili/me")
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(
         response.status(),
         StatusCode::METHOD_NOT_ALLOWED,
         "Bilibili /me must require POST so provider requests stay consistently structured"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_ticket_route_uses_write_rate_limit_tier() {
+async fn test_ticket_route_uses_write_rate_limit_tier() -> TestResult {
     let state = test_app_state_with_websocket_runtime(synctv_core::RequestRateLimitConfig {
         write_max_requests: 1,
         write_window_seconds: 60,
@@ -1552,46 +1560,40 @@ async fn test_ticket_route_uses_write_rate_limit_tier() {
         ..synctv_core::RequestRateLimitConfig::default()
     })
     .await;
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let first = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/tickets")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"room_id":"room_123"}"#))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let first_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/tickets")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"room_id":"room_123"}"#)),
+    )?;
+    let first = test_response(app.clone().oneshot(first_request).await)?;
     assert_eq!(
         first.status(),
         StatusCode::UNAUTHORIZED,
         "first unauthenticated ticket request should reach auth before exhausting the write bucket"
     );
 
-    let second = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/tickets")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"room_id":"room_123"}"#))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let second_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/tickets")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"room_id":"room_123"}"#)),
+    )?;
+    let second = test_response(app.oneshot(second_request).await)?;
     assert_eq!(
         second.status(),
         StatusCode::TOO_MANY_REQUESTS,
         "ticket issuance should consume the write rate-limit bucket before unauthenticated requests reach impl authentication"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() {
+async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() -> TestResult {
     let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
         streaming_max_requests: 1,
         streaming_window_seconds: 60,
@@ -1599,40 +1601,35 @@ async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() {
         read_window_seconds: 60,
         ..synctv_core::RequestRateLimitConfig::default()
     });
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let first = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/providers/proxy/bilibili/v1/test.m3u8")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let first_request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/providers/proxy/bilibili/v1/test.m3u8")
+            .body(Body::empty()),
+    )?;
+    let first = test_response(app.clone().oneshot(first_request).await)?;
     assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
 
-    let second = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/providers/proxy/bilibili/v1/test.m3u8")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let second_request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/providers/proxy/bilibili/v1/test.m3u8")
+            .body(Body::empty()),
+    )?;
+    let second = test_response(app.oneshot(second_request).await)?;
     assert_eq!(
         second.status(),
         StatusCode::TOO_MANY_REQUESTS,
         "provider proxy endpoints must use the streaming rate-limit bucket"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_transport_layers_preserve_shared_http_metadata_without_global_timeout() {
+async fn test_transport_layers_preserve_shared_http_metadata_without_global_timeout() -> TestResult
+{
     let state = test_app_state();
     let app = apply_global_layers(
         Router::new().route(
@@ -1643,20 +1640,16 @@ async fn test_transport_layers_preserve_shared_http_metadata_without_global_time
             }),
         ),
         &state,
-    )
-    .expect("valid test router should build");
+    )?;
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/slow")
-                .header("x-request-id", "transport-no-timeout-123")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/slow")
+            .header("x-request-id", "transport-no-timeout-123")
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(
         response.status(),
@@ -1672,74 +1665,69 @@ async fn test_transport_layers_preserve_shared_http_metadata_without_global_time
         "request IDs must still be propagated without transport timeout wrapping"
     );
     assert_eq!(
-        response.headers().get("X-Frame-Options").unwrap(),
+        response
+            .headers()
+            .get("X-Frame-Options")
+            .ok_or_else(|| test_error("missing X-Frame-Options header"))?,
         "DENY",
         "shared security headers must still be applied after removing transport timeout routing"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_streaming_proxy_routes_preserve_options_preflight() {
+async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let rtmp_preflight = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("OPTIONS")
-                .uri("/api/providers/proxy/rtmp/ver1/playlist.m3u8")
-                .header(axum::http::header::ORIGIN, "https://example.com")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let rtmp_request = test_request(
+        Request::builder()
+            .method("OPTIONS")
+            .uri("/api/providers/proxy/rtmp/ver1/playlist.m3u8")
+            .header(axum::http::header::ORIGIN, "https://example.com")
+            .body(Body::empty()),
+    )?;
+    let rtmp_preflight = test_response(app.clone().oneshot(rtmp_request).await)?;
     assert_ne!(
         rtmp_preflight.status(),
         StatusCode::METHOD_NOT_ALLOWED,
         "RTMP proxy routes must continue handling browser preflight through the generic proxy route"
     );
 
-    let live_proxy_preflight = app
-        .oneshot(
-            Request::builder()
-                .method("OPTIONS")
-                .uri("/api/providers/proxy/live_proxy/ver1/playlist.m3u8")
-                .header(axum::http::header::ORIGIN, "https://example.com")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let live_proxy_request = test_request(
+        Request::builder()
+            .method("OPTIONS")
+            .uri("/api/providers/proxy/live_proxy/ver1/playlist.m3u8")
+            .header(axum::http::header::ORIGIN, "https://example.com")
+            .body(Body::empty()),
+    )?;
+    let live_proxy_preflight = test_response(app.oneshot(live_proxy_request).await)?;
     assert_ne!(
         live_proxy_preflight.status(),
         StatusCode::METHOD_NOT_ALLOWED,
         "live_proxy proxy routes must continue handling browser preflight through the generic proxy route"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_cors_preflight_does_not_advertise_credentials() {
+async fn test_cors_preflight_does_not_advertise_credentials() -> TestResult {
     let mut config = synctv_core::Config::default();
     config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
 
     let app = Router::new()
         .route("/test", get(|| async { "ok" }))
-        .layer(build_cors_layer(&config).expect("valid CORS config should build"));
+        .layer(build_cors_layer(&config)?);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("OPTIONS")
-                .uri("/test")
-                .header(axum::http::header::ORIGIN, "https://example.com")
-                .header(axum::http::header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("OPTIONS")
+            .uri("/test")
+            .header(axum::http::header::ORIGIN, "https://example.com")
+            .header(axum::http::header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert!(
         response
@@ -1748,102 +1736,96 @@ async fn test_cors_preflight_does_not_advertise_credentials() {
             .is_none(),
         "native-client-oriented CORS policy should not advertise credentialed browser requests by default"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_cors_preflight_allows_request_correlation_headers() {
+async fn test_cors_preflight_allows_request_correlation_headers() -> TestResult {
     let mut config = synctv_core::Config::default();
     config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
 
     let app = Router::new()
         .route("/test", get(|| async { "ok" }))
-        .layer(build_cors_layer(&config).expect("valid CORS config should build"));
+        .layer(build_cors_layer(&config)?);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("OPTIONS")
-                .uri("/test")
-                .header(axum::http::header::ORIGIN, "https://example.com")
-                .header(axum::http::header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
-                .header(
-                    axum::http::header::ACCESS_CONTROL_REQUEST_HEADERS,
-                    "x-request-id, traceparent, tracestate",
-                )
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("OPTIONS")
+            .uri("/test")
+            .header(axum::http::header::ORIGIN, "https://example.com")
+            .header(axum::http::header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+            .header(
+                axum::http::header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "x-request-id, traceparent, tracestate",
+            )
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(response.status(), StatusCode::OK);
 
     let allowed_headers = response
         .headers()
         .get(axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS)
-        .expect("preflight should advertise allowed headers")
+        .ok_or_else(|| test_error("preflight should advertise allowed headers"))?
         .to_str()
-        .expect("allowed headers should be valid ascii")
+        .map_err(|error| test_error(error.to_string()))?
         .to_ascii_lowercase();
     assert!(allowed_headers.contains("x-request-id"));
     assert!(allowed_headers.contains("traceparent"));
     assert!(allowed_headers.contains("tracestate"));
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_cors_actual_response_exposes_request_id_header() {
+async fn test_cors_actual_response_exposes_request_id_header() -> TestResult {
     let mut config = synctv_core::Config::default();
     config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
 
     let app = Router::new()
         .route("/test", get(|| async { "ok" }))
-        .layer(build_cors_layer(&config).expect("valid CORS config should build"));
+        .layer(build_cors_layer(&config)?);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/test")
-                .header(axum::http::header::ORIGIN, "https://example.com")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/test")
+            .header(axum::http::header::ORIGIN, "https://example.com")
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(response.status(), StatusCode::OK);
     let exposed_headers = response
         .headers()
         .get(axum::http::header::ACCESS_CONTROL_EXPOSE_HEADERS)
-        .expect("CORS response should expose request correlation response headers")
+        .ok_or_else(|| {
+            test_error("CORS response should expose request correlation response headers")
+        })?
         .to_str()
-        .expect("exposed headers should be valid ascii")
+        .map_err(|error| test_error(error.to_string()))?
         .to_ascii_lowercase();
     assert!(exposed_headers.contains("x-request-id"));
+    Ok(())
 }
 
 #[cfg(feature = "openapi")]
 #[tokio::test]
-async fn test_openapi_json_route_is_available() {
+async fn test_openapi_json_route_is_available() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api-docs/openapi.json")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .uri("/api-docs/openapi.json")
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    let json: serde_json::Value = serde_json::from_slice(&body).expect("valid openapi json");
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+    let json: serde_json::Value = serde_json::from_slice(&body)?;
     assert_eq!(json["openapi"], "3.1.0");
     assert!(json["paths"]["/api/auth/email/confirm"].is_object());
     assert!(json["paths"]["/api/auth/direct-password/register"].is_object());
@@ -1901,15 +1883,15 @@ async fn test_openapi_json_route_is_available() {
     let alist_login_ref = json["paths"]["/api/providers/alist/login"]["post"]["responses"]["200"]
         ["content"]["application/json"]["schema"]["$ref"]
         .as_str()
-        .expect("alist login schema ref");
+        .ok_or_else(|| test_error("alist login schema ref"))?;
     let auth_login_ref = json["paths"]["/api/auth/email/confirm"]["post"]["responses"]["200"]
         ["content"]["application/json"]["schema"]["$ref"]
         .as_str()
-        .expect("auth login schema ref");
+        .ok_or_else(|| test_error("auth login schema ref"))?;
     let emby_login_ref = json["paths"]["/api/providers/emby/login"]["post"]["responses"]["200"]
         ["content"]["application/json"]["schema"]["$ref"]
         .as_str()
-        .expect("emby login schema ref");
+        .ok_or_else(|| test_error("emby login schema ref"))?;
     assert_eq!(
         auth_login_ref,
         "#/components/schemas/synctv_client_LoginResponse"
@@ -1926,11 +1908,11 @@ async fn test_openapi_json_route_is_available() {
     let alist_login_schema_name = alist_login_ref
         .rsplit('/')
         .next()
-        .expect("alist login schema name");
+        .ok_or_else(|| test_error("alist login schema name"))?;
     let emby_login_schema_name = emby_login_ref
         .rsplit('/')
         .next()
-        .expect("emby login schema name");
+        .ok_or_else(|| test_error("emby login schema name"))?;
 
     let alist_login_properties =
         &json["components"]["schemas"][alist_login_schema_name]["properties"];
@@ -1965,25 +1947,20 @@ async fn test_openapi_json_route_is_available() {
         emby_login_properties["token"].is_null(),
         "emby login schema must not be overwritten by alist login response"
     );
+    Ok(())
 }
 
 #[cfg(feature = "openapi")]
 #[tokio::test]
-async fn test_swagger_ui_route_is_available() {
+async fn test_swagger_ui_route_is_available() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/swagger-ui/")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(Request::builder().uri("/swagger-ui/").body(Body::empty()))?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
 }
 
 #[test]
@@ -2016,7 +1993,8 @@ fn test_build_cors_layer_rejects_configured_origin_with_path() {
 }
 
 #[tokio::test]
-async fn test_provider_common_routes_rate_limit_invalid_tokens_before_authentication() {
+async fn test_provider_common_routes_rate_limit_invalid_tokens_before_authentication() -> TestResult
+{
     let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
         admin_max_requests: 1,
         admin_window_seconds: 60,
@@ -2024,46 +2002,40 @@ async fn test_provider_common_routes_rate_limit_invalid_tokens_before_authentica
         auth_window_seconds: 60,
         ..synctv_core::RequestRateLimitConfig::default()
     });
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let first = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/providers/instances")
-                .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let first_request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/providers/instances")
+            .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
+            .body(Body::empty()),
+    )?;
+    let first = test_response(app.clone().oneshot(first_request).await)?;
     assert_eq!(
         first.status(),
         StatusCode::UNAUTHORIZED,
         "first provider common request should still reach authentication while the admin bucket has capacity"
     );
 
-    let second = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/providers/instances")
-                .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let second_request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/providers/instances")
+            .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
+            .body(Body::empty()),
+    )?;
+    let second = test_response(app.oneshot(second_request).await)?;
     assert_eq!(
         second.status(),
         StatusCode::TOO_MANY_REQUESTS,
         "provider common routes should consume the admin rate-limit bucket before invalid-token authentication fails"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_provider_management_routes_do_not_consume_outer_read_bucket() {
+async fn test_provider_management_routes_do_not_consume_outer_read_bucket() -> TestResult {
     let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
         read_max_requests: 1,
         read_window_seconds: 60,
@@ -2071,49 +2043,43 @@ async fn test_provider_management_routes_do_not_consume_outer_read_bucket() {
         auth_window_seconds: 60,
         ..synctv_core::RequestRateLimitConfig::default()
     });
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let management = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/providers/alist/login")
-                .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    r#"{"host":"https://alist.example.com","username":"demo","password":"demo"}"#,
-                ))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let management_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/providers/alist/login")
+            .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"host":"https://alist.example.com","username":"demo","password":"demo"}"#,
+            )),
+    )?;
+    let management = test_response(app.clone().oneshot(management_request).await)?;
     assert_eq!(
         management.status(),
         StatusCode::UNAUTHORIZED,
         "provider auth routes should hit their own auth limiter without consuming the outer read bucket"
     );
 
-    let common = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/providers/instances")
-                .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let common_request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/providers/instances")
+            .header(axum::http::header::AUTHORIZATION, "Bearer malformed-token")
+            .body(Body::empty()),
+    )?;
+    let common = test_response(app.oneshot(common_request).await)?;
     assert_eq!(
         common.status(),
         StatusCode::UNAUTHORIZED,
         "provider management traffic must not drain the provider-common read bucket"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_ticket_routes_use_write_rate_limit_tier() {
+async fn test_ticket_routes_use_write_rate_limit_tier() -> TestResult {
     let state = test_app_state_with_websocket_runtime(synctv_core::RequestRateLimitConfig {
         write_max_requests: 1,
         write_window_seconds: 60,
@@ -2122,170 +2088,150 @@ async fn test_ticket_routes_use_write_rate_limit_tier() {
         ..synctv_core::RequestRateLimitConfig::default()
     })
     .await;
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let first = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/tickets")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"room_id":"room_123"}"#))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let first_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/tickets")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"room_id":"room_123"}"#)),
+    )?;
+    let first = test_response(app.clone().oneshot(first_request).await)?;
     assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
 
-    let second = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/tickets")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"room_id":"room_123"}"#))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let second_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/tickets")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"room_id":"room_123"}"#)),
+    )?;
+    let second = test_response(app.oneshot(second_request).await)?;
     assert_eq!(
         second.status(),
         StatusCode::TOO_MANY_REQUESTS,
         "ticket creation should consume the write rate-limit bucket before unauthenticated requests reach impl authentication"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_ticket_route_fails_closed_when_websocket_runtime_is_unavailable() {
+async fn test_ticket_route_fails_closed_when_websocket_runtime_is_unavailable() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/tickets")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"room_id":"room1234_abx"}"#))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/tickets")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"room_id":"room1234_abx"}"#)),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(
         response.status(),
         StatusCode::SERVICE_UNAVAILABLE,
         "ticket issuance must fail closed with service unavailable when websocket runtime dependencies are unavailable"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_websocket_route_fails_closed_when_runtime_is_unavailable_before_upgrade_checks() {
+async fn test_websocket_route_fails_closed_when_runtime_is_unavailable_before_upgrade_checks(
+) -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/ws/rooms/AbC123xYz890")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/ws/rooms/AbC123xYz890")
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(
         response.status(),
         StatusCode::SERVICE_UNAVAILABLE,
         "websocket runtime checks must fail closed before WebSocketUpgrade extraction would otherwise return 400"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_websocket_ticket_runtime_gate_does_not_leak_to_other_write_routes() {
+async fn test_websocket_ticket_runtime_gate_does_not_leak_to_other_write_routes() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/user")
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"new_username":"patched-name"}"#))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("PATCH")
+            .uri("/api/user")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"new_username":"patched-name"}"#)),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(
         response.status(),
         StatusCode::UNAUTHORIZED,
         "write routes unrelated to ticket issuance must keep their normal auth path when websocket runtime dependencies are unavailable"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_rtmp_publish_key_routes_are_reachable_under_api() {
+async fn test_rtmp_publish_key_routes_are_reachable_under_api() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let api_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/providers/rtmp/rooms/AbC123xYz890/publish-key/ZyX098wVu765")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let api_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/providers/rtmp/rooms/AbC123xYz890/publish-key/ZyX098wVu765")
+            .body(Body::empty()),
+    )?;
+    let api_response = test_response(app.clone().oneshot(api_request).await)?;
     assert_eq!(api_response.status(), StatusCode::UNAUTHORIZED);
 
-    let info_api_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/providers/rtmp/rooms/AbC123xYz890/info/ZyX098wVu765")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let info_request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/providers/rtmp/rooms/AbC123xYz890/info/ZyX098wVu765")
+            .body(Body::empty()),
+    )?;
+    let info_api_response = test_response(app.clone().oneshot(info_request).await)?;
     assert_eq!(info_api_response.status(), StatusCode::UNAUTHORIZED);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_oauth2_routes_fail_closed_when_service_missing() {
+async fn test_oauth2_routes_fail_closed_when_service_missing() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/oauth2/providers")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/oauth2/providers")
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_optional_user_execution_rejects_invalid_authorization_header() {
+async fn test_optional_user_execution_rejects_invalid_authorization_header() -> TestResult {
     let state = test_app_state();
     let request_meta = crate::impls::RequestMetadata::new(crate::impls::TransportProtocol::Http)
         .with_authorization(Some("Bearer malformed-token".to_string()))
-        .with_client_ip(Some("127.0.0.1".parse().expect("ip")));
+        .with_client_ip(Some("127.0.0.1".parse()?));
 
-    let err = state
+    let err = match state
         .shared_api_runtime
         .request_executor
         .execute_optional_user_with_control(
@@ -2294,129 +2240,119 @@ async fn test_optional_user_execution_rejects_invalid_authorization_header() {
             |_control, _authenticated| async move { Ok::<_, crate::impls::ApiError>(()) },
         )
         .await
-        .expect_err("invalid bearer token must be rejected on the strict optional-auth path");
+    {
+        Ok(()) => return Err(test_error("invalid bearer token must be rejected")),
+        Err(error) => error,
+    };
 
     assert!(
         matches!(err.classify(), crate::impls::ErrorKind::Unauthenticated),
         "strict optional-auth execution must reject invalid bearer headers instead of downgrading to anonymous",
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_http_request_metadata_rejects_non_utf8_authorization_header() {
+async fn test_http_request_metadata_rejects_non_utf8_authorization_header() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/rooms/hot")
-                .header(
-                    axum::http::header::AUTHORIZATION,
-                    axum::http::HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
-                )
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/rooms/hot")
+            .header(
+                axum::http::header::AUTHORIZATION,
+                axum::http::HeaderValue::from_bytes(&[0xff])?,
+            )
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_http_request_metadata_rejects_non_utf8_user_agent_header() {
+async fn test_http_request_metadata_rejects_non_utf8_user_agent_header() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/rooms/hot")
-                .header(
-                    axum::http::header::USER_AGENT,
-                    axum::http::HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
-                )
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/rooms/hot")
+            .header(
+                axum::http::header::USER_AGENT,
+                axum::http::HeaderValue::from_bytes(&[0xff])?,
+            )
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_notification_routes_fail_closed_when_service_missing() {
+async fn test_notification_routes_fail_closed_when_service_missing() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let read_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/notifications")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let read_request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/notifications")
+            .body(Body::empty()),
+    )?;
+    let read_response = test_response(app.clone().oneshot(read_request).await)?;
     assert_eq!(read_response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
-    let write_response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/notifications/read-all")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let write_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/notifications/read-all")
+            .body(Body::empty()),
+    )?;
+    let write_response = test_response(app.oneshot(write_request).await)?;
     assert_eq!(write_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_live_provider_routes_remain_registered_when_infrastructure_missing() {
+async fn test_live_provider_routes_remain_registered_when_infrastructure_missing() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/rooms/room_123/streams")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/rooms/room_123/streams")
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_websocket_routes_fail_closed_when_dependencies_missing() {
+async fn test_websocket_routes_fail_closed_when_dependencies_missing() -> TestResult {
     let state = test_app_state();
-    let app = register_all_routes(&state).with_state(state);
+    let app = register_all_routes().with_state(state);
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/ws/rooms/room1234_abx")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/ws/rooms/room1234_abx")
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
 
     assert_eq!(
         response.status(),
         StatusCode::SERVICE_UNAVAILABLE,
         "websocket route must fail closed before auth/query validation when runtime dependencies are unavailable"
     );
+    Ok(())
 }

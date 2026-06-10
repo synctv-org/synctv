@@ -1,8 +1,10 @@
 use super::*;
 use std::thread;
 
+type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
 #[test]
-fn half_open_allows_only_one_probe_request() {
+fn half_open_allows_only_one_probe_request() -> TestResult {
     let breaker = CircuitBreaker::new();
     breaker
         .consecutive_failures
@@ -20,7 +22,10 @@ fn half_open_allows_only_one_probe_request() {
 
     let allowed = handles
         .into_iter()
-        .map(|handle| handle.join().unwrap())
+        .map(std::thread::JoinHandle::join)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| anyhow::anyhow!("probe thread panicked"))?
+        .into_iter()
         .filter(|allowed| *allowed)
         .count();
 
@@ -28,6 +33,7 @@ fn half_open_allows_only_one_probe_request() {
         allowed, 1,
         "half-open state must allow exactly one probe request"
     );
+    Ok(())
 }
 
 #[test]

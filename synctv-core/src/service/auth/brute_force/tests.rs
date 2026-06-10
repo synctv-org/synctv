@@ -2,6 +2,20 @@ use super::tracker::parse_redis_attempt_state;
 use super::*;
 use crate::test_helpers::failing_redis_runtime;
 
+fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
+fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
+    match result {
+        Ok(_) => std::panic::panic_any(context.to_string()),
+        Err(error) => error,
+    }
+}
+
 fn runtime_without_snapshot() -> Arc<dyn crate::RedisConnectionRuntime> {
     failing_redis_runtime()
 }
@@ -22,33 +36,35 @@ async fn brute_force_protection_supports_service_trait_object() {
     let protection: Arc<dyn BruteForceProtectionService> =
         Arc::new(BruteForceProtection::in_memory("trait-test:".to_string()));
 
-    protection
-        .record_failure("trait-user", None)
-        .await
-        .expect("trait-object brute-force service should record failures");
-    protection
-        .check_allowed("trait-user", None)
-        .await
-        .expect("single failure should stay below the default lockout threshold");
+    ok(
+        protection.record_failure("trait-user", None).await,
+        "trait-object brute-force service should record failures",
+    );
+    ok(
+        protection.check_allowed("trait-user", None).await,
+        "single failure should stay below the default lockout threshold",
+    );
 }
 
 #[tokio::test]
-async fn brute_force_protection_from_shared_state_profile_returns_live_trait_object() {
-    let profile = SharedStateProfile::from_runtime(None, "trait-test:", false);
-    let protection = brute_force_protection_from_shared_state_profile(&profile)
-        .expect("standalone mode should allow local brute-force protection");
+async fn brute_force_protection_shared_state_builder_returns_live_service() {
+    let profile = SharedStateProfile::for_cluster_runtime(None, "trait-test:", false);
+    let protection = ok(
+        BruteForceProtection::from_shared_state_profile(&profile),
+        "standalone mode should allow local brute-force protection",
+    );
 
-    protection
-        .check_allowed("trait-user", None)
-        .await
-        .expect("trait-object builder should return a live service");
+    ok(
+        protection.check_allowed("trait-user", None).await,
+        "shared-state builder should return a live service",
+    );
 }
 
 #[test]
-fn brute_force_protection_from_shared_state_profile_requires_shared_runtime_in_cluster_mode() {
-    let profile = SharedStateProfile::from_runtime(None, "trait-test:", true);
-    let Err(error) = brute_force_protection_from_shared_state_profile(&profile) else {
-        panic!("cluster runtime must reject local brute-force protection");
+fn brute_force_protection_shared_state_builder_requires_shared_runtime_in_cluster_mode() {
+    let profile = SharedStateProfile::for_cluster_runtime(None, "trait-test:", true);
+    let Err(error) = BruteForceProtection::from_shared_state_profile(&profile) else {
+        std::panic::panic_any("cluster runtime must reject local brute-force protection");
     };
 
     assert!(
@@ -134,14 +150,20 @@ async fn in_memory_tracker_records_and_resets_attempts() {
     let key = "test:user";
     let now = chrono::Utc::now().timestamp();
 
-    tracker.record_failure(key, now, 900).await.unwrap();
-    tracker.record_failure(key, now, 900).await.unwrap();
+    ok(
+        tracker.record_failure(key, now, 900).await,
+        "first attempt should record",
+    );
+    ok(
+        tracker.record_failure(key, now, 900).await,
+        "second attempt should record",
+    );
 
-    let (count, _) = tracker.get_attempts(key).await.unwrap();
+    let (count, _) = ok(tracker.get_attempts(key).await, "attempts should load");
     assert_eq!(count, 2);
 
-    tracker.reset(key).await.unwrap();
-    let (count, _) = tracker.get_attempts(key).await.unwrap();
+    ok(tracker.reset(key).await, "attempts should reset");
+    let (count, _) = ok(tracker.get_attempts(key).await, "attempts should reload");
     assert_eq!(count, 0);
 }
 
@@ -168,23 +190,27 @@ fn fail_closed_backend_error_is_service_unavailable() {
                 "unexpected message: {message}"
             );
         }
-        other => panic!("expected ServiceUnavailable, got {other:?}"),
+        other => std::panic::panic_any(format!("expected ServiceUnavailable, got {other:?}")),
     }
 }
 
 #[test]
 fn parse_redis_attempt_state_accepts_json_state() {
     let raw = r#"{"count":7,"last_failure_at":12345}"#;
-    let parsed =
-        parse_redis_attempt_state("login:user", raw).expect("valid JSON state should parse");
+    let parsed = ok(
+        parse_redis_attempt_state("login:user", raw),
+        "valid JSON state should parse",
+    );
 
     assert_eq!(parsed, (7, 12345));
 }
 
 #[test]
 fn parse_redis_attempt_state_rejects_corrupt_state() {
-    let err = parse_redis_attempt_state("login:user", "{bad json")
-        .expect_err("corrupt state should fail closed");
+    let err = err(
+        parse_redis_attempt_state("login:user", "{bad json"),
+        "corrupt state should fail closed",
+    );
 
     assert!(
         matches!(err, Error::ServiceUnavailable(ref message) if message.contains("state is invalid")),

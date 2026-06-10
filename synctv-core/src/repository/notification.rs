@@ -65,7 +65,6 @@ struct NotificationListRow {
     is_read: bool,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
-    total_count: i64,
 }
 
 impl NotificationListRow {
@@ -117,6 +116,33 @@ impl NotificationRepository {
             }
         };
         qb.push(order_by);
+    }
+
+    fn push_list_filters(
+        qb: &mut sqlx::QueryBuilder<sqlx::Postgres>,
+        user_id: &UserId,
+        query: &NotificationListQuery,
+    ) {
+        qb.push(" WHERE user_id = ");
+        qb.push_bind(user_id);
+        qb.push(" AND created_at >= NOW() - INTERVAL '6 months'");
+
+        if let Some(search) = &query.search {
+            let pattern = super::query_builder::escape_ilike(search);
+            qb.push(" AND (title ILIKE ");
+            qb.push_bind(pattern.clone());
+            qb.push(" OR content ILIKE ");
+            qb.push_bind(pattern);
+            qb.push(")");
+        }
+        if let Some(notification_type) = &query.notification_type {
+            qb.push(" AND type = ");
+            qb.push_bind(i16::from(*notification_type));
+        }
+        if let Some(is_read) = query.is_read {
+            qb.push(" AND is_read = ");
+            qb.push_bind(is_read);
+        }
     }
 
     /// Create a new notification
@@ -227,10 +253,6 @@ impl NotificationRepository {
 
     /// List notifications for a user with pagination, filters, and total count.
     ///
-    /// Uses `COUNT(*) OVER()` window function to return both the list and total count
-    /// in a single query, avoiding a separate count round trip.
-    /// Dynamic query building eliminates the need for separate query variants per filter combo.
-    ///
     /// Adds a `created_at >= NOW() - INTERVAL '6 months'` filter to enable
     /// partition pruning on the range-partitioned `notifications` table.
     pub async fn list_by_user_with_count(
@@ -241,33 +263,16 @@ impl NotificationRepository {
         let limit = query.pagination.limit_i64()?;
         let offset = query.pagination.offset_i64()?;
 
+        let mut count_qb: sqlx::QueryBuilder<sqlx::Postgres> =
+            sqlx::QueryBuilder::new("SELECT COUNT(*) FROM notifications");
+        Self::push_list_filters(&mut count_qb, user_id, query);
+        let total = count_qb.build_query_scalar().fetch_one(&self.pool).await?;
+
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "SELECT id, user_id, type AS notification_type, title, content, data, is_read, created_at, updated_at, \
-             COUNT(*) OVER() AS total_count \
-             FROM notifications WHERE user_id = ",
+            "SELECT id, user_id, type AS notification_type, title, content, data, is_read, created_at, updated_at \
+             FROM notifications",
         );
-        qb.push_bind(user_id);
-
-        // Partition pruning: limit scan to the retention window (6 months)
-        qb.push(" AND created_at >= NOW() - INTERVAL '6 months'");
-
-        if let Some(search) = &query.search {
-            let pattern = super::query_builder::escape_ilike(search);
-            qb.push(" AND (title ILIKE ");
-            qb.push_bind(pattern.clone());
-            qb.push(" OR content ILIKE ");
-            qb.push_bind(pattern);
-            qb.push(")");
-        }
-        if let Some(notification_type) = &query.notification_type {
-            qb.push(" AND type = ");
-            qb.push_bind(i16::from(*notification_type));
-        }
-        if let Some(is_read) = query.is_read {
-            qb.push(" AND is_read = ");
-            qb.push_bind(is_read);
-        }
-
+        Self::push_list_filters(&mut qb, user_id, query);
         Self::push_list_order_by(&mut qb, query);
         qb.push(" LIMIT ");
         qb.push_bind(limit);
@@ -279,7 +284,6 @@ impl NotificationRepository {
             .fetch_all(&self.pool)
             .await?;
 
-        let total = rows.first().map_or(0, |row| row.total_count);
         let notifications = rows
             .into_iter()
             .map(NotificationListRow::into_notification)

@@ -35,9 +35,7 @@
 //!
 //! Operators should monitor for ERROR logs indicating audit failures:
 //! - "Audit sync fallback write also failed, event dropped"
-//! - "Failed to flush audit batch after all retries, events dropped"
-//!
-//! The `dropped_count()` method returns the total number of dropped events.
+//! - "Failed to flush audit batch; events dropped"
 //!
 //! ## Recovery Strategies
 //!
@@ -96,17 +94,6 @@ pub struct AuditEventParams {
 }
 
 #[derive(Debug, Clone)]
-pub struct PermissionAuditRequest {
-    pub actor_id: String,
-    pub actor_username: String,
-    pub target_type: AuditTargetType,
-    pub target_id: String,
-    pub old_permissions: u64,
-    pub new_permissions: u64,
-    pub is_grant: bool,
-}
-
-#[derive(Debug, Clone)]
 pub struct StreamKickAuditRequest {
     pub actor_id: String,
     pub actor_username: String,
@@ -117,42 +104,11 @@ pub struct StreamKickAuditRequest {
     pub user_agent: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct UserLoginAuditRequest {
-    pub user_id: String,
-    pub username: String,
-    pub login_method: String,
-    pub ip_address: Option<String>,
-    pub user_agent: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TokenIssuedAuditRequest {
-    pub user_id: String,
-    pub username: String,
-    pub token_type: String,
-    pub jti: String,
-    pub expires_at: i64,
-    pub ip_address: Option<String>,
-    pub user_agent: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TokenRefreshedAuditRequest {
-    pub user_id: String,
-    pub username: String,
-    pub old_jti: String,
-    pub new_jti: String,
-    pub ip_address: Option<String>,
-    pub user_agent: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TokenFamilyRevokedAuditRequest {
-    pub user_id: String,
-    pub username: String,
-    pub replayed_jti: String,
-    pub ip_address: Option<String>,
+fn optional_reason_json(reason: Option<&str>) -> serde_json::Value {
+    reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map_or(serde_json::Value::Null, serde_json::Value::from)
 }
 
 /// Internal record sent through the mpsc channel
@@ -230,12 +186,6 @@ impl AuditService {
             sender: None,
             dropped_count: Arc::new(AtomicUsize::new(0)),
         }
-    }
-
-    /// Return the number of events that were dropped because the buffer was full.
-    #[must_use]
-    pub fn dropped_count(&self) -> usize {
-        self.dropped_count.load(Ordering::Relaxed)
     }
 
     pub async fn log(&self, params: AuditEventParams) -> Result<()> {
@@ -401,29 +351,6 @@ impl AuditService {
         .await
     }
 
-    pub async fn log_permission_changed(&self, request: PermissionAuditRequest) -> Result<()> {
-        let action = if request.is_grant {
-            AuditAction::PermissionGranted
-        } else {
-            AuditAction::PermissionRevoked
-        };
-
-        self.log(AuditEventParams {
-            actor_id: request.actor_id,
-            actor_username: request.actor_username,
-            action,
-            target_type: request.target_type,
-            target_id: Some(request.target_id),
-            details: serde_json::json!({
-                "old_permissions": request.old_permissions,
-                "new_permissions": request.new_permissions
-            }),
-            ip_address: None,
-            user_agent: None,
-        })
-        .await
-    }
-
     /// Log room deletion
     pub async fn log_room_deleted(
         &self,
@@ -455,7 +382,7 @@ impl AuditService {
             details: serde_json::json!({
                 "room_id": request.room_id,
                 "media_id": request.media_id,
-                "reason": request.reason.unwrap_or_default()
+                "reason": optional_reason_json(request.reason.as_deref())
             }),
             ip_address: request.ip_address,
             user_agent: request.user_agent,
@@ -492,10 +419,6 @@ impl AuditService {
         .await
     }
 
-    pub async fn log_user_login(&self, request: UserLoginAuditRequest) -> Result<()> {
-        self.log(user_login_event_params(request)).await
-    }
-
     /// Log a user logout event.
     ///
     /// Records when a user explicitly logs out (access token blacklisted).
@@ -510,37 +433,6 @@ impl AuditService {
             user_id, username, ip_address, user_agent,
         ))
         .await
-    }
-
-    pub async fn log_token_issued(&self, request: TokenIssuedAuditRequest) -> Result<()> {
-        self.log(token_issued_event_params(request)).await
-    }
-
-    pub async fn log_token_refreshed(&self, request: TokenRefreshedAuditRequest) -> Result<()> {
-        self.log(token_refreshed_event_params(request)).await
-    }
-
-    pub async fn log_token_family_revoked(
-        &self,
-        request: TokenFamilyRevokedAuditRequest,
-    ) -> Result<()> {
-        self.log(token_family_revoked_event_params(request)).await
-    }
-}
-
-fn user_login_event_params(request: UserLoginAuditRequest) -> AuditEventParams {
-    AuditEventParams {
-        actor_id: request.user_id.clone(),
-        actor_username: request.username.clone(),
-        action: AuditAction::UserLogin,
-        target_type: AuditTargetType::User,
-        target_id: Some(request.user_id),
-        details: serde_json::json!({
-            "login_method": request.login_method,
-            "username": request.username
-        }),
-        ip_address: request.ip_address,
-        user_agent: request.user_agent,
     }
 }
 
@@ -559,57 +451,6 @@ fn user_logout_event_params(
         details: serde_json::json!({}),
         ip_address,
         user_agent,
-    }
-}
-
-fn token_issued_event_params(request: TokenIssuedAuditRequest) -> AuditEventParams {
-    let target_id = format!("{}:{}", request.user_id, request.jti);
-    AuditEventParams {
-        actor_id: request.user_id,
-        actor_username: request.username,
-        action: AuditAction::TokenIssued,
-        target_type: AuditTargetType::Token,
-        target_id: Some(target_id),
-        details: serde_json::json!({
-            "token_type": request.token_type,
-            "jti": request.jti,
-            "expires_at": request.expires_at
-        }),
-        ip_address: request.ip_address,
-        user_agent: request.user_agent,
-    }
-}
-
-fn token_refreshed_event_params(request: TokenRefreshedAuditRequest) -> AuditEventParams {
-    let target_id = format!("{}:{}", request.user_id, request.new_jti);
-    AuditEventParams {
-        actor_id: request.user_id,
-        actor_username: request.username,
-        action: AuditAction::TokenRefreshed,
-        target_type: AuditTargetType::Token,
-        target_id: Some(target_id),
-        details: serde_json::json!({
-            "old_jti": request.old_jti,
-            "new_jti": request.new_jti
-        }),
-        ip_address: request.ip_address,
-        user_agent: request.user_agent,
-    }
-}
-
-fn token_family_revoked_event_params(request: TokenFamilyRevokedAuditRequest) -> AuditEventParams {
-    AuditEventParams {
-        actor_id: request.user_id.clone(),
-        actor_username: request.username,
-        action: AuditAction::TokenFamilyRevoked,
-        target_type: AuditTargetType::Token,
-        target_id: Some(request.user_id),
-        details: serde_json::json!({
-            "replayed_jti": request.replayed_jti,
-            "reason": "token_replay_detected"
-        }),
-        ip_address: request.ip_address,
-        user_agent: None,
     }
 }
 
@@ -748,19 +589,11 @@ impl Drop for AuditFlushHandle {
     }
 }
 
-/// Maximum retry attempts for `flush_batch`
-const FLUSH_MAX_RETRIES: u32 = 3;
-/// Base delay in milliseconds for exponential backoff on flush retries
-const FLUSH_RETRY_BASE_MS: u64 = 100;
-
 fn parse_actor_id_for_storage(actor_id: &str) -> Option<i64> {
     actor_id.parse::<i64>().ok().filter(|id| *id > 0)
 }
 
-/// Flush a batch of audit records to the database with retry on failure.
-///
-/// Uses exponential backoff (100ms, 200ms, 400ms) before giving up and
-/// counting the batch as dropped.
+/// Flush a batch of audit records to the database.
 async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count: &AtomicUsize) {
     let batch_size = buffer.len();
     tracing::debug!(batch_size = batch_size, "Flushing audit event batch");
@@ -788,83 +621,66 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
         created_ats.push(record.created_at);
     }
 
-    for attempt in 0..FLUSH_MAX_RETRIES {
-        let query = r"
-            INSERT INTO audit_logs (
-                actor_id, actor_username, action, target_type, target_id,
-                details, ip_address, user_agent, created_at
-            )
-            SELECT actor_id::bigint,
-                   actor_username::text,
-                   action::smallint,
-                   target_type::smallint,
-                   target_id::text,
-                   details::jsonb,
-                   ip_address::text,
-                   user_agent::text,
-                   created_at::timestamptz
-            FROM UNNEST(
-                $1::bigint[],
-                $2::text[],
-                $3::smallint[],
-                $4::smallint[],
-                $5::text[],
-                $6::jsonb[],
-                $7::text[],
-                $8::text[],
-                $9::timestamptz[]
-            ) AS t(
-                actor_id,
-                actor_username,
-                action,
-                target_type,
-                target_id,
-                details,
-                ip_address,
-                user_agent,
-                created_at
-            )
-            ";
-        match sqlx::query(query)
-            .bind(&actor_ids)
-            .bind(&actor_usernames)
-            .bind(&actions)
-            .bind(&target_types)
-            .bind(&target_ids)
-            .bind(&details_list)
-            .bind(&ip_addresses)
-            .bind(&user_agents)
-            .bind(&created_ats)
-            .execute(pool)
-            .await
-        {
-            Ok(_) => {
-                tracing::debug!(batch_size = batch_size, "Audit batch flushed successfully");
-                buffer.clear();
-                return;
-            }
-            Err(e) => {
-                if attempt + 1 < FLUSH_MAX_RETRIES {
-                    let backoff_ms = FLUSH_RETRY_BASE_MS * (1 << attempt);
-                    tracing::warn!(
-                        batch_size = batch_size,
-                        attempt = attempt + 1,
-                        max_retries = FLUSH_MAX_RETRIES,
-                        backoff_ms = backoff_ms,
-                        error = %e,
-                        "Audit batch flush failed, retrying"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                } else {
-                    dropped_count.fetch_add(batch_size, Ordering::Relaxed);
-                    tracing::error!(
-                        batch_size = batch_size,
-                        attempts = FLUSH_MAX_RETRIES,
-                        error = %e,
-                        "Failed to flush audit batch after all retries, events dropped"
-                    );
-                }
-            }
+    let query = r"
+        INSERT INTO audit_logs (
+            actor_id, actor_username, action, target_type, target_id,
+            details, ip_address, user_agent, created_at
+        )
+        SELECT actor_id::bigint,
+               actor_username::text,
+               action::smallint,
+               target_type::smallint,
+               target_id::text,
+               details::jsonb,
+               ip_address::text,
+               user_agent::text,
+               created_at::timestamptz
+        FROM UNNEST(
+            $1::bigint[],
+            $2::text[],
+            $3::smallint[],
+            $4::smallint[],
+            $5::text[],
+            $6::jsonb[],
+            $7::text[],
+            $8::text[],
+            $9::timestamptz[]
+        ) AS t(
+            actor_id,
+            actor_username,
+            action,
+            target_type,
+            target_id,
+            details,
+            ip_address,
+            user_agent,
+            created_at
+        )
+        ";
+    match sqlx::query(query)
+        .bind(&actor_ids)
+        .bind(&actor_usernames)
+        .bind(&actions)
+        .bind(&target_types)
+        .bind(&target_ids)
+        .bind(&details_list)
+        .bind(&ip_addresses)
+        .bind(&user_agents)
+        .bind(&created_ats)
+        .execute(pool)
+        .await
+    {
+        Ok(_) => {
+            tracing::debug!(batch_size = batch_size, "Audit batch flushed successfully");
+            buffer.clear();
+        }
+        Err(e) => {
+            dropped_count.fetch_add(batch_size, Ordering::Relaxed);
+            tracing::error!(
+                batch_size = batch_size,
+                error = %e,
+                "Failed to flush audit batch; events dropped"
+            );
         }
     }
 
@@ -874,6 +690,20 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    #[test]
+    fn optional_reason_json_preserves_missing_and_trims_present_reason() {
+        assert!(optional_reason_json(None).is_null());
+        assert!(optional_reason_json(Some("   ")).is_null());
+        assert_eq!(optional_reason_json(Some("  abuse  ")), "abuse");
+    }
 
     #[test]
     fn test_audit_record_fields() {
@@ -897,24 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_audit_request_mapping_preserves_identity_and_metadata() {
-        let login = user_login_event_params(UserLoginAuditRequest {
-            user_id: "user_123".to_string(),
-            username: "alice".to_string(),
-            login_method: "password".to_string(),
-            ip_address: Some("192.168.1.1".to_string()),
-            user_agent: Some("Mozilla/5.0".to_string()),
-        });
-        assert_eq!(login.actor_id, "user_123");
-        assert_eq!(login.actor_username, "alice");
-        assert_eq!(login.action, AuditAction::UserLogin);
-        assert_eq!(login.target_type, AuditTargetType::User);
-        assert_eq!(login.target_id.as_deref(), Some("user_123"));
-        assert_eq!(login.details["login_method"], "password");
-        assert_eq!(login.details["username"], "alice");
-        assert_eq!(login.ip_address.as_deref(), Some("192.168.1.1"));
-        assert_eq!(login.user_agent.as_deref(), Some("Mozilla/5.0"));
-
+    fn user_logout_event_params_preserves_identity_and_metadata() {
         let logout = user_logout_event_params(
             "user_123".to_string(),
             "alice".to_string(),
@@ -932,55 +745,13 @@ mod tests {
     }
 
     #[test]
-    fn token_audit_request_mapping_preserves_jti_details() {
-        let issued = token_issued_event_params(TokenIssuedAuditRequest {
-            user_id: "user_123".to_string(),
-            username: "alice".to_string(),
-            token_type: "access".to_string(),
-            jti: "jti_abc123".to_string(),
-            expires_at: 1_735_689_600,
-            ip_address: Some("192.168.1.1".to_string()),
-            user_agent: Some("Mozilla/5.0".to_string()),
-        });
-        assert_eq!(issued.action, AuditAction::TokenIssued);
-        assert_eq!(issued.target_type, AuditTargetType::Token);
-        assert_eq!(issued.target_id.as_deref(), Some("user_123:jti_abc123"));
-        assert_eq!(issued.details["token_type"], "access");
-        assert_eq!(issued.details["jti"], "jti_abc123");
-        assert_eq!(issued.details["expires_at"], 1_735_689_600);
-
-        let refreshed = token_refreshed_event_params(TokenRefreshedAuditRequest {
-            user_id: "user_123".to_string(),
-            username: "alice".to_string(),
-            old_jti: "jti_old_123".to_string(),
-            new_jti: "jti_new_456".to_string(),
-            ip_address: Some("192.168.1.1".to_string()),
-            user_agent: Some("Mozilla/5.0".to_string()),
-        });
-        assert_eq!(refreshed.action, AuditAction::TokenRefreshed);
-        assert_eq!(refreshed.target_id.as_deref(), Some("user_123:jti_new_456"));
-        assert_eq!(refreshed.details["old_jti"], "jti_old_123");
-        assert_eq!(refreshed.details["new_jti"], "jti_new_456");
-
-        let revoked = token_family_revoked_event_params(TokenFamilyRevokedAuditRequest {
-            user_id: "user_123".to_string(),
-            username: "alice".to_string(),
-            replayed_jti: "jti_replayed_789".to_string(),
-            ip_address: Some("192.168.1.1".to_string()),
-        });
-        assert_eq!(revoked.action, AuditAction::TokenFamilyRevoked);
-        assert_eq!(revoked.target_id.as_deref(), Some("user_123"));
-        assert_eq!(revoked.details["replayed_jti"], "jti_replayed_789");
-        assert_eq!(revoked.details["reason"], "token_replay_detected");
-        assert_eq!(revoked.ip_address.as_deref(), Some("192.168.1.1"));
-        assert!(revoked.user_agent.is_none());
-    }
-
-    #[test]
     fn test_audit_action_and_target_display_parse_roundtrip() {
         assert_eq!(AuditAction::TokenIssued.to_string(), "token_issued");
         assert_eq!(
-            "ROOM_OWNERSHIP_TRANSFERRED".parse::<AuditAction>().unwrap(),
+            ok(
+                "ROOM_OWNERSHIP_TRANSFERRED".parse::<AuditAction>(),
+                "audit action should parse",
+            ),
             AuditAction::RoomOwnershipTransferred
         );
         assert!("unknown_action".parse::<AuditAction>().is_err());
@@ -990,11 +761,17 @@ mod tests {
             "provider_instance"
         );
         assert_eq!(
-            "STREAM".parse::<AuditTargetType>().unwrap(),
+            ok(
+                "STREAM".parse::<AuditTargetType>(),
+                "audit target type should parse",
+            ),
             AuditTargetType::Stream
         );
         assert_eq!(
-            "CHAT_MESSAGE".parse::<AuditTargetType>().unwrap(),
+            ok(
+                "CHAT_MESSAGE".parse::<AuditTargetType>(),
+                "audit target type should parse",
+            ),
             AuditTargetType::ChatMessage
         );
         assert!("unknown_target".parse::<AuditTargetType>().is_err());

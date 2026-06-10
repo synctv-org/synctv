@@ -18,7 +18,6 @@ pub struct ClusterServer {
     auth: Option<ClusterAuthInterceptor>,
 }
 
-#[allow(clippy::result_large_err)]
 impl ClusterServer {
     #[must_use]
     pub fn new<N>(node_registry: Arc<N>) -> Self
@@ -51,6 +50,7 @@ impl ClusterServer {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn authorize<T>(&self, request: &Request<T>) -> std::result::Result<(), Status> {
         let Some(auth) = &self.auth else {
             tracing::error!(

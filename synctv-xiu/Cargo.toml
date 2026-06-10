@@ -57,7 +57,6 @@ hex.workspace = true
 dashmap.workspace = true
 parking_lot.workspace = true
 lru.workspace = true
-rayon.workspace = true
 
 # IDs
 uuid.workspace = true

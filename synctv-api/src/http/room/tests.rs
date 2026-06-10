@@ -14,10 +14,27 @@ use synctv_proto::client::{
     ListPlaylistsRequest, ListRoomsRequest, MoveMediaRequest, UpdatePlaybackRequest,
 };
 
+type TestResult<T = ()> = anyhow::Result<T>;
+
+fn test_error(message: impl Into<String>) -> anyhow::Error {
+    anyhow::anyhow!(message.into())
+}
+
+fn app_ok<T>(result: Result<T, crate::http::AppError>) -> TestResult<T> {
+    result.map_err(|error| test_error(format!("{error:?}")))
+}
+
+fn app_err<T>(result: Result<T, crate::http::AppError>) -> TestResult<crate::http::AppError> {
+    match result {
+        Ok(_) => Err(test_error("expected HTTP route error")),
+        Err(error) => Ok(error),
+    }
+}
+
 #[test]
-fn test_update_playback_deserialize_playing_update() {
+fn test_update_playback_deserialize_playing_update() -> TestResult {
     let json = r#"{"type":1,"playing":true}"#;
-    let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+    let req: UpdatePlaybackRequest = serde_json::from_str(json)?;
     assert_eq!(
         req.r#type,
         synctv_proto::client::PlaybackUpdateType::Play as i32
@@ -25,36 +42,45 @@ fn test_update_playback_deserialize_playing_update() {
     assert_eq!(req.playing, Some(true));
     assert!(req.position.is_none());
     assert!(req.speed.is_none());
+    Ok(())
 }
 
 #[test]
-fn test_update_playback_deserialize_seek_update() {
+fn test_update_playback_deserialize_seek_update() -> TestResult {
     let json = r#"{"type":3,"position": 42.5}"#;
-    let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+    let req: UpdatePlaybackRequest = serde_json::from_str(json)?;
     assert_eq!(
         req.r#type,
         synctv_proto::client::PlaybackUpdateType::Seek as i32
     );
-    assert!((req.position.unwrap() - 42.5).abs() < f64::EPSILON);
+    let position = req
+        .position
+        .ok_or_else(|| test_error("seek update should include position"))?;
+    assert!((position - 42.5).abs() < f64::EPSILON);
     assert!(req.speed.is_none());
+    Ok(())
 }
 
 #[test]
-fn test_update_playback_deserialize_speed_update() {
+fn test_update_playback_deserialize_speed_update() -> TestResult {
     let json = r#"{"type":4,"speed": 2.0}"#;
-    let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+    let req: UpdatePlaybackRequest = serde_json::from_str(json)?;
     assert_eq!(
         req.r#type,
         synctv_proto::client::PlaybackUpdateType::Speed as i32
     );
     assert!(req.position.is_none());
-    assert!((req.speed.unwrap() - 2.0).abs() < f64::EPSILON);
+    let speed = req
+        .speed
+        .ok_or_else(|| test_error("speed update should include speed"))?;
+    assert!((speed - 2.0).abs() < f64::EPSILON);
+    Ok(())
 }
 
 #[test]
-fn test_update_playback_deserialize_full_state() {
+fn test_update_playback_deserialize_full_state() -> TestResult {
     let json = r#"{"type":3,"playing":false,"position":42.5,"speed":1.25,"version":9}"#;
-    let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+    let req: UpdatePlaybackRequest = serde_json::from_str(json)?;
     assert_eq!(
         req.r#type,
         synctv_proto::client::PlaybackUpdateType::Seek as i32
@@ -63,72 +89,70 @@ fn test_update_playback_deserialize_full_state() {
     assert_eq!(req.position, Some(42.5));
     assert_eq!(req.speed, Some(1.25));
     assert_eq!(req.version, Some(9));
+    Ok(())
 }
 
 #[test]
-fn test_watch_after_event_sequence_prefers_last_event_id() {
+fn test_watch_after_event_sequence_prefers_last_event_id() -> TestResult {
     let mut headers = HeaderMap::new();
     headers.insert("last-event-id", HeaderValue::from_static("42"));
 
-    let sequence =
-        watch_after_event_sequence(&headers, Some(7)).expect("valid Last-Event-ID should parse");
+    let sequence = app_ok(watch_after_event_sequence(&headers, Some(7)))?;
 
     assert_eq!(sequence, Some(42));
+    Ok(())
 }
 
 #[test]
-fn test_watch_after_event_sequence_rejects_invalid_last_event_id() {
+fn test_watch_after_event_sequence_rejects_invalid_last_event_id() -> TestResult {
     let mut headers = HeaderMap::new();
     headers.insert("last-event-id", HeaderValue::from_static("event-42"));
 
-    let error = watch_after_event_sequence(&headers, Some(7))
-        .expect_err("invalid Last-Event-ID should fail");
+    let error = app_err(watch_after_event_sequence(&headers, Some(7)))?;
 
     assert_eq!(error.status, StatusCode::BAD_REQUEST);
     assert!(error.message.contains("Last-Event-ID"));
+    Ok(())
 }
 
 #[test]
-fn test_watch_after_event_sequence_rejects_negative_last_event_id() {
+fn test_watch_after_event_sequence_rejects_negative_last_event_id() -> TestResult {
     let mut headers = HeaderMap::new();
     headers.insert("last-event-id", HeaderValue::from_static("-1"));
 
-    let error = watch_after_event_sequence(&headers, Some(7))
-        .expect_err("negative Last-Event-ID should fail");
+    let error = app_err(watch_after_event_sequence(&headers, Some(7)))?;
 
     assert_eq!(error.status, StatusCode::BAD_REQUEST);
     assert!(error.message.contains("event sequence"));
+    Ok(())
 }
 
 #[test]
-fn test_watch_after_event_sequence_rejects_negative_query_sequence() {
+fn test_watch_after_event_sequence_rejects_negative_query_sequence() -> TestResult {
     let headers = HeaderMap::new();
 
-    let error = watch_after_event_sequence(&headers, Some(-1))
-        .expect_err("negative query event sequence should fail");
+    let error = app_err(watch_after_event_sequence(&headers, Some(-1)))?;
 
     assert_eq!(error.status, StatusCode::BAD_REQUEST);
     assert!(error.message.contains("event sequence"));
+    Ok(())
 }
 
 #[test]
-fn test_watch_after_event_sequence_rejects_non_utf8_last_event_id() {
+fn test_watch_after_event_sequence_rejects_non_utf8_last_event_id() -> TestResult {
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "last-event-id",
-        HeaderValue::from_bytes(&[0xff]).expect("header bytes should build"),
-    );
+    headers.insert("last-event-id", HeaderValue::from_bytes(&[0xff])?);
 
-    let error = watch_after_event_sequence(&headers, Some(7))
-        .expect_err("non-UTF-8 Last-Event-ID should fail");
+    let error = app_err(watch_after_event_sequence(&headers, Some(7)))?;
 
     assert_eq!(error.status, StatusCode::BAD_REQUEST);
     assert!(error.message.contains("Last-Event-ID"));
+    Ok(())
 }
 
 #[test]
-fn test_build_get_playback_request_parses_generic_profile_query() {
-    let request = build_get_playback_request(&GetPlaybackQuery {
+fn test_build_get_playback_request_parses_generic_profile_query() -> TestResult {
+    let request = app_ok(build_get_playback_request(&GetPlaybackQuery {
         delivery_preference: Some("transcode".to_string()),
         max_streaming_bitrate: Some(8_000_000),
         max_audio_channels: Some(2),
@@ -136,12 +160,11 @@ fn test_build_get_playback_request_parses_generic_profile_query() {
         containers: Some("mp4,webm".to_string()),
         audio_capability: Some("surround".to_string()),
         subtitle_preference: Some("embedded_or_external".to_string()),
-    })
-    .expect("playback query should parse");
+    }))?;
 
     let profile = request
         .playback_client_profile
-        .expect("query should produce playback client profile");
+        .ok_or_else(|| test_error("query should produce playback client profile"))?;
     assert_eq!(
         profile.delivery_preference,
         synctv_proto::client::PlaybackDeliveryPreference::Transcode as i32
@@ -170,14 +193,15 @@ fn test_build_get_playback_request_parses_generic_profile_query() {
         profile.subtitle_preference,
         synctv_proto::client::PlaybackSubtitlePreference::EmbeddedOrExternal as i32
     );
+    Ok(())
 }
 
 #[test]
-fn test_build_get_playback_request_omits_profile_when_query_is_empty() {
-    let request = build_get_playback_request(&GetPlaybackQuery::default())
-        .expect("empty query should be valid");
+fn test_build_get_playback_request_omits_profile_when_query_is_empty() -> TestResult {
+    let request = app_ok(build_get_playback_request(&GetPlaybackQuery::default()))?;
 
     assert!(request.playback_client_profile.is_none());
+    Ok(())
 }
 
 #[test]
@@ -271,8 +295,8 @@ fn test_build_get_playback_request_rejects_invalid_audio_capability() {
 }
 
 #[test]
-fn test_build_get_playback_request_rejects_invalid_subtitle_preference() {
-    let error = build_get_playback_request(&GetPlaybackQuery {
+fn test_build_get_playback_request_rejects_invalid_subtitle_preference() -> TestResult {
+    let error = app_err(build_get_playback_request(&GetPlaybackQuery {
         delivery_preference: None,
         max_streaming_bitrate: None,
         max_audio_channels: None,
@@ -280,17 +304,17 @@ fn test_build_get_playback_request_rejects_invalid_subtitle_preference() {
         containers: None,
         audio_capability: None,
         subtitle_preference: Some("burn_in".to_string()),
-    })
-    .expect_err("unknown subtitle preference must be rejected");
+    }))?;
 
     assert!(error.message.contains("subtitle_preference"), "{error:?}");
+    Ok(())
 }
 
 #[test]
-fn test_members_query_params_deserialize_sorting_and_filters() {
+fn test_members_query_params_deserialize_sorting_and_filters() -> TestResult {
     let json =
         r#"{"page":2,"page_size":25,"search":"alice","role":2,"sort_by":2,"sort_direction":1}"#;
-    let query: GetRoomMembersRequest = serde_json::from_str(json).expect("deserialize");
+    let query: GetRoomMembersRequest = serde_json::from_str(json)?;
     assert_eq!(query.page, 2);
     assert_eq!(query.page_size, 25);
     assert_eq!(query.search, "alice");
@@ -306,6 +330,7 @@ fn test_members_query_params_deserialize_sorting_and_filters() {
         query.sort_direction,
         synctv_proto::client::SortDirection::Asc as i32
     );
+    Ok(())
 }
 
 #[test]
@@ -323,21 +348,21 @@ fn test_scalar_query_parsers_reject_invalid_values() {
 }
 
 #[test]
-fn test_list_rooms_query_deserializes_proto_defaults() {
-    let query: ListRoomsRequest = serde_urlencoded::from_str("").unwrap();
+fn test_list_rooms_query_deserializes_proto_defaults() -> TestResult {
+    let query: ListRoomsRequest = serde_urlencoded::from_str("")?;
 
     assert_eq!(query.page, 0);
     assert_eq!(query.page_size, 0);
     assert!(query.search.is_empty());
     assert_eq!(query.sort_by, 0);
     assert_eq!(query.sort_direction, 0);
+    Ok(())
 }
 
 #[test]
-fn test_list_rooms_query_deserializes_explicit_values() {
+fn test_list_rooms_query_deserializes_explicit_values() -> TestResult {
     let query: ListRoomsRequest =
-        serde_urlencoded::from_str("page=2&page_size=25&search=room&sort_by=4&sort_direction=1")
-            .unwrap();
+        serde_urlencoded::from_str("page=2&page_size=25&search=room&sort_by=4&sort_direction=1")?;
 
     assert_eq!(query.page, 2);
     assert_eq!(query.page_size, 25);
@@ -350,68 +375,75 @@ fn test_list_rooms_query_deserializes_explicit_values() {
         query.sort_direction,
         synctv_proto::client::SortDirection::Asc as i32
     );
+    Ok(())
 }
 
 #[test]
-fn test_check_room_path_deserializes_proto_field_name() {
+fn test_check_room_path_deserializes_proto_field_name() -> TestResult {
     let req: synctv_proto::client::CheckRoomRequest =
-        serde_json::from_str(r#"{"room_id":"room_1"}"#).unwrap();
+        serde_json::from_str(r#"{"room_id":"room_1"}"#)?;
 
     assert_eq!(req.room_id, "room_1");
+    Ok(())
 }
 
 #[test]
-fn test_room_path_request_deserializes_proto_field_name() {
+fn test_room_path_request_deserializes_proto_field_name() -> TestResult {
     let req: synctv_proto::client::RoomPathRequest =
-        serde_json::from_str(r#"{"room_id":"room_1"}"#).unwrap();
+        serde_json::from_str(r#"{"room_id":"room_1"}"#)?;
 
     assert_eq!(req.room_id, "room_1");
+    Ok(())
 }
 
 #[test]
-fn test_room_media_target_path_request_deserializes_proto_field_names() {
+fn test_room_media_target_path_request_deserializes_proto_field_names() -> TestResult {
     let req: synctv_proto::client::RoomMediaTargetPathRequest =
-        serde_json::from_str(r#"{"room_id":"room_1","media_id":"med_1"}"#).unwrap();
+        serde_json::from_str(r#"{"room_id":"room_1","media_id":"med_1"}"#)?;
 
     assert_eq!(req.room_id, "room_1");
     assert_eq!(req.media_id, "med_1");
+    Ok(())
 }
 
 #[test]
-fn test_kick_room_stream_body_does_not_require_path_media_id() {
-    let empty: super::KickRoomStreamBody = serde_json::from_str("{}").unwrap();
+fn test_kick_room_stream_body_does_not_require_path_media_id() -> TestResult {
+    let empty: super::KickRoomStreamBody = serde_json::from_str("{}")?;
     assert_eq!(empty.reason, "");
 
     let with_reason: super::KickRoomStreamBody =
-        serde_json::from_str(r#"{"reason":"moderation"}"#).unwrap();
+        serde_json::from_str(r#"{"reason":"moderation"}"#)?;
     assert_eq!(with_reason.reason, "moderation");
+    Ok(())
 }
 
 #[test]
-fn test_room_playlist_target_path_request_deserializes_proto_field_names() {
+fn test_room_playlist_target_path_request_deserializes_proto_field_names() -> TestResult {
     let req: synctv_proto::client::RoomPlaylistTargetPathRequest =
-        serde_json::from_str(r#"{"room_id":"room_1","playlist_id":"pl_1"}"#).unwrap();
+        serde_json::from_str(r#"{"room_id":"room_1","playlist_id":"pl_1"}"#)?;
 
     assert_eq!(req.room_id, "room_1");
     assert_eq!(req.playlist_id, "pl_1");
+    Ok(())
 }
 
 #[test]
-fn test_list_playlists_query_deserializes_proto_defaults() {
-    let query: ListPlaylistsRequest = serde_urlencoded::from_str("").unwrap();
+fn test_list_playlists_query_deserializes_proto_defaults() -> TestResult {
+    let query: ListPlaylistsRequest = serde_urlencoded::from_str("")?;
 
     assert_eq!(query.page, 0);
     assert_eq!(query.page_size, 0);
     assert_eq!(query.sort_by, 0);
     assert_eq!(query.sort_direction, 0);
     assert_eq!(query.availability, 0);
+    Ok(())
 }
 
 #[test]
-fn test_list_playlists_query_deserializes_explicit_values() {
-    let query: ListPlaylistsRequest =
-        serde_urlencoded::from_str("page=2&page_size=25&sort_by=4&sort_direction=2&availability=2")
-            .unwrap();
+fn test_list_playlists_query_deserializes_explicit_values() -> TestResult {
+    let query: ListPlaylistsRequest = serde_urlencoded::from_str(
+        "page=2&page_size=25&sort_by=4&sort_direction=2&availability=2",
+    )?;
 
     assert_eq!(query.page, 2);
     assert_eq!(query.page_size, 25);
@@ -427,6 +459,7 @@ fn test_list_playlists_query_deserializes_explicit_values() {
         query.availability,
         synctv_proto::client::ResourceAvailabilityFilter::Unavailable as i32
     );
+    Ok(())
 }
 
 #[test]
@@ -437,57 +470,62 @@ fn test_chat_history_parser_rejects_invalid_limit() {
 }
 
 #[test]
-fn test_chat_history_query_preserves_limit_for_shared_validation() {
-    let req: GetChatHistoryRequest = serde_urlencoded::from_str("limit=101").unwrap();
+fn test_chat_history_query_preserves_limit_for_shared_validation() -> TestResult {
+    let req: GetChatHistoryRequest = serde_urlencoded::from_str("limit=101")?;
 
     assert_eq!(req.limit, 101);
     assert!(crate::impls::validate_proto_request(&req).is_err());
+    Ok(())
 }
 
 #[test]
-fn test_hot_rooms_query_preserves_limit_for_shared_validation() {
-    let req: GetHotRoomsRequest = serde_urlencoded::from_str("limit=51").unwrap();
+fn test_hot_rooms_query_preserves_limit_for_shared_validation() -> TestResult {
+    let req: GetHotRoomsRequest = serde_urlencoded::from_str("limit=51")?;
 
     assert_eq!(req.limit, 51);
     assert!(crate::impls::validate_proto_request(&req).is_err());
+    Ok(())
 }
 
 #[test]
-fn test_list_playlist_items_body_deserialize_room_root() {
+fn test_list_playlist_items_body_deserialize_room_root() -> TestResult {
     let json = r"{}";
-    let req: ListPlaylistItemsRequest = serde_json::from_str(json).unwrap();
+    let req: ListPlaylistItemsRequest = serde_json::from_str(json)?;
     assert!(req.playlist_id.is_empty());
     assert!(req.target.is_empty());
     assert_eq!(req.page, 0);
     assert_eq!(req.page_size, 0);
     assert_eq!(req.availability, 0);
+    Ok(())
 }
 
 #[test]
-fn test_list_playlist_items_body_deserialize_dynamic_target() {
+fn test_list_playlist_items_body_deserialize_dynamic_target() -> TestResult {
     let json = r#"{"playlist_id":"pl1","target":{"cursor":"season-1"},"page":2,"page_size":25}"#;
-    let req: ListPlaylistItemsRequest = serde_json::from_str(json).unwrap();
+    let req: ListPlaylistItemsRequest = serde_json::from_str(json)?;
     assert_eq!(req.playlist_id, "pl1");
-    let target: serde_json::Value = serde_json::from_slice(&req.target).unwrap();
+    let target: serde_json::Value = serde_json::from_slice(&req.target)?;
     assert_eq!(target, serde_json::json!({"cursor":"season-1"}));
     assert_eq!(req.page, 2);
     assert_eq!(req.page_size, 25);
     assert_eq!(req.availability, 0);
+    Ok(())
 }
 
 #[test]
-fn test_update_playback_request_deserialize_with_version() {
+fn test_update_playback_request_deserialize_with_version() -> TestResult {
     let json = r#"{"type": 1, "version": 42}"#;
-    let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+    let req: UpdatePlaybackRequest = serde_json::from_str(json)?;
     assert_eq!(
         req.r#type,
         synctv_proto::client::PlaybackUpdateType::Play as i32
     );
     assert_eq!(req.version, Some(42));
+    Ok(())
 }
 
 #[test]
-fn test_add_media_batch_body_deserializes_without_room_id_in_nested_items() {
+fn test_add_media_batch_body_deserializes_without_room_id_in_nested_items() -> TestResult {
     let json = r#"{
         "items": [
             {
@@ -499,73 +537,75 @@ fn test_add_media_batch_body_deserializes_without_room_id_in_nested_items() {
             }
         ]
     }"#;
-    let body: AddMediaBatchRequest = serde_json::from_str(json).unwrap();
+    let body: AddMediaBatchRequest = serde_json::from_str(json)?;
     assert_eq!(body.items.len(), 1);
+    Ok(())
 }
 
 #[test]
-fn test_move_media_request_deserializes_anchor_fields_without_wrapper() {
+fn test_move_media_request_deserializes_anchor_fields_without_wrapper() -> TestResult {
     let json = r#"{
         "media_ids": ["media-1"],
         "before_media_id": "media-2"
     }"#;
-    let req: MoveMediaRequest = serde_json::from_str(json).unwrap();
+    let req: MoveMediaRequest = serde_json::from_str(json)?;
     assert_eq!(req.media_ids, vec!["media-1".to_string()]);
     assert_eq!(req.before_media_id.as_deref(), Some("media-2"));
     assert!(req.after_media_id.is_none());
+    Ok(())
 }
 
 #[test]
-fn test_parse_chat_history_request_accepts_cursor_only() {
+fn test_parse_chat_history_request_accepts_cursor_only() -> TestResult {
     let req: GetChatHistoryRequest =
-        serde_urlencoded::from_str("limit=20&cursor=2026-03-31T12%3A00%3A00%2B00%3A00%7Cmsg_123")
-            .expect("deserialize cursor request");
+        serde_urlencoded::from_str("limit=20&cursor=2026-03-31T12%3A00%3A00%2B00%3A00%7Cmsg_123")?;
 
     assert_eq!(req.limit, 20);
     assert_eq!(req.cursor, "2026-03-31T12:00:00+00:00|msg_123");
+    Ok(())
 }
 
 #[test]
-fn test_chat_message_path_injected_queries_deserialize_without_message_id() {
-    let message: GetChatMessageRequest =
-        serde_urlencoded::from_str("include_deleted=true").expect("deserialize chat message query");
+fn test_chat_message_path_injected_queries_deserialize_without_message_id() -> TestResult {
+    let message: GetChatMessageRequest = serde_urlencoded::from_str("include_deleted=true")?;
     assert!(message.message_id.is_empty());
     assert!(message.include_deleted);
 
     let context: GetChatMessageContextRequest =
-        serde_urlencoded::from_str("before_limit=5&after_limit=6&include_deleted=true")
-            .expect("deserialize chat message context query");
+        serde_urlencoded::from_str("before_limit=5&after_limit=6&include_deleted=true")?;
     assert!(context.message_id.is_empty());
     assert_eq!(context.before_limit, 5);
     assert_eq!(context.after_limit, 6);
     assert!(context.include_deleted);
+    Ok(())
 }
 
 #[test]
-fn test_delete_force_query_deserialization_accepts_bool_only() {
-    let query: DeleteMediaQuery = serde_urlencoded::from_str("force=true").unwrap();
+fn test_delete_force_query_deserialization_accepts_bool_only() -> TestResult {
+    let query: DeleteMediaQuery = serde_urlencoded::from_str("force=true")?;
     assert!(query.force);
 
-    let query: DeletePlaylistQuery = serde_urlencoded::from_str("force=false").unwrap();
+    let query: DeletePlaylistQuery = serde_urlencoded::from_str("force=false")?;
     assert!(!query.force);
 
     assert!(serde_urlencoded::from_str::<DeleteMediaQuery>("force=1").is_err());
+    Ok(())
 }
 
 #[test]
-fn test_delete_entries_body_deserializes_force_true() {
+fn test_delete_entries_body_deserializes_force_true() -> TestResult {
     let body: DeleteEntriesRequest = serde_json::from_str(
         r#"{"playlist_ids":["playlist-1"],"media_ids":["media-1"],"force":true}"#,
-    )
-    .unwrap();
+    )?;
 
     assert_eq!(body.playlist_ids, vec!["playlist-1"]);
     assert_eq!(body.media_ids, vec!["media-1"]);
     assert!(body.force);
+    Ok(())
 }
 
 #[test]
-fn test_create_playlist_body_deserializes_dynamic_fields() {
+fn test_create_playlist_body_deserializes_dynamic_fields() -> TestResult {
     let body: CreatePlaylistRequest = serde_json::from_str(
         r#"{
             "name":"Dynamic Folder",
@@ -574,21 +614,21 @@ fn test_create_playlist_body_deserializes_dynamic_fields() {
             "source_config":{"path":"/tv"},
             "provider_instance_name":"alist-main"
         }"#,
-    )
-    .unwrap();
+    )?;
 
     assert_eq!(body.name, "Dynamic Folder");
     assert_eq!(body.parent_id, "playlist-root");
     assert_eq!(body.source_provider, "alist");
-    let source_config: serde_json::Value = serde_json::from_slice(&body.source_config).unwrap();
+    let source_config: serde_json::Value = serde_json::from_slice(&body.source_config)?;
     assert_eq!(source_config, serde_json::json!({"path":"/tv"}));
     assert_eq!(body.provider_instance_name, "alist-main");
+    Ok(())
 }
 
 #[test]
-fn test_move_playlist_body_deserializes_without_path_playlist_id() {
+fn test_move_playlist_body_deserializes_without_path_playlist_id() -> TestResult {
     let body: synctv_proto::client::MovePlaylistRequest =
-        serde_json::from_str(r#"{"before_playlist_id":"playlist-2"}"#).expect("deserialize");
+        serde_json::from_str(r#"{"before_playlist_id":"playlist-2"}"#)?;
 
     assert!(body.playlist_id.is_empty());
     assert_eq!(
@@ -599,6 +639,7 @@ fn test_move_playlist_body_deserializes_without_path_playlist_id() {
             )
         )
     );
+    Ok(())
 }
 
 #[test]
@@ -625,7 +666,7 @@ fn test_sse_event_id_from_resource_changed_uses_event_sequence() {
 }
 
 #[tokio::test]
-async fn test_chat_resource_changed_sse_event_includes_event_sequence() {
+async fn test_chat_resource_changed_sse_event_includes_event_sequence() -> TestResult {
     use axum::response::IntoResponse;
     use synctv_proto::client::resource_changed::Payload;
     use synctv_proto::client::server_message::Message;
@@ -650,20 +691,19 @@ async fn test_chat_resource_changed_sse_event_includes_event_sequence() {
         crate::http::websocket::RealtimeTransportFormat::Json,
         message,
     )
-    .expect("resource changed should produce SSE event")
-    .expect("SSE event should serialize");
+    .ok_or_else(|| test_error("resource changed should produce SSE event"))?
+    .map_err(|error| test_error(format!("{error:?}")))?;
     let response = axum::response::sse::Sse::new(tokio_stream::iter([Ok::<
         _,
         std::convert::Infallible,
     >(event)]))
     .into_response();
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("SSE body should render");
-    let rendered = std::str::from_utf8(&body).expect("SSE body should be utf-8");
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+    let rendered = std::str::from_utf8(&body)?;
 
     assert!(rendered.contains("id: 3\n"));
     assert!(rendered.contains("event: changed\n"));
+    Ok(())
 }
 
 #[test]

@@ -1,5 +1,22 @@
 use super::*;
 
+type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+fn missing(message: &'static str) -> Box<dyn std::error::Error + Send + Sync> {
+    anyhow::anyhow!(message).into()
+}
+
+fn signed_value<'a>(
+    signed: &'a [(String, String)],
+    key: &'static str,
+) -> std::result::Result<&'a str, Box<dyn std::error::Error + Send + Sync>> {
+    signed
+        .iter()
+        .find(|(candidate, _)| candidate == key)
+        .map(|(_, value)| value.as_str())
+        .ok_or_else(|| missing(key))
+}
+
 #[test]
 fn test_extract_bvid() {
     assert_eq!(
@@ -107,45 +124,47 @@ fn test_is_short_link_variations() {
 }
 
 #[test]
-fn test_match_url_video() {
+fn test_match_url_video() -> TestResult {
     let (media_type, id) =
-        BilibiliClient::match_url("https://www.bilibili.com/video/BV1xx411c7XZ").unwrap();
+        BilibiliClient::match_url("https://www.bilibili.com/video/BV1xx411c7XZ")?;
     assert_eq!(media_type, "bv");
     assert_eq!(id, "BV1xx411c7XZ");
+    Ok(())
 }
 
 #[test]
-fn test_match_url_bangumi_ep() {
+fn test_match_url_bangumi_ep() -> TestResult {
     let (media_type, id) =
-        BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ep12345").unwrap();
+        BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ep12345")?;
     assert_eq!(media_type, "ep");
     assert_eq!(id, "12345");
+    Ok(())
 }
 
 #[test]
-fn test_match_url_bangumi_ss() {
+fn test_match_url_bangumi_ss() -> TestResult {
     let (media_type, id) =
-        BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ss67890").unwrap();
+        BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ss67890")?;
     assert_eq!(media_type, "ss");
     assert_eq!(id, "67890");
+    Ok(())
 }
 
 #[test]
-fn test_match_url_live() {
-    let (media_type, id) =
-        BilibiliClient::match_url("https://live.bilibili.com/live/12345").unwrap();
+fn test_match_url_live() -> TestResult {
+    let (media_type, id) = BilibiliClient::match_url("https://live.bilibili.com/live/12345")?;
     assert_eq!(media_type, "live");
     assert_eq!(id, "12345");
 
     let (media_type, id) =
-        BilibiliClient::match_url("https://live.bilibili.com/76?live_from=85002").unwrap();
+        BilibiliClient::match_url("https://live.bilibili.com/76?live_from=85002")?;
     assert_eq!(media_type, "live");
     assert_eq!(id, "76");
 
-    let (media_type, id) =
-        BilibiliClient::match_url("https://live.bilibili.com/21452505#main").unwrap();
+    let (media_type, id) = BilibiliClient::match_url("https://live.bilibili.com/21452505#main")?;
     assert_eq!(media_type, "live");
     assert_eq!(id, "21452505");
+    Ok(())
 }
 
 #[test]
@@ -192,21 +211,27 @@ fn test_quality_roundtrip() {
 }
 
 #[test]
-fn test_client_creation_no_cookies() {
-    let client = BilibiliClient::new().unwrap();
+fn test_client_creation_no_cookies() -> TestResult {
+    let client = BilibiliClient::new()?;
     assert!(client.cookies.is_none());
+    Ok(())
 }
 
 #[test]
-fn test_client_creation_with_cookies() {
+fn test_client_creation_with_cookies() -> TestResult {
     let mut cookies = HashMap::new();
     cookies.insert("SESSDATA".to_string(), "abc123".to_string());
-    let client = BilibiliClient::with_cookies(cookies.clone()).unwrap();
+    let client = BilibiliClient::with_cookies(cookies.clone())?;
     assert!(client.cookies.is_some());
     assert_eq!(
-        client.cookies.as_ref().unwrap().get("SESSDATA"),
+        client
+            .cookies
+            .as_ref()
+            .ok_or_else(|| missing("client cookies should be present"))?
+            .get("SESSDATA"),
         Some(&"abc123".to_string())
     );
+    Ok(())
 }
 
 #[test]
@@ -220,7 +245,7 @@ fn test_live_danmaku_websocket_config_limits_incoming_sizes() {
 }
 
 #[test]
-fn test_video_page_info_deserialize() {
+fn test_video_page_info_deserialize() -> TestResult {
     let json = r#"{
             "data": {
                 "title": "Test Video",
@@ -235,32 +260,36 @@ fn test_video_page_info_deserialize() {
             "code": 0,
             "ttl": 1
         }"#;
-    let resp: types::VideoPageInfoResp = serde_json::from_str(json).unwrap();
-    let data = resp.data.expect("video page data should deserialize");
+    let resp: types::VideoPageInfoResp = serde_json::from_str(json)?;
+    let data = resp
+        .data
+        .ok_or_else(|| missing("video page data should deserialize"))?;
     assert_eq!(data.title, "Test Video");
     assert_eq!(data.bvid, "BV1xx411c7XZ");
     assert_eq!(data.aid, 12345);
     assert_eq!(data.pages.len(), 1);
     assert_eq!(data.pages[0].duration, 120);
     assert_eq!(resp.code, 0);
+    Ok(())
 }
 
 #[test]
-fn test_nav_resp_deserialize() {
+fn test_nav_resp_deserialize() -> TestResult {
     let json = r#"{
             "data": {"isLogin": true, "uname": "TestUser", "face": "https://example.com/face.jpg", "vipStatus": 1, "mid": 12345},
             "message": "0",
             "code": 0,
             "ttl": 1
         }"#;
-    let resp: types::NavResp = serde_json::from_str(json).unwrap();
+    let resp: types::NavResp = serde_json::from_str(json)?;
     assert!(resp.data.is_login);
     assert_eq!(resp.data.uname, "TestUser");
     assert_eq!(resp.data.mid, 12345);
+    Ok(())
 }
 
 #[test]
-fn test_video_url_resp_deserialize() {
+fn test_video_url_resp_deserialize() -> TestResult {
     let json = r#"{
             "data": {
                 "accept_quality": [80, 64, 32],
@@ -272,23 +301,25 @@ fn test_video_url_resp_deserialize() {
             "code": 0,
             "ttl": 1
         }"#;
-    let resp: types::VideoUrlResp = serde_json::from_str(json).unwrap();
+    let resp: types::VideoUrlResp = serde_json::from_str(json)?;
     assert_eq!(resp.data.quality, 80);
     assert_eq!(resp.data.durl.len(), 1);
     assert_eq!(resp.data.accept_quality, vec![80, 64, 32]);
+    Ok(())
 }
 
 #[test]
-fn test_qrcode_resp_deserialize() {
+fn test_qrcode_resp_deserialize() -> TestResult {
     let json = r#"{
             "data": {"url": "https://passport.bilibili.com/qrcode", "qrcode_key": "abc123"},
             "message": "0",
             "code": 0,
             "ttl": 180
         }"#;
-    let resp: types::QrcodeResp = serde_json::from_str(json).unwrap();
+    let resp: types::QrcodeResp = serde_json::from_str(json)?;
     assert_eq!(resp.data.qrcode_key, "abc123");
     assert_eq!(resp.ttl, 180);
+    Ok(())
 }
 
 #[test]
@@ -329,7 +360,7 @@ fn test_gen_mixin_key_empty() {
 }
 
 #[test]
-fn test_wbi_sign_produces_w_rid_and_wts() {
+fn test_wbi_sign_produces_w_rid_and_wts() -> TestResult {
     let params = vec![
         ("bvid", "BV1xx411c7XZ".to_string()),
         ("cid", "12345".to_string()),
@@ -338,7 +369,6 @@ fn test_wbi_sign_produces_w_rid_and_wts() {
     let mixin_key = "ea1db124af3c7062474693fa704f4ff8";
     let signed = wbi_sign(&params, mixin_key);
 
-    // Should contain w_rid and wts in addition to original params
     let keys: Vec<&str> = signed.iter().map(|(k, _)| k.as_str()).collect();
     assert!(
         keys.contains(&"w_rid"),
@@ -352,36 +382,28 @@ fn test_wbi_sign_produces_w_rid_and_wts() {
         "signed params should contain fnval"
     );
 
-    // w_rid should be a 32-char hex MD5 hash
-    let w_rid = signed
-        .iter()
-        .find(|(k, _)| k == "w_rid")
-        .map(|(_, v)| v.as_str())
-        .expect("w_rid missing");
+    let w_rid = signed_value(&signed, "w_rid")?;
     assert_eq!(w_rid.len(), 32);
     assert!(
         w_rid.chars().all(|c| c.is_ascii_hexdigit()),
         "w_rid should be hex"
     );
+    Ok(())
 }
 
 #[test]
-fn test_wbi_sign_filters_special_chars() {
+fn test_wbi_sign_filters_special_chars() -> TestResult {
     let params = vec![("key", "hello!'()*world".to_string())];
     let mixin_key = "testkey12345678901234567890123456";
     let signed = wbi_sign(&params, mixin_key);
 
-    // The value should have !'()* removed
-    let val = signed
-        .iter()
-        .find(|(k, _)| k == "key")
-        .map(|(_, v)| v.as_str())
-        .expect("key missing");
+    let val = signed_value(&signed, "key")?;
     assert_eq!(val, "helloworld");
+    Ok(())
 }
 
 #[test]
-fn test_wbi_sign_url_encodes_values_for_hash() {
+fn test_wbi_sign_url_encodes_values_for_hash() -> TestResult {
     // Values with spaces and Chinese characters should be URL-encoded
     // before hashing, matching Go's url.Values.Encode() behavior.
     let params = vec![
@@ -391,16 +413,8 @@ fn test_wbi_sign_url_encodes_values_for_hash() {
     let mixin_key = "ea1db124af3c7062474693fa704f4ff8";
     let signed = wbi_sign(&params, mixin_key);
 
-    let w_rid = signed
-        .iter()
-        .find(|(k, _)| k == "w_rid")
-        .map(|(_, v)| v.as_str())
-        .expect("w_rid missing");
-    let wts = signed
-        .iter()
-        .find(|(k, _)| k == "wts")
-        .map(|(_, v)| v.as_str())
-        .expect("wts missing");
+    let w_rid = signed_value(&signed, "w_rid")?;
+    let wts = signed_value(&signed, "wts")?;
 
     // Reconstruct the expected hash using URL-encoded query string
     let mut expected_params: Vec<(&str, &str)> =
@@ -429,6 +443,7 @@ fn test_wbi_sign_url_encodes_values_for_hash() {
         expected_query.contains('+') || expected_query.contains("%20"),
         "query string should URL-encode spaces"
     );
+    Ok(())
 }
 
 #[test]
@@ -457,7 +472,7 @@ fn test_wbi_sign_sorted_params() {
 }
 
 #[test]
-fn test_wbi_sign_deterministic_for_same_timestamp() {
+fn test_wbi_sign_deterministic_for_same_timestamp() -> TestResult {
     // The same params + mixin_key should produce consistent signing
     // (modulo the wts which depends on system time)
     let params = vec![("bvid", "BV1test".to_string()), ("cid", "999".to_string())];
@@ -466,38 +481,21 @@ fn test_wbi_sign_deterministic_for_same_timestamp() {
     let signed2 = wbi_sign(&params, mixin_key);
 
     // The wts values should be very close (same second)
-    let wts1 = signed1
-        .iter()
-        .find(|(k, _)| k == "wts")
-        .map(|(_, v)| v.clone())
-        .expect("wts missing");
-    let wts2 = signed2
-        .iter()
-        .find(|(k, _)| k == "wts")
-        .map(|(_, v)| v.clone())
-        .expect("wts missing");
-    // They should be the same if run within the same second
+    let wts1 = signed_value(&signed1, "wts")?;
+    let wts2 = signed_value(&signed2, "wts")?;
     assert_eq!(wts1, wts2, "wts should be same within the same second");
 
-    // If wts is the same, w_rid must be the same too
-    let w_rid1 = signed1
-        .iter()
-        .find(|(k, _)| k == "w_rid")
-        .map(|(_, v)| v.clone())
-        .expect("w_rid missing");
-    let w_rid2 = signed2
-        .iter()
-        .find(|(k, _)| k == "w_rid")
-        .map(|(_, v)| v.clone())
-        .expect("w_rid missing");
+    let w_rid1 = signed_value(&signed1, "w_rid")?;
+    let w_rid2 = signed_value(&signed2, "w_rid")?;
     assert_eq!(
         w_rid1, w_rid2,
         "w_rid should be deterministic for same inputs"
     );
+    Ok(())
 }
 
 #[test]
-fn test_nav_resp_with_wbi_img_deserialize() {
+fn test_nav_resp_with_wbi_img_deserialize() -> TestResult {
     let json = r#"{
             "data": {
                 "isLogin": true,
@@ -514,15 +512,19 @@ fn test_nav_resp_with_wbi_img_deserialize() {
             "code": 0,
             "ttl": 1
         }"#;
-    let resp: types::NavResp = serde_json::from_str(json).unwrap();
+    let resp: types::NavResp = serde_json::from_str(json)?;
     assert!(resp.data.wbi_img.is_some());
-    let wbi_img = resp.data.wbi_img.unwrap();
+    let wbi_img = resp
+        .data
+        .wbi_img
+        .ok_or_else(|| missing("wbi_img should deserialize"))?;
     assert!(wbi_img.img_url.contains("7cd084941338484aae1ad9425b84077c"));
     assert!(wbi_img.sub_url.contains("4932caff0ff746eab6f01bf08b70ac45"));
+    Ok(())
 }
 
 #[test]
-fn test_nav_resp_without_wbi_img_deserialize() {
+fn test_nav_resp_without_wbi_img_deserialize() -> TestResult {
     let json = r#"{
             "data": {
                 "isLogin": false,
@@ -535,8 +537,9 @@ fn test_nav_resp_without_wbi_img_deserialize() {
             "code": 0,
             "ttl": 1
         }"#;
-    let resp: types::NavResp = serde_json::from_str(json).unwrap();
+    let resp: types::NavResp = serde_json::from_str(json)?;
     assert!(resp.data.wbi_img.is_none());
+    Ok(())
 }
 
 #[test]
@@ -579,42 +582,47 @@ fn test_is_wbi_stale_error_other_codes() {
 }
 
 #[test]
-fn test_build_cookie_header_empty_returns_none() {
-    let client = BilibiliClient::new().unwrap();
+fn test_build_cookie_header_empty_returns_none() -> TestResult {
+    let client = BilibiliClient::new()?;
     assert!(client.build_cookie_header().is_none());
+    Ok(())
 }
 
 #[test]
-fn test_build_cookie_header_multiple_joined() {
+fn test_build_cookie_header_multiple_joined() -> TestResult {
     let mut cookies = HashMap::new();
     cookies.insert("SESSDATA".to_string(), "abc123".to_string());
     cookies.insert("bili_jct".to_string(), "token456".to_string());
-    let client = BilibiliClient::with_cookies(cookies).unwrap();
+    let client = BilibiliClient::with_cookies(cookies)?;
 
-    let header = client.build_cookie_header().unwrap();
-    // Should contain both cookies joined by "; "
+    let header = client
+        .build_cookie_header()
+        .ok_or_else(|| missing("cookie header should be present"))?;
     assert!(header.contains("SESSDATA=abc123"));
     assert!(header.contains("bili_jct=token456"));
     assert!(header.contains("; "));
+    Ok(())
 }
 
 #[test]
-fn test_build_cookie_header_sanitizes_crlf() {
+fn test_build_cookie_header_sanitizes_crlf() -> TestResult {
     let mut cookies = HashMap::new();
     cookies.insert("evil\r\nkey".to_string(), "evil\r\nvalue".to_string());
-    let client = BilibiliClient::with_cookies(cookies).unwrap();
+    let client = BilibiliClient::with_cookies(cookies)?;
 
-    let header = client.build_cookie_header().unwrap();
-    // CRLF characters should be stripped
+    let header = client
+        .build_cookie_header()
+        .ok_or_else(|| missing("cookie header should be present"))?;
     assert!(!header.contains('\r'));
     assert!(!header.contains('\n'));
     assert!(header.contains("evilkey=evilvalue"));
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_wbi_state_is_isolated_per_client_instance() {
-    let client_a = BilibiliClient::new().unwrap();
-    let client_b = BilibiliClient::new().unwrap();
+async fn test_wbi_state_is_isolated_per_client_instance() -> TestResult {
+    let client_a = BilibiliClient::new()?;
+    let client_b = BilibiliClient::new()?;
 
     let state_a = client_a.shared_wbi_state();
     let state_b = client_b.shared_wbi_state();
@@ -636,17 +644,11 @@ async fn test_wbi_state_is_isolated_per_client_instance() {
     assert!(!state_b.has_exceeded_max_failures());
     assert_eq!(state_a.api_call_count(), 0);
     assert_eq!(state_b.api_call_count(), 0);
+    Ok(())
 }
 
-// Note: WBI Key Refresh Coordination tests were removed as they referenced
-// a non-existent WbiKeyCache struct. The WBI key caching is handled by
-// instance-scoped `WbiState` shared explicitly by a `BilibiliService`.
-
 #[test]
-fn test_parse_danmaku_gift_with_huge_count_no_panic() {
-    // The gift count field could exceed u32::MAX, which would cause
-    // u32::try_from().expect("REASON") to panic. After the fix,
-    // it should use unwrap_or(u32::MAX) instead.
+fn test_parse_danmaku_gift_with_huge_count_no_panic() -> TestResult {
     let json = serde_json::json!({
         "cmd": "SEND_GIFT",
         "data": {
@@ -656,18 +658,15 @@ fn test_parse_danmaku_gift_with_huge_count_no_panic() {
         }
     });
 
-    // This should NOT panic after the fix
-    let result = parse_danmaku_cmd("SEND_GIFT", &json);
-    match result {
-        DanmakuMessage::Gift { count, .. } => {
-            assert_eq!(count, u32::MAX, "Overflow should clamp to u32::MAX");
-        }
-        _ => panic!("Expected Gift message variant"),
-    }
+    let DanmakuMessage::Gift { count, .. } = parse_danmaku_cmd("SEND_GIFT", &json) else {
+        return Err(missing("expected Gift message variant"));
+    };
+    assert_eq!(count, u32::MAX, "Overflow should clamp to u32::MAX");
+    Ok(())
 }
 
 #[test]
-fn test_parse_danmaku_gift_with_normal_count() {
+fn test_parse_danmaku_gift_with_normal_count() -> TestResult {
     let json = serde_json::json!({
         "cmd": "SEND_GIFT",
         "data": {
@@ -677,27 +676,24 @@ fn test_parse_danmaku_gift_with_normal_count() {
         }
     });
 
-    let result = parse_danmaku_cmd("SEND_GIFT", &json);
-    match result {
-        DanmakuMessage::Gift { count, .. } => {
-            assert_eq!(count, 5);
-        }
-        _ => panic!("Expected Gift message variant"),
-    }
+    let DanmakuMessage::Gift { count, .. } = parse_danmaku_cmd("SEND_GIFT", &json) else {
+        return Err(missing("expected Gift message variant"));
+    };
+    assert_eq!(count, 5);
+    Ok(())
 }
 
 #[test]
-fn test_build_auth_packet_does_not_panic_on_normal_token() {
-    // build_auth_packet uses u32::try_from(packet_length).expect("REASON")
-    // Normal tokens should work fine
-    let packet = build_auth_packet(12345, "normal_token_value");
+fn test_build_auth_packet_does_not_panic_on_normal_token() -> TestResult {
+    let packet = build_auth_packet(12345, "normal_token_value")?;
     assert!(!packet.is_empty());
-    // The first 4 bytes encode the packet length as big-endian u32
     let len = u32::from_be_bytes([packet[0], packet[1], packet[2], packet[3]]);
     assert_eq!(len as usize, packet.len());
+    Ok(())
 }
 
 #[tokio::test]
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 async fn test_resolve_validated_danmaku_addr_blocks_localhost_with_strict_ssrf() {
     let guard = SsrfGuard::strict_policy();
     let err = resolve_validated_danmaku_addr("localhost", 443, &guard)
@@ -710,6 +706,7 @@ async fn test_resolve_validated_danmaku_addr_blocks_localhost_with_strict_ssrf()
 }
 
 #[tokio::test]
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 async fn test_resolve_validated_danmaku_addr_blocks_private_ip_literal_with_strict_ssrf() {
     let guard = SsrfGuard::strict_policy();
     let err = resolve_validated_danmaku_addr("127.0.0.1", 443, &guard)
@@ -722,18 +719,16 @@ async fn test_resolve_validated_danmaku_addr_blocks_private_ip_literal_with_stri
 }
 
 #[tokio::test]
-async fn test_resolve_validated_danmaku_addr_accepts_public_ip_literal() {
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
+async fn test_resolve_validated_danmaku_addr_accepts_public_ip_literal() -> TestResult {
     let guard = SsrfGuard::strict_policy();
-    let addr = resolve_validated_danmaku_addr("93.184.216.34", 443, &guard)
-        .await
-        .expect("public IP literal should pass SSRF validation");
-    assert_eq!(
-        addr,
-        "93.184.216.34:443".parse::<std::net::SocketAddr>().unwrap()
-    );
+    let addr = resolve_validated_danmaku_addr("93.184.216.34", 443, &guard).await?;
+    assert_eq!(addr, "93.184.216.34:443".parse::<std::net::SocketAddr>()?);
+    Ok(())
 }
 
 #[tokio::test]
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 async fn test_resolve_validated_danmaku_addr_rejects_out_of_range_port() {
     let guard = SsrfGuard::strict_policy();
     let err = resolve_validated_danmaku_addr("93.184.216.34", u32::from(u16::MAX) + 1, &guard)
@@ -747,7 +742,6 @@ async fn test_resolve_validated_danmaku_addr_rejects_out_of_range_port() {
 
 #[test]
 fn test_parse_danmaku_packet_too_short_returns_empty() {
-    // Packets less than 16 bytes should return empty Vec
     let short_data = [0u8; 15];
     let result = parse_danmaku_packet(&short_data);
     assert!(result.is_empty());
@@ -755,22 +749,18 @@ fn test_parse_danmaku_packet_too_short_returns_empty() {
 
 #[test]
 fn test_parse_danmaku_packet_empty_returns_empty() {
-    // Empty packet should return empty Vec
     let result = parse_danmaku_packet(&[]);
     assert!(result.is_empty());
 }
 
 #[test]
 fn test_parse_danmaku_packet_invalid_zlib_returns_empty() {
-    // Create a packet with operation=5 (notification) and protocol_version=2 (zlib)
-    // but with invalid zlib data
     let mut packet = Vec::new();
-    packet.extend_from_slice(&16u32.to_be_bytes()); // packet length
-    packet.extend_from_slice(&16u16.to_be_bytes()); // header length
-    packet.extend_from_slice(&2u16.to_be_bytes()); // protocol version = zlib
-    packet.extend_from_slice(&5u32.to_be_bytes()); // operation = notification
-    packet.extend_from_slice(&1u32.to_be_bytes()); // sequence
-                                                   // Add invalid zlib data (not valid zlib compressed data)
+    packet.extend_from_slice(&16u32.to_be_bytes());
+    packet.extend_from_slice(&16u16.to_be_bytes());
+    packet.extend_from_slice(&2u16.to_be_bytes());
+    packet.extend_from_slice(&5u32.to_be_bytes());
+    packet.extend_from_slice(&1u32.to_be_bytes());
     packet.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
 
     let result = parse_danmaku_packet(&packet);
@@ -779,15 +769,12 @@ fn test_parse_danmaku_packet_invalid_zlib_returns_empty() {
 
 #[test]
 fn test_parse_danmaku_packet_invalid_brotli_returns_empty() {
-    // Create a packet with operation=5 (notification) and protocol_version=3 (brotli)
-    // but with invalid brotli data
     let mut packet = Vec::new();
-    packet.extend_from_slice(&20u32.to_be_bytes()); // packet length
-    packet.extend_from_slice(&16u16.to_be_bytes()); // header length
-    packet.extend_from_slice(&3u16.to_be_bytes()); // protocol version = brotli
-    packet.extend_from_slice(&5u32.to_be_bytes()); // operation = notification
-    packet.extend_from_slice(&1u32.to_be_bytes()); // sequence
-                                                   // Add invalid brotli data
+    packet.extend_from_slice(&20u32.to_be_bytes());
+    packet.extend_from_slice(&16u16.to_be_bytes());
+    packet.extend_from_slice(&3u16.to_be_bytes());
+    packet.extend_from_slice(&5u32.to_be_bytes());
+    packet.extend_from_slice(&1u32.to_be_bytes());
     packet.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
 
     let result = parse_danmaku_packet(&packet);
@@ -795,65 +782,56 @@ fn test_parse_danmaku_packet_invalid_brotli_returns_empty() {
 }
 
 #[test]
-fn test_read_limited_danmaku_decompressed_rejects_oversized_output() {
-    let oversized_len = usize::try_from(MAX_DANMAKU_DECOMPRESS_SIZE)
-        .expect("danmaku decompression test limit must fit in usize")
+fn test_read_limited_danmaku_decompressed_rejects_oversized_output() -> TestResult {
+    let oversized_len = usize::try_from(MAX_DANMAKU_DECOMPRESS_SIZE)?
         .checked_add(1)
-        .expect("danmaku decompression test allocation length must not overflow");
+        .ok_or_else(|| missing("danmaku decompression test allocation length must not overflow"))?;
     let oversized = vec![0u8; oversized_len];
     let result =
         read_limited_danmaku_decompressed(std::io::Cursor::new(oversized), "identity-test", 1);
     assert!(result.is_none());
+    Ok(())
 }
 
 #[test]
 fn test_parse_danmaku_packet_unknown_protocol_version_returns_empty() {
-    // Create a packet with operation=5 (notification) and unknown protocol_version
     let mut packet = Vec::new();
-    packet.extend_from_slice(&20u32.to_be_bytes()); // packet length
-    packet.extend_from_slice(&16u16.to_be_bytes()); // header length
-    packet.extend_from_slice(&99u16.to_be_bytes()); // protocol version = unknown
-    packet.extend_from_slice(&5u32.to_be_bytes()); // operation = notification
-    packet.extend_from_slice(&1u32.to_be_bytes()); // sequence
-    packet.extend_from_slice(&[0, 0, 0, 0]); // body
+    packet.extend_from_slice(&20u32.to_be_bytes());
+    packet.extend_from_slice(&16u16.to_be_bytes());
+    packet.extend_from_slice(&99u16.to_be_bytes());
+    packet.extend_from_slice(&5u32.to_be_bytes());
+    packet.extend_from_slice(&1u32.to_be_bytes());
+    packet.extend_from_slice(&[0, 0, 0, 0]);
 
     let result = parse_danmaku_packet(&packet);
     assert!(result.is_empty());
 }
 
 #[test]
-fn test_parse_danmaku_packet_valid_heartbeat() {
-    // Create a valid heartbeat response packet
+fn test_parse_danmaku_packet_valid_heartbeat() -> TestResult {
     let mut packet = Vec::new();
-    packet.extend_from_slice(&20u32.to_be_bytes()); // packet length
-    packet.extend_from_slice(&16u16.to_be_bytes()); // header length
-    packet.extend_from_slice(&1u16.to_be_bytes()); // protocol version
-    packet.extend_from_slice(&3u32.to_be_bytes()); // operation = heartbeat response
-    packet.extend_from_slice(&1u32.to_be_bytes()); // sequence
-    packet.extend_from_slice(&12345u32.to_be_bytes()); // online count
+    packet.extend_from_slice(&20u32.to_be_bytes());
+    packet.extend_from_slice(&16u16.to_be_bytes());
+    packet.extend_from_slice(&1u16.to_be_bytes());
+    packet.extend_from_slice(&3u32.to_be_bytes());
+    packet.extend_from_slice(&1u32.to_be_bytes());
+    packet.extend_from_slice(&12345u32.to_be_bytes());
 
     let result = parse_danmaku_packet(&packet);
     assert_eq!(result.len(), 1);
-    match &result[0] {
-        DanmakuMessage::Heartbeat { online_count } => {
-            assert_eq!(*online_count, 12345);
-        }
-        _ => panic!("Expected Heartbeat message"),
-    }
+    let DanmakuMessage::Heartbeat { online_count } = &result[0] else {
+        return Err(missing("expected Heartbeat message"));
+    };
+    assert_eq!(*online_count, 12345);
+    Ok(())
 }
 
-/// Test that waiting with timeout actually times out when no notification comes.
-/// This test verifies the timeout mechanism works in isolation.
 #[tokio::test]
 async fn test_notify_timeout_mechanism() {
-    // We test that tokio::time::timeout works correctly with Notify.
-    // This is a sanity check that our timeout approach is valid.
     let timeout_duration = std::time::Duration::from_millis(10);
 
-    // Create a new Notify for this test (not the global one) to avoid interference
     let local_notify = tokio::sync::Notify::new();
 
-    // This should timeout since we never call local_notify.notify_waiters()
     let result = tokio::time::timeout(timeout_duration, local_notify.notified()).await;
     assert!(
         result.is_err(),
@@ -861,28 +839,25 @@ async fn test_notify_timeout_mechanism() {
     );
 }
 
-/// Test that notification arrives before timeout when sent quickly.
 #[tokio::test]
-async fn test_notify_arrives_before_timeout() {
-    // Create a new Notify wrapped in Arc for this test to avoid interference
+async fn test_notify_arrives_before_timeout() -> TestResult {
     use std::sync::Arc;
     let local_notify = Arc::new(tokio::sync::Notify::new());
     let timeout_duration = std::time::Duration::from_millis(100);
 
-    // Spawn a task that waits with timeout
     let notify = Arc::clone(&local_notify);
     let wait_task = tokio::spawn(async move {
         let result = tokio::time::timeout(timeout_duration, notify.notified()).await;
         result.is_ok()
     });
 
-    // Send notification quickly
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     local_notify.notify_waiters();
 
-    let notification_received = wait_task.await.expect("Task should not panic");
+    let notification_received = wait_task.await?;
     assert!(
         notification_received,
         "Notification should have arrived before timeout"
     );
+    Ok(())
 }

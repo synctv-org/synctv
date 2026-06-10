@@ -3,8 +3,6 @@
 //! Tests user registration and login validation using testcontainers.
 //!
 //! Run Docker tests: cargo test --test `user_service_tests` -- --ignored
-#![allow(clippy::unwrap_used)]
-
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -36,12 +34,13 @@ use synctv_core::{
 };
 use synctv_core_testing::{
     create_test_pool, opaque_login_user, opaque_login_user_with_challenge, opaque_register_user,
-    opaque_register_user_with_client_ip,
+    opaque_register_user_with_client_ip, TestOptionExt, TestResultExt,
 };
 use tokio::sync::Barrier;
 
 fn create_jwt_service() -> JwtService {
-    JwtService::new("test-secret-key-for-user-service-tests-long-enough-1234567890").unwrap()
+    JwtService::new("test-secret-key-for-user-service-tests-long-enough-1234567890")
+        .checked("test operation should succeed")
 }
 
 fn create_user_service(pool: &PgPool) -> UserService {
@@ -90,12 +89,12 @@ async fn email_signup_registry(pool: &PgPool) -> Arc<SettingsRegistry> {
         .enable_email_signup
         .set(true)
         .await
-        .expect("email signup setting should persist");
+        .checked("email signup setting should persist");
     registry
         .email_signup_need_review
         .set(false)
         .await
-        .expect("email signup review setting should persist");
+        .checked("email signup review setting should persist");
     registry
 }
 
@@ -133,8 +132,8 @@ fn create_user_service_with_security_pipeline(
         Arc::clone(&service),
         SecurityPipelineRuntime {
             user_cache: None,
-            token_blacklist: Some(token_blacklist),
-            key_builder: Some(key_builder),
+            token_blacklist,
+            key_builder,
         },
     );
     (service, jwt, pipeline)
@@ -187,7 +186,7 @@ async fn test_direct_password_registration_stores_opaque_credential() {
             None,
         )
         .await
-        .expect("direct password registration should succeed");
+        .checked("direct password registration should succeed");
     let AccountRegistrationOutcome::Registered {
         user,
         access_token,
@@ -195,7 +194,7 @@ async fn test_direct_password_registration_stores_opaque_credential() {
         ..
     } = outcome
     else {
-        panic!("direct password registration should complete without review");
+        std::panic::panic_any("direct password registration should complete without review");
     };
 
     assert_eq!(user.username, username.to_ascii_lowercase());
@@ -205,8 +204,8 @@ async fn test_direct_password_registration_stores_opaque_credential() {
     let stored_credential = UserPasswordRepository::new(pool.clone())
         .get_opaque_credential(&user.id)
         .await
-        .expect("password credential lookup should succeed")
-        .expect("password credential should be stored");
+        .checked("password credential lookup should succeed")
+        .checked("password credential should be stored");
 
     assert_eq!(
         stored_credential.record.ciphersuite,
@@ -218,7 +217,7 @@ async fn test_direct_password_registration_stores_opaque_credential() {
     );
     assert!(opaque_password_service
         .verify_password(&stored_credential.record, password,)
-        .expect("stored OPAQUE credential should verify"));
+        .checked("stored OPAQUE credential should verify"));
 }
 
 #[tokio::test]
@@ -244,7 +243,7 @@ async fn test_email_registration_confirmation_stores_opaque_credential() {
     let token = service
         .create_email_registration_token_with_control(username.clone(), email.clone(), None, None)
         .await
-        .expect("email registration token should be created");
+        .checked("email registration token should be created");
     let outcome = service
         .complete_email_registration_with_direct_password_transport_with_control(
             &token,
@@ -253,7 +252,7 @@ async fn test_email_registration_confirmation_stores_opaque_credential() {
             None,
         )
         .await
-        .expect("email registration confirmation should succeed");
+        .checked("email registration confirmation should succeed");
     let AccountRegistrationOutcome::Registered {
         user,
         access_token,
@@ -261,7 +260,7 @@ async fn test_email_registration_confirmation_stores_opaque_credential() {
         ..
     } = outcome
     else {
-        panic!("email registration confirmation should complete without review");
+        std::panic::panic_any("email registration confirmation should complete without review");
     };
 
     assert_eq!(user.username, username.to_ascii_lowercase());
@@ -271,11 +270,11 @@ async fn test_email_registration_confirmation_stores_opaque_credential() {
     let stored_credential = UserPasswordRepository::new(pool.clone())
         .get_opaque_credential(&user.id)
         .await
-        .expect("password credential lookup should succeed")
-        .expect("password credential should be stored");
+        .checked("password credential lookup should succeed")
+        .checked("password credential should be stored");
     assert!(opaque_password_service
         .verify_password(&stored_credential.record, password,)
-        .expect("stored OPAQUE credential should verify"));
+        .checked("stored OPAQUE credential should verify"));
 
     let reuse = service
         .complete_email_registration_with_direct_password_transport_with_control(
@@ -296,9 +295,9 @@ async fn password_verification_id(
     let outcome = service
         .start_sensitive_operation_verification(user_id, None)
         .await
-        .expect("start sensitive verification");
+        .checked("start sensitive verification");
     let SensitiveVerificationOutcome::Pending(challenge) = outcome else {
-        panic!("password verification should start with a pending challenge");
+        std::panic::panic_any("password verification should start with a pending challenge");
     };
     match service
         .finish_sensitive_operation_password_verification(
@@ -308,11 +307,11 @@ async fn password_verification_id(
             None,
         )
         .await
-        .expect("finish password verification")
+        .checked("finish password verification")
     {
         SensitiveVerificationOutcome::Complete { verification_id } => verification_id,
         SensitiveVerificationOutcome::Pending(_) => {
-            panic!("single-factor password verification should complete")
+            std::panic::panic_any("single-factor password verification should complete")
         }
     }
 }
@@ -330,7 +329,7 @@ async fn insert_trusted_email_identity(pool: &PgPool, user_id: &UserId, email: &
     .bind(email)
     .execute(pool)
     .await
-    .expect("trusted email identity should be inserted");
+    .checked("trusted email identity should be inserted");
 }
 
 async fn insert_test_passkey(pool: &PgPool, user_id: &UserId, credential_id: &[u8]) {
@@ -346,7 +345,7 @@ async fn insert_test_passkey(pool: &PgPool, user_id: &UserId, credential_id: &[u
     .bind(credential_id)
     .execute(pool)
     .await
-    .expect("insert test passkey");
+    .checked("insert test passkey");
 }
 
 async fn insert_oauth2_identity(
@@ -369,7 +368,7 @@ async fn insert_oauth2_identity(
     .bind(format!("{provider_user_id}@example.com"))
     .execute(pool)
     .await
-    .expect("oauth2 identity should be inserted");
+    .checked("oauth2 identity should be inserted");
 }
 
 fn make_passkey_service(pool: PgPool, user_service: Arc<UserService>) -> PasskeyService {
@@ -377,13 +376,15 @@ fn make_passkey_service(pool: PgPool, user_service: Arc<UserService>) -> Passkey
     config.enabled = true;
     config.rp_id = "localhost".to_string();
     config.rp_origin = "http://localhost".to_string();
-    PasskeyService::new(
+    match PasskeyService::new(
         &config,
         WebAuthnCredentialRepository::new(pool),
         user_service,
         local_passkey_session_store(),
-    )
-    .expect("passkey service should build")
+    ) {
+        Ok(service) => service,
+        Err(error) => std::panic::panic_any(format!("passkey service should build: {error:?}")),
+    }
 }
 
 fn make_room(name: &str, owner_id: &UserId) -> Room {
@@ -509,7 +510,7 @@ async fn assert_login_wrong_password(service: &UserService) {
         "CorrectPass1",
     )
     .await
-    .expect("Registration should succeed");
+    .checked("Registration should succeed");
 
     // Try to login with wrong password
     let result = opaque_login_user(service, "login_test_user", "WrongPass1").await;
@@ -550,7 +551,7 @@ async fn assert_delete_user_already_deleted_returns_error(service: &UserService)
         "StrongPass1",
     )
     .await
-    .expect("Registration should succeed");
+    .checked("Registration should succeed");
 
     let user_id = user.id;
 
@@ -568,8 +569,8 @@ async fn assert_delete_user_already_deleted_returns_error(service: &UserService)
                 "Error message should mention 'already deleted': {msg}"
             );
         }
-        Err(e) => panic!("Expected InvalidInput error, got: {e:?}"),
-        Ok(()) => panic!("Expected error, got Ok"),
+        Err(e) => std::panic::panic_any(format!("expected InvalidInput error, got: {e:?}")),
+        Ok(()) => std::panic::panic_any("expected error, got Ok"),
     }
 }
 
@@ -585,7 +586,7 @@ async fn assert_delete_user_concurrent_deletion_atomicity(pool: PgPool) {
         "StrongPass1",
     )
     .await
-    .expect("Registration should succeed");
+    .checked("Registration should succeed");
 
     let user_id = user.id;
 
@@ -608,8 +609,8 @@ async fn assert_delete_user_concurrent_deletion_atomicity(pool: PgPool) {
         service2.delete_user(&user_id2).await
     });
 
-    let result1 = handle1.await.expect("Task 1 panicked");
-    let result2 = handle2.await.expect("Task 2 panicked");
+    let result1 = handle1.await.checked("Task 1 panicked");
+    let result2 = handle2.await.checked("Task 2 panicked");
 
     // Exactly one of the two should succeed
     let success_count = [result1.is_ok(), result2.is_ok()]
@@ -626,7 +627,7 @@ async fn assert_delete_user_concurrent_deletion_atomicity(pool: PgPool) {
     let user_after = user_repo
         .get_by_id(&user_id)
         .await
-        .expect("Query should work");
+        .checked("Query should work");
     assert!(
         user_after.is_none(),
         "User should be soft-deleted (not found via get_by_id)"
@@ -644,24 +645,24 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     let doomed_user = user_repo
         .create(&make_user("delete_owner"))
         .await
-        .expect("create doomed user");
+        .checked("create doomed user");
     let foreign_owner = user_repo
         .create(&make_user("foreign_owner"))
         .await
-        .expect("create foreign owner");
+        .checked("create foreign owner");
     let other_creator = user_repo
         .create(&make_user("other_creator"))
         .await
-        .expect("create other creator");
+        .checked("create other creator");
 
     let owned_room = room_repo
         .create(&make_room("owned room", &doomed_user.id))
         .await
-        .expect("create owned room");
+        .checked("create owned room");
     let foreign_room = room_repo
         .create(&make_room("foreign room", &foreign_owner.id))
         .await
-        .expect("create foreign room");
+        .checked("create foreign room");
 
     room_member_repo
         .add(&RoomMember {
@@ -677,7 +678,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             version: 0,
         })
         .await
-        .expect("create foreign room membership");
+        .checked("create foreign room membership");
 
     let owned_playlist = playlist_repo
         .create(&make_playlist(
@@ -687,7 +688,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             0,
         ))
         .await
-        .expect("create playlist in owned room");
+        .checked("create playlist in owned room");
     let owned_media = media_repo
         .create(&make_media(
             &owned_room.id,
@@ -697,7 +698,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             0,
         ))
         .await
-        .expect("create media in owned room");
+        .checked("create media in owned room");
 
     let foreign_playlist = playlist_repo
         .create(&make_playlist(
@@ -707,7 +708,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             0,
         ))
         .await
-        .expect("create playlist in foreign room");
+        .checked("create playlist in foreign room");
     let foreign_media = media_repo
         .create(&make_media(
             &foreign_room.id,
@@ -717,7 +718,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             0,
         ))
         .await
-        .expect("create media in foreign room");
+        .checked("create media in foreign room");
 
     let survivor_playlist = playlist_repo
         .create(&make_playlist(
@@ -727,7 +728,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             1,
         ))
         .await
-        .expect("create surviving playlist");
+        .checked("create surviving playlist");
     let survivor_media = media_repo
         .create(&make_media(
             &foreign_room.id,
@@ -737,7 +738,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             0,
         ))
         .await
-        .expect("create surviving media");
+        .checked("create surviving media");
 
     let foreign_progress_id: i64 = sqlx::query_scalar(
         "INSERT INTO room_playback_progress
@@ -750,7 +751,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .bind("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
     .fetch_one(&pool)
     .await
-    .expect("create playback progress");
+    .checked("create playback progress");
 
     sqlx::query(
         "INSERT INTO room_playback_state
@@ -762,7 +763,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .bind(foreign_progress_id)
     .execute(&pool)
     .await
-    .expect("create playback state");
+    .checked("create playback state");
 
     sqlx::query(
         "INSERT INTO auth_oauth2_identities (
@@ -778,7 +779,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .bind("delete_owner@example.com")
     .execute(&pool)
     .await
-    .expect("create oauth2 mapping");
+    .checked("create oauth2 mapping");
 
     sqlx::query(
         "INSERT INTO notifications (user_id, title, content, type, is_read, created_at, updated_at)
@@ -790,7 +791,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .bind(i16::from(NotificationType::SystemAnnouncement))
     .execute(&pool)
     .await
-    .expect("create notification");
+    .checked("create notification");
 
     sqlx::query(
         "INSERT INTO chat_messages (room_id, user_id, content, message_type, created_at)
@@ -801,12 +802,12 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .bind("hello")
     .execute(&pool)
     .await
-    .expect("create chat message");
+    .checked("create chat message");
 
     let summary = service
         .delete_user_with_summary(&doomed_user.id)
         .await
-        .expect("delete_user_with_summary should succeed");
+        .checked("delete_user_with_summary should succeed");
 
     assert_eq!(summary.user_id, doomed_user.id);
     assert_eq!(summary.username, doomed_user.username);
@@ -827,7 +828,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         user_repo
             .get_by_id(&doomed_user.id)
             .await
-            .expect("get user")
+            .checked("get user")
             .is_none(),
         "deleted user must no longer be visible"
     );
@@ -835,7 +836,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         room_repo
             .get_by_id(&owned_room.id)
             .await
-            .expect("get owned room")
+            .checked("get owned room")
             .is_none(),
         "owned room must be soft-deleted"
     );
@@ -843,7 +844,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         room_repo
             .get_by_id(&foreign_room.id)
             .await
-            .expect("get foreign room")
+            .checked("get foreign room")
             .is_some(),
         "foreign room must survive"
     );
@@ -852,7 +853,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         playlist_repo
             .get_by_id(&owned_playlist.id)
             .await
-            .expect("get owned playlist")
+            .checked("get owned playlist")
             .is_none(),
         "owned room playlist should be deleted"
     );
@@ -860,7 +861,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         media_repo
             .get_by_id(&owned_media.id)
             .await
-            .expect("get owned media")
+            .checked("get owned media")
             .is_none(),
         "owned room media should be deleted"
     );
@@ -868,7 +869,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         playlist_repo
             .get_by_id(&foreign_playlist.id)
             .await
-            .expect("get foreign playlist")
+            .checked("get foreign playlist")
             .is_none(),
         "user-created playlist in foreign room should be deleted"
     );
@@ -876,7 +877,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         media_repo
             .get_by_id(&foreign_media.id)
             .await
-            .expect("get foreign media")
+            .checked("get foreign media")
             .is_none(),
         "user-created media in foreign room should be deleted"
     );
@@ -884,7 +885,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         playlist_repo
             .get_by_id(&survivor_playlist.id)
             .await
-            .expect("get survivor playlist")
+            .checked("get survivor playlist")
             .is_some(),
         "other users' playlists must survive"
     );
@@ -892,7 +893,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         media_repo
             .get_by_id(&survivor_media.id)
             .await
-            .expect("get survivor media")
+            .checked("get survivor media")
             .is_some(),
         "other users' media must survive"
     );
@@ -900,7 +901,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     let member_after = room_member_repo
         .get(&foreign_room.id, &doomed_user.id)
         .await
-        .expect("get membership");
+        .checked("get membership");
     assert!(
         member_after.is_none(),
         "deleted user must no longer be an active member of surviving rooms"
@@ -914,7 +915,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .bind(foreign_room.id)
     .fetch_one(&pool)
     .await
-    .expect("query playback");
+    .checked("query playback");
     assert_eq!(playback_row.0, None, "playing media must be cleared");
     assert_eq!(playback_row.1, None, "playing playlist must be cleared");
     assert!(!playback_row.2, "playback must be stopped");
@@ -924,7 +925,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             .bind(doomed_user.id)
             .fetch_one(&pool)
             .await
-            .expect("count oauth2 mappings");
+            .checked("count oauth2 mappings");
     assert_eq!(oauth2_count, 0, "oauth2 mappings must be deleted");
 
     let notification_count: i64 =
@@ -932,7 +933,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             .bind(doomed_user.id)
             .fetch_one(&pool)
             .await
-            .expect("count notifications");
+            .checked("count notifications");
     assert_eq!(notification_count, 0, "notifications must be deleted");
 
     let chat_user_ids: Vec<Option<String>> =
@@ -940,7 +941,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             .bind(foreign_room.id)
             .fetch_all(&pool)
             .await
-            .expect("query chat messages");
+            .checked("query chat messages");
     assert_eq!(
         chat_user_ids,
         vec![None],
@@ -954,7 +955,9 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
 /// This should fail with `AlreadyExists`, but should NOT lock out the IP
 /// because it's not a security threat - just an unfortunate choice of username.
 async fn assert_register_username_taken_no_brute_force_lockout(service: &UserService) {
-    let client_ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
+    let client_ip: std::net::IpAddr = "192.168.1.100"
+        .parse()
+        .checked("test operation should succeed");
 
     // Register first user
     opaque_register_user_with_client_ip(
@@ -965,7 +968,7 @@ async fn assert_register_username_taken_no_brute_force_lockout(service: &UserSer
         Some(client_ip),
     )
     .await
-    .expect("First registration should succeed");
+    .checked("First registration should succeed");
 
     // Try to register with the same username multiple times (should fail with AlreadyExists)
     for _ in 0..5 {
@@ -1017,11 +1020,11 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
         RoomMemberRepository::new(pool.clone()),
         RoomRepository::new(pool.clone()),
         PermissionServiceRuntime {
-            version_fence: Some(version_fence.clone()),
-            ..PermissionServiceRuntime::default()
+            version_fence: version_fence.clone(),
+            ..PermissionServiceRuntime::local_only()
         },
     )
-    .expect("permission service should build");
+    .checked("permission service should build");
     let user_service = create_user_service_with_runtime(
         &pool,
         UserServiceRuntimeOptions {
@@ -1033,16 +1036,19 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
     let room_repo = RoomRepository::new(pool.clone());
     let room_member_repo = RoomMemberRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("banned_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("banned_owner"))
+        .await
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("banned_owner_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let owned_room = room_repo
         .create(&make_room("owner-room", &owner.id))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_member_repo
         .add(&RoomMember::new(
@@ -1051,7 +1057,7 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
             synctv_core::models::RoomRole::Creator,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_member_repo
         .add(&RoomMember::new(
             owned_room.id,
@@ -1059,17 +1065,17 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
             synctv_core::models::RoomRole::Member,
         ))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     user_service
         .ban_user_and_cleanup_memberships(&owner.id, None, None)
         .await
-        .expect("banning owner should succeed");
+        .checked("banning owner should succeed");
 
     let owner_membership = room_member_repo
         .get(&owned_room.id, &owner.id)
         .await
-        .expect("owner membership lookup should succeed");
+        .checked("owner membership lookup should succeed");
     assert!(
         owner_membership.is_none(),
         "banned owner must no longer be an active member of their owned room"
@@ -1078,7 +1084,7 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
     let member_membership = room_member_repo
         .get(&owned_room.id, &member.id)
         .await
-        .expect("member membership lookup should succeed");
+        .checked("member membership lookup should succeed");
     assert!(
         member_membership.is_none(),
         "banning a room owner must remove other memberships from the owned room"
@@ -1090,7 +1096,7 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
             user_id: member.id,
         })
         .await
-        .expect("member permission fence should be readable");
+        .checked("member permission fence should be readable");
     assert!(
         member_fence.is_some(),
         "banning a room owner must commit permission fences for removed owned-room members"
@@ -1102,7 +1108,9 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
 /// Scenario: Attacker sends malformed registration requests (validation errors).
 /// These should count against the IP lockout because they indicate automated attacks.
 async fn assert_register_validation_errors_trigger_brute_force_lockout(service: &UserService) {
-    let client_ip: std::net::IpAddr = "192.168.1.101".parse().unwrap();
+    let client_ip: std::net::IpAddr = "192.168.1.101"
+        .parse()
+        .checked("test operation should succeed");
 
     // The brute-force lockout thresholds are:
     // - 5 failures: 1 minute lockout
@@ -1148,25 +1156,25 @@ async fn assert_update_user_rejects_direct_email_changes(pool: PgPool) {
     let created = user_repo
         .create(&make_user("email_update_guard_user"))
         .await
-        .expect("create email signup user");
+        .checked("create email signup user");
     let original_email = "email_update_guard_user@example.com";
     email_repo
         .create_for_user_with_executor(&created, Some(original_email), &pool)
         .await
-        .expect("create original email identity");
+        .checked("create original email identity");
 
     let mut profile_update = created.clone();
     profile_update.username = "email_update_guard_renamed".to_string();
     let updated = service
         .update_user(&profile_update, created.version)
         .await
-        .expect("profile update should succeed");
+        .checked("profile update should succeed");
 
     assert_eq!(updated.username, "email_update_guard_renamed");
     let unchanged_email = email_repo
         .get_email(&created.id)
         .await
-        .expect("fetch unchanged email identity");
+        .checked("fetch unchanged email identity");
     assert_eq!(unchanged_email.as_deref(), Some(original_email));
 }
 
@@ -1182,18 +1190,18 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
         "StrongPass1",
     )
     .await
-    .expect("create email bind flow user");
+    .checked("create email bind flow user");
     let new_email = "email_bind_flow_new@example.com";
 
     let token = service
         .start_email_bind(&created.id, new_email)
         .await
-        .expect("start email bind");
+        .checked("start email bind");
 
     let after_start = email_repo
         .get_email(&created.id)
         .await
-        .expect("fetch email after bind start");
+        .checked("fetch email after bind start");
     assert_eq!(after_start.as_deref(), Some(original_email));
 
     let mismatch_result = service
@@ -1204,7 +1212,7 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
             &password_verification_id(&service, &created.id, "StrongPass1").await,
         )
         .await
-        .expect_err("email mismatch must reject pending bind request");
+        .failed("email mismatch must reject pending bind request");
     assert!(
         matches!(mismatch_result, Error::InvalidInput(_)),
         "expected InvalidInput for email mismatch"
@@ -1213,7 +1221,7 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
     let after_mismatch = email_repo
         .get_email(&created.id)
         .await
-        .expect("fetch email after bind mismatch");
+        .checked("fetch email after bind mismatch");
     assert_eq!(after_mismatch.as_deref(), Some(original_email));
 
     let updated = service
@@ -1224,12 +1232,12 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
             &password_verification_id(&service, &created.id, "StrongPass1").await,
         )
         .await
-        .expect("confirm email bind");
+        .checked("confirm email bind");
     assert_eq!(updated.id, created.id);
     let updated_email = email_repo
         .get_email(&created.id)
         .await
-        .expect("fetch updated email");
+        .checked("fetch updated email");
     assert_eq!(updated_email.as_deref(), Some(new_email));
 
     let consumed_result = service
@@ -1240,7 +1248,7 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
             &password_verification_id(&service, &created.id, "StrongPass1").await,
         )
         .await
-        .expect_err("consumed bind token must be rejected");
+        .failed("consumed bind token must be rejected");
     assert!(
         matches!(consumed_result, Error::InvalidInput(_)),
         "expected InvalidInput for consumed token"
@@ -1255,21 +1263,21 @@ async fn assert_email_bind_rejects_taken_email(pool: PgPool) {
     let owner = user_repo
         .create(&make_user("email_bind_taken_owner"))
         .await
-        .expect("create owner user");
+        .checked("create owner user");
     let owner_email = "email_bind_taken_owner@example.com";
     email_repo
         .create_for_user_with_executor(&owner, Some(owner_email), &pool)
         .await
-        .expect("create owner email identity");
+        .checked("create owner email identity");
     let requester = user_repo
         .create(&make_user("email_bind_taken_requester"))
         .await
-        .expect("create requester user");
+        .checked("create requester user");
 
     let result = service
         .start_email_bind(&requester.id, owner_email)
         .await
-        .expect_err("taken email must be rejected");
+        .failed("taken email must be rejected");
     assert!(
         matches!(result, Error::AlreadyExists(_)),
         "expected AlreadyExists for taken email"
@@ -1282,11 +1290,11 @@ async fn assert_two_factor_requires_two_usable_methods(pool: PgPool) {
     let (password_only, _, _) =
         opaque_register_user(&service, "two_factor_password_only", None, "StrongPass1")
             .await
-            .expect("create password-only user");
+            .checked("create password-only user");
     let result = service
         .set_two_factor_enabled(&password_only.id, true)
         .await
-        .expect_err("single-method users must not enable two-factor authentication");
+        .failed("single-method users must not enable two-factor authentication");
     assert!(
         matches!(&result, Error::InvalidInput(message) if message.contains("requires at least two")),
         "expected InvalidInput for insufficient auth factors, got {result:?}"
@@ -1299,11 +1307,11 @@ async fn assert_two_factor_requires_two_usable_methods(pool: PgPool) {
         "StrongPass1",
     )
     .await
-    .expect("create email+password user");
+    .checked("create email+password user");
     let (preferences, factors) = service
         .set_two_factor_enabled(&email_and_password.id, true)
         .await
-        .expect("email+password user can enable two-factor authentication");
+        .checked("email+password user can enable two-factor authentication");
     assert!(preferences.two_factor_enabled);
     assert!(factors.password);
     assert!(factors.email);
@@ -1319,17 +1327,17 @@ async fn assert_sensitive_verification_is_one_time(pool: PgPool) {
         "StrongPass1",
     )
     .await
-    .expect("create user with password");
+    .checked("create user with password");
 
     let verification_id = password_verification_id(&service, &user.id, "StrongPass1").await;
     service
         .consume_sensitive_operation_verification(&user.id, &verification_id)
         .await
-        .expect("first verification consumption should succeed");
+        .checked("first verification consumption should succeed");
     let reused = service
         .consume_sensitive_operation_verification(&user.id, &verification_id)
         .await
-        .expect_err("verification id must be single-use");
+        .failed("verification id must be single-use");
     assert!(
         matches!(reused, Error::Authentication(_)),
         "expected Authentication for reused verification id, got {reused:?}"
@@ -1345,13 +1353,13 @@ async fn assert_sensitive_password_verification_is_rate_limited(pool: PgPool) {
         "StrongPass1",
     )
     .await
-    .expect("create user with password");
+    .checked("create user with password");
     let outcome = service
         .start_sensitive_operation_verification(&user.id, None)
         .await
-        .expect("start sensitive verification");
+        .checked("start sensitive verification");
     let SensitiveVerificationOutcome::Pending(challenge) = outcome else {
-        panic!("password-sensitive verification should start with a challenge");
+        std::panic::panic_any("password-sensitive verification should start with a challenge");
     };
 
     for _ in 0..5 {
@@ -1377,7 +1385,7 @@ async fn assert_sensitive_password_verification_is_rate_limited(pool: PgPool) {
             None,
         )
         .await
-        .expect_err("sensitive password verification should lock out after repeated failures");
+        .failed("sensitive password verification should lock out after repeated failures");
     assert!(
         matches!(locked, Error::Authentication(ref message) if message.contains("Too many failed attempts")),
         "expected sensitive verification brute-force lockout, got {locked:?}"
@@ -1394,19 +1402,21 @@ async fn assert_sensitive_verification_requires_two_local_factors_when_2fa_enabl
         "StrongPass1",
     )
     .await
-    .expect("create user with password and email");
+    .checked("create user with password and email");
     insert_trusted_email_identity(&pool, &user.id, email).await;
     service
         .set_two_factor_enabled(&user.id, true)
         .await
-        .expect("password+email user can enable two-factor authentication");
+        .checked("password+email user can enable two-factor authentication");
 
     let outcome = service
         .start_sensitive_operation_verification(&user.id, None)
         .await
-        .expect("start sensitive verification");
+        .checked("start sensitive verification");
     let SensitiveVerificationOutcome::Pending(challenge) = outcome else {
-        panic!("2FA-enabled sensitive verification should start with a pending challenge");
+        std::panic::panic_any(
+            "2FA-enabled sensitive verification should start with a pending challenge",
+        );
     };
     assert_eq!(challenge.required_count, 2);
     assert!(challenge
@@ -1424,9 +1434,9 @@ async fn assert_sensitive_verification_requires_two_local_factors_when_2fa_enabl
             None,
         )
         .await
-        .expect("password factor should verify");
+        .checked("password factor should verify");
     let SensitiveVerificationOutcome::Pending(next_challenge) = pending else {
-        panic!("2FA-enabled sensitive verification should require another factor");
+        std::panic::panic_any("2FA-enabled sensitive verification should require another factor");
     };
     assert_eq!(next_challenge.required_count, 2);
     assert_eq!(
@@ -1443,14 +1453,14 @@ async fn assert_sensitive_verification_requires_two_local_factors_when_2fa_enabl
             AuthFactorMethod::Email,
         )
         .await
-        .expect("email factor should complete");
+        .checked("email factor should complete");
     let SensitiveVerificationOutcome::Complete { verification_id } = complete else {
-        panic!("second factor should complete sensitive verification");
+        std::panic::panic_any("second factor should complete sensitive verification");
     };
     service
         .consume_sensitive_operation_verification(&user.id, &verification_id)
         .await
-        .expect("completed two-factor verification should be consumable");
+        .checked("completed two-factor verification should be consumable");
 }
 
 async fn assert_oauth2_session_sensitive_verification_requires_one_local_factor(pool: PgPool) {
@@ -1463,20 +1473,20 @@ async fn assert_oauth2_session_sensitive_verification_requires_one_local_factor(
         "StrongPass1",
     )
     .await
-    .expect("create user with password and email");
+    .checked("create user with password and email");
     insert_trusted_email_identity(&pool, &user.id, email).await;
     service
         .set_two_factor_enabled(&user.id, true)
         .await
-        .expect("password+email user can enable two-factor authentication");
+        .checked("password+email user can enable two-factor authentication");
 
     let outcome = service
         .start_sensitive_operation_verification(&user.id, Some(TokenAuthContext::OAuth2))
         .await
-        .expect("start OAuth2 sensitive verification");
+        .checked("start OAuth2 sensitive verification");
     let SensitiveVerificationOutcome::Pending(challenge) = outcome else {
-        panic!(
-            "OAuth2-session sensitive verification should start with local factors when present"
+        std::panic::panic_any(
+            "OAuth2-session sensitive verification should start with local factors when present",
         );
     };
     assert_eq!(challenge.required_count, 1);
@@ -1492,14 +1502,16 @@ async fn assert_oauth2_session_sensitive_verification_requires_one_local_factor(
             None,
         )
         .await
-        .expect("one local factor should complete OAuth2-session sensitive verification");
+        .checked("one local factor should complete OAuth2-session sensitive verification");
     let SensitiveVerificationOutcome::Complete { verification_id } = complete else {
-        panic!("OAuth2-session sensitive verification should complete after one local factor");
+        std::panic::panic_any(
+            "OAuth2-session sensitive verification should complete after one local factor",
+        );
     };
     service
         .consume_sensitive_operation_verification(&user.id, &verification_id)
         .await
-        .expect("OAuth2-session verification should be consumable");
+        .checked("OAuth2-session verification should be consumable");
 }
 
 async fn assert_oauth2_only_session_can_bootstrap_first_local_factor(pool: PgPool) {
@@ -1511,7 +1523,7 @@ async fn assert_oauth2_only_session_can_bootstrap_first_local_factor(pool: PgPoo
             SignupMethod::OAuth2,
         ))
         .await
-        .expect("create OAuth2-only user");
+        .checked("create OAuth2-only user");
     insert_oauth2_identity(
         &pool,
         &user.id,
@@ -1523,14 +1535,14 @@ async fn assert_oauth2_only_session_can_bootstrap_first_local_factor(pool: PgPoo
     let outcome = service
         .start_sensitive_operation_verification(&user.id, Some(TokenAuthContext::OAuth2))
         .await
-        .expect("OAuth2-only account should receive a bootstrap verification id");
+        .checked("OAuth2-only account should receive a bootstrap verification id");
     let SensitiveVerificationOutcome::Complete { verification_id } = outcome else {
-        panic!("OAuth2-only bootstrap should complete from current OAuth2 session");
+        std::panic::panic_any("OAuth2-only bootstrap should complete from current OAuth2 session");
     };
     service
         .consume_sensitive_operation_verification(&user.id, &verification_id)
         .await
-        .expect("OAuth2-only bootstrap verification should be consumable");
+        .checked("OAuth2-only bootstrap verification should be consumable");
 }
 
 async fn assert_two_factor_blocks_deleting_required_passkey(pool: PgPool) {
@@ -1542,20 +1554,20 @@ async fn assert_two_factor_blocks_deleting_required_passkey(pool: PgPool) {
         "StrongPass1",
     )
     .await
-    .expect("create password+passkey user");
+    .checked("create password+passkey user");
     let credential_id = b"two-factor-required-passkey";
     insert_test_passkey(&pool, &user.id, credential_id).await;
 
     user_service
         .set_two_factor_enabled(&user.id, true)
         .await
-        .expect("password+passkey user can enable two-factor authentication");
+        .checked("password+passkey user can enable two-factor authentication");
 
     let passkey_service = make_passkey_service(pool, user_service);
     let result = passkey_service
         .delete_credential(&user.id, credential_id)
         .await
-        .expect_err("deleting the passkey would leave fewer than two auth methods");
+        .failed("deleting the passkey would leave fewer than two auth methods");
     assert!(
         matches!(&result, Error::InvalidInput(message) if message.contains("remaining verification methods are insufficient")),
         "expected InvalidInput for deleting required passkey, got {result:?}"
@@ -1571,30 +1583,30 @@ async fn assert_two_factor_blocks_single_factor_token_issuance(pool: PgPool) {
         "StrongPass1",
     )
     .await
-    .expect("create user with password");
+    .checked("create user with password");
 
     insert_trusted_email_identity(&pool, &user.id, "two_factor_login_blocked@example.com").await;
     let refresh_token = match opaque_login_user(&service, "two_factor_login_blocked", "StrongPass1")
         .await
-        .expect("single-factor login should work before 2FA is enabled")
+        .checked("single-factor login should work before 2FA is enabled")
     {
         AuthenticatedLogin::Complete { refresh_token, .. } => refresh_token,
         AuthenticatedLogin::MfaRequired { .. } => {
-            panic!("2FA is disabled, login should be complete")
+            std::panic::panic_any("2FA is disabled, login should be complete")
         }
     };
 
     service
         .set_two_factor_enabled(&user.id, true)
         .await
-        .expect("password+verified email user can enable two-factor authentication");
+        .checked("password+verified email user can enable two-factor authentication");
 
     let login_result =
         opaque_login_user_with_challenge(&service, "two_factor_login_blocked", "StrongPass1")
             .await
-            .expect("first factor should return an MFA challenge after 2FA is enabled");
+            .checked("first factor should return an MFA challenge after 2FA is enabled");
     let AuthenticatedLogin::MfaRequired { challenge, .. } = login_result else {
-        panic!("single-factor login must not issue tokens after 2FA is enabled");
+        std::panic::panic_any("single-factor login must not issue tokens after 2FA is enabled");
     };
     assert!(
         challenge
@@ -1616,24 +1628,24 @@ async fn assert_two_factor_blocks_single_factor_token_issuance(pool: PgPool) {
             None,
         )
         .await
-        .expect("verified second factor should complete MFA login")
+        .checked("verified second factor should complete MFA login")
     {
         AuthenticatedLogin::Complete { refresh_token, .. } => refresh_token,
         AuthenticatedLogin::MfaRequired { .. } => {
-            panic!("completed MFA must issue tokens")
+            std::panic::panic_any("completed MFA must issue tokens")
         }
     };
     let (rotated_access, rotated_refresh) = service
         .refresh_token(mfa_refresh_token)
         .await
-        .expect("refresh token issued after MFA should rotate successfully");
+        .checked("refresh token issued after MFA should rotate successfully");
     assert!(!rotated_access.is_empty());
     assert!(!rotated_refresh.is_empty());
 
     let refresh_result = service
         .refresh_token(refresh_token)
         .await
-        .expect_err("refresh token rotation must not issue tokens after 2FA is enabled");
+        .failed("refresh token rotation must not issue tokens after 2FA is enabled");
     assert!(
         matches!(&refresh_result, Error::Authentication(message) if message.contains("Two-factor authentication is required")),
         "expected Authentication error requiring 2FA during refresh, got {refresh_result:?}"
@@ -1649,28 +1661,29 @@ async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
         "StrongPass1",
     )
     .await
-    .expect("create user with password");
-    let old_access_token = old_access_token.expect("2FA-disabled registration issues access token");
+    .checked("create user with password");
+    let old_access_token =
+        old_access_token.checked("2FA-disabled registration issues access token");
     let old_refresh_token =
-        old_refresh_token.expect("2FA-disabled registration issues refresh token");
+        old_refresh_token.checked("2FA-disabled registration issues refresh token");
     let old_access_claims = jwt
         .verify_access_token(&old_access_token)
-        .expect("old access token should be syntactically valid");
+        .checked("old access token should be syntactically valid");
     pipeline
         .check(&old_access_claims)
         .await
-        .expect("single-factor access token should work before 2FA is enabled");
+        .checked("single-factor access token should work before 2FA is enabled");
 
     insert_trusted_email_identity(&pool, &user.id, "two_factor_access_context@example.com").await;
     service
         .set_two_factor_enabled(&user.id, true)
         .await
-        .expect("password+verified email user can enable two-factor authentication");
+        .checked("password+verified email user can enable two-factor authentication");
 
     let result = pipeline
         .check(&old_access_claims)
         .await
-        .expect_err("old single-factor access token must be rejected while 2FA is enabled");
+        .failed("old single-factor access token must be rejected while 2FA is enabled");
     assert!(
         matches!(&result, Error::Authentication(message) if message.contains("Two-factor authentication is required")),
         "expected old access token to require 2FA context, got {result:?}"
@@ -1678,7 +1691,7 @@ async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
     let refresh_result = service
         .refresh_token(old_refresh_token)
         .await
-        .expect_err("old single-factor refresh token must also be rejected while 2FA is enabled");
+        .failed("old single-factor refresh token must also be rejected while 2FA is enabled");
     assert!(
         matches!(&refresh_result, Error::Authentication(message) if message.contains("Two-factor authentication is required")),
         "expected old refresh token to require 2FA context, got {refresh_result:?}"
@@ -1690,9 +1703,9 @@ async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
         "StrongPass1",
     )
     .await
-    .expect("password first factor should start MFA challenge");
+    .checked("password first factor should start MFA challenge");
     let AuthenticatedLogin::MfaRequired { challenge, .. } = login_result else {
-        panic!("2FA-enabled password login should require email second factor");
+        std::panic::panic_any("2FA-enabled password login should require email second factor");
     };
     let mfa_access_token = match service
         .complete_mfa_session_with_control(
@@ -1702,16 +1715,16 @@ async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
             None,
         )
         .await
-        .expect("verified email second factor should complete MFA login")
+        .checked("verified email second factor should complete MFA login")
     {
         AuthenticatedLogin::Complete { access_token, .. } => access_token,
         AuthenticatedLogin::MfaRequired { .. } => {
-            panic!("completed MFA must issue tokens")
+            std::panic::panic_any("completed MFA must issue tokens")
         }
     };
     let mfa_access_claims = jwt
         .verify_access_token(&mfa_access_token)
-        .expect("MFA access token should be syntactically valid");
+        .checked("MFA access token should be syntactically valid");
     assert!(
         mfa_access_claims.satisfies_two_factor_requirement(),
         "MFA-completed token must carry a 2FA auth context"
@@ -1719,22 +1732,22 @@ async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
     pipeline
         .check(&mfa_access_claims)
         .await
-        .expect("MFA access token should work while 2FA is enabled");
+        .checked("MFA access token should work while 2FA is enabled");
 
     insert_oauth2_identity(&pool, &user.id, "github", "oauth2-provider-user-id").await;
     let oauth_access_token = match service
         .login_oauth2(&user.id, "github", "oauth2-provider-user-id", None)
         .await
-        .expect("OAuth2 login should stay independent from local 2FA")
+        .checked("OAuth2 login should stay independent from local 2FA")
     {
         AuthenticatedLogin::Complete { access_token, .. } => access_token,
         AuthenticatedLogin::MfaRequired { .. } => {
-            panic!("OAuth2 login must not start a local MFA challenge")
+            std::panic::panic_any("OAuth2 login must not start a local MFA challenge")
         }
     };
     let oauth_access_claims = jwt
         .verify_access_token(&oauth_access_token)
-        .expect("OAuth2 access token should be syntactically valid");
+        .checked("OAuth2 access token should be syntactically valid");
     assert!(
         oauth_access_claims.satisfies_two_factor_requirement(),
         "OAuth2 token must carry its independent auth context"
@@ -1742,20 +1755,20 @@ async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
     pipeline
         .check(&oauth_access_claims)
         .await
-        .expect("OAuth2 access token should work while 2FA is enabled");
+        .checked("OAuth2 access token should work while 2FA is enabled");
 
     service
         .set_two_factor_enabled(&user.id, false)
         .await
-        .expect("2FA can be disabled once the caller has a valid strong context");
+        .checked("2FA can be disabled once the caller has a valid strong context");
     pipeline
         .check(&old_access_claims)
         .await
-        .expect("single-factor access token should work again after 2FA is disabled");
+        .checked("single-factor access token should work again after 2FA is disabled");
     pipeline
         .check(&mfa_access_claims)
         .await
-        .expect("MFA access token should remain valid after 2FA is disabled");
+        .checked("MFA access token should remain valid after 2FA is disabled");
 }
 
 async fn assert_two_factor_allows_oauth2_without_local_mfa(pool: PgPool) {
@@ -1767,19 +1780,19 @@ async fn assert_two_factor_allows_oauth2_without_local_mfa(pool: PgPool) {
         "StrongPass1",
     )
     .await
-    .expect("create user with password");
+    .checked("create user with password");
 
     insert_trusted_email_identity(&pool, &user.id, "two_factor_oauth2_allowed@example.com").await;
     service
         .set_two_factor_enabled(&user.id, true)
         .await
-        .expect("password+verified email user can enable two-factor authentication");
+        .checked("password+verified email user can enable two-factor authentication");
 
     insert_oauth2_identity(&pool, &user.id, "github", "oauth2-provider-user-id-mfa").await;
     let (access_token, refresh_token) = match service
         .login_oauth2(&user.id, "github", "oauth2-provider-user-id-mfa", None)
         .await
-        .expect("OAuth2 login should stay independent from local 2FA")
+        .checked("OAuth2 login should stay independent from local 2FA")
     {
         AuthenticatedLogin::Complete {
             access_token,
@@ -1787,14 +1800,14 @@ async fn assert_two_factor_allows_oauth2_without_local_mfa(pool: PgPool) {
             ..
         } => (access_token, refresh_token),
         AuthenticatedLogin::MfaRequired { .. } => {
-            panic!("OAuth2 login must not start a local MFA challenge")
+            std::panic::panic_any("OAuth2 login must not start a local MFA challenge")
         }
     };
     assert!(!access_token.is_empty());
     let (rotated_access, rotated_refresh) = service
         .refresh_token(refresh_token)
         .await
-        .expect("OAuth2 refresh token should rotate for 2FA-enabled users");
+        .checked("OAuth2 refresh token should rotate for 2FA-enabled users");
     assert!(!rotated_access.is_empty());
     assert!(!rotated_refresh.is_empty());
 }
@@ -1808,16 +1821,18 @@ async fn assert_refresh_token_rejects_unbound_oauth2_identity(pool: PgPool) {
         "StrongPass1",
     )
     .await
-    .expect("create user with password");
+    .checked("create user with password");
 
     insert_oauth2_identity(&pool, &user.id, "github", "oauth-refresh-provider-user").await;
     let refresh_token = match service
         .login_oauth2(&user.id, "github", "oauth-refresh-provider-user", None)
         .await
-        .expect("OAuth2 login should issue tokens")
+        .checked("OAuth2 login should issue tokens")
     {
         AuthenticatedLogin::Complete { refresh_token, .. } => refresh_token,
-        AuthenticatedLogin::MfaRequired { .. } => panic!("OAuth2 login should complete"),
+        AuthenticatedLogin::MfaRequired { .. } => {
+            std::panic::panic_any("OAuth2 login should complete")
+        }
     };
 
     sqlx::query(
@@ -1829,7 +1844,7 @@ async fn assert_refresh_token_rejects_unbound_oauth2_identity(pool: PgPool) {
     .bind("oauth-refresh-provider-user")
     .execute(&pool)
     .await
-    .expect("delete oauth2 identity");
+    .checked("delete oauth2 identity");
 
     let result = service.refresh_token(refresh_token).await;
     assert!(
@@ -1847,21 +1862,23 @@ async fn assert_refresh_token_rejects_unbound_email_identity(pool: PgPool) {
         "StrongPass1",
     )
     .await
-    .expect("create user with password");
+    .checked("create user with password");
     let refresh_token = match service
         .login_with_verified_email(&user.id, "email-refresh-binding", None)
         .await
-        .expect("verified email login should issue tokens")
+        .checked("verified email login should issue tokens")
     {
         AuthenticatedLogin::Complete { refresh_token, .. } => refresh_token,
-        AuthenticatedLogin::MfaRequired { .. } => panic!("email login should complete"),
+        AuthenticatedLogin::MfaRequired { .. } => {
+            std::panic::panic_any("email login should complete")
+        }
     };
 
     sqlx::query("DELETE FROM auth_email_identities WHERE user_id = $1")
         .bind(user.id)
         .execute(&pool)
         .await
-        .expect("delete email identity");
+        .checked("delete email identity");
 
     let result = service.refresh_token(refresh_token).await;
     assert!(
@@ -1879,7 +1896,7 @@ async fn assert_refresh_token_rejects_deleted_passkey_binding(pool: PgPool) {
         "StrongPass1",
     )
     .await
-    .expect("create user with password");
+    .checked("create user with password");
     let credential_id = b"passkey-refresh-binding";
     insert_test_passkey(&pool, &user.id, credential_id).await;
 
@@ -1892,10 +1909,12 @@ async fn assert_refresh_token_rejects_deleted_passkey_binding(pool: PgPool) {
             None,
         )
         .await
-        .expect("passkey login should issue tokens")
+        .checked("passkey login should issue tokens")
     {
         AuthenticatedLogin::Complete { refresh_token, .. } => refresh_token,
-        AuthenticatedLogin::MfaRequired { .. } => panic!("passkey login should complete"),
+        AuthenticatedLogin::MfaRequired { .. } => {
+            std::panic::panic_any("passkey login should complete")
+        }
     };
 
     sqlx::query("DELETE FROM auth_webauthn_credentials WHERE user_id = $1 AND credential_id = $2")
@@ -1903,7 +1922,7 @@ async fn assert_refresh_token_rejects_deleted_passkey_binding(pool: PgPool) {
         .bind(credential_id.as_slice())
         .execute(&pool)
         .await
-        .expect("delete passkey credential");
+        .checked("delete passkey credential");
 
     let result = service.refresh_token(refresh_token).await;
     assert!(

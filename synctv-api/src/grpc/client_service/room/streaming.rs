@@ -154,22 +154,23 @@ pub(super) async fn message_stream(
             concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
         },
         StreamMessageHandlerRuntime {
-            playback_service: Some(service.client_api.clone()),
-            playlist_items_snapshot_service: Some(service.client_api.clone()),
-            room_members_snapshot_service: Some(service.client_api.clone()),
-            room_settings_snapshot_service: None,
+            playback_service: service.client_api.clone(),
+            playlist_items_snapshot_service: service.client_api.clone(),
+            room_members_snapshot_service: service.client_api.clone(),
+            room_settings_snapshot_service:
+                crate::impls::room_settings_snapshot::default_room_settings_snapshot_service(
+                    service.room_service.clone(),
+                ),
             playback_fanout: service.client_api.playback_fanout.clone(),
             chat_event_dispatcher: crate::chat_event_dispatcher::default_chat_event_dispatcher(
                 event_service.clone(),
             ),
             notification_service: service.notification_service.clone(),
-            ws_message_rate_limit: Some(
-                service
-                    .config
-                    .connection_limits
-                    .ws_message_rate_limit_per_second,
-            ),
-            heartbeat_schedule: Some(service.heartbeat_schedule),
+            ws_message_rate_limit: service
+                .config
+                .connection_limits
+                .ws_message_rate_limit_per_second,
+            heartbeat_schedule: service.heartbeat_schedule,
             filter_private_ice_candidates: service.config.webrtc.filter_private_ice_candidates,
         },
     );

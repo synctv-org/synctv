@@ -199,6 +199,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::TestResultExt;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
@@ -216,7 +217,7 @@ mod tests {
             })
             .await;
 
-        assert_eq!(result.unwrap(), 42);
+        assert_eq!(result.checked("operation should succeed"), 42);
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
@@ -240,7 +241,10 @@ mod tests {
         }
 
         for handle in handles {
-            let result = handle.await.unwrap().unwrap();
+            let result = handle
+                .await
+                .checked("operation should succeed")
+                .checked("operation should succeed");
             assert_eq!(result, 123);
         }
 
@@ -273,8 +277,14 @@ mod tests {
             .await
         });
 
-        let r1 = h1.await.unwrap().unwrap();
-        let r2 = h2.await.unwrap().unwrap();
+        let r1 = h1
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
+        let r2 = h2
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
 
         assert_eq!(r1, 1);
         assert_eq!(r2, 2);
@@ -293,7 +303,7 @@ mod tests {
 
         match result {
             Err(SingleFlightError::Inner(msg)) => assert_eq!(msg, "test error"),
-            _ => panic!("Expected Inner error"),
+            _ => std::panic::panic_any("Expected Inner error"),
         }
     }
 
@@ -311,7 +321,7 @@ mod tests {
 
         // Second request with same key should work
         let result = sf.do_work("fail_key".to_string(), async { Ok(42) }).await;
-        assert_eq!(result.unwrap(), 42);
+        assert_eq!(result.checked("operation should succeed"), 42);
     }
 
     /// Stress test: 100 concurrent tasks on same key - thundering herd protection
@@ -335,7 +345,10 @@ mod tests {
         }
 
         for handle in handles {
-            let result = handle.await.unwrap().unwrap();
+            let result = handle
+                .await
+                .checked("operation should succeed")
+                .checked("operation should succeed");
             assert_eq!(result, 999);
         }
 
@@ -373,7 +386,7 @@ mod tests {
         }
 
         for handle in handles {
-            let result = handle.await.unwrap();
+            let result = handle.await.checked("operation should succeed");
             assert!(result.is_ok());
         }
 
@@ -425,7 +438,7 @@ mod tests {
         let mut success_count = 0;
 
         for handle in handles {
-            match handle.await.unwrap() {
+            match handle.await.checked("operation should succeed") {
                 Ok(v) => {
                     assert_eq!(v, 42);
                     success_count += 1;

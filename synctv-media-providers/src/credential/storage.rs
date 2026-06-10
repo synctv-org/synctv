@@ -26,7 +26,7 @@ fn validate_credential_host(data: &CredentialData) -> Result<()> {
         CredentialData::Bilibili { .. } => return Ok(()),
     };
 
-    crate::grpc::validation::validate_host(host)
+    crate::validation::validate_host(host)
         .map_err(|status| CredentialStorageError::InvalidData(status.message().to_string()))
 }
 
@@ -448,12 +448,18 @@ impl CredentialStorage for InMemoryCredentialStorage {
 mod tests {
     use super::*;
 
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
+    }
+
     fn bilibili_server_id() -> String {
         CredentialData::bilibili(HashMap::new()).server_id()
     }
 
     #[tokio::test]
-    async fn test_in_memory_storage_set_and_get() {
+    async fn test_in_memory_storage_set_and_get() -> TestResult {
         let storage = InMemoryCredentialStorage::new();
 
         let mut cookies = HashMap::new();
@@ -461,8 +467,7 @@ mod tests {
 
         let cred = storage
             .set("user123", None, CredentialData::bilibili(cookies.clone()))
-            .await
-            .unwrap();
+            .await?;
 
         assert_eq!(cred.user_id, "user123");
         assert_eq!(cred.provider, ProviderType::Bilibili);
@@ -471,68 +476,64 @@ mod tests {
         // Retrieve the credential
         let retrieved = storage
             .get("user123", ProviderType::Bilibili, &bilibili_server_id())
-            .await
-            .unwrap();
+            .await?;
 
         assert!(retrieved.is_some());
-        let retrieved = retrieved.unwrap();
+        let retrieved = retrieved.ok_or_else(|| test_error("credential should exist"))?;
         assert_eq!(retrieved.id, cred.id);
         assert_eq!(retrieved.user_id, "user123");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_in_memory_storage_get_not_found() {
+    async fn test_in_memory_storage_get_not_found() -> TestResult {
         let storage = InMemoryCredentialStorage::new();
 
         let result = storage
             .get("nonexistent", ProviderType::Bilibili, &bilibili_server_id())
-            .await
-            .unwrap();
+            .await?;
 
         assert!(result.is_none());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_in_memory_storage_delete() {
+    async fn test_in_memory_storage_delete() -> TestResult {
         let storage = InMemoryCredentialStorage::new();
 
         // Create a credential
         storage
             .set("user123", None, CredentialData::bilibili(HashMap::new()))
-            .await
-            .unwrap();
+            .await?;
 
         // Delete it
         let deleted = storage
             .delete("user123", ProviderType::Bilibili, &bilibili_server_id())
-            .await
-            .unwrap();
+            .await?;
         assert!(deleted);
 
         // Verify it's gone
         let result = storage
             .get("user123", ProviderType::Bilibili, &bilibili_server_id())
-            .await
-            .unwrap();
+            .await?;
         assert!(result.is_none());
 
         // Delete non-existent returns false
         let deleted_again = storage
             .delete("user123", ProviderType::Bilibili, &bilibili_server_id())
-            .await
-            .unwrap();
+            .await?;
         assert!(!deleted_again);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_in_memory_storage_list_by_user() {
+    async fn test_in_memory_storage_list_by_user() -> TestResult {
         let storage = InMemoryCredentialStorage::new();
 
         // Create credentials for user1
         storage
             .set("user1", None, CredentialData::bilibili(HashMap::new()))
-            .await
-            .unwrap();
+            .await?;
         storage
             .set(
                 "user1",
@@ -543,26 +544,23 @@ mod tests {
                     "pass".into(),
                 ),
             )
-            .await
-            .unwrap();
+            .await?;
 
         // Create credential for user2
         storage
             .set("user2", None, CredentialData::bilibili(HashMap::new()))
-            .await
-            .unwrap();
+            .await?;
 
-        // List user1's credentials
-        let user1_creds = storage.list_by_user("user1").await.unwrap();
+        let user1_creds = storage.list_by_user("user1").await?;
         assert_eq!(user1_creds.len(), 2);
 
-        // List user2's credentials
-        let user2_creds = storage.list_by_user("user2").await.unwrap();
+        let user2_creds = storage.list_by_user("user2").await?;
         assert_eq!(user2_creds.len(), 1);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_in_memory_storage_list_by_provider() {
+    async fn test_in_memory_storage_list_by_provider() -> TestResult {
         let storage = InMemoryCredentialStorage::new();
 
         // Create multiple Alist credentials (different hosts)
@@ -576,8 +574,7 @@ mod tests {
                     "pass".into(),
                 ),
             )
-            .await
-            .unwrap();
+            .await?;
         storage
             .set(
                 "user1",
@@ -588,44 +585,39 @@ mod tests {
                     "pass".into(),
                 ),
             )
-            .await
-            .unwrap();
+            .await?;
         storage
             .set("user1", None, CredentialData::bilibili(HashMap::new()))
-            .await
-            .unwrap();
+            .await?;
 
         // List only Alist credentials
         let alist_creds = storage
             .list_by_provider("user1", ProviderType::Alist)
-            .await
-            .unwrap();
+            .await?;
         assert_eq!(alist_creds.len(), 2);
 
         // List only Bilibili credentials
         let bilibili_creds = storage
             .list_by_provider("user1", ProviderType::Bilibili)
-            .await
-            .unwrap();
+            .await?;
         assert_eq!(bilibili_creds.len(), 1);
 
         // List Emby credentials (none)
         let emby_creds = storage
             .list_by_provider("user1", ProviderType::Emby)
-            .await
-            .unwrap();
+            .await?;
         assert!(emby_creds.is_empty());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_in_memory_storage_update() {
+    async fn test_in_memory_storage_update() -> TestResult {
         let storage = InMemoryCredentialStorage::new();
 
         // Create initial credential
         let cred1 = storage
             .set("user1", None, CredentialData::bilibili(HashMap::new()))
-            .await
-            .unwrap();
+            .await?;
 
         // Update with new cookies
         let mut new_cookies = HashMap::new();
@@ -633,39 +625,41 @@ mod tests {
 
         let cred2 = storage
             .set("user1", None, CredentialData::bilibili(new_cookies))
-            .await
-            .unwrap();
+            .await?;
 
         // Should preserve the same ID on upsert (matches PostgreSQL ON CONFLICT behavior)
         assert_eq!(cred1.id, cred2.id);
 
         // Should only have one credential
-        let all = storage.list_by_user("user1").await.unwrap();
+        let all = storage.list_by_user("user1").await?;
         assert_eq!(all.len(), 1);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_in_memory_storage_exists() {
+    async fn test_in_memory_storage_exists() -> TestResult {
         let storage = InMemoryCredentialStorage::new();
 
-        assert!(!storage
-            .exists("user1", ProviderType::Bilibili, &bilibili_server_id())
-            .await
-            .unwrap());
+        assert!(
+            !storage
+                .exists("user1", ProviderType::Bilibili, &bilibili_server_id())
+                .await?
+        );
 
         storage
             .set("user1", None, CredentialData::bilibili(HashMap::new()))
-            .await
-            .unwrap();
+            .await?;
 
-        assert!(storage
-            .exists("user1", ProviderType::Bilibili, &bilibili_server_id())
-            .await
-            .unwrap());
+        assert!(
+            storage
+                .exists("user1", ProviderType::Bilibili, &bilibili_server_id())
+                .await?
+        );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_in_memory_storage_multiple_alist_servers() {
+    async fn test_in_memory_storage_multiple_alist_servers() -> TestResult {
         let storage = InMemoryCredentialStorage::new();
 
         // User can have multiple Alist servers
@@ -678,8 +672,7 @@ mod tests {
                 Some("instance1"),
                 CredentialData::alist(host1.into(), "user".into(), "pass".into()),
             )
-            .await
-            .unwrap();
+            .await?;
 
         storage
             .set(
@@ -687,20 +680,19 @@ mod tests {
                 Some("instance2"),
                 CredentialData::alist(host2.into(), "user".into(), "pass".into()),
             )
-            .await
-            .unwrap();
+            .await?;
 
         // Both should exist independently
         let all = storage
             .list_by_provider("user1", ProviderType::Alist)
-            .await
-            .unwrap();
+            .await?;
         assert_eq!(all.len(), 2);
 
         // Verify they have different server_ids
         let server_ids: std::collections::HashSet<_> =
             all.iter().map(|c| c.server_id.clone()).collect();
         assert_eq!(server_ids.len(), 2);
+        Ok(())
     }
 
     fn test_encryption_key() -> Vec<u8> {
@@ -712,8 +704,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_encryption_alist_password_round_trip() {
-        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key()).unwrap();
+    async fn test_encryption_alist_password_round_trip() -> TestResult {
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key())?;
 
         let plain_password = "my_secret_password_123";
 
@@ -728,40 +720,30 @@ mod tests {
                     plain_password.to_string(),
                 ),
             )
-            .await
-            .expect("Failed to store credential");
+            .await?;
 
-        // The returned credential should have decrypted password (for caller convenience)
-        let (_, _, password) = stored
-            .data
-            .as_alist()
-            .expect("Expected Alist credential data");
+        let (_, _, password) = stored.data.as_alist().map_err(test_error)?;
         assert_eq!(
             password, plain_password,
             "Returned password should be decrypted"
         );
 
-        // Retrieve the credential
         let retrieved = storage
             .get("user1", ProviderType::Alist, &stored.server_id)
-            .await
-            .expect("Failed to get credential")
-            .expect("Credential should exist");
+            .await?
+            .ok_or_else(|| test_error("credential should exist"))?;
 
-        // The retrieved password should be decrypted
-        let (_, _, password) = retrieved
-            .data
-            .as_alist()
-            .expect("Expected Alist credential data");
+        let (_, _, password) = retrieved.data.as_alist().map_err(test_error)?;
         assert_eq!(
             password, plain_password,
             "Retrieved password should be decrypted"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_encryption_emby_api_key_round_trip() {
-        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key()).unwrap();
+    async fn test_encryption_emby_api_key_round_trip() -> TestResult {
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key())?;
 
         let api_key = "secret_api_key_12345";
 
@@ -776,34 +758,24 @@ mod tests {
                     "user_id".to_string(),
                 ),
             )
-            .await
-            .expect("Failed to store credential");
+            .await?;
 
-        // The returned credential should have decrypted api_key
-        let (_, key, _) = stored
-            .data
-            .as_emby()
-            .expect("Expected Emby credential data");
+        let (_, key, _) = stored.data.as_emby().map_err(test_error)?;
         assert_eq!(key, api_key, "Returned api_key should be decrypted");
 
-        // Retrieve the credential
         let retrieved = storage
             .get("user1", ProviderType::Emby, &stored.server_id)
-            .await
-            .expect("Failed to get credential")
-            .expect("Credential should exist");
+            .await?
+            .ok_or_else(|| test_error("credential should exist"))?;
 
-        // The retrieved api_key should be decrypted
-        let (_, key, _) = retrieved
-            .data
-            .as_emby()
-            .expect("Expected Emby credential data");
+        let (_, key, _) = retrieved.data.as_emby().map_err(test_error)?;
         assert_eq!(key, api_key, "Retrieved api_key should be decrypted");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_encryption_bilibili_sessdata_encrypted() {
-        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key()).unwrap();
+    async fn test_encryption_bilibili_sessdata_encrypted() -> TestResult {
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key())?;
 
         let mut cookies = HashMap::new();
         cookies.insert("SESSDATA".to_string(), "test_session".to_string());
@@ -812,14 +784,9 @@ mod tests {
         // Store Bilibili credential
         let stored = storage
             .set("user1", None, CredentialData::bilibili(cookies.clone()))
-            .await
-            .expect("Failed to store credential");
+            .await?;
 
-        // The returned credential should have decrypted cookies (for caller convenience)
-        let c = stored
-            .data
-            .as_bilibili()
-            .expect("Expected Bilibili credential data");
+        let c = stored.data.as_bilibili().map_err(test_error)?;
         assert_eq!(
             c.get("SESSDATA"),
             Some(&"test_session".to_string()),
@@ -831,18 +798,12 @@ mod tests {
             "Returned bili_jct should be decrypted"
         );
 
-        // Retrieve the credential
         let retrieved = storage
             .get("user1", ProviderType::Bilibili, &bilibili_server_id())
-            .await
-            .expect("Failed to get credential")
-            .expect("Credential should exist");
+            .await?
+            .ok_or_else(|| test_error("credential should exist"))?;
 
-        // The retrieved cookies should be decrypted
-        let c = retrieved
-            .data
-            .as_bilibili()
-            .expect("Expected Bilibili credential data");
+        let c = retrieved.data.as_bilibili().map_err(test_error)?;
         assert_eq!(
             c.get("SESSDATA"),
             Some(&"test_session".to_string()),
@@ -853,38 +814,36 @@ mod tests {
             Some(&"test_jct_token".to_string()),
             "Retrieved bili_jct should be decrypted"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_encryption_bilibili_stored_encrypted_at_rest() {
-        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key()).unwrap();
+    async fn test_encryption_bilibili_stored_encrypted_at_rest() -> TestResult {
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key())?;
 
         let mut cookies = HashMap::new();
         cookies.insert("SESSDATA".to_string(), "test_session".to_string());
 
         storage
             .set("user1", None, CredentialData::bilibili(cookies))
-            .await
-            .expect("Failed to store credential");
+            .await?;
 
-        // Inspect the raw stored data (bypass decryption by reading the map directly)
         let credentials = storage.credentials.read().await;
         let stored_raw = credentials
             .values()
             .next()
-            .expect("Should have one credential");
+            .ok_or_else(|| test_error("credential should exist"))?;
 
-        let raw_cookies = stored_raw
-            .data
-            .as_bilibili()
-            .expect("Expected Bilibili credential data");
+        let raw_cookies = stored_raw.data.as_bilibili().map_err(test_error)?;
 
-        // The raw stored SESSDATA should be encrypted (starts with "enc:")
-        let raw_sessdata = raw_cookies.get("SESSDATA").expect("SESSDATA should exist");
+        let raw_sessdata = raw_cookies
+            .get("SESSDATA")
+            .ok_or_else(|| test_error("SESSDATA should exist"))?;
         assert!(
             FieldEncryption::is_encrypted(raw_sessdata),
             "SESSDATA should be encrypted at rest, got: {raw_sessdata}"
         );
+        Ok(())
     }
 
     #[test]
@@ -897,7 +856,9 @@ mod tests {
         let result = emby_data.as_alist();
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().contains("Expected Alist"),
+            result
+                .expect_err("validation should fail")
+                .contains("Expected Alist"),
             "Error message should mention expected type"
         );
 
@@ -915,7 +876,9 @@ mod tests {
         let result = alist_data.as_emby();
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().contains("Expected Emby"),
+            result
+                .expect_err("validation should fail")
+                .contains("Expected Emby"),
             "Error message should mention expected type"
         );
 
@@ -933,7 +896,9 @@ mod tests {
         let result = alist_data.as_bilibili();
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().contains("Expected Bilibili"),
+            result
+                .expect_err("validation should fail")
+                .contains("Expected Bilibili"),
             "Error message should mention expected type"
         );
 
@@ -946,51 +911,57 @@ mod tests {
     }
 
     #[test]
-    fn test_as_alist_returns_correct_fields() {
+    fn test_as_alist_returns_correct_fields() -> TestResult {
         let data = CredentialData::alist(
             "https://alist.example.com".to_string(),
             "admin".to_string(),
             "secret".to_string(),
         );
-        let (host, username, password) = data.as_alist().unwrap();
+        let (host, username, password) = data.as_alist().map_err(test_error)?;
         assert_eq!(host, "https://alist.example.com");
         assert_eq!(username, "admin");
         assert_eq!(password, "secret");
+        Ok(())
     }
 
     #[test]
-    fn test_as_emby_returns_correct_fields() {
+    fn test_as_emby_returns_correct_fields() -> TestResult {
         let data = CredentialData::emby(
             "https://emby.example.com".to_string(),
             "my_api_key".to_string(),
             "user_42".to_string(),
         );
-        let (host, api_key, emby_user_id) = data.as_emby().unwrap();
+        let (host, api_key, emby_user_id) = data.as_emby().map_err(test_error)?;
         assert_eq!(host, "https://emby.example.com");
         assert_eq!(api_key, "my_api_key");
         assert_eq!(emby_user_id, "user_42");
+        Ok(())
     }
 
     #[test]
-    fn test_as_bilibili_returns_correct_fields() {
+    fn test_as_bilibili_returns_correct_fields() -> TestResult {
         let mut cookies = HashMap::new();
         cookies.insert("SESSDATA".to_string(), "abc123".to_string());
         let data = CredentialData::bilibili(cookies);
-        let c = data.as_bilibili().unwrap();
+        let c = data.as_bilibili().map_err(test_error)?;
         assert_eq!(c.get("SESSDATA"), Some(&"abc123".to_string()));
+        Ok(())
     }
 
     #[test]
-    fn test_with_encryption_rejects_invalid_key_length() {
+    fn test_with_encryption_rejects_invalid_key_length() -> TestResult {
         let Err(err) = InMemoryCredentialStorage::with_encryption(&[0u8; 16]) else {
-            panic!("invalid encryption key length must return an error");
+            return Err(test_error(
+                "invalid encryption key length must return an error",
+            ));
         };
         assert!(err.to_string().contains("Invalid encryption key length"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_decrypt_rejects_plaintext_when_encryption_enabled() {
-        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key()).unwrap();
+    async fn test_decrypt_rejects_plaintext_when_encryption_enabled() -> TestResult {
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key())?;
         let credential = CredentialData::alist(
             "https://alist.example.com".to_string(),
             "admin".to_string(),
@@ -1016,5 +987,6 @@ mod tests {
             .await
             .expect_err("plaintext credentials must be rejected when encryption is enabled");
         assert!(err.to_string().contains("not encrypted"));
+        Ok(())
     }
 }

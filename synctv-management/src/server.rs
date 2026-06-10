@@ -6,9 +6,9 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server;
-use tracing::info;
 #[cfg(unix)]
 use tracing::warn;
+use tracing::{debug, info};
 
 use synctv_api::impls::{
     AdminApiImpl, AlistApiImpl, BilibiliApiImpl, ClientApiImpl, EmbyApiImpl, ProviderCommonApiImpl,
@@ -169,7 +169,12 @@ where
 
     let mut shutdown_rx = config.shutdown_rx;
     let graceful = async move {
-        let _ = shutdown_rx.changed().await;
+        match shutdown_rx.changed().await {
+            Ok(()) => {}
+            Err(_) => {
+                debug!("management shutdown signal sender dropped; stopping gRPC server");
+            }
+        }
     };
 
     let mut server = Server::builder();
@@ -311,6 +316,7 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tonic::transport::Server;
     use tonic_health::pb::health_client::HealthClient;
     use tonic_health::pb::HealthCheckRequest;
@@ -322,18 +328,19 @@ mod tests {
 
     #[cfg(unix)]
     impl TempDirGuard {
-        fn new(label: &str) -> Self {
+        fn new(label: &str) -> std::io::Result<Self> {
             let base_dir = std::path::Path::new("/tmp");
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(std::io::Error::other)?
+                .as_nanos();
             let path = base_dir.join(format!(
                 "stv-m-{label}-{}-{}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("system clock should be after unix epoch")
-                    .as_nanos()
+                timestamp
             ));
-            std::fs::create_dir_all(&path).expect("temp dir should be created");
-            Self { path }
+            std::fs::create_dir_all(&path)?;
+            Ok(Self { path })
         }
 
         fn path(&self) -> &std::path::Path {
@@ -344,84 +351,86 @@ mod tests {
     #[cfg(unix)]
     impl Drop for TempDirGuard {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.path);
+            if let Err(error) = std::fs::remove_dir_all(&self.path) {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    %error,
+                    "failed to remove temporary management test directory"
+                );
+            }
         }
     }
 
     #[cfg(unix)]
     #[test]
-    fn prepare_management_unix_socket_restricts_parent_directory_permissions() {
-        let temp_dir = TempDirGuard::new("parent-perms");
+    fn prepare_management_unix_socket_restricts_parent_directory_permissions(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = TempDirGuard::new("parent-perms")?;
         let runtime_dir = temp_dir.path().join("management-runtime");
         let socket_path = runtime_dir.join("synctv.sock");
 
-        prepare_management_unix_socket(socket_path.to_str().expect("socket path should be utf-8"))
-            .expect("prepare should succeed");
+        prepare_management_unix_socket(&socket_path.to_string_lossy())?;
 
-        let metadata = std::fs::metadata(&runtime_dir).expect("runtime dir metadata");
+        let metadata = std::fs::metadata(&runtime_dir)?;
         let mode = metadata.permissions().mode() & 0o777;
 
         assert_eq!(
             mode, 0o700,
             "management runtime directory must be owner-only, got {mode:o}"
         );
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn prepare_management_unix_socket_preserves_existing_parent_directory_permissions() {
-        let temp_dir = TempDirGuard::new("existing-parent-perms");
+    fn prepare_management_unix_socket_preserves_existing_parent_directory_permissions(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = TempDirGuard::new("existing-parent-perms")?;
         let runtime_dir = temp_dir.path().join("preexisting-runtime");
-        std::fs::create_dir_all(&runtime_dir).expect("existing runtime dir should be created");
-        std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o755))
-            .expect("existing runtime dir permissions should be set");
+        std::fs::create_dir_all(&runtime_dir)?;
+        std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o755))?;
         let socket_path = runtime_dir.join("synctv.sock");
 
-        prepare_management_unix_socket(socket_path.to_str().expect("socket path should be utf-8"))
-            .expect("prepare should succeed");
+        prepare_management_unix_socket(&socket_path.to_string_lossy())?;
 
-        let metadata = std::fs::metadata(&runtime_dir).expect("runtime dir metadata");
+        let metadata = std::fs::metadata(&runtime_dir)?;
         let mode = metadata.permissions().mode() & 0o777;
 
         assert_eq!(
             mode, 0o755,
             "prepare must not rewrite permissions for an existing parent directory, got {mode:o}"
         );
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn management_unix_socket_is_owner_only_after_bind() {
-        let temp_dir = TempDirGuard::new("socket-perms");
+    fn management_unix_socket_is_owner_only_after_bind() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = TempDirGuard::new("socket-perms")?;
         let socket_path = temp_dir.path().join("management.sock");
 
-        prepare_management_unix_socket(socket_path.to_str().expect("socket path should be utf-8"))
-            .expect("prepare should succeed");
+        prepare_management_unix_socket(&socket_path.to_string_lossy())?;
 
-        let listener =
-            std::os::unix::net::UnixListener::bind(&socket_path).expect("socket should bind");
-        restrict_management_unix_socket_permissions(&socket_path)
-            .expect("socket permissions should be restricted");
-        let metadata = std::fs::metadata(&socket_path).expect("socket metadata");
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+        restrict_management_unix_socket_permissions(&socket_path)?;
+        let metadata = std::fs::metadata(&socket_path)?;
         let mode = metadata.permissions().mode() & 0o777;
 
         drop(listener);
-        std::fs::remove_file(&socket_path).expect("socket cleanup");
+        std::fs::remove_file(&socket_path)?;
 
         assert_eq!(
             mode, 0o600,
             "management unix socket must be owner-only, got {mode:o}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn management_health_service_remains_accessible_without_management_auth() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("health test listener should bind");
-        let addr = listener
-            .local_addr()
-            .expect("health test listener should expose local address");
+    async fn management_health_service_remains_accessible_without_management_auth(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
 
         let (reporter, health_service) = tonic_health::server::health_reporter();
         reporter
@@ -433,23 +442,19 @@ mod tests {
                 .add_service(health_service)
                 .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
                 .await
-                .expect("health-only management server should serve");
         });
 
         let endpoint = format!("http://{addr}");
-        let channel = tonic::transport::Endpoint::from_shared(endpoint)
-            .expect("health test endpoint should be valid")
+        let channel = tonic::transport::Endpoint::from_shared(endpoint)?
             .connect()
-            .await
-            .expect("health test channel should connect");
+            .await?;
 
         let mut unauthenticated_client = HealthClient::new(channel);
         let response = unauthenticated_client
             .check(HealthCheckRequest {
                 service: String::new(),
             })
-            .await
-            .expect("health check should stay available without management auth")
+            .await?
             .into_inner();
         assert_eq!(
             response.status,
@@ -457,6 +462,12 @@ mod tests {
         );
 
         serve_handle.abort();
-        let _ = serve_handle.await;
+        match serve_handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(error.into()),
+            Err(error) if error.is_cancelled() => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
     }
 }

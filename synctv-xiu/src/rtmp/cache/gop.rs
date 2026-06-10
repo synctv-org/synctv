@@ -4,9 +4,16 @@ use {crate::streamhub::define::FrameData, std::collections::VecDeque, std::sync:
 /// 1500 frames ≈ 1 minute at 24fps, generous for any reasonable GOP.
 const MAX_FRAMES_PER_GOP: usize = 1500;
 
-/// Max memory per GOP (100 MB) to prevent OOM.
+/// Max memory per GOP (100 MB).
 /// Each frame can vary widely in size (keyframes are larger).
 const MAX_MEMORY_PER_GOP: usize = 100 * 1024 * 1024;
+
+fn clone_or_unwrap_frozen_frames(frames: Arc<Vec<FrameData>>) -> Vec<FrameData> {
+    match Arc::try_unwrap(frames) {
+        Ok(frames) => frames,
+        Err(shared_frames) => (*shared_frames).clone(),
+    }
+}
 
 /// A single Group of Pictures.
 ///
@@ -119,7 +126,7 @@ impl Gop {
     #[must_use]
     pub fn get_frame_data(mut self) -> Vec<FrameData> {
         self.freeze();
-        Arc::try_unwrap(self.frozen).unwrap_or_else(|arc| (*arc).clone())
+        clone_or_unwrap_frozen_frames(self.frozen)
     }
 
     #[must_use]
@@ -135,13 +142,15 @@ impl Gop {
 
 /// Default maximum total bytes across all GOPs per stream (500 MB).
 ///
-/// When exceeded, the oldest GOP is dropped even if `gop_num` hasn't been reached.
-/// Prevents OOM under high-bitrate multi-stream scenarios (e.g., 4K at 50 Mbps).
-///
-/// Previously set to 50 MB which was contradictory with `MAX_MEMORY_PER_GOP` (100 MB) —
-/// a single GOP could exceed the total budget, making caching impossible.
-/// 500 MB allows ~5 GOPs at the per-GOP max, supporting high-quality streams.
+/// When exceeded, the oldest GOP is dropped even if `gop_num` has room.
 pub const DEFAULT_MAX_TOTAL_BYTES: usize = 500 * 1024 * 1024;
+
+const fn resolve_max_total_bytes(max_total_bytes: Option<usize>) -> usize {
+    match max_total_bytes {
+        Some(value) => value,
+        None => DEFAULT_MAX_TOTAL_BYTES,
+    }
+}
 
 /// Default global memory limit across ALL streams (2 GB).
 ///
@@ -176,7 +185,7 @@ impl Gops {
         Self {
             entries: VecDeque::from([Gop::new()]),
             size,
-            max_total_bytes: max_total_bytes.unwrap_or(DEFAULT_MAX_TOTAL_BYTES),
+            max_total_bytes: resolve_max_total_bytes(max_total_bytes),
             current_total_bytes: 0,
         }
     }
@@ -236,13 +245,16 @@ impl Gops {
         if is_key_frame {
             // Freeze the current back GOP before pushing a new one,
             // so it's ready for zero-copy clone.
-            if let Some(back) = self.entries.back_mut() {
-                back.freeze();
+            let should_start_new_gop = self.entries.back().is_some_and(|back| !back.is_empty());
+            if should_start_new_gop {
+                if let Some(back) = self.entries.back_mut() {
+                    back.freeze();
+                }
+                if self.entries.len() == self.size {
+                    self.evict_oldest_gop("GOP count limit reached");
+                }
+                self.entries.push_back(Gop::new());
             }
-            if self.entries.len() == self.size {
-                self.evict_oldest_gop("GOP count limit reached");
-            }
-            self.entries.push_back(Gop::new());
         }
 
         // Check memory limit BEFORE adding the frame to keep accounting precise.
@@ -255,15 +267,16 @@ impl Gops {
             }
         }
 
-        if let Some(gop) = self.entries.back_mut() {
-            // Only update total bytes if the frame was actually stored.
-            // Gop::save_frame_data may drop the frame due to per-GOP limits
-            // (MAX_FRAMES_PER_GOP or MAX_MEMORY_PER_GOP).
-            if gop.save_frame_data(data) {
-                self.current_total_bytes += frame_bytes;
-            }
-        } else {
-            tracing::error!("should not be here!");
+        if self.entries.is_empty() {
+            self.entries.push_back(Gop::new());
+        }
+
+        if self
+            .entries
+            .back_mut()
+            .is_some_and(|gop| gop.save_frame_data(data))
+        {
+            self.current_total_bytes += frame_bytes;
         }
     }
 
@@ -310,6 +323,42 @@ mod tests {
     }
 
     #[test]
+    fn test_gop_get_frame_data_clones_shared_frozen_frames() {
+        let mut gop = Gop::new();
+        assert!(gop.save_frame_data(video_frame(100)));
+        gop.freeze();
+
+        let cloned = gop.clone();
+
+        assert_eq!(gop.get_frame_data().len(), 1);
+        assert_eq!(cloned.get_frame_data().len(), 1);
+    }
+
+    #[test]
+    fn test_gops_uses_default_total_byte_limit() {
+        let gops = Gops::new(1, None);
+
+        assert_eq!(gops.max_total_bytes(), DEFAULT_MAX_TOTAL_BYTES);
+    }
+
+    #[test]
+    fn test_gops_uses_custom_total_byte_limit() {
+        let gops = Gops::new(1, Some(1024));
+
+        assert_eq!(gops.max_total_bytes(), 1024);
+    }
+
+    #[test]
+    fn test_first_keyframe_reuses_initial_empty_gop() {
+        let mut gops = Gops::new(5, Some(1024));
+
+        gops.save_frame_data(video_frame(600), true);
+
+        assert_eq!(gops.gop_count(), 1);
+        assert_eq!(gops.current_total_bytes(), 600);
+    }
+
+    #[test]
     fn test_gops_per_stream_eviction() {
         // Per-stream limit of 1 KB, 5 GOPs max
         let mut gops = Gops::new(5, Some(1024));
@@ -320,9 +369,7 @@ mod tests {
 
         // Start second GOP with ~600 bytes → total 1200 > 1024 → evicts first
         gops.save_frame_data(video_frame(600), true);
-        // After eviction the first GOP (600 bytes) is removed,
-        // then the new frame is added.
-        assert!(gops.current_total_bytes() <= 1024 + 600); // within reason
+        assert_eq!(gops.current_total_bytes(), 600);
     }
 
     #[test]
@@ -333,8 +380,7 @@ mod tests {
         gops.save_frame_data(video_frame(200), true);
         assert_eq!(gops.current_total_bytes(), 400);
 
-        // Adding 200 more → 600 > 500 → should evict
         gops.save_frame_data(video_frame(200), true);
-        assert!(gops.current_total_bytes() <= 600);
+        assert_eq!(gops.current_total_bytes(), 400);
     }
 }

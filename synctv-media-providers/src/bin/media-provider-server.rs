@@ -6,7 +6,7 @@
 //! Authentication is required via the `PROVIDER_AUTH_SECRET` environment variable.
 //! Clients must pass the secret in the `x-provider-secret` gRPC metadata header.
 //!
-//! # Circuit Breaker //!
+//! # Circuit Breaker
 //! Each provider service is wrapped with a per-service circuit breaker to prevent
 //! a failing backend from consuming all server threads. The circuit breaker tracks
 //! consecutive failures and opens after `CIRCUIT_BREAKER_THRESHOLD` failures,
@@ -17,6 +17,7 @@
 //! failures, while client/auth/validation errors do not poison the breaker.
 
 use std::future::Future;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -25,9 +26,8 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use synctv_media_providers::circuit_breaker::CircuitBreaker;
 use synctv_media_providers::grpc::{
-    alist::alist_server::AlistServer, alist_server::AlistService as AlistGrpcService,
-    bilibili::bilibili_server::BilibiliServer, bilibili_server::BilibiliService,
-    emby::emby_server::EmbyServer, emby_server::EmbyService,
+    alist::alist_server::AlistServer, bilibili::bilibili_server::BilibiliServer,
+    emby::emby_server::EmbyServer, AlistService as AlistGrpcService, BilibiliService, EmbyService,
 };
 use tonic::codec::CompressionEncoding;
 use tonic::codegen::http::{HeaderMap, Response as HttpResponse};
@@ -42,6 +42,8 @@ use tracing::{info, warn, Level};
 const PROVIDER_GRPC_MESSAGE_SIZE_LIMIT: usize = 4 * 1024 * 1024;
 const PROVIDER_GRPC_FRAME_SIZE_LIMIT: u32 = 4 * 1024 * 1024;
 const PROVIDER_GRPC_COMPRESSION_ENABLED_ENV: &str = "PROVIDER_GRPC_COMPRESSION_ENABLED";
+const PROVIDER_LISTEN_ADDR_ENV: &str = "PROVIDER_LISTEN_ADDR";
+const DEFAULT_PROVIDER_LISTEN_ADDR: &str = "[::]:50051";
 
 trait GrpcStatusHeaders {
     fn grpc_status_headers(&self) -> &HeaderMap;
@@ -94,6 +96,26 @@ fn parse_env_bool(env_name: &str, default: bool) -> Result<bool, String> {
     }
 }
 
+fn parse_listen_addr(raw_value: Option<&str>) -> Result<SocketAddr, String> {
+    let value = raw_value.unwrap_or(DEFAULT_PROVIDER_LISTEN_ADDR).trim();
+    if value.is_empty() {
+        return Err(format!("{PROVIDER_LISTEN_ADDR_ENV} must not be empty"));
+    }
+    value
+        .parse()
+        .map_err(|error| format!("invalid {PROVIDER_LISTEN_ADDR_ENV} `{value}`: {error}"))
+}
+
+fn parse_listen_addr_env() -> Result<SocketAddr, String> {
+    match std::env::var(PROVIDER_LISTEN_ADDR_ENV) {
+        Ok(raw_value) => parse_listen_addr(Some(&raw_value)),
+        Err(std::env::VarError::NotPresent) => parse_listen_addr(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err(format!("{PROVIDER_LISTEN_ADDR_ENV} must be valid UTF-8"))
+        }
+    }
+}
+
 fn validate_provider_secret(metadata: &MetadataMap, expected_secret: &str) -> Result<(), Status> {
     let token = metadata
         .get("x-provider-secret")
@@ -114,6 +136,13 @@ fn validate_provider_secret(metadata: &MetadataMap, expected_secret: &str) -> Re
     }
 
     Ok(())
+}
+
+fn validate_provider_secret_boxed(
+    metadata: &MetadataMap,
+    expected_secret: &str,
+) -> Result<(), Box<Status>> {
+    validate_provider_secret(metadata, expected_secret).map_err(Box::new)
 }
 
 /// Tower [`Layer`] that wraps a gRPC service and signals the circuit breaker
@@ -223,7 +252,7 @@ impl ProviderAuthInterceptor {
         }
     }
 
-    #[allow(clippy::result_large_err)]
+    #[allow(clippy::result_large_err)] // tonic interceptors require Result<Request<T>, Status>
     fn validate<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
         // Check circuit breaker before auth to short-circuit quickly
         if !self.circuit_breaker.allow_request() {
@@ -239,14 +268,13 @@ impl ProviderAuthInterceptor {
 
         // Auth failures don't count as circuit-breaker events; they are client
         // configuration errors rather than backend failures.
-        validate_provider_secret(request.metadata(), &self.secret)?;
+        validate_provider_secret_boxed(request.metadata(), &self.secret).map_err(|error| *error)?;
 
         Ok(request)
     }
 }
 
 #[tokio::main]
-#[allow(clippy::result_large_err)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     tracing_subscriber::fmt()
@@ -263,9 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("PROVIDER_AUTH_SECRET must not be empty".into());
     }
 
-    let addr = std::env::var("PROVIDER_LISTEN_ADDR")
-        .unwrap_or_else(|_| "[::]:50051".to_string())
-        .parse()?;
+    let addr = parse_listen_addr_env()?;
     let grpc_compression_enabled = parse_env_bool(PROVIDER_GRPC_COMPRESSION_ENABLED_ENV, true)?;
 
     info!("Starting Provider gRPC server on {}", addr);
@@ -424,72 +450,111 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
 
-    fn grpc_headers(code: Option<&str>) -> HeaderMap {
+    fn grpc_headers(code: Option<&str>) -> Result<HeaderMap, Box<dyn std::error::Error>> {
         let mut headers = HeaderMap::new();
         if let Some(code) = code {
-            headers.insert(
-                Status::GRPC_STATUS,
-                code.parse().expect("valid grpc-status"),
-            );
+            headers.insert(Status::GRPC_STATUS, code.parse()?);
         }
-        headers
+        Ok(headers)
     }
 
     #[test]
-    fn circuit_breaker_treats_ok_response_as_success() {
-        assert!(should_record_circuit_breaker_success(&grpc_headers(Some(
-            "0"
-        ))));
-        assert!(!should_record_circuit_breaker_failure(&grpc_headers(Some(
-            "0"
-        ))));
+    fn circuit_breaker_treats_ok_response_as_success() -> Result<(), Box<dyn std::error::Error>> {
+        let headers = grpc_headers(Some("0"))?;
+        assert!(should_record_circuit_breaker_success(&headers));
+        assert!(!should_record_circuit_breaker_failure(&headers));
+        Ok(())
     }
 
     #[test]
-    fn circuit_breaker_treats_backend_failure_codes_as_failures() {
+    fn circuit_breaker_treats_backend_failure_codes_as_failures(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         for code in ["2", "4", "10", "13", "14", "15"] {
+            let headers = grpc_headers(Some(code))?;
             assert!(
-                should_record_circuit_breaker_failure(&grpc_headers(Some(code))),
+                should_record_circuit_breaker_failure(&headers),
                 "grpc-status {code} should count as a backend failure"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn circuit_breaker_ignores_client_and_auth_errors() {
+    fn circuit_breaker_ignores_client_and_auth_errors() -> Result<(), Box<dyn std::error::Error>> {
         for code in ["3", "5", "7", "8", "9", "11", "12", "16"] {
+            let headers = grpc_headers(Some(code))?;
             assert!(
-                !should_record_circuit_breaker_failure(&grpc_headers(Some(code))),
+                !should_record_circuit_breaker_failure(&headers),
                 "grpc-status {code} should not poison the service breaker"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn missing_grpc_status_defaults_to_success_path() {
-        assert!(should_record_circuit_breaker_success(&grpc_headers(None)));
-        assert!(!should_record_circuit_breaker_failure(&grpc_headers(None)));
+    fn missing_grpc_status_defaults_to_success_path() -> Result<(), Box<dyn std::error::Error>> {
+        let headers = grpc_headers(None)?;
+        assert!(should_record_circuit_breaker_success(&headers));
+        assert!(!should_record_circuit_breaker_failure(&headers));
+        Ok(())
     }
 
     #[test]
-    fn parse_bool_env_value_accepts_common_values() {
+    fn parse_bool_env_value_accepts_common_values() -> Result<(), Box<dyn std::error::Error>> {
         for value in ["true", "1", "yes", "on", " TRUE "] {
-            assert!(
-                parse_bool_env_value(PROVIDER_GRPC_COMPRESSION_ENABLED_ENV, value)
-                    .expect("valid truthy compression env value should parse")
-            );
+            assert!(parse_bool_env_value(
+                PROVIDER_GRPC_COMPRESSION_ENABLED_ENV,
+                value
+            )?);
         }
 
         for value in ["false", "0", "no", "off", " FALSE "] {
-            assert!(
-                !parse_bool_env_value(PROVIDER_GRPC_COMPRESSION_ENABLED_ENV, value)
-                    .expect("valid falsy compression env value should parse")
-            );
+            assert!(!parse_bool_env_value(
+                PROVIDER_GRPC_COMPRESSION_ENABLED_ENV,
+                value
+            )?);
         }
+        Ok(())
     }
 
     #[test]
     fn parse_bool_env_value_rejects_invalid_values() {
         assert!(parse_bool_env_value(PROVIDER_GRPC_COMPRESSION_ENABLED_ENV, "maybe").is_err());
+    }
+
+    #[test]
+    fn parse_listen_addr_uses_default_when_absent() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            parse_listen_addr(None)?,
+            DEFAULT_PROVIDER_LISTEN_ADDR.parse::<SocketAddr>()?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_listen_addr_accepts_explicit_socket_addr() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            parse_listen_addr(Some("127.0.0.1:50052"))?,
+            "127.0.0.1:50052".parse::<SocketAddr>()?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_listen_addr_rejects_empty_value() -> Result<(), Box<dyn std::error::Error>> {
+        let error = parse_listen_addr(Some("   "))
+            .err()
+            .ok_or("empty listen addr should fail")?;
+        assert!(error.contains("must not be empty"));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_listen_addr_rejects_invalid_value() -> Result<(), Box<dyn std::error::Error>> {
+        let Err(error) = parse_listen_addr(Some("not-a-socket")) else {
+            return Err("invalid listen addr should fail".into());
+        };
+        assert!(error.contains("invalid PROVIDER_LISTEN_ADDR"));
+        Ok(())
     }
 }

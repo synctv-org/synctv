@@ -54,6 +54,10 @@ fn dynamic_list_start_index(page: usize, page_size: usize) -> Result<u64, Provid
     usize_to_u64(start_index, "Emby pagination start")
 }
 
+fn optional_i64_to_proto_absent_zero(value: Option<i64>) -> i64 {
+    value.unwrap_or(0)
+}
+
 /// Build an absolute Emby/Jellyfin URL from a configured server URL and an API path.
 ///
 /// `host` may point at either a root deployment (`https://media.example.com`) or
@@ -277,7 +281,7 @@ fn emby_auth_headers(token: &str) -> HashMap<String, String> {
 ///
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
 pub struct EmbyProvider {
-    provider_instance_manager: Option<Arc<RemoteProviderManager>>,
+    provider_instance_manager: Arc<RemoteProviderManager>,
     client_manager: Arc<ProviderClientManager>,
 }
 
@@ -295,7 +299,7 @@ impl EmbyProvider {
         provider_instance_manager: Arc<RemoteProviderManager>,
     ) -> Result<Self, ProviderError> {
         Ok(Self {
-            provider_instance_manager: Some(provider_instance_manager),
+            provider_instance_manager,
             client_manager: Arc::new(ProviderClientManager::new()?),
         })
     }
@@ -305,26 +309,17 @@ impl EmbyProvider {
         provider_instance_manager: Arc<RemoteProviderManager>,
         client_manager: Arc<ProviderClientManager>,
     ) -> Self {
-        Self::with_optional_manager_and_client_manager(
-            Some(provider_instance_manager),
-            client_manager,
-        )
-    }
-
-    #[must_use]
-    pub fn with_optional_manager_and_client_manager(
-        provider_instance_manager: Option<Arc<RemoteProviderManager>>,
-        client_manager: Arc<ProviderClientManager>,
-    ) -> Self {
         Self {
             provider_instance_manager,
             client_manager,
         }
     }
 
+    #[cfg(test)]
     pub fn new_local_only() -> Result<Self, ProviderError> {
         Ok(Self {
-            provider_instance_manager: None,
+            provider_instance_manager:
+                crate::service::remote_provider_manager::empty_provider_instance_manager(),
             client_manager: Arc::new(ProviderClientManager::new()?),
         })
     }
@@ -334,10 +329,10 @@ impl EmbyProvider {
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
     ) -> Result<EmbyClientArc, ProviderError> {
-        match (instance_name, self.provider_instance_manager.as_ref()) {
-            (None, _) => Ok(self.client_manager.local_emby_client()),
-            (Some(_), Some(manager)) => {
-                manager
+        match instance_name {
+            None => Ok(self.client_manager.local_emby_client()),
+            Some(_) => {
+                self.provider_instance_manager
                     .resolve_client_required_with_context(
                         instance_name,
                         request_context,
@@ -346,10 +341,6 @@ impl EmbyProvider {
                     )
                     .await
             }
-            (Some(_), None) => Err(ProviderError::Internal(
-                "provider instance manager is required for remote Emby playback resolution"
-                    .to_string(),
-            )),
         }
     }
 
@@ -524,55 +515,28 @@ impl EmbyProvider {
             )
         })?;
 
-        if let Some(access_service) = &ctx.provider_access_service {
-            let access = access_service
-                .emby_access(
-                    *credential_owner_id,
-                    &config.server_id,
-                    super::bound_provider_instance_name(ctx),
-                    ctx.request_context(),
-                )
-                .await?;
-            return Ok(ResolvedEmbyConfig {
-                host: access.host,
-                token: access.api_key,
-                user_id: access.emby_user_id,
-                item_id: config.item_id,
-                credential_owner_id: access.credential_owner_id,
-                credential_revision: access.credential_revision,
-                provider_instance_name: access.provider_instance_name,
-            });
-        }
-
-        let repo = ctx.credential_repo.ok_or_else(|| {
-            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
+        let access_service = ctx.provider_access_service.as_ref().ok_or_else(|| {
+            ProviderError::Internal(
+                "provider_access_service not available in ProviderContext".to_string(),
+            )
         })?;
-        let resolved_credential = super::credential_resolver::resolve_credential_record_for_owner(
-            repo,
-            Self::NAME,
-            *credential_owner_id,
-            &config.server_id,
-            ctx.request_context(),
-        )
-        .await?;
-
-        match resolved_credential.credential {
-            crate::models::ProviderCredential::Emby {
-                host,
-                api_key,
-                emby_user_id,
-            } => Ok(ResolvedEmbyConfig {
-                host,
-                token: api_key,
-                user_id: emby_user_id,
-                item_id: config.item_id,
-                credential_owner_id: credential_owner_id.to_string(),
-                credential_revision: resolved_credential.revision,
-                provider_instance_name: super::bound_provider_instance_name(ctx)
-                    .map(std::string::ToString::to_string),
-            }),
-            _ => Err(ProviderError::InvalidCredentialType),
-        }
+        let access = access_service
+            .emby_access(
+                *credential_owner_id,
+                &config.server_id,
+                super::bound_provider_instance_name(ctx),
+                ctx.request_context(),
+            )
+            .await?;
+        Ok(ResolvedEmbyConfig {
+            host: access.host,
+            token: access.api_key,
+            user_id: access.emby_user_id,
+            item_id: config.item_id,
+            credential_owner_id: access.credential_owner_id,
+            credential_revision: access.credential_revision,
+            provider_instance_name: access.provider_instance_name,
+        })
     }
 
     /// Resolve playback result from Emby API (no caching).
@@ -618,9 +582,9 @@ impl EmbyProvider {
             media_source_id: String::new(), // Use default media source
             audio_stream_index: 0,
             subtitle_stream_index: 0,
-            max_streaming_bitrate: playback_client_profile
-                .and_then(|profile| profile.max_streaming_bitrate)
-                .unwrap_or(0),
+            max_streaming_bitrate: optional_i64_to_proto_absent_zero(
+                playback_client_profile.and_then(|profile| profile.max_streaming_bitrate),
+            ),
             max_audio_channels: playback_hints.max_audio_channels,
             enable_direct_play: playback_hints.enable_direct_play,
             enable_direct_stream: playback_hints.enable_direct_stream,
@@ -1138,11 +1102,9 @@ impl super::proxy::ProviderProxy for EmbyProvider {
         ctx: &super::proxy::ProxyRequestContext<'_>,
     ) -> Result<super::proxy::ProxyAction, ProviderError> {
         let sub_path = ctx.sub_path;
-        let (version, maybe_rest) = sub_path
-            .split_once('/')
-            .map_or((sub_path, None), |(version, rest)| (version, Some(rest)));
+        let version = super::proxy::proxy_version_segment(sub_path)?;
 
-        if !version.is_empty() {
+        {
             let versioned =
                 super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
 
@@ -1155,9 +1117,7 @@ impl super::proxy::ProviderProxy for EmbyProvider {
                 return super::proxy::action_for_signed_target_url(ctx, version, url, headers);
             }
 
-            let Some(rest) = maybe_rest else {
-                return Err(ProviderError::NotFound);
-            };
+            let (_, rest) = super::proxy::split_versioned_proxy_path(sub_path)?;
 
             if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
                 let (mode_name, index_str) = subtitle_path
@@ -1168,9 +1128,7 @@ impl super::proxy::ProviderProxy for EmbyProvider {
                     .playback_infos
                     .get(mode_name)
                     .ok_or(ProviderError::NotFound)?;
-                let index: usize = index_str
-                    .parse()
-                    .map_err(|_| ProviderError::ApiError("Invalid subtitle index".into()))?;
+                let index = super::proxy::parse_proxy_index(index_str)?;
                 let subtitle = playback_info
                     .subtitles
                     .get(index)
@@ -1204,9 +1162,7 @@ impl super::proxy::ProviderProxy for EmbyProvider {
                             stream_path,
                         )
                     };
-                let Ok(index) = index_str.parse::<usize>() else {
-                    return Err(ProviderError::NotFound);
-                };
+                let index = super::proxy::parse_proxy_index(index_str)?;
                 let url = playback_info
                     .urls
                     .get(index)
@@ -1244,9 +1200,8 @@ impl super::proxy::ProviderProxy for EmbyProvider {
                 }
                 _ => {}
             }
+            Err(ProviderError::NotFound)
         }
-
-        Err(ProviderError::NotFound)
     }
 }
 
@@ -1613,6 +1568,7 @@ mod tests {
     use super::*;
     use crate::models::UserId;
     use crate::provider::ProviderClientManager;
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
     use async_trait::async_trait;
     use std::sync::Arc;
     use synctv_media_providers::emby::{EmbyError, EmbyInterface};
@@ -1638,7 +1594,7 @@ mod tests {
     struct TestEmbyClient;
 
     fn unconfigured_test_response() -> EmbyError {
-        EmbyError::NotImplemented("test emby method is not configured".to_string())
+        EmbyError::InvalidConfig("test emby method is not configured".to_string())
     }
 
     #[async_trait]
@@ -1756,13 +1712,16 @@ mod tests {
 
     fn provider_with_test_emby_client() -> EmbyProvider {
         let default_clients = ProviderClientManager::new_for_tests()
-            .expect("default provider HTTP client should build");
+            .checked("default provider HTTP client should build");
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
             default_clients.local_alist_client(),
             default_clients.local_bilibili_client(),
             Arc::new(TestEmbyClient),
         ));
-        EmbyProvider::with_optional_manager_and_client_manager(None, client_manager)
+        EmbyProvider::with_client_manager(
+            crate::service::remote_provider_manager::empty_provider_instance_manager(),
+            client_manager,
+        )
     }
 
     #[tokio::test]
@@ -1783,7 +1742,7 @@ mod tests {
                 None,
             )
             .await
-            .expect("mock Emby playback should resolve");
+            .checked("mock Emby playback should resolve");
 
         let playback = &result.playback_infos["Main"];
         assert_eq!(
@@ -1822,7 +1781,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_emby_credential_dependencies_use_creator_credential() {
-        let provider = EmbyProvider::new_local_only().expect("provider should build");
+        let provider = EmbyProvider::new_local_only().checked("provider should build");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_credential_owner_id(UserId::expect_positive(2));
@@ -1834,7 +1793,7 @@ mod tests {
                     "server_id": "emby-main"
                 }),
             )
-            .expect("Emby dependency extraction should succeed");
+            .checked("Emby dependency extraction should succeed");
 
         assert_eq!(
             dependencies,
@@ -1848,7 +1807,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_emby_credential_dependencies_require_explicit_creator_credential_owner() {
-        let provider = EmbyProvider::new_local_only().expect("provider should build");
+        let provider = EmbyProvider::new_local_only().checked("provider should build");
         let ctx = ProviderContext::new("test").with_user_id(UserId::expect_positive(1));
         let err = provider
             .credential_dependencies(
@@ -1858,7 +1817,7 @@ mod tests {
                     "server_id": "emby-main"
                 }),
             )
-            .expect_err("Emby must not silently fall back to viewer credentials");
+            .failed("Emby must not silently fall back to viewer credentials");
 
         assert!(
             err.to_string().contains("credential_owner_id"),
@@ -1868,7 +1827,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_prepare_emby_config_rejects_provider_instance_name() {
-        let provider = EmbyProvider::new_local_only().expect("provider should build");
+        let provider = EmbyProvider::new_local_only().checked("provider should build");
         let config = json!({
             "item_id": "item-456",
             "provider_instance_name": "remote-emby-1",
@@ -1915,7 +1874,7 @@ mod tests {
             "item_id": "item-456",
             "server_id": "srv-xyz"
         });
-        let parsed = EmbySourceConfig::try_from(&config).unwrap();
+        let parsed = EmbySourceConfig::try_from(&config).checked("operation should succeed");
         assert_eq!(parsed.server_id, "srv-xyz");
         assert_eq!(parsed.item_id, "item-456");
     }
@@ -2059,11 +2018,13 @@ mod tests {
     #[test]
     fn test_emby_server_url_supports_emby_and_jellyfin_root_deployments() {
         assert_eq!(
-            emby_server_url("https://emby.example.com", "/Items/item-1/Download").unwrap(),
+            emby_server_url("https://emby.example.com", "/Items/item-1/Download")
+                .checked("operation should succeed"),
             "https://emby.example.com/Items/item-1/Download"
         );
         assert_eq!(
-            emby_server_url("https://jellyfin.example.com", "/Items/item-1/Download").unwrap(),
+            emby_server_url("https://jellyfin.example.com", "/Items/item-1/Download")
+                .checked("operation should succeed"),
             "https://jellyfin.example.com/Items/item-1/Download"
         );
     }
@@ -2075,7 +2036,7 @@ mod tests {
                 "https://media.example.com/jellyfin",
                 "/Items/item-1/Download"
             )
-            .unwrap(),
+            .checked("operation should succeed"),
             "https://media.example.com/jellyfin/Items/item-1/Download"
         );
         assert_eq!(
@@ -2083,7 +2044,7 @@ mod tests {
                 "https://media.example.com/jellyfin",
                 "/jellyfin/Videos/item/master.m3u8"
             )
-            .unwrap(),
+            .checked("operation should succeed"),
             "https://media.example.com/jellyfin/Videos/item/master.m3u8"
         );
     }
@@ -2095,14 +2056,14 @@ mod tests {
                 "https://media.example.com/jellyfin",
                 "https://cdn.example.com/video.m3u8"
             )
-            .unwrap(),
+            .checked("operation should succeed"),
             "https://cdn.example.com/video.m3u8"
         );
     }
 
     #[tokio::test]
     async fn test_emby_playback_lifecycle_session_id_uses_provider_metadata() {
-        let provider = EmbyProvider::new_local_only().expect("provider should build");
+        let provider = EmbyProvider::new_local_only().checked("provider should build");
         let result = PlaybackResult {
             playback_infos: HashMap::new(),
             default_mode: "direct".to_string(),
@@ -2150,7 +2111,7 @@ mod tests {
         let hints = grpc_playback_request_hints(Some(&profile));
         let device_profile = hints
             .device_profile
-            .expect("client profile should produce an Emby device profile");
+            .checked("client profile should produce an Emby device profile");
 
         assert_eq!(hints.max_audio_channels, Some(2));
         assert_eq!(hints.enable_direct_play, Some(false));
@@ -2170,7 +2131,7 @@ mod tests {
             .direct_play_profiles
             .iter()
             .find(|profile| profile.container == "mp4,m4v")
-            .expect("mp4 direct-play profile should exist");
+            .checked("mp4 direct-play profile should exist");
         assert_eq!(mp4.video_codecs, vec!["h264", "vp9"]);
         assert_eq!(mp4.audio_codecs, vec!["aac", "mp3"]);
 
@@ -2178,7 +2139,7 @@ mod tests {
             .direct_play_profiles
             .iter()
             .find(|profile| profile.container == "webm")
-            .expect("webm direct-play profile should exist");
+            .checked("webm direct-play profile should exist");
         assert_eq!(webm.video_codecs, vec!["vp9"]);
         assert_eq!(webm.audio_codecs, vec!["vorbis", "opus"]);
     }
@@ -2201,7 +2162,7 @@ mod tests {
         let hints = grpc_playback_request_hints(Some(&profile));
         let device_profile = hints
             .device_profile
-            .expect("client profile should produce an Emby device profile");
+            .checked("client profile should produce an Emby device profile");
 
         assert_eq!(hints.enable_direct_play, Some(true));
         assert_eq!(hints.enable_direct_stream, Some(true));

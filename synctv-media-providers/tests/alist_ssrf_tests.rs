@@ -11,8 +11,8 @@
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 
-use synctv_media_providers::error::PROVIDER_USER_AGENT;
 use synctv_media_providers::AlistClient;
+use synctv_media_providers::PROVIDER_USER_AGENT;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

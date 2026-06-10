@@ -4,8 +4,8 @@ use crate::bytesio::bytes_errors::{BytesReadError, BytesWriteError};
 pub enum UnpackErrorValue {
     #[error("bytes read error: {0}")]
     BytesReadError(BytesReadError),
-    #[error("unknow read state")]
-    UnknowReadState,
+    #[error("unknown read state")]
+    UnknownReadState,
     #[error("empty chunks")]
     EmptyChunks,
     //IO(io::Error),
@@ -37,12 +37,14 @@ impl From<BytesReadError> for UnpackError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PackErrorValue {
-    #[error("not exist header")]
+    #[error("chunk header is missing")]
     NotExistHeader,
-    #[error("unknow read state")]
-    UnknowReadState,
+    #[error("unknown read state")]
+    UnknownReadState,
     #[error("invalid chunk stream id {0}")]
     InvalidChunkStreamId(u32),
+    #[error("invalid chunk header format {0}")]
+    InvalidChunkHeaderFormat(u8),
     #[error("bytes writer error: {0}")]
     BytesWriteError(BytesWriteError),
 }

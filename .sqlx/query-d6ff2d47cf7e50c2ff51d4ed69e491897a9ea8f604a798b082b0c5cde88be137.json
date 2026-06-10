@@ -6,52 +6,107 @@
       {
         "ordinal": 0,
         "name": "room_id: RoomId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "room_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "user_id: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "user_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "role: RoomRole",
-        "type_info": "Int2"
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "role"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "added_permissions",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "added_permissions"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "removed_permissions",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "removed_permissions"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "admin_added_permissions",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "admin_added_permissions"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "admin_removed_permissions",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "admin_removed_permissions"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "joined_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "joined_at"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "is_active!",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": "Expression"
       },
       {
         "ordinal": 9,
         "name": "username",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
       }
     ],
     "parameters": {

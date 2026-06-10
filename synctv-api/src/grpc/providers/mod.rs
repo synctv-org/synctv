@@ -20,19 +20,29 @@ pub(crate) fn provider_instance_name(instance_name: &str) -> Result<Option<Strin
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn provider_instance_name_rejects_invalid_grpc_body_field() {
-        let status = super::provider_instance_name("bad/name")
-            .expect_err("gRPC body instance_name must be validated like HTTP query");
+    type TestResult<T = ()> = anyhow::Result<T>;
 
-        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
     }
 
     #[test]
-    fn provider_instance_name_trims_valid_value() {
-        let instance_name = super::provider_instance_name("  alist-main  ")
-            .expect("valid instance_name should pass");
+    fn provider_instance_name_rejects_invalid_grpc_body_field() -> TestResult {
+        let Err(status) = super::provider_instance_name("bad/name") else {
+            return Err(test_error(
+                "gRPC body instance_name validation accepted invalid input",
+            ));
+        };
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        Ok(())
+    }
+
+    #[test]
+    fn provider_instance_name_trims_valid_value() -> TestResult {
+        let instance_name = super::provider_instance_name("  alist-main  ")?;
 
         assert_eq!(instance_name.as_deref(), Some("alist-main"));
+        Ok(())
     }
 }

@@ -14,7 +14,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Instant};
 
-use synctv_xiu::bytesio::bytesio::{TNetIO, TcpIO};
+use synctv_xiu::bytesio::net_io::{TNetIO, TcpIO};
 use synctv_xiu::rtmp::handshake::{
     define::ClientHandshakeState, handshake_client::SimpleHandshakeClient,
 };
@@ -56,7 +56,10 @@ async fn test_client_session_handshake_timeout_on_no_response() {
         let mut stream = server.accept().await;
         // Read C0/C1 but never respond
         let mut buf = vec![0u8; 1537];
-        let _ = stream.read_exact(&mut buf).await;
+        stream
+            .read_exact(&mut buf)
+            .await
+            .expect("server should read client C0/C1");
         // Hold connection open without responding
         tokio::time::sleep(Duration::from_secs(10)).await;
     });
@@ -135,7 +138,10 @@ async fn test_client_session_handshake_normal_flow() {
 
         // Read C2 (1536 bytes)
         let mut c2 = vec![0u8; 1536];
-        let _ = stream.read_exact(&mut c2).await;
+        stream
+            .read_exact(&mut c2)
+            .await
+            .expect("server should read client C2");
 
         // Keep connection alive briefly
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -224,14 +230,11 @@ async fn test_client_session_handles_invalid_s0_version() {
         handshaker.extend_data(&data).unwrap();
     }
 
-    // The handshake should handle the invalid version gracefully
-    // Depending on implementation, this may succeed with warning or fail
-    let result = handshaker.handshake().await;
-
-    // The handshake should either fail or handle it gracefully
-    // The simple handshake client typically accepts any version for compatibility
-    // but logs a warning - this test verifies it doesn't panic
-    let _ = result;
+    handshaker
+        .handshake()
+        .await
+        .expect("simple client accepts the server version byte");
+    assert_eq!(handshaker.state, ClientHandshakeState::Finish);
 
     server_handle.await.unwrap();
 }

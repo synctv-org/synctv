@@ -4,7 +4,6 @@ use synctv_core::service::RealtimeOutboxSettingsEventFactory;
 use synctv_realtime::sync::RealtimeEvent;
 
 use crate::realtime_fanout::{PreparedRealtimeFanoutPlan, RealtimeFanoutService};
-use crate::runtime::RealtimeDeliveryRequirement;
 
 #[derive(Clone)]
 pub struct PreparedRoomSettingsFanout {
@@ -23,12 +22,8 @@ impl PreparedRoomSettingsFanout {
         event: RealtimeEvent,
         realtime_fanout: Arc<dyn RealtimeFanoutService>,
     ) -> synctv_core::Result<Self> {
-        let plan = PreparedRealtimeFanoutPlan::new(
-            realtime_fanout.clone(),
-            event,
-            RealtimeDeliveryRequirement::DistributedIfAvailable,
-        )
-        .map_err(synctv_core::Error::Internal)?;
+        let plan = PreparedRealtimeFanoutPlan::new(realtime_fanout.clone(), event)
+            .map_err(synctv_core::Error::Internal)?;
         Ok(Self {
             plan,
             realtime_fanout,
@@ -209,6 +204,16 @@ mod tests {
     use synctv_core::models::{RoomId, UserId};
     use synctv_realtime::sync::RealtimeEvent;
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn core_ok<T>(result: synctv_core::Result<T>) -> TestResult<T> {
+        result.map_err(|error| test_error(error.to_string()))
+    }
+
     fn room_id() -> RoomId {
         RoomId::expect_positive(107_001)
     }
@@ -218,41 +223,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_standalone_room_settings_fanout_broadcasts_locally() {
+    async fn test_standalone_room_settings_fanout_broadcasts_locally() -> TestResult {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service = default_room_settings_fanout_service(local_realtime_fanout_service(
             event_service.clone(),
         ));
 
-        let prepared = service
-            .prepare_settings_changed(
-                &room_id(),
-                &user_id(),
-                "tester",
-                br#"{"chat_enabled":false}"#.to_vec(),
-                11,
-            )
-            .expect("room settings fanout should prepare");
+        let prepared = core_ok(service.prepare_settings_changed(
+            &room_id(),
+            &user_id(),
+            "tester",
+            br#"{"chat_enabled":false}"#.to_vec(),
+            11,
+        ))?;
         service.publish_prepared_after_outbox_commit(prepared);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(event_service.room_calls.load(Ordering::SeqCst), 1);
         assert_eq!(event_service.room_event_count(), 1);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_prepared_room_settings_fanout_keeps_event_identity_when_snapshot_is_applied() {
+    async fn test_prepared_room_settings_fanout_keeps_event_identity_when_snapshot_is_applied(
+    ) -> TestResult {
         let service = default_room_settings_fanout_service(
             crate::realtime_fanout::disabled_realtime_fanout_service(),
         );
-        let prepared = service
-            .prepare_settings_changed(&room_id(), &user_id(), "tester", Vec::new(), 0)
-            .expect("room settings fanout should prepare");
+        let prepared = core_ok(service.prepare_settings_changed(
+            &room_id(),
+            &user_id(),
+            "tester",
+            Vec::new(),
+            0,
+        ))?;
         let original_event_id = prepared.event().event_id().to_string();
 
         let prepared = prepared
             .with_settings_and_version(&synctv_core::models::RoomSettings::default(), 42)
-            .expect("default room settings should serialize");
+            .map_err(|error| test_error(error.to_string()))?;
 
         assert_eq!(
             prepared.event().event_id(),
@@ -263,7 +272,12 @@ mod tests {
             RealtimeEvent::RoomSettingsChanged { version, .. } => {
                 assert_eq!(*version, 42);
             }
-            other => panic!("expected RoomSettingsChanged, got {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "expected RoomSettingsChanged, got {other:?}"
+                )));
+            }
         }
+        Ok(())
     }
 }

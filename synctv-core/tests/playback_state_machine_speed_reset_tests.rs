@@ -1,9 +1,7 @@
 //! Playback state machine speed and reset tests.
 
-#![allow(clippy::unwrap_used)]
-
 use synctv_core::repository::UserRepository;
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, TestResultExt};
 
 mod playback_state_machine_support;
 
@@ -16,7 +14,10 @@ async fn test_speed_change_preserves_position() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("sm_speed_pos")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("sm_speed_pos"))
+        .await
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -27,23 +28,23 @@ async fn test_speed_change_preserves_position() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let playback_service = room_service.playback_service();
     set_current_test_media(&pool, room.id, owner.id, "Speed Position Video").await;
     playback_service
         .seek(room.id, owner.id, 100.0)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     playback_service
         .set_playing(room.id, owner.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let state = playback_service
         .change_speed(room.id, owner.id, 2.0)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     assert!(state.position >= 99.0);
     assert!((state.speed - 2.0).abs() < f64::EPSILON);
@@ -59,7 +60,7 @@ async fn test_speed_change_while_paused() {
     let owner = user_repo
         .create(&make_user("sm_speed_paused"))
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -70,13 +71,13 @@ async fn test_speed_change_while_paused() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let state = room_service
         .playback_service()
         .change_speed(room.id, owner.id, 1.5)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     assert!(!state.is_playing);
     assert!((state.speed - 1.5).abs() < f64::EPSILON);
@@ -89,7 +90,10 @@ async fn test_reset_returns_to_initial_state() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("sm_reset")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("sm_reset"))
+        .await
+        .checked("operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -100,24 +104,27 @@ async fn test_reset_returns_to_initial_state() {
             None,
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     let playback_service = room_service.playback_service();
     set_current_test_media(&pool, room.id, owner.id, "Reset Video").await;
     playback_service
         .seek(room.id, owner.id, 200.0)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     playback_service
         .change_speed(room.id, owner.id, 2.0)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     playback_service
         .set_playing(room.id, owner.id, true)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
-    let state = playback_service.reset(room.id, owner.id).await.unwrap();
+    let state = playback_service
+        .reset(room.id, owner.id)
+        .await
+        .checked("operation should succeed");
 
     assert!(!state.is_playing);
     assert!((state.position - 0.0).abs() < f64::EPSILON);

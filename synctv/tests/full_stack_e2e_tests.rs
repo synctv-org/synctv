@@ -19,7 +19,7 @@ use prost::Message;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use sha2_010::Sha512;
-use synctv::app::{Application, ApplicationBuildOptions};
+use synctv::{Application, ApplicationBuildOptions};
 use synctv_core::config::Config;
 use synctv_core_testing::{
     connect_test_pool_url, create_test_database_url_with_label,
@@ -29,8 +29,8 @@ use synctv_core_testing::{
 use synctv_management::proto as management_proto;
 use synctv_media_providers::grpc::alist::{alist_server::AlistServer, MeResp as AlistMeResp};
 use synctv_proto::client::{server_message, ServerMessage};
-use synctv_xiu::bytesio::bytesio::{TNetIO, TcpIO};
 use synctv_xiu::bytesio::bytesio_errors::BytesIOErrorValue;
+use synctv_xiu::bytesio::net_io::{TNetIO, TcpIO};
 use synctv_xiu::flv::amf0::define::Amf0ValueType;
 use synctv_xiu::rtmp::chunk::unpacketizer::{ChunkUnpacketizer, UnpackResult};
 use synctv_xiu::rtmp::handshake::{
@@ -1757,7 +1757,9 @@ async fn run_idle_rtmp_publisher(
                 if publish_started
                     && matches!(
                         error.value,
-                        BytesIOErrorValue::NoneReturn | BytesIOErrorValue::IOError(_)
+                        BytesIOErrorValue::EmptyStream
+                            | BytesIOErrorValue::ConnectionClosed
+                            | BytesIOErrorValue::IOError(_)
                     ) =>
             {
                 return Ok(());
@@ -1801,57 +1803,61 @@ async fn run_idle_rtmp_publisher(
                                         format!("RTMP publisher should acknowledge peer bandwidth: {error}")
                                     })?;
                             }
-                            RtmpMessageData::Amf0Command {
-                                command_name,
-                                transaction_id,
-                                others,
-                                ..
-                            } => match rtmp_command_name(command_name) {
-                                Some("_result")
-                                    if is_rtmp_transaction_id(transaction_id, 1)
-                                        && !create_stream_sent =>
-                                {
-                                    create_stream_sent = true;
-                                    let mut netconnection =
-                                        NetConnection::new(std::sync::Arc::clone(&io));
-                                    netconnection.write_create_stream(&2.0).await.map_err(
-                                        |error| {
-                                            format!(
+                            RtmpMessageData::Amf0Command(command) => {
+                                match rtmp_command_name(&command.command_name) {
+                                    Some("_result")
+                                        if is_rtmp_transaction_id(&command.transaction_id, 1)
+                                            && !create_stream_sent =>
+                                    {
+                                        create_stream_sent = true;
+                                        let mut netconnection =
+                                            NetConnection::new(std::sync::Arc::clone(&io));
+                                        netconnection.write_create_stream(&2.0).await.map_err(
+                                            |error| {
+                                                format!(
                                                 "RTMP publisher should send createStream: {error}"
                                             )
-                                        },
-                                    )?;
-                                }
-                                Some("_result")
-                                    if is_rtmp_transaction_id(transaction_id, 2)
-                                        && !publish_sent =>
-                                {
-                                    publish_sent = true;
-                                    let mut netstream =
-                                        NetStreamWriter::new(std::sync::Arc::clone(&io));
-                                    netstream
-                                        .write_publish(&3.0, &raw_stream_name, &"live".to_string())
-                                        .await
-                                        .map_err(|error| {
-                                            format!("RTMP publisher should send publish: {error}")
-                                        })?;
-                                }
-                                Some("onStatus")
-                                    if rtmp_status_code(others)
-                                        == Some("NetStream.Publish.Start") =>
-                                {
-                                    publish_started = true;
-                                    if let Some(started_tx) = started_tx.take() {
-                                        let _ = started_tx.send(Ok(()));
+                                            },
+                                        )?;
                                     }
-                                }
-                                Some("_error") => {
-                                    return Err(format!(
-                                        "RTMP server returned an error during publish setup: {others:?}"
+                                    Some("_result")
+                                        if is_rtmp_transaction_id(&command.transaction_id, 2)
+                                            && !publish_sent =>
+                                    {
+                                        publish_sent = true;
+                                        let mut netstream =
+                                            NetStreamWriter::new(std::sync::Arc::clone(&io));
+                                        netstream
+                                            .write_publish(
+                                                &3.0,
+                                                &raw_stream_name,
+                                                &"live".to_string(),
+                                            )
+                                            .await
+                                            .map_err(|error| {
+                                                format!(
+                                                    "RTMP publisher should send publish: {error}"
+                                                )
+                                            })?;
+                                    }
+                                    Some("onStatus")
+                                        if rtmp_status_code(&command.others)
+                                            == Some("NetStream.Publish.Start") =>
+                                    {
+                                        publish_started = true;
+                                        if let Some(started_tx) = started_tx.take() {
+                                            let _ = started_tx.send(Ok(()));
+                                        }
+                                    }
+                                    Some("_error") => {
+                                        return Err(format!(
+                                        "RTMP server returned an error during publish setup: {:?}",
+                                        command.others
                                     ));
+                                    }
+                                    _ => {}
                                 }
-                                _ => {}
-                            },
+                            }
                             _ => {}
                         }
                     }
@@ -2316,7 +2322,7 @@ async fn full_stack_health_endpoints_report_live_and_ready() {
 async fn full_stack_management_exposes_only_remote_admin_surface() {
     use synctv_api::grpc::{AdminServiceImpl, ClientServiceImpl};
     use synctv_management::proto::management_service_server::ManagementServiceServer;
-    use synctv_management::service::ManagementServiceImpl;
+    use synctv_management::ManagementServiceImpl;
     use synctv_proto::admin::admin_service_server::AdminServiceServer;
     use synctv_proto::client::{
         auth_service_server::AuthServiceServer, public_service_server::PublicServiceServer,

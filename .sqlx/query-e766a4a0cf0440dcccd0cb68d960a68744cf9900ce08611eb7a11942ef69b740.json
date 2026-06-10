@@ -6,47 +6,101 @@
       {
         "ordinal": 0,
         "name": "id: RoomId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "requested_by: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "requested_by"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "name",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "name"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "description",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "description"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "settings_payload",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "settings_payload"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "opaque_password_record",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "opaque_password_record"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "opaque_password_credential_identifier",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "opaque_password_credential_identifier"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "opaque_password_ciphersuite",
-        "type_info": "Varchar"
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "opaque_password_ciphersuite"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "opaque_password_server_setup_version",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "opaque_password_server_setup_version"
+          }
+        }
       }
     ],
     "parameters": {

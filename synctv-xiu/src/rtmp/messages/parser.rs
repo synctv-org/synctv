@@ -1,15 +1,13 @@
 use {
     super::{
-        define::{msg_type_id, RtmpMessageData},
-        errors::MessageError,
+        define::{msg_type_id, Amf0CommandMessage, RtmpMessageData},
+        errors::{MessageError, MessageErrorValue},
     },
     crate::bytesio::bytes_reader::BytesReader,
     crate::flv::amf0::{amf0_markers, amf0_reader::Amf0Reader},
     crate::rtmp::{
-        chunk::ChunkInfo,
-        protocol_control_messages::reader::ProtocolControlMessageReader,
+        chunk::ChunkInfo, protocol_control_messages::reader::ProtocolControlMessageReader,
         user_control_messages::reader::EventMessagesReader,
-        // utils,
     },
 };
 
@@ -35,14 +33,6 @@ impl MessageParser {
                 let command_name = amf_reader.read_with_type(amf0_markers::STRING)?;
                 let transaction_id = amf_reader.read_with_type(amf0_markers::NUMBER)?;
 
-                // match command_name.clone() {
-                //     Amf0ValueType::UTF8String(val) => {
-                //         tracing::info!("command_name:{}", val);
-                //     }
-                //     _ => {}
-                // }
-
-                //The third value can be an object or NULL object
                 let command_obj_raw = amf_reader.read_with_type(amf0_markers::OBJECT);
                 let command_obj = match command_obj_raw {
                     Ok(val) => val,
@@ -51,12 +41,14 @@ impl MessageParser {
 
                 let others = amf_reader.read_all()?;
 
-                return Ok(Some(RtmpMessageData::Amf0Command {
-                    command_name,
-                    transaction_id,
-                    command_object: command_obj,
-                    others,
-                }));
+                Ok(Some(RtmpMessageData::Amf0Command(Box::new(
+                    Amf0CommandMessage {
+                        command_name,
+                        transaction_id,
+                        command_object: command_obj,
+                        others,
+                    },
+                ))))
             }
 
             msg_type_id::AUDIO => {
@@ -65,18 +57,18 @@ impl MessageParser {
                     self.chunk_info.message_header.msg_length
                 );
 
-                return Ok(Some(RtmpMessageData::AudioData {
+                Ok(Some(RtmpMessageData::AudioData {
                     data: reader.extract_remaining_bytes(),
-                }));
+                }))
             }
             msg_type_id::VIDEO => {
                 tracing::trace!(
                     "receive video msg , msg length is{}\n",
                     self.chunk_info.message_header.msg_length
                 );
-                return Ok(Some(RtmpMessageData::VideoData {
+                Ok(Some(RtmpMessageData::VideoData {
                     data: reader.extract_remaining_bytes(),
-                }));
+                }))
             }
             msg_type_id::USER_CONTROL_EVENT => {
                 tracing::trace!(
@@ -84,46 +76,40 @@ impl MessageParser {
                     self.chunk_info.message_header.msg_length
                 );
                 let data = EventMessagesReader::new(reader).parse_event()?;
-                return Ok(Some(data));
+                Ok(Some(data))
             }
             msg_type_id::SET_CHUNK_SIZE => {
                 let chunk_size = ProtocolControlMessageReader::new(reader).read_set_chunk_size()?;
-                return Ok(Some(RtmpMessageData::SetChunkSize { chunk_size }));
+                Ok(Some(RtmpMessageData::SetChunkSize { chunk_size }))
             }
             msg_type_id::ABORT => {
                 let chunk_stream_id =
                     ProtocolControlMessageReader::new(reader).read_abort_message()?;
-                return Ok(Some(RtmpMessageData::AbortMessage { chunk_stream_id }));
+                Ok(Some(RtmpMessageData::AbortMessage { chunk_stream_id }))
             }
             msg_type_id::ACKNOWLEDGEMENT => {
                 let sequence_number =
                     ProtocolControlMessageReader::new(reader).read_acknowledgement()?;
-                return Ok(Some(RtmpMessageData::Acknowledgement { sequence_number }));
+                Ok(Some(RtmpMessageData::Acknowledgement { sequence_number }))
             }
             msg_type_id::WIN_ACKNOWLEDGEMENT_SIZE => {
                 let size =
                     ProtocolControlMessageReader::new(reader).read_window_acknowledgement_size()?;
-                return Ok(Some(RtmpMessageData::WindowAcknowledgementSize { size }));
+                Ok(Some(RtmpMessageData::WindowAcknowledgementSize { size }))
             }
             msg_type_id::SET_PEER_BANDWIDTH => {
                 let properties =
                     ProtocolControlMessageReader::new(reader).read_set_peer_bandwidth()?;
-                return Ok(Some(RtmpMessageData::SetPeerBandwidth { properties }));
+                Ok(Some(RtmpMessageData::SetPeerBandwidth { properties }))
             }
-            msg_type_id::DATA_AMF0 | msg_type_id::DATA_AMF3 => {
-                //let values = Amf0Reader::new(reader).read_all()?;
-                return Ok(Some(RtmpMessageData::AmfData {
-                    raw_data: reader.extract_remaining_bytes(),
-                }));
-            }
+            msg_type_id::DATA_AMF0 | msg_type_id::DATA_AMF3 => Ok(Some(RtmpMessageData::AmfData {
+                raw_data: reader.extract_remaining_bytes(),
+            })),
 
-            _ => {}
+            message_type => Err(MessageError {
+                value: MessageErrorValue::UnknownMessageType(message_type),
+            }),
         }
-        tracing::warn!(
-            "the msg_type_id is not processed: {}",
-            self.chunk_info.message_header.msg_type_id
-        );
-        Ok(None)
     }
 }
 
@@ -131,36 +117,82 @@ impl MessageParser {
 mod tests {
 
     use super::MessageParser;
+    use crate::flv::amf0::{amf0_writer::Amf0Writer, define::Amf0ValueType};
     use crate::rtmp::chunk::unpacketizer::ChunkUnpacketizer;
     use crate::rtmp::chunk::unpacketizer::UnpackResult;
+    use crate::rtmp::chunk::ChunkInfo;
+    use crate::rtmp::messages::define::{msg_type_id, RtmpMessageData};
+    use crate::rtmp::messages::errors::MessageErrorValue;
+    use bytes::BytesMut;
+    use indexmap::IndexMap;
+
+    fn expect_unknown_message_type(
+        result: Result<Option<RtmpMessageData>, crate::rtmp::messages::errors::MessageError>,
+    ) -> u8 {
+        let err = result.expect_err("unknown RTMP message type should fail");
+        match err.value {
+            MessageErrorValue::UnknownMessageType(message_type) => message_type,
+            other => panic!("expected unknown message type error, got {other:?}"),
+        }
+    }
+
+    fn expect_set_chunk_size(message: &RtmpMessageData) -> u32 {
+        let RtmpMessageData::SetChunkSize { chunk_size } = message else {
+            panic!("expected set chunk size message, got {message:?}");
+        };
+        *chunk_size
+    }
+
+    fn expect_amf0_command(
+        message: RtmpMessageData,
+    ) -> Box<crate::rtmp::messages::define::Amf0CommandMessage> {
+        let RtmpMessageData::Amf0Command(command) = message else {
+            panic!("expected AMF0 command message, got {message:?}");
+        };
+        command
+    }
+
+    fn expect_amf0_object(value: Amf0ValueType) -> IndexMap<String, Amf0ValueType> {
+        let Amf0ValueType::Object(properties) = value else {
+            panic!("expected AMF0 object, got {value:?}");
+        };
+        properties
+    }
 
     #[test]
-    fn test_message_parse() {
+    fn unknown_message_type_returns_typed_error() {
+        let result =
+            MessageParser::new(ChunkInfo::new(3, 0, 0, 0, 0x7F, 0, BytesMut::new())).parse();
+
+        assert_eq!(expect_unknown_message_type(result), 0x7F);
+    }
+
+    #[test]
+    fn parses_set_chunk_size_from_chunk_stream() {
         let mut unpacker = ChunkUnpacketizer::new();
 
-        let data: [u8; 205] = [
-            2, 0, 0, 0, 0, 0, 4, 1, 0, 0, 0, 0, 0, 0, 16, 0, //set chunk size
-            //connect
-            3, //|format+csid|
-            0, 0, 0, //timestamp
-            0, 0, 177, //msg_length
-            20,  //msg_type_id 0x14
-            0, 0, 0, 0, //msg_stream_id
-            2, 0, 7, 99, 111, 110, 110, 101, 99, 116, 0, 63, 240, 0, 0, 0, 0, 0, 0, //body
-            3, 0, 3, 97, 112, 112, 2, 0, 6, 104, 97, 114, 108, 97, 110, 0, 4, 116, 121, 112, 101,
-            2, 0, 10, 110, 111, 110, 112, 114, 105, 118, 97, 116, 101, 0, 8, 102, 108, 97, 115,
-            104, 86, 101, 114, 2, 0, 31, 70, 77, 76, 69, 47, 51, 46, 48, 32, 40, 99, 111, 109, 112,
-            97, 116, 105, 98, 108, 101, 59, 32, 70, 77, 83, 99, 47, 49, 46, 48, 41, 0, 6, 115, 119,
-            102, 85, 114, 108, 2, 0, 28, 114, 116, 109, 112, 58, 47, 47, 108, 111, 99, 97, 108,
-            104, 111, 115, 116, 58, 49, 57, 51, 53, 47, 104, 97, 114, 108, 97, 110, 0, 5, 116, 99,
-            85, 114, 108, 2, 0, 28, 114, 116, 109, 112, 58, 47, 47, 108, 111, 99, 97, 108, 104,
-            111, 115, 116, 58, 49, 57, 51, 53, 47, 104, 97, 114, 108, 97, 110, 0, 0, 9,
+        let data: [u8; 16] = [
+            2, // basic header: format 0, csid 2
+            0,
+            0,
+            0, // timestamp
+            0,
+            0,
+            4, // message length
+            msg_type_id::SET_CHUNK_SIZE,
+            0,
+            0,
+            0,
+            0, // message stream id
+            0,
+            0,
+            16,
+            0, // chunk size 4096
         ];
 
         unpacker.extend_data(&data[..]).unwrap();
 
-        let mut chunk_count = 0;
-        let mut parsed_count = 0;
+        let mut parsed_messages = Vec::new();
 
         loop {
             let result = unpacker.read_chunk();
@@ -170,24 +202,68 @@ mod tests {
             };
 
             if let UnpackResult::ChunkInfo(chunk_info) = rv {
-                chunk_count += 1;
-                let _ = chunk_info.message_header.msg_streamd_id;
-                let _ = chunk_info.message_header.timestamp;
+                assert_eq!(chunk_info.message_header.timestamp, 0);
+                assert_eq!(chunk_info.message_header.msg_streamd_id, 0);
 
                 let message_parser = MessageParser::new(chunk_info);
-                if message_parser.parse().is_ok() {
-                    parsed_count += 1;
+                if let Some(message) = message_parser.parse().expect("message should parse") {
+                    parsed_messages.push(message);
                 }
             }
         }
 
-        assert!(
-            chunk_count > 0,
-            "Should have parsed at least one chunk from RTMP data"
+        assert_eq!(parsed_messages.len(), 1);
+
+        assert_eq!(expect_set_chunk_size(&parsed_messages[0]), 4096);
+    }
+
+    #[test]
+    fn parses_amf0_connect_command() {
+        let mut properties = IndexMap::new();
+        properties.insert(
+            "app".to_string(),
+            Amf0ValueType::UTF8String("harlan".to_string()),
         );
-        assert!(
-            parsed_count > 0,
-            "Should have successfully parsed at least one RTMP message"
+        properties.insert(
+            "tcUrl".to_string(),
+            Amf0ValueType::UTF8String("rtmp://localhost:1935/harlan".to_string()),
+        );
+
+        let mut writer = Amf0Writer::new();
+        writer
+            .write_string(&"connect".to_string())
+            .expect("command name should encode");
+        writer
+            .write_number(&1.0)
+            .expect("transaction id should encode");
+        writer
+            .write_object(&properties)
+            .expect("connect object should encode");
+        let payload = writer.extract_current_bytes();
+
+        let message = MessageParser::new(ChunkInfo::new(
+            3,
+            0,
+            0,
+            payload.len() as u32,
+            msg_type_id::COMMAND_AMF0,
+            0,
+            payload,
+        ))
+        .parse()
+        .expect("connect message should parse")
+        .expect("connect message should produce data");
+
+        let command = expect_amf0_command(message);
+        assert_eq!(
+            command.command_name,
+            Amf0ValueType::UTF8String("connect".to_string())
+        );
+        assert_eq!(command.transaction_id, Amf0ValueType::Number(1.0));
+        let properties = expect_amf0_object(command.command_object);
+        assert_eq!(
+            properties.get("app"),
+            Some(&Amf0ValueType::UTF8String("harlan".to_string()))
         );
     }
 }

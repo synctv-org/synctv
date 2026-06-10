@@ -64,6 +64,12 @@ mod tests {
     use chrono::Utc;
     use synctv_core::models::{ChatEventKind, ChatMessage, ChatMessageWithImages, RoomId, UserId};
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
     fn chat_event() -> ChatMessageEvent {
         let occurred_at = Utc::now();
         let room_id = RoomId::expect_positive(7);
@@ -88,7 +94,7 @@ mod tests {
     }
 
     #[test]
-    fn realtime_dispatcher_maps_chat_event_to_realtime_event() {
+    fn realtime_dispatcher_maps_chat_event_to_realtime_event() -> TestResult {
         let recorder = Arc::new(RecordingRealtimeEventService::default());
         let dispatcher = RealtimeChatEventDispatcher::new(recorder.clone());
         let event = chat_event();
@@ -97,7 +103,7 @@ mod tests {
 
         assert!(outcome.local_delivered());
         let events = recorder.broadcast_events();
-        match events.first().expect("recorded event") {
+        match events.first().ok_or_else(|| test_error("recorded event"))? {
             RealtimeEvent::ChatMessageEvent {
                 event_id,
                 room_id,
@@ -110,7 +116,8 @@ mod tests {
                 assert_eq!(*actor_user_id, UserId::expect_positive(11));
                 assert_eq!(recorded.event_id, event.event_id);
             }
-            other => panic!("unexpected realtime event: {other:?}"),
+            other => return Err(test_error(format!("unexpected realtime event: {other:?}"))),
         }
+        Ok(())
     }
 }

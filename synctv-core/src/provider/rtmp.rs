@@ -231,10 +231,7 @@ impl ProviderProxy for RtmpProvider {
         &self,
         ctx: &ProxyRequestContext<'_>,
     ) -> Result<ProxyAction, ProviderError> {
-        let (version, rest) = ctx
-            .sub_path
-            .split_once('/')
-            .ok_or(ProviderError::NotFound)?;
+        let (version, rest) = super::proxy::split_versioned_proxy_path(ctx.sub_path)?;
         let versioned =
             super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
         Self::build_proxy_action(rest, &versioned, ctx)
@@ -245,6 +242,7 @@ impl ProviderProxy for RtmpProvider {
 mod tests {
     use super::*;
     use crate::models::{MediaId, RoomId, UserId};
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
     use serde_json::json;
 
     fn create_context() -> ProviderContext<'static> {
@@ -337,7 +335,10 @@ mod tests {
         let provider = RtmpProvider::new();
         let ctx = create_context();
 
-        let result = provider.generate_playback(&ctx, &json!({})).await.unwrap();
+        let result = provider
+            .generate_playback(&ctx, &json!({}))
+            .await
+            .checked("operation should succeed");
 
         assert_eq!(result.metadata.get("room_id"), Some(&json!(10)));
         assert_eq!(result.metadata.get("media_id"), Some(&json!(100)));
@@ -353,39 +354,65 @@ mod tests {
 
         let provider = RtmpProvider::new();
         let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .expect("test proxy signing key should derive");
+            .checked("test proxy signing key should derive");
         let ctx = ProviderContext::new("synctv")
             .with_user_id(UserId::expect_positive(1))
             .with_room_id(RoomId::expect_positive(10))
             .with_media_id(MediaId::expect_positive(100))
             .with_signing_key(&signing_key)
             .with_store(Arc::new(InMemoryProviderStore::new(16)));
-        let result = provider.generate_playback(&ctx, &json!({})).await.unwrap();
+        let result = provider
+            .generate_playback(&ctx, &json!({}))
+            .await
+            .checked("operation should succeed");
 
         let hls = result
             .playback_infos
             .get("hls")
-            .unwrap()
+            .checked("operation should succeed")
             .urls
             .first()
-            .unwrap();
+            .checked("operation should succeed");
         let flv = result
             .playback_infos
             .get("flv")
-            .unwrap()
+            .checked("operation should succeed")
             .urls
             .first()
-            .unwrap();
+            .checked("operation should succeed");
         assert!(hls.starts_with("/api/providers/proxy/rtmp/"));
         assert!(hls.contains("/m3u8?"));
         assert!(flv.starts_with("/api/providers/proxy/rtmp/"));
-        let flv_url = url::Url::parse(&format!("http://synctv.local{flv}")).unwrap();
+        let flv_url = url::Url::parse(&format!("http://synctv.local{flv}"))
+            .checked("operation should succeed");
         assert!(flv_url
             .path_segments()
-            .unwrap()
+            .checked("operation should succeed")
             .nth(5)
             .is_some_and(|action| action == "stream" || action.starts_with("stream/")));
         assert!(flv_url.query_pairs().any(|(key, _)| key == "sig"));
+    }
+
+    #[tokio::test]
+    async fn resolve_proxy_rejects_empty_action() {
+        let provider = RtmpProvider::new();
+        let ctx = ProxyRequestContext {
+            sub_path: "v1/",
+            query_string: None,
+            store: None,
+            proxy_base: "/api/providers/proxy/rtmp",
+            services: None,
+            public_id_codec: None,
+            verified_claims: None,
+            request_context: None,
+            request_headers: &http::HeaderMap::new(),
+        };
+
+        let err = provider
+            .resolve_proxy(&ctx)
+            .await
+            .failed("empty proxy action should fail before store lookup");
+        assert!(matches!(err, ProviderError::NotFound));
     }
 
     #[tokio::test]
@@ -397,7 +424,7 @@ mod tests {
         let provider = RtmpProvider::new();
         let store = Arc::new(InMemoryProviderStore::new(16));
         let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .expect("test proxy signing key should derive");
+            .checked("test proxy signing key should derive");
 
         let ctx1 = ProviderContext::new("synctv")
             .with_user_id(UserId::expect_positive(1))
@@ -405,7 +432,10 @@ mod tests {
             .with_media_id(MediaId::expect_positive(100))
             .with_signing_key(&signing_key)
             .with_store(store.clone());
-        let first = provider.generate_playback(&ctx1, &json!({})).await.unwrap();
+        let first = provider
+            .generate_playback(&ctx1, &json!({}))
+            .await
+            .checked("operation should succeed");
 
         let ctx2 = ProviderContext::new("synctv")
             .with_user_id(UserId::expect_positive(2))
@@ -413,22 +443,25 @@ mod tests {
             .with_media_id(MediaId::expect_positive(100))
             .with_signing_key(&signing_key)
             .with_store(store);
-        let second = provider.generate_playback(&ctx2, &json!({})).await.unwrap();
+        let second = provider
+            .generate_playback(&ctx2, &json!({}))
+            .await
+            .checked("operation should succeed");
 
         let first_hls = first
             .playback_infos
             .get("hls")
-            .unwrap()
+            .checked("operation should succeed")
             .urls
             .first()
-            .unwrap();
+            .checked("operation should succeed");
         let second_hls = second
             .playback_infos
             .get("hls")
-            .unwrap()
+            .checked("operation should succeed")
             .urls
             .first()
-            .unwrap();
+            .checked("operation should succeed");
         assert_ne!(
             first_hls, second_hls,
             "cached playback must be re-signed per user"
@@ -457,13 +490,13 @@ mod tests {
                         "room_id".to_string(),
                         json!(public_id_codec
                             .encode_room_id(RoomId::expect_positive(10))
-                            .unwrap()),
+                            .checked("operation should succeed")),
                     ),
                     (
                         "media_id".to_string(),
                         json!(public_id_codec
                             .encode_media_id(MediaId::expect_positive(100))
-                            .unwrap()),
+                            .checked("operation should succeed")),
                     ),
                 ]),
             },
@@ -474,10 +507,10 @@ mod tests {
             version: "v1".to_string(),
             room_id: public_id_codec
                 .encode_room_id(RoomId::expect_positive(10))
-                .expect("room id should encode"),
+                .checked("room id should encode"),
             user_id: public_id_codec
                 .encode_user_id(UserId::expect_positive(1))
-                .expect("user id should encode"),
+                .checked("user id should encode"),
             expires_at: chrono::Utc::now().timestamp() + 30,
             target_url: None,
         };
@@ -492,7 +525,8 @@ mod tests {
             request_context: None,
             request_headers: &http::HeaderMap::new(),
         };
-        let action = RtmpProvider::build_proxy_action("stream", &versioned, &ctx).unwrap();
+        let action = RtmpProvider::build_proxy_action("stream", &versioned, &ctx)
+            .checked("operation should succeed");
         match action {
             ProxyAction::LiveFlv {
                 user_id,
@@ -502,7 +536,7 @@ mod tests {
                 assert_eq!(user_id, UserId::expect_positive(1));
                 assert_eq!(expires_at, claims.expires_at);
             }
-            other => panic!("expected LiveFlv action, got {other:?}"),
+            other => std::panic::panic_any(format!("expected LiveFlv action, got {other:?}")),
         }
     }
 
@@ -524,10 +558,10 @@ mod tests {
             version: "v1".to_string(),
             room_id: public_id_codec
                 .encode_room_id(room_id)
-                .expect("room id should encode"),
+                .checked("room id should encode"),
             user_id: public_id_codec
                 .encode_user_id(UserId::expect_positive(1))
-                .expect("user id should encode"),
+                .checked("user id should encode"),
             expires_at: chrono::Utc::now().timestamp() + 30,
             target_url: None,
         };
@@ -543,7 +577,8 @@ mod tests {
             request_headers: &http::HeaderMap::new(),
         };
 
-        let hls = RtmpProvider::build_proxy_action("m3u8", &versioned, &ctx).unwrap();
+        let hls = RtmpProvider::build_proxy_action("m3u8", &versioned, &ctx)
+            .checked("operation should succeed");
         match hls {
             ProxyAction::LiveHlsPlaylist {
                 room_id: resolved_room_id,
@@ -553,10 +588,13 @@ mod tests {
                 assert_eq!(resolved_room_id, room_id);
                 assert_eq!(resolved_media_id, media_id);
             }
-            other => panic!("expected LiveHlsPlaylist action, got {other:?}"),
+            other => {
+                std::panic::panic_any(format!("expected LiveHlsPlaylist action, got {other:?}"))
+            }
         }
 
-        let flv = RtmpProvider::build_proxy_action("stream", &versioned, &ctx).unwrap();
+        let flv = RtmpProvider::build_proxy_action("stream", &versioned, &ctx)
+            .checked("operation should succeed");
         match flv {
             ProxyAction::LiveFlv {
                 room_id: resolved_room_id,
@@ -568,7 +606,7 @@ mod tests {
                 assert_eq!(resolved_media_id, media_id);
                 assert_eq!(user_id, UserId::expect_positive(1));
             }
-            other => panic!("expected LiveFlv action, got {other:?}"),
+            other => std::panic::panic_any(format!("expected LiveFlv action, got {other:?}")),
         }
     }
 
@@ -601,7 +639,8 @@ mod tests {
             request_context: None,
             request_headers: &http::HeaderMap::new(),
         };
-        let err = RtmpProvider::build_proxy_action("stream", &versioned, &ctx).unwrap_err();
+        let err = RtmpProvider::build_proxy_action("stream", &versioned, &ctx)
+            .failed("operation should fail");
         assert!(matches!(err, ProviderError::ApiError(_)));
     }
 }

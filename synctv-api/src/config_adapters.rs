@@ -34,6 +34,8 @@ pub fn proxy_slice_cache_config_from_app_config(config: &Config) -> SliceCacheCo
 mod tests {
     use super::*;
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
     #[test]
     fn proxy_slice_cache_config_controls_startup_enablement() {
         let mut app_config = Config::default();
@@ -53,7 +55,7 @@ mod tests {
     }
 
     #[test]
-    fn proxy_slice_cache_config_uses_file_backend_when_enabled() {
+    fn proxy_slice_cache_config_uses_file_backend_when_enabled() -> TestResult {
         let mut config = Config::default();
         config.proxy_slice_cache.file_backend_enabled = true;
         config.proxy_slice_cache.file_cache_dir = "/tmp/synctv-proxy-cache".to_string();
@@ -68,8 +70,9 @@ mod tests {
                 assert_eq!(cache_dir, PathBuf::from("/tmp/synctv-proxy-cache"));
                 assert_eq!(dir_levels, (2, 2));
             }
-            CacheBackendConfig::Memory => panic!("expected file backend"),
+            CacheBackendConfig::Memory => return Err(anyhow::anyhow!("expected file backend")),
         }
+        Ok(())
     }
 
     #[test]

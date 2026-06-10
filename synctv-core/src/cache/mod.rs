@@ -13,19 +13,15 @@ pub mod tiered;
 pub mod user_cache;
 pub mod username_cache;
 
+pub(crate) use consistency::version_fence_store_from_shared_state_profile;
 pub use consistency::{
-    cache_domain_metric_label, version_fence_store_from_shared_state_profile, CacheDomain,
-    ConsistencyCoordinator, ConsistencyPolicy, LocalVersionFenceStore, NoopVersionFenceStore,
+    CacheDomain, ConsistencyCoordinator, ConsistencyPolicy, LocalVersionFenceStore,
     RedisVersionFenceStore, VersionFenceReservation, VersionFenceStore, VersionedCacheValue,
 };
-pub use invalidation::{
-    cache_invalidation_runtime_from_shared_state_profile, CacheInvalidationRuntime,
-    CacheInvalidationService, InvalidationMessage,
-};
+pub use invalidation::{CacheInvalidationRuntime, CacheInvalidationService, InvalidationMessage};
 pub use key_builder::KeyBuilder;
 pub use l2_backend::{
-    build_l2_cache_backend, build_l2_cache_backend_from_profile, local_l2_cache_backend,
-    CacheL2Backend, NoopCacheL2, RedisCacheL2,
+    build_l2_cache_backend, local_l2_cache_backend, CacheL2Backend, NoopCacheL2, RedisCacheL2,
 };
 pub use manager::CacheManager;
 pub use member_permission_cache::{

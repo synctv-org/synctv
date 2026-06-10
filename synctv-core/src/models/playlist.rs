@@ -135,6 +135,13 @@ pub struct PlaylistWithCount {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn json_ok<T>(result: serde_json::Result<T>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
     use chrono::Utc;
 
     fn make_playlist(
@@ -193,7 +200,10 @@ mod tests {
             "room_id": 123,
             "name": "Simple"
         });
-        let req: CreatePlaylistRequest = serde_json::from_value(json).unwrap();
+        let req: CreatePlaylistRequest = json_ok(
+            serde_json::from_value(json),
+            "playlist request should deserialize",
+        );
         assert_eq!(req.description, "");
         assert!(req.parent_id.is_none());
         assert!(req.source_provider.is_none());
@@ -208,7 +218,10 @@ mod tests {
             media_count: 42,
             children_count: 3,
         };
-        let json = serde_json::to_value(&pwc).unwrap();
+        let json = json_ok(
+            serde_json::to_value(&pwc),
+            "playlist count should serialize",
+        );
         assert_eq!(json["media_count"], 42);
         assert_eq!(json["children_count"], 3);
         assert_eq!(json["name"], "Counted");

@@ -189,7 +189,7 @@ macro_rules! numeric_id_test_support {
             pub fn expect_positive(id: i64) -> Self {
                 match Self::try_from(id) {
                     Ok(id) => id,
-                    Err(error) => panic!("{error}"),
+                    Err(error) => std::panic::panic_any(error.to_string()),
                 }
             }
         }
@@ -215,6 +215,28 @@ numeric_id_test_support!(EmailRegistrationTokenId);
 mod tests {
     use super::*;
 
+    fn parse_id<T>(value: &str, context: &str) -> T
+    where
+        T: std::str::FromStr,
+        T::Err: std::fmt::Display,
+    {
+        match value.parse::<T>() {
+            Ok(id) => id,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    fn id_from_i64<T>(value: i64, context: &str) -> T
+    where
+        T: TryFrom<i64>,
+        T::Error: std::fmt::Display,
+    {
+        match T::try_from(value) {
+            Ok(id) => id,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn new_ids_are_positive_and_unique() {
         let id1 = UserId::new();
@@ -225,12 +247,24 @@ mod tests {
 
     #[test]
     fn parsed_ids_accept_positive_integers() {
-        assert_eq!("1".parse::<UserId>().unwrap().as_i64(), 1);
-        assert_eq!("2".parse::<RoomId>().unwrap().as_i64(), 2);
-        assert_eq!("3".parse::<MediaId>().unwrap().as_i64(), 3);
-        assert_eq!("4".parse::<PlaylistId>().unwrap().as_i64(), 4);
-        assert_eq!("5".parse::<ReviewRequestId>().unwrap().as_i64(), 5);
-        assert_eq!("6".parse::<BanRecordId>().unwrap().as_i64(), 6);
+        assert_eq!(parse_id::<UserId>("1", "user id should parse").as_i64(), 1);
+        assert_eq!(parse_id::<RoomId>("2", "room id should parse").as_i64(), 2);
+        assert_eq!(
+            parse_id::<MediaId>("3", "media id should parse").as_i64(),
+            3
+        );
+        assert_eq!(
+            parse_id::<PlaylistId>("4", "playlist id should parse").as_i64(),
+            4
+        );
+        assert_eq!(
+            parse_id::<ReviewRequestId>("5", "review request id should parse").as_i64(),
+            5
+        );
+        assert_eq!(
+            parse_id::<BanRecordId>("6", "ban record id should parse").as_i64(),
+            6
+        );
     }
 
     #[test]
@@ -241,7 +275,10 @@ mod tests {
 
     #[test]
     fn try_from_i64_rejects_non_positive_values() {
-        assert_eq!(UserId::try_from(1_i64).unwrap().as_i64(), 1);
+        assert_eq!(
+            id_from_i64::<UserId>(1, "user id should convert").as_i64(),
+            1
+        );
         assert!(UserId::try_from(0_i64).is_err());
         assert!(UserId::try_from(-1_i64).is_err());
     }

@@ -8,10 +8,10 @@
 //! - Short link resolution
 //! - Anti-crawler handling
 
-pub mod client;
-pub mod error;
-pub mod service;
-pub mod types;
+mod client;
+mod error;
+mod service;
+mod types;
 
 pub use client::{
     BilibiliClient, BilibiliEndpoints, DanmakuMessage, HeartbeatConfig, LiveDanmakuConnection,

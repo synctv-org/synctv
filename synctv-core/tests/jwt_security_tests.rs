@@ -1,8 +1,6 @@
 //! JWT token generation/validation integration tests //!
 //! These tests verify JWT security properties including tampering detection,
 //! expiry enforcement, and type confusion prevention.
-//!
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -12,9 +10,9 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use synctv_core::{
     models::UserId,
-    service::auth::{jwt::JwtService, JwtValidator, TokenCredentialBinding},
+    service::auth::{jwt::JwtService, Claims, JwtValidator, TokenCredentialBinding},
 };
-use synctv_core_testing::create_test_jwt_service;
+use synctv_core_testing::{create_test_jwt_service, err, ok};
 use tonic::metadata::MetadataMap;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -29,15 +27,43 @@ struct ExpiredClaims {
 const JWT_SECRET: &str = "test-secret-key-for-jwt-security-tests-minimum-32-chars";
 
 fn sign_test_refresh_token(jwt_service: &JwtService, user_id: &UserId) -> String {
-    jwt_service
-        .sign_refresh_token_with_session(
+    ok(
+        jwt_service.sign_refresh_token_with_session(
             user_id,
             0,
             None,
             "jwt-security-refresh-session",
             &TokenCredentialBinding::Password { version: 0 },
-        )
-        .expect("Failed to sign refresh token")
+        ),
+        "refresh token should be signed",
+    )
+}
+
+fn sign_access_token(jwt_service: &JwtService, user_id: &UserId, pv: i32) -> String {
+    ok(
+        jwt_service.sign_access_token(user_id, pv),
+        "access token should be signed",
+    )
+}
+
+fn verify_access_token(jwt_service: &JwtService, token: &str) -> Claims {
+    ok(
+        jwt_service.verify_access_token(token),
+        "access token should verify",
+    )
+}
+
+fn verify_refresh_token(jwt_service: &JwtService, token: &str) -> Claims {
+    ok(
+        jwt_service.verify_refresh_token(token),
+        "refresh token should verify",
+    )
+}
+
+fn jwt_parts(token: &str) -> Vec<&str> {
+    let parts: Vec<&str> = token.split('.').collect();
+    assert_eq!(parts.len(), 3);
+    parts
 }
 
 #[tokio::test]
@@ -46,13 +72,10 @@ async fn test_jwt_tampering_detection_signature() {
     let user_id = UserId::new();
 
     // Generate valid token
-    let token = jwt_service
-        .sign_access_token(&user_id, 0)
-        .expect("Failed to sign token");
+    let token = sign_access_token(&jwt_service, &user_id, 0);
 
     // Tamper with signature
-    let parts: Vec<&str> = token.split('.').collect();
-    assert_eq!(parts.len(), 3);
+    let parts = jwt_parts(&token);
 
     let tampered_token = format!("{}.{}.TAMPERED_SIGNATURE", parts[0], parts[1]);
 
@@ -66,15 +89,14 @@ async fn test_jwt_tampering_detection_payload() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
 
-    let token = jwt_service
-        .sign_access_token(&user_id, 0)
-        .expect("Failed to sign token");
+    let token = sign_access_token(&jwt_service, &user_id, 0);
 
     // Extract and modify payload
-    let parts: Vec<&str> = token.split('.').collect();
-    let mut payload_bytes = general_purpose::URL_SAFE_NO_PAD
-        .decode(parts[1])
-        .expect("Failed to decode payload");
+    let parts = jwt_parts(&token);
+    let mut payload_bytes = ok(
+        general_purpose::URL_SAFE_NO_PAD.decode(parts[1]),
+        "payload should decode",
+    );
 
     // Tamper with payload (change user ID)
     if let Some(byte) = payload_bytes.get_mut(10) {
@@ -119,14 +141,16 @@ async fn test_jwt_expiry_enforcement() {
 
     let secret = "test-secret-key-for-integration-tests-minimum-length-32-chars";
     let encoding_key = EncodingKey::from_secret(secret.as_bytes());
-    let expired_token = encode(&Header::new(Algorithm::HS256), &claims, &encoding_key)
-        .expect("Failed to encode expired token");
+    let expired_token = ok(
+        encode(&Header::new(Algorithm::HS256), &claims, &encoding_key),
+        "expired token should encode",
+    );
 
     // Verification should fail due to expiry
     let result = jwt_service.verify_access_token(&expired_token);
     assert!(result.is_err(), "Expired token should be rejected");
 
-    let err_msg = format!("{:?}", result.unwrap_err());
+    let err_msg = format!("{:?}", err(result, "expired token should be rejected"));
     assert!(
         err_msg.contains("expired") || err_msg.contains("ExpiredSignature"),
         "Error should indicate token expiry: {err_msg}"
@@ -139,9 +163,7 @@ async fn test_jwt_type_confusion_access_vs_refresh() {
     let user_id = UserId::new();
 
     // Generate access token
-    let access_token = jwt_service
-        .sign_access_token(&user_id, 0)
-        .expect("Failed to sign access token");
+    let access_token = sign_access_token(&jwt_service, &user_id, 0);
 
     // Generate refresh token
     let refresh_token = sign_test_refresh_token(&jwt_service, &user_id);
@@ -174,9 +196,10 @@ async fn test_jwt_type_confusion_guest_token() {
     let room_id = RoomId::new();
 
     // Generate guest token (session_id is generated internally by sign_guest_token)
-    let guest_token = jwt_service
-        .sign_guest_token(&room_id)
-        .expect("Failed to sign guest token");
+    let guest_token = ok(
+        jwt_service.sign_guest_token(&room_id),
+        "guest token should be signed",
+    );
 
     // Try to use guest token as access token
     let result = jwt_service.verify_access_token(&guest_token);
@@ -186,9 +209,7 @@ async fn test_jwt_type_confusion_guest_token() {
     );
 
     // Generate regular access token
-    let access_token = jwt_service
-        .sign_access_token(&user_id, 0)
-        .expect("Failed to sign access token");
+    let access_token = sign_access_token(&jwt_service, &user_id, 0);
 
     // Try to use access token as guest token
     let result = jwt_service.verify_guest_token(&access_token);
@@ -248,8 +269,10 @@ async fn test_jwt_wrong_algorithm_rejection() {
 
     let secret = "test-secret-key-for-integration-tests-minimum-length-32-chars";
     let encoding_key = EncodingKey::from_secret(secret.as_bytes());
-    let wrong_alg_token = encode(&Header::new(Algorithm::HS512), &claims, &encoding_key)
-        .expect("Failed to encode token");
+    let wrong_alg_token = ok(
+        encode(&Header::new(Algorithm::HS512), &claims, &encoding_key),
+        "wrong-algorithm token should encode",
+    );
 
     // Should fail because service expects HS256
     let result = jwt_service.verify_access_token(&wrong_alg_token);
@@ -286,8 +309,10 @@ async fn test_jwt_future_issued_at_rejection() {
 
     let secret = "test-secret-key-for-integration-tests-minimum-length-32-chars";
     let encoding_key = EncodingKey::from_secret(secret.as_bytes());
-    let future_token = encode(&Header::new(Algorithm::HS256), &claims, &encoding_key)
-        .expect("Failed to encode future token");
+    let future_token = ok(
+        encode(&Header::new(Algorithm::HS256), &claims, &encoding_key),
+        "future-issued token should encode",
+    );
 
     // Verification may succeed or fail depending on clock skew tolerance
     // But the token should not be usable for authentication
@@ -307,11 +332,11 @@ async fn test_jwt_jti_uniqueness() {
     let user_id = UserId::new();
 
     // Generate multiple tokens
-    let token1 = jwt_service.sign_access_token(&user_id, 0).unwrap();
-    let token2 = jwt_service.sign_access_token(&user_id, 0).unwrap();
+    let token1 = sign_access_token(&jwt_service, &user_id, 0);
+    let token2 = sign_access_token(&jwt_service, &user_id, 0);
 
-    let claims1 = jwt_service.verify_access_token(&token1).unwrap();
-    let claims2 = jwt_service.verify_access_token(&token2).unwrap();
+    let claims1 = verify_access_token(&jwt_service, &token1);
+    let claims2 = verify_access_token(&jwt_service, &token2);
 
     // JTI should be different for each token
     assert_ne!(claims1.jti, claims2.jti, "JTI should be unique per token");
@@ -321,17 +346,19 @@ async fn test_jwt_jti_uniqueness() {
 
 #[tokio::test]
 async fn test_jwt_different_secrets_incompatible() {
-    let jwt_service1 = JwtService::new("test-secret-key-1-with-sufficient-length-32chars")
-        .expect("Failed to create JWT service 1");
-    let jwt_service2 = JwtService::new("test-secret-key-2-with-sufficient-length-32chars")
-        .expect("Failed to create JWT service 2");
+    let jwt_service1 = ok(
+        JwtService::new("test-secret-key-1-with-sufficient-length-32chars"),
+        "first JWT service should be created",
+    );
+    let jwt_service2 = ok(
+        JwtService::new("test-secret-key-2-with-sufficient-length-32chars"),
+        "second JWT service should be created",
+    );
 
     let user_id = UserId::new();
 
     // Sign with service 1
-    let token = jwt_service1
-        .sign_access_token(&user_id, 0)
-        .expect("Failed to sign token");
+    let token = sign_access_token(&jwt_service1, &user_id, 0);
 
     // Verify with service 2 should fail
     let result = jwt_service2.verify_access_token(&token);
@@ -347,13 +374,9 @@ async fn test_jwt_token_expiration_boundary() {
     let user_id = UserId::new();
 
     // Generate token
-    let token = jwt_service
-        .sign_access_token(&user_id, 0)
-        .expect("Failed to sign token");
+    let token = sign_access_token(&jwt_service, &user_id, 0);
 
-    let claims = jwt_service
-        .verify_access_token(&token)
-        .expect("Failed to verify token");
+    let claims = verify_access_token(&jwt_service, &token);
 
     // Verify expiration is correctly set (1 hour for access token)
     let expected_exp = claims.iat + 3600;
@@ -365,9 +388,7 @@ async fn test_jwt_token_expiration_boundary() {
     // Generate refresh token
     let refresh_token = sign_test_refresh_token(&jwt_service, &user_id);
 
-    let refresh_claims = jwt_service
-        .verify_refresh_token(&refresh_token)
-        .expect("Failed to verify refresh token");
+    let refresh_claims = verify_refresh_token(&jwt_service, &refresh_token);
 
     // Verify refresh token expiration (30 days)
     let expected_refresh_exp = refresh_claims.iat + (30 * 24 * 3600);
@@ -390,12 +411,8 @@ async fn test_jwt_concurrent_token_generation() {
         let service = jwt_service.clone();
         let handle = tokio::spawn(async move {
             let user_id = UserId::new();
-            let token = service
-                .sign_access_token(&user_id, 0)
-                .expect("Failed to sign token");
-            let claims = service
-                .verify_access_token(&token)
-                .expect("Failed to verify token");
+            let token = sign_access_token(&service, &user_id, 0);
+            let claims = verify_access_token(&service, &token);
             claims.jti
         });
         handles.push(handle);
@@ -404,7 +421,7 @@ async fn test_jwt_concurrent_token_generation() {
     let jtis: Vec<String> = futures::future::join_all(handles)
         .await
         .into_iter()
-        .map(|r| r.unwrap())
+        .map(|result| ok(result, "JWT generation task should complete"))
         .collect();
 
     // All JTIs should be unique
@@ -495,38 +512,51 @@ async fn test_jwt_validator_grpc_as_status_returns_unauthenticated() {
     let metadata = MetadataMap::new();
     let result = validator.validate_grpc_as_status(&metadata);
     assert!(result.is_err());
-    let status = result.unwrap_err();
+    let status = err(result, "missing auth metadata should fail");
     assert_eq!(status.code(), tonic::Code::Unauthenticated);
 
     // Invalid token in metadata
     let mut metadata2 = MetadataMap::new();
-    metadata2.insert("authorization", "Bearer invalid.token".parse().unwrap());
+    metadata2.insert(
+        "authorization",
+        ok(
+            "Bearer invalid.token".parse(),
+            "authorization metadata should parse",
+        ),
+    );
     let result2 = validator.validate_grpc_as_status(&metadata2);
-    assert!(result2.is_err());
-    assert_eq!(result2.unwrap_err().code(), tonic::Code::Unauthenticated);
+    assert_eq!(
+        err(result2, "invalid metadata token should fail").code(),
+        tonic::Code::Unauthenticated
+    );
 }
 
 // SEC9: JwtService::verify_custom skips issuer/audience
 
 #[tokio::test]
 async fn test_verify_custom_skips_issuer_validation() {
-    let jwt_service = JwtService::with_durations_and_claims(
-        "test-secret-key-for-integration-tests-minimum-length-32-chars",
-        1,
-        30,
-        4,
-        60,
-        Some("synctv".to_string()),
-        Some("synctv-api".to_string()),
-    )
-    .unwrap();
+    let jwt_service = ok(
+        JwtService::with_durations_and_claims(
+            "test-secret-key-for-integration-tests-minimum-length-32-chars",
+            1,
+            30,
+            4,
+            60,
+            Some("synctv".to_string()),
+            Some("synctv-api".to_string()),
+        ),
+        "JWT service with claims should be created",
+    );
 
     // Sign a custom token WITHOUT issuer/audience
     let custom_claims = serde_json::json!({
         "sub": "custom_subject",
         "custom_field": "custom_value",
     });
-    let token = jwt_service.sign_custom(&custom_claims).unwrap();
+    let token = ok(
+        jwt_service.sign_custom(&custom_claims),
+        "custom token should be signed",
+    );
 
     // verify_custom should succeed (it skips issuer/audience checks)
     let result = jwt_service.verify_custom(&token);
@@ -536,7 +566,7 @@ async fn test_verify_custom_skips_issuer_validation() {
         result.err()
     );
 
-    let verified = result.unwrap();
+    let verified = ok(result, "custom token should verify");
     assert_eq!(verified["sub"], "custom_subject");
     assert_eq!(verified["custom_field"], "custom_value");
 
@@ -548,7 +578,7 @@ async fn test_verify_custom_skips_issuer_validation() {
 
     // First, sign a regular token (which includes iss/aud)
     let user_id = UserId::new();
-    let regular_token = jwt_service.sign_access_token(&user_id, 0).unwrap();
+    let regular_token = sign_access_token(&jwt_service, &user_id, 0);
 
     // Regular token should pass verify_token (has correct issuer/audience)
     assert!(jwt_service.verify_token(&regular_token).is_ok());
@@ -579,12 +609,14 @@ async fn test_verify_custom_still_validates_expiry() {
 
     // Sign it manually (can't use sign_custom since it adds a valid exp)
     let encoding_key = EncodingKey::from_secret(secret.as_bytes());
-    let token = jsonwebtoken::encode(
-        &Header::new(Algorithm::HS256),
-        &expired_claims,
-        &encoding_key,
-    )
-    .unwrap();
+    let token = ok(
+        jsonwebtoken::encode(
+            &Header::new(Algorithm::HS256),
+            &expired_claims,
+            &encoding_key,
+        ),
+        "expired custom token should encode",
+    );
 
     // verify_custom should still reject expired tokens
     let result = jwt_service.verify_custom(&token);
@@ -597,12 +629,17 @@ async fn test_verify_custom_still_validates_expiry() {
 #[tokio::test]
 async fn test_verify_custom_validates_signature() {
     let jwt_service1 = create_test_jwt_service();
-    let jwt_service2 =
-        JwtService::new("DIFFERENT-secret-key-for-custom-token-tests-1234567890!@#").unwrap();
+    let jwt_service2 = ok(
+        JwtService::new("DIFFERENT-secret-key-for-custom-token-tests-1234567890!@#"),
+        "second JWT service should be created",
+    );
 
     // Sign custom token with service 1
     let claims = serde_json::json!({"sub": "test", "data": 42});
-    let token = jwt_service1.sign_custom(&claims).unwrap();
+    let token = ok(
+        jwt_service1.sign_custom(&claims),
+        "custom token should be signed",
+    );
 
     // verify_custom with different secret should fail
     let result = jwt_service2.verify_custom(&token);
@@ -618,24 +655,16 @@ async fn test_token_includes_password_version() {
     let user_id = UserId::new();
 
     // Token with password version 0
-    let token_v0 = jwt_service
-        .sign_access_token(&user_id, 0)
-        .expect("Failed to sign token v0");
+    let token_v0 = sign_access_token(&jwt_service, &user_id, 0);
 
-    let claims_v0 = jwt_service
-        .verify_access_token(&token_v0)
-        .expect("Failed to verify token v0");
+    let claims_v0 = verify_access_token(&jwt_service, &token_v0);
 
     assert_eq!(claims_v0.pv, 0, "Token should include password version");
 
     // Token with password version 5
-    let token_v5 = jwt_service
-        .sign_access_token(&user_id, 5)
-        .expect("Failed to sign token v5");
+    let token_v5 = sign_access_token(&jwt_service, &user_id, 5);
 
-    let claims_v5 = jwt_service
-        .verify_access_token(&token_v5)
-        .expect("Failed to verify token v5");
+    let claims_v5 = verify_access_token(&jwt_service, &token_v5);
 
     assert_eq!(
         claims_v5.pv, 5,
@@ -651,16 +680,12 @@ async fn test_refresh_token_rotation_produces_new_jti() {
     // Simulate token rotation: old token -> new token
     let old_refresh = sign_test_refresh_token(&jwt_service, &user_id);
 
-    let old_claims = jwt_service
-        .verify_refresh_token(&old_refresh)
-        .expect("Failed to verify old token");
+    let old_claims = verify_refresh_token(&jwt_service, &old_refresh);
 
     // New token (as would be produced by rotation)
     let new_refresh = sign_test_refresh_token(&jwt_service, &user_id);
 
-    let new_claims = jwt_service
-        .verify_refresh_token(&new_refresh)
-        .expect("Failed to verify new token");
+    let new_claims = verify_refresh_token(&jwt_service, &new_refresh);
 
     // New token should have different JTI
     assert_ne!(
@@ -677,19 +702,13 @@ async fn test_access_and_refresh_tokens_have_different_expirations() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
 
-    let access_token = jwt_service
-        .sign_access_token(&user_id, 0)
-        .expect("Failed to sign access token");
+    let access_token = sign_access_token(&jwt_service, &user_id, 0);
 
     let refresh_token = sign_test_refresh_token(&jwt_service, &user_id);
 
-    let access_claims = jwt_service
-        .verify_access_token(&access_token)
-        .expect("Failed to verify access token");
+    let access_claims = verify_access_token(&jwt_service, &access_token);
 
-    let refresh_claims = jwt_service
-        .verify_refresh_token(&refresh_token)
-        .expect("Failed to verify refresh token");
+    let refresh_claims = verify_refresh_token(&jwt_service, &refresh_token);
 
     // Access token should expire before refresh token
     assert!(
@@ -717,25 +736,25 @@ async fn test_tampered_subject_rejected() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
 
-    let token = jwt_service
-        .sign_access_token(&user_id, 0)
-        .expect("Failed to sign token");
+    let token = sign_access_token(&jwt_service, &user_id, 0);
 
-    let parts: Vec<&str> = token.split('.').collect();
+    let parts = jwt_parts(&token);
 
     // Decode, modify subject, re-encode (but with wrong signature)
-    let mut payload: serde_json::Value = serde_json::from_slice(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(parts[1])
-            .expect("Failed to decode payload"),
-    )
-    .expect("Failed to parse payload");
+    let payload_bytes = ok(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1]),
+        "payload should decode",
+    );
+    let mut payload: serde_json::Value = ok(
+        serde_json::from_slice(&payload_bytes),
+        "payload should parse",
+    );
 
     // Change subject to different user
     payload["sub"] = serde_json::json!("attacker_user_id");
 
     let tampered_payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(&payload).expect("Failed to encode payload"));
+        .encode(ok(serde_json::to_vec(&payload), "payload should encode"));
 
     let tampered_token = format!("{}.{}.{}", parts[0], tampered_payload, parts[2]);
 
@@ -761,9 +780,10 @@ async fn test_expired_refresh_token_rejected() {
     };
 
     let encoding_key = EncodingKey::from_secret(JWT_SECRET.as_bytes());
-    let expired_token =
-        jsonwebtoken::encode(&Header::new(Algorithm::HS256), &claims, &encoding_key)
-            .expect("Failed to encode expired token");
+    let expired_token = ok(
+        jsonwebtoken::encode(&Header::new(Algorithm::HS256), &claims, &encoding_key),
+        "expired refresh token should encode",
+    );
 
     let result = jwt_service.verify_refresh_token(&expired_token);
     assert!(result.is_err(), "Expired refresh token should be rejected");

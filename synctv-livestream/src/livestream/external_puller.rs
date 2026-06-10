@@ -13,14 +13,16 @@
 //!   (header + audio/video/metadata tags) in a streaming fashion, and forwards
 //!   frames to the local `StreamHub`.
 //!
-//! Both modes include retry logic with exponential backoff (matching `GrpcStreamPuller`).
+//! Both modes include bounded retry logic for established streams.
 
 use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::{Buf, BytesMut};
 use synctv_common::{self, ssrf::SsrfGuard};
-use synctv_xiu::rtmp::session::client_session::{ClientSession, ClientSessionType};
+use synctv_xiu::rtmp::session::client_session::{
+    ClientSession, ClientSessionConfig, ClientSessionType,
+};
 use synctv_xiu::rtmp::session::common::RtmpStreamHandler;
 use synctv_xiu::rtmp::utils::RtmpUrlParser;
 use synctv_xiu::streamhub::{
@@ -38,12 +40,6 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 
 const MAX_RETRIES: u32 = 10;
-/// Global maximum retry attempts to prevent infinite retry loops.
-/// Even if individual attempts reset after successful connections,
-/// this global counter ensures we eventually give up.
-const GLOBAL_MAX_ATTEMPTS: u32 = 50;
-/// Minimum connection duration to consider "successful" for retry reset.
-const MIN_SUCCESSFUL_DURATION: std::time::Duration = std::time::Duration::from_mins(1);
 const INITIAL_BACKOFF_MS: u64 = 1000;
 const MAX_BACKOFF_MS: u64 = 30_000;
 /// Maximum total FLV buffer size (50 MB) to prevent unbounded memory growth
@@ -65,19 +61,37 @@ const FLV_TAG_AUDIO: u8 = 8;
 const FLV_TAG_VIDEO: u8 = 9;
 const FLV_TAG_SCRIPT_DATA: u8 = 18;
 
-fn should_reset_retry_counters(stream_duration: std::time::Duration) -> bool {
-    stream_duration > MIN_SUCCESSFUL_DURATION
-}
-
 pub(crate) fn redact_source_url_for_logs(source_url: &str) -> String {
     let Ok(mut parsed) = Url::parse(source_url) else {
         return "<invalid-url>".to_string();
     };
-    let _ = parsed.set_username("");
-    let _ = parsed.set_password(None);
+    if parsed.set_username("").is_err() || parsed.set_password(None).is_err() {
+        warn!("failed to redact external pull source URL credentials");
+        return "<redaction-failed>".to_string();
+    }
     parsed.set_query(None);
     parsed.set_fragment(None);
     parsed.to_string()
+}
+
+fn notify_oneshot<T>(sender: oneshot::Sender<T>, value: T, description: &'static str) {
+    if sender.send(value).is_err() {
+        debug!(description, "oneshot receiver dropped before notification");
+    }
+}
+
+async fn log_aborted_task_join(task_name: &'static str, handle: tokio::task::JoinHandle<()>) {
+    match handle.await {
+        Ok(()) => {}
+        Err(error) if error.is_cancelled() => {}
+        Err(error) => {
+            warn!(
+                task = task_name,
+                error = %error,
+                "aborted task returned join error"
+            );
+        }
+    }
 }
 
 async fn send_frame_with_backpressure(
@@ -97,7 +111,7 @@ async fn send_frame_with_backpressure(
 
 /// Source type for external streams
 #[derive(Debug, Clone)]
-pub enum ExternalSourceType {
+pub(crate) enum ExternalSourceType {
     /// RTMP URL (e.g., <rtmp://live.example.com/app/stream>)
     Rtmp,
     /// HTTP-FLV URL (e.g., <http://live.example.com/app/stream.flv>)
@@ -107,7 +121,7 @@ pub enum ExternalSourceType {
 impl ExternalSourceType {
     /// Detect source type from URL
     #[must_use]
-    pub fn from_url(url: &str) -> Option<Self> {
+    pub(crate) fn from_url(url: &str) -> Option<Self> {
         let parsed = Url::parse(url).ok()?;
         match parsed.scheme() {
             "rtmp" => Some(Self::Rtmp),
@@ -121,7 +135,7 @@ impl ExternalSourceType {
 ///
 /// Connects to a remote streaming source and publishes frames to the local
 /// `StreamHub` under the local stream identity (`live/{room_id}/{media_id}`).
-pub struct ExternalStreamPuller {
+pub(crate) struct ExternalStreamPuller {
     room_id: String,
     media_id: String,
     source_url: String,
@@ -150,7 +164,7 @@ impl ExternalStreamPuller {
 
     /// Create with async DNS-resolved SSRF validation (required for all production use).
     /// Resolves the hostname and validates all resolved IPs against blocklists.
-    pub async fn new_async(
+    pub(crate) async fn new_async(
         room_id: String,
         media_id: String,
         source_url: String,
@@ -229,10 +243,17 @@ impl ExternalStreamPuller {
                 // Hostname - resolve and check all IPs
                 let addrs = resolver(host.to_string(), port).await?;
 
-                // Filter out blocked IPs
+                // RTMP uses a raw TCP path, so hostname allowlists must not
+                // unlock private DNS answers. HTTP-FLV uses the reqwest
+                // resolver path and keeps hostname-aware policy semantics.
                 let safe_addrs: Vec<std::net::SocketAddr> = addrs
                     .into_iter()
-                    .filter(|addr| !ssrf_guard.is_ip_blocked_for_host(host, &addr.ip()))
+                    .filter(|addr| match source_type {
+                        ExternalSourceType::Rtmp => !ssrf_guard.is_ip_blocked(&addr.ip()),
+                        ExternalSourceType::HttpFlv => {
+                            !ssrf_guard.is_ip_blocked_for_host(host, &addr.ip())
+                        }
+                    })
                     .collect();
 
                 if safe_addrs.is_empty() {
@@ -261,7 +282,7 @@ impl ExternalStreamPuller {
     }
 
     #[must_use]
-    pub const fn with_max_flv_tag_size_bytes(mut self, max: usize) -> Self {
+    pub(crate) const fn with_max_flv_tag_size_bytes(mut self, max: usize) -> Self {
         self.max_flv_tag_size_bytes = max;
         self
     }
@@ -269,34 +290,28 @@ impl ExternalStreamPuller {
     /// Set a one-shot confirmation channel. The puller will signal this channel
     /// after the first successful connection is established (not just after URL validation).
     #[must_use]
-    pub fn with_confirm(mut self, tx: tokio::sync::oneshot::Sender<Result<(), String>>) -> Self {
+    pub(crate) fn with_confirm(
+        mut self,
+        tx: tokio::sync::oneshot::Sender<Result<(), String>>,
+    ) -> Self {
         self.confirm_tx = Some(tx);
         self
     }
 
     /// Set a shared HTTP client for FLV connections (reused across retries, supports TLS).
     #[must_use]
-    pub fn with_http_client(mut self, client: reqwest::Client) -> Self {
+    pub(crate) fn with_http_client(mut self, client: reqwest::Client) -> Self {
         self.http_client = Some(client);
         self
     }
 
-    /// Set a cancellation token for graceful shutdown.
+    /// Run the puller with bounded retry logic.
     ///
-    /// When the token is cancelled, the puller exits the main loop cleanly,
-    /// unpublishes from the local `StreamHub`, and returns `Ok(())`.
-    #[must_use]
-    pub fn with_cancel(mut self, token: CancellationToken) -> Self {
-        self.cancel_token = token;
-        self
-    }
-
-    /// Run the puller with retry logic.
-    ///
-    /// On transient failures (connection refused, stream interrupted), retries with exponential
-    /// backoff (1s initial, 30s max, with jitter). Gives up after 10 consecutive failures.
+    /// Startup failures are reported to the caller immediately. After the first
+    /// successful connection, interrupted streams retry with exponential backoff
+    /// up to `MAX_RETRIES`.
     /// If the cancellation token is triggered, the loop exits cleanly and returns `Ok(())`.
-    pub async fn run(mut self) -> Result<()> {
+    pub(crate) async fn run(mut self) -> Result<()> {
         info!(
             room_id = %self.room_id,
             media_id = %self.media_id,
@@ -306,7 +321,6 @@ impl ExternalStreamPuller {
         );
 
         let mut attempt: u32 = 0;
-        let mut global_attempt_count: u32 = 0;
 
         loop {
             // Exit cleanly if cancellation has been requested before starting a new attempt
@@ -320,88 +334,56 @@ impl ExternalStreamPuller {
             }
 
             attempt += 1;
-            global_attempt_count += 1;
-
-            // Check global attempt limit to prevent infinite retry loops
-            if global_attempt_count > GLOBAL_MAX_ATTEMPTS {
-                error!(
-                    room_id = %self.room_id,
-                    media_id = %self.media_id,
-                    global_attempts = global_attempt_count,
-                    "Exceeded global max retry attempts ({GLOBAL_MAX_ATTEMPTS})"
-                );
-                return Err(anyhow::anyhow!(
-                    "Exceeded global max retry attempts ({GLOBAL_MAX_ATTEMPTS})"
-                ));
-            }
 
             // Publish to local StreamHub (re-publish on each retry to get a fresh sender)
             let data_sender = match self.publish_to_local_stream_hub().await {
                 Ok(sender) => sender,
                 Err(e) => {
-                    let err_msg = format!("{e}");
-                    // If publish fails with "Exists" from a stale entry, force-unpublish
-                    // first and retry immediately.
-                    if err_msg.contains("Exists") || err_msg.contains("exists") {
-                        warn!(
-                            room_id = %self.room_id,
-                            "Stream already published (stale entry), force-unpublishing and retrying"
+                    if let Some(tx) = self.confirm_tx.take() {
+                        notify_oneshot(
+                            tx,
+                            Err(format!("{e}")),
+                            "external pull startup publish failure",
                         );
-                        self.unpublish_from_local_stream_hub();
-                        // Retry publish immediately (don't count as a separate attempt)
-                        match self.publish_to_local_stream_hub().await {
-                            Ok(sender) => sender,
-                            Err(e2) => {
-                                error!(
-                                    room_id = %self.room_id,
-                                    attempt = attempt,
-                                    "Failed to publish after force-unpublish: {e2}"
-                                );
-                                if attempt > MAX_RETRIES {
-                                    return Err(anyhow::anyhow!(
-                                        "Gave up after {MAX_RETRIES} retries (last error: {e2})"
-                                    ));
-                                }
-                                // Respect cancellation during backoff
-                                tokio::select! {
-                                    () = self.cancel_token.cancelled() => {
-                                        info!(
-                                            room_id = %self.room_id,
-                                            media_id = %self.media_id,
-                                            "External stream puller cancelled during backoff"
-                                        );
-                                        return Ok(());
-                                    }
-                                    () = Self::backoff(attempt) => {}
-                                }
-                                continue;
-                            }
-                        }
-                    } else {
                         error!(
                             room_id = %self.room_id,
-                            attempt = attempt,
                             "Failed to publish to local StreamHub: {e}"
                         );
-                        if attempt > MAX_RETRIES {
-                            return Err(anyhow::anyhow!(
-                                "Gave up after {MAX_RETRIES} retries (last error: publish to StreamHub: {e})"
-                            ));
-                        }
-                        // Respect cancellation during backoff
-                        tokio::select! {
-                            () = self.cancel_token.cancelled() => {
-                                info!(
-                                    room_id = %self.room_id,
-                                    media_id = %self.media_id,
-                                    "External stream puller cancelled during backoff"
-                                );
-                                return Ok(());
-                            }
-                            () = Self::backoff(attempt) => {}
-                        }
-                        continue;
+                        return Err(e);
                     }
+
+                    if attempt >= MAX_RETRIES {
+                        error!(
+                            room_id = %self.room_id,
+                            media_id = %self.media_id,
+                            attempt = attempt,
+                            "Gave up after {MAX_RETRIES} retries publishing to local StreamHub: {e}"
+                        );
+                        return Err(anyhow::anyhow!(
+                            "Gave up after {MAX_RETRIES} retries (last error: publish to StreamHub: {e})"
+                        ));
+                    }
+
+                    warn!(
+                        room_id = %self.room_id,
+                        media_id = %self.media_id,
+                        attempt = attempt,
+                        max_retries = MAX_RETRIES,
+                        "External stream publish failed, retrying: {e}"
+                    );
+
+                    tokio::select! {
+                        () = self.cancel_token.cancelled() => {
+                            info!(
+                                room_id = %self.room_id,
+                                media_id = %self.media_id,
+                                "External stream puller cancelled during retry backoff"
+                            );
+                            return Ok(());
+                        }
+                        () = Self::backoff(attempt) => {}
+                    }
+                    continue;
                 }
             };
 
@@ -414,19 +396,17 @@ impl ExternalStreamPuller {
                 self.stream_hub_event_sender.clone(),
             );
 
-            let connect_start = std::time::Instant::now();
             let result = match self.source_type {
                 ExternalSourceType::Rtmp => self.connect_and_stream_rtmp(&data_sender).await,
                 ExternalSourceType::HttpFlv => self.connect_and_stream_flv(&data_sender).await,
             };
-            let stream_duration = connect_start.elapsed();
             let startup_confirmation_pending = self.confirm_tx.is_some();
 
             // If the connection failed on the first attempt and we have a pending
             // confirm_tx, signal the failure so the caller doesn't wait forever.
             if let Err(ref e) = result {
                 if let Some(tx) = self.confirm_tx.take() {
-                    let _ = tx.send(Err(format!("{e}")));
+                    notify_oneshot(tx, Err(format!("{e}")), "external pull startup failure");
                 }
             }
 
@@ -464,19 +444,6 @@ impl ExternalStreamPuller {
                             "External stream startup failed before first confirmation: {e}"
                         );
                         return Err(e);
-                    }
-
-                    // Reset retry counters if the connection was up for a meaningful duration
-                    // This prevents accumulating transient failures that were followed by
-                    // successful long-lived connections from triggering GLOBAL_MAX_ATTEMPTS
-                    if should_reset_retry_counters(stream_duration) {
-                        info!(
-                            room_id = %self.room_id,
-                            duration_secs = stream_duration.as_secs(),
-                            "Resetting retry counters after successful long connection"
-                        );
-                        attempt = 0;
-                        global_attempt_count = 0;
                     }
 
                     if attempt >= MAX_RETRIES {
@@ -585,13 +552,17 @@ impl ExternalStreamPuller {
                 match event {
                     StreamHubEvent::Publish { result_sender, .. } => {
                         // Respond with our local StreamHub's FrameDataSender
-                        let _ = result_sender.send(Ok((
-                            Some(bridge_data_sender.clone()),
-                            None, // No packet data sender needed
-                            None, // No statistic data sender needed
-                        )));
+                        notify_oneshot(
+                            result_sender,
+                            Ok((
+                                Some(bridge_data_sender.clone()),
+                                None, // No packet data sender needed
+                                None, // No statistic data sender needed
+                            )),
+                            "RTMP bridge publish result",
+                        );
                         if let Some(tx) = publish_started_tx.take() {
-                            let _ = tx.send(());
+                            notify_oneshot(tx, (), "RTMP bridge publish started");
                         }
                     }
                     StreamHubEvent::UnPublish { .. } => {
@@ -611,13 +582,15 @@ impl ExternalStreamPuller {
         // to our local stream identity.
         let mut client = ClientSession::new(
             tcp_stream,
-            ClientSessionType::Pull,
-            parser.host_with_port.clone(),
-            parser.app_name.clone(),
-            parser.stream_name_with_query.clone(),
-            bridge_tx,
-            2,    // gop_num (GOP cache on bridge side; real caching happens in local StreamHub)
-            None, // per_stream_max_bytes: use default for external pulls
+            ClientSessionConfig {
+                client_type: ClientSessionType::Pull,
+                raw_domain_name: parser.host_with_port.clone(),
+                app_name: parser.app_name.clone(),
+                raw_stream_name: parser.stream_name_with_query.clone(),
+                event_producer: bridge_tx,
+                gop_num: 2,
+                per_stream_max_bytes: None,
+            },
         );
 
         let mut client_run = Box::pin(client.run());
@@ -648,7 +621,7 @@ impl ExternalStreamPuller {
 
         // Cleanup: abort bridge task and await to ensure it is fully cleaned up
         bridge_handle.abort();
-        let _ = bridge_handle.await;
+        log_aborted_task_join("RTMP pull bridge", bridge_handle).await;
 
         result
     }
@@ -676,12 +649,7 @@ impl ExternalStreamPuller {
             )
         })?;
 
-        let client = build_http_flv_client(
-            &self.source_url,
-            addr,
-            self.http_client.as_ref(),
-            &self.ssrf_guard,
-        )?;
+        let client = build_http_flv_client(&self.source_url, addr, &self.ssrf_guard)?;
 
         let mut response =
             send_http_flv_request(&client, &self.source_url, HTTP_FLV_REQUEST_START_TIMEOUT)
@@ -802,7 +770,7 @@ impl ExternalStreamPuller {
 
                 // Zero-copy extraction: skip tag header, split out data, freeze to Bytes.
                 // This avoids a memcpy compared to the old copy_from_slice approach.
-                let _ = buffer.split_to(FLV_TAG_HEADER_SIZE); // discard tag header
+                drop(buffer.split_to(FLV_TAG_HEADER_SIZE)); // discard tag header
                 let tag_data = buffer.split_to(data_size).freeze(); // zero-copy Bytes
                 buffer.advance(FLV_PREV_TAG_SIZE_LEN); // skip PreviousTagSize
 
@@ -854,7 +822,7 @@ impl ExternalStreamPuller {
     /// Send the one-shot confirmation if still pending.
     fn send_confirm_ok(&mut self) {
         if let Some(tx) = self.confirm_tx.take() {
-            let _ = tx.send(Ok(()));
+            notify_oneshot(tx, Ok(()), "external pull startup success");
         }
     }
 
@@ -945,7 +913,6 @@ impl ExternalStreamPuller {
 fn build_http_flv_client(
     source_url: &str,
     resolved_addr: std::net::SocketAddr,
-    _shared_client: Option<&reqwest::Client>,
     ssrf_guard: &SsrfGuard,
 ) -> Result<reqwest::Client> {
     let parsed = reqwest::Url::parse(source_url)?;
@@ -989,7 +956,6 @@ async fn send_http_flv_request(
 /// Drop guard that sends UnPublish to StreamHub when dropped.
 ///
 /// Ensures cleanup happens even if the puller task is aborted (not just cancelled).
-/// Uses `try_send` for the fast path; spawns an async task if the channel is full.
 struct UnpublishGuard {
     room_id: String,
     media_id: String,
@@ -1040,30 +1006,10 @@ impl Drop for UnpublishGuard {
                 );
             }
             Err(mpsc::error::TrySendError::Full(event)) => {
-                let sender = self.stream_hub_event_sender.clone();
-                let room_id = self.room_id.clone();
-                let media_id = self.media_id.clone();
-                let room_id_for_task = room_id.clone();
-                let media_id_for_task = media_id.clone();
                 warn!(
-                    "UnpublishGuard: channel full, spawning async UnPublish for {}/{}",
-                    room_id, media_id
+                    "UnpublishGuard: StreamHub queue full, dropping UnPublish for {}/{}: {:?}",
+                    self.room_id, self.media_id, event
                 );
-                if crate::util::try_spawn(async move {
-                    if let Err(e) = sender.send(event).await {
-                        warn!(
-                            "UnpublishGuard: async UnPublish failed for {}/{}: {}",
-                            room_id_for_task, media_id_for_task, e
-                        );
-                    }
-                })
-                .is_none()
-                {
-                    warn!(
-                        "UnpublishGuard: no Tokio runtime available, skipping async UnPublish for {}/{}",
-                        room_id, media_id
-                    );
-                }
             }
             Err(e) => {
                 warn!(
@@ -1075,22 +1021,18 @@ impl Drop for UnpublishGuard {
     }
 }
 
-/// Validate that a URL is a supported external source format.
-///
-/// SSRF protection is enforced, when enabled, at the network level:
-/// HTTP clients may use an injected DNS resolver, and RTMP connections check
-/// resolved IPs before connecting.
-pub fn validate_source_url(url: &str) -> Result<ExternalSourceType, String> {
-    ExternalSourceType::from_url(url)
-        .ok_or_else(|| format!("Unsupported source URL: {url}. Expected rtmp:// or *.flv"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration as StdDuration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    type TestResult = anyhow::Result<()>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
 
     #[test]
     fn test_source_type_detection() {
@@ -1117,18 +1059,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_source_url() {
-        assert!(validate_source_url("rtmp://live.example.com/app/stream").is_ok());
-        assert!(validate_source_url("http://live.example.com/app/stream.flv").is_ok());
-        // m3u8/HLS is not supported
-        assert!(validate_source_url("https://live.example.com/app/stream/index.m3u8").is_err());
-        assert!(validate_source_url("http://example.com/video.mp4").is_err());
-        assert!(validate_source_url("ftp://example.com/video.flv").is_err());
-        assert!(validate_source_url("file:///tmp/video.flv").is_err());
-        assert!(validate_source_url("not-a-url").is_err());
-    }
-
-    #[test]
     fn test_redact_source_url_for_logs_removes_sensitive_parts() {
         let redacted = redact_source_url_for_logs(
             "https://user:pass@live.example.com:8443/app/stream.flv?token=secret#frag",
@@ -1141,29 +1071,18 @@ mod tests {
     }
 
     /// Note: SSRF protection is enforced at the network level (DNS resolution time),
-    /// not at URL validation time. See the comments on validate_source_url.
+    /// not at source type detection time.
     /// Tests for SSRF protection during async creation are in test_external_puller_async_ssrf_protection.
     #[test]
     fn test_ssrf_urls_are_valid_format() {
         // URLs with private IPs are valid URL formats
         // SSRF protection happens at network level, not URL validation
-        assert!(validate_source_url("rtmp://10.0.0.1/app/stream").is_ok());
-        assert!(validate_source_url("rtmp://192.168.1.1/app/stream").is_ok());
-        assert!(validate_source_url("rtmp://172.16.0.1/app/stream").is_ok());
-        assert!(validate_source_url("http://127.0.0.1/stream.flv").is_ok());
-        assert!(validate_source_url("http://169.254.169.254/stream.flv").is_ok());
-        assert!(validate_source_url("rtmp://localhost/app/stream").is_ok());
-    }
-
-    #[test]
-    fn test_retry_counter_reset_threshold() {
-        assert!(!should_reset_retry_counters(
-            std::time::Duration::from_secs(59)
-        ));
-        assert!(!should_reset_retry_counters(MIN_SUCCESSFUL_DURATION));
-        assert!(should_reset_retry_counters(
-            MIN_SUCCESSFUL_DURATION + std::time::Duration::from_nanos(1)
-        ));
+        assert!(ExternalSourceType::from_url("rtmp://10.0.0.1/app/stream").is_some());
+        assert!(ExternalSourceType::from_url("rtmp://192.168.1.1/app/stream").is_some());
+        assert!(ExternalSourceType::from_url("rtmp://172.16.0.1/app/stream").is_some());
+        assert!(ExternalSourceType::from_url("http://127.0.0.1/stream.flv").is_some());
+        assert!(ExternalSourceType::from_url("http://169.254.169.254/stream.flv").is_some());
+        assert!(ExternalSourceType::from_url("rtmp://localhost/app/stream").is_some());
     }
 
     fn spawn_stream_hub(
@@ -1173,11 +1092,11 @@ mod tests {
             while let Some(event) = receiver.recv().await {
                 if let StreamHubEvent::Publish { result_sender, .. } = event {
                     let (data_sender, _) = tokio::sync::mpsc::channel(8);
-                    let _ = result_sender.send(Ok((
-                        Some(FrameDataSender::bounded(data_sender)),
-                        None,
-                        None,
-                    )));
+                    notify_oneshot(
+                        result_sender,
+                        Ok((Some(FrameDataSender::bounded(data_sender)), None, None)),
+                        "test stream hub publish result",
+                    );
                 }
             }
         })
@@ -1215,9 +1134,15 @@ mod tests {
         let addr = listener.local_addr()?;
         let handle = tokio::spawn(async move {
             if let Ok((mut stream, _)) = listener.accept().await {
-                let _ = read_http_request_headers(&mut stream).await;
-                let _ = stream.write_all(&response).await;
-                let _ = stream.shutdown().await;
+                if let Err(error) = read_http_request_headers(&mut stream).await {
+                    debug!(%error, "test HTTP response server failed to read request headers");
+                }
+                if let Err(error) = stream.write_all(&response).await {
+                    debug!(%error, "test HTTP response server failed to write response");
+                }
+                if let Err(error) = stream.shutdown().await {
+                    debug!(%error, "test HTTP response server failed to shut down stream");
+                }
             }
         });
         Ok((addr, handle))
@@ -1231,10 +1156,16 @@ mod tests {
         let addr = listener.local_addr()?;
         let handle = tokio::spawn(async move {
             if let Ok((mut stream, _)) = listener.accept().await {
-                let _ = read_http_request_headers(&mut stream).await;
+                if let Err(error) = read_http_request_headers(&mut stream).await {
+                    debug!(%error, "delayed test HTTP response server failed to read request headers");
+                }
                 tokio::time::sleep(delay).await;
-                let _ = stream.write_all(&response).await;
-                let _ = stream.shutdown().await;
+                if let Err(error) = stream.write_all(&response).await {
+                    debug!(%error, "delayed test HTTP response server failed to write response");
+                }
+                if let Err(error) = stream.shutdown().await {
+                    debug!(%error, "delayed test HTTP response server failed to shut down stream");
+                }
             }
         });
         Ok((addr, handle))
@@ -1261,13 +1192,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_http_flv_confirmation_waits_for_valid_flv_header() {
+    async fn test_http_flv_confirmation_waits_for_valid_flv_header() -> TestResult {
         let response =
             b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nbadflvheader!"
                 .to_vec();
-        let (addr, server_handle) = spawn_http_response_server(response)
-            .await
-            .expect("test server should start");
+        let (addr, server_handle) = spawn_http_response_server(response).await?;
         let (hub_sender, hub_receiver) = tokio::sync::mpsc::channel(8);
         let hub_handle = spawn_stream_hub(hub_receiver);
         let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
@@ -1276,7 +1205,7 @@ mod tests {
         let result = puller.run().await;
 
         assert!(result.is_err(), "invalid FLV header must fail startup");
-        let confirm = confirm_rx.await.expect("confirm channel should resolve");
+        let confirm = confirm_rx.await?;
         let err = confirm.expect_err("startup should not be confirmed for invalid FLV");
         assert!(
             err.contains("Invalid FLV header"),
@@ -1285,15 +1214,14 @@ mod tests {
 
         server_handle.abort();
         hub_handle.abort();
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_http_flv_truncated_header_fails_startup() {
+    async fn test_http_flv_truncated_header_fails_startup() -> TestResult {
         let response =
             b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nFLV".to_vec();
-        let (addr, server_handle) = spawn_http_response_server(response)
-            .await
-            .expect("test server should start");
+        let (addr, server_handle) = spawn_http_response_server(response).await?;
         let (hub_sender, hub_receiver) = tokio::sync::mpsc::channel(8);
         let hub_handle = spawn_stream_hub(hub_receiver);
         let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
@@ -1302,7 +1230,7 @@ mod tests {
         let result = puller.run().await;
 
         assert!(result.is_err(), "truncated FLV header must fail startup");
-        let confirm = confirm_rx.await.expect("confirm channel should resolve");
+        let confirm = confirm_rx.await?;
         let err = confirm.expect_err("startup should not be confirmed for truncated header");
         assert!(
             err.contains("complete FLV header"),
@@ -1311,10 +1239,11 @@ mod tests {
 
         server_handle.abort();
         hub_handle.abort();
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_http_flv_confirmation_succeeds_after_valid_header() {
+    async fn test_http_flv_confirmation_succeeds_after_valid_header() -> TestResult {
         let mut body = vec![b'F', b'L', b'V', 0x01, 0x00, 0x00, 0x00, 0x00, 0x09];
         body.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
         let response = format!(
@@ -1324,9 +1253,7 @@ mod tests {
         .into_bytes();
         let mut response = response;
         response.extend_from_slice(&body);
-        let (addr, server_handle) = spawn_http_response_server(response)
-            .await
-            .expect("test server should start");
+        let (addr, server_handle) = spawn_http_response_server(response).await?;
         let (hub_sender, hub_receiver) = tokio::sync::mpsc::channel(8);
         let hub_handle = spawn_stream_hub(hub_receiver);
         let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
@@ -1335,7 +1262,7 @@ mod tests {
         let result = puller.run().await;
 
         assert!(result.is_ok(), "valid FLV header should allow startup");
-        let confirm = confirm_rx.await.expect("confirm channel should resolve");
+        let confirm = confirm_rx.await?;
         assert!(
             confirm.is_ok(),
             "startup should be confirmed after FLV header"
@@ -1343,17 +1270,18 @@ mod tests {
 
         server_handle.abort();
         hub_handle.abort();
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_http_flv_frame_send_waits_for_backpressure_instead_of_dropping() {
+    async fn test_http_flv_frame_send_waits_for_backpressure_instead_of_dropping() -> TestResult {
         let (data_sender, mut data_receiver) = tokio::sync::mpsc::channel(1);
         data_sender
             .try_send(FrameData::MetaData {
                 timestamp: 0,
                 data: bytes::Bytes::from_static(b"queued"),
             })
-            .expect("test channel should start full");
+            .map_err(|_| test_error("test channel should start full"))?;
 
         let sender = FrameDataSender::bounded(data_sender);
         let send_task = tokio::spawn(async move {
@@ -1373,26 +1301,24 @@ mod tests {
             "HTTP-FLV send should wait for bounded StreamHub backpressure"
         );
 
-        let _ = data_receiver.recv().await;
-        send_task
+        data_receiver
+            .recv()
             .await
-            .expect("send task should join")
-            .expect("send should complete once backpressure clears");
+            .ok_or_else(|| anyhow::anyhow!("data receiver closed before releasing backpressure"))?;
+        send_task.await??;
 
         let received = data_receiver
             .recv()
             .await
-            .expect("backpressured frame should be delivered");
+            .ok_or_else(|| test_error("backpressured frame should be delivered"))?;
         assert!(matches!(received, FrameData::Video { timestamp: 1, .. }));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_external_puller_creation_rtmp() {
+    async fn test_external_puller_creation_rtmp() -> TestResult {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
-        // Use an IP literal to avoid DNS resolution (which may return
-        // non-public IPs in some environments, e.g. VPN/proxy setups).
-        // 93.184.216.34 is example.com's public IP - any public IP works here.
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
@@ -1400,10 +1326,8 @@ mod tests {
             sender,
             SsrfGuard::strict_policy(),
         )
-        .await;
+        .await?;
 
-        assert!(puller.is_ok(), "new_async failed: {:?}", puller.err());
-        let puller = puller.unwrap();
         assert_eq!(puller.room_id, "room123");
         assert_eq!(puller.media_id, "media456");
         assert!(matches!(puller.source_type, ExternalSourceType::Rtmp));
@@ -1411,13 +1335,13 @@ mod tests {
             puller.resolved_addr,
             Some(std::net::SocketAddr::from(([93, 184, 216, 34], 1935)))
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_external_puller_creation_flv() {
+    async fn test_external_puller_creation_flv() -> TestResult {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
-        // Use an IP literal to avoid DNS resolution dependency.
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
@@ -1425,15 +1349,14 @@ mod tests {
             sender,
             SsrfGuard::strict_policy(),
         )
-        .await;
+        .await?;
 
-        assert!(puller.is_ok(), "new_async failed: {:?}", puller.err());
-        let puller = puller.unwrap();
         assert!(matches!(puller.source_type, ExternalSourceType::HttpFlv));
         assert_eq!(
             puller.resolved_addr,
             Some(std::net::SocketAddr::from(([93, 184, 216, 34], 80)))
         );
+        Ok(())
     }
 
     #[tokio::test]
@@ -1468,12 +1391,8 @@ mod tests {
         assert!(puller.is_err());
     }
 
-    /// Test that `new_async()` properly resolves DNS and sets `resolved_addr`.
-    /// This test uses a real external hostname that should resolve to a public IP.
-    /// Ignored because DNS results vary by environment (VPNs, proxies, firewalls
-    /// may return non-public IPs that are correctly blocked by SSRF protection).
     #[tokio::test]
-    async fn test_external_puller_async_sets_resolved_addr() {
+    async fn test_external_puller_async_sets_resolved_addr() -> TestResult {
         let (sender, _) = tokio::sync::mpsc::channel(64);
         let resolved = std::net::SocketAddr::from(([93, 184, 216, 34], 1935));
 
@@ -1492,26 +1411,18 @@ mod tests {
                 }
             },
         )
-        .await;
+        .await?;
 
-        // The URL should parse correctly
-        assert!(
-            puller.is_ok(),
-            "new_async should succeed for valid URL: {:?}",
-            puller.err()
-        );
-        let puller = puller.unwrap();
-
-        // resolved_addr should be set (DNS resolution was successful)
         assert!(
             puller.resolved_addr.is_some(),
             "resolved_addr should be set by new_async"
         );
         assert_eq!(puller.resolved_addr, Some(resolved));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_external_puller_allows_private_ip_for_allowed_hostname() {
+    async fn test_external_puller_allows_private_ip_for_allowed_hostname() -> TestResult {
         let (sender, _) = tokio::sync::mpsc::channel(64);
         let resolved = std::net::SocketAddr::from(([10, 0, 0, 42], 1935));
         let guard = SsrfGuard::builder()
@@ -1533,14 +1444,14 @@ mod tests {
                 }
             },
         )
-        .await
-        .expect("allowed hostname should be able to resolve to a private service IP");
+        .await?;
 
         assert_eq!(puller.resolved_addr, Some(resolved));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_external_puller_blocks_metadata_ip_for_allowed_hostname() {
+    async fn test_external_puller_blocks_metadata_ip_for_allowed_hostname() -> TestResult {
         let (sender, _) = tokio::sync::mpsc::channel(64);
         let guard = SsrfGuard::builder()
             .extra_allowed_host("internal.example".to_string())
@@ -1561,110 +1472,92 @@ mod tests {
         )
         .await
         else {
-            panic!("hostname allowlist must not allow metadata/link-local targets");
+            return Err(test_error(
+                "hostname allowlist must not allow metadata/link-local targets",
+            ));
         };
 
         assert!(
             error.to_string().contains("all resolved IPs"),
             "unexpected error: {error}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_build_http_flv_client_pins_hostname_even_with_shared_client() {
+    async fn test_build_http_flv_client_pins_hostname_to_resolved_address() -> TestResult {
         let response =
             b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
-        let (addr, server_handle) = spawn_http_response_server(response)
-            .await
-            .expect("test server should start");
+        let (addr, server_handle) = spawn_http_response_server(response).await?;
 
-        let shared_client = reqwest::Client::new();
         let client = build_http_flv_client(
             &format!("http://example.com:{}/stream.flv", addr.port()),
             addr,
-            Some(&shared_client),
             &SsrfGuard::disabled(),
-        )
-        .expect("pinned HTTP-FLV client should build");
+        )?;
 
         let response = client
             .get(format!("http://example.com:{}/stream.flv", addr.port()))
             .send()
-            .await
-            .expect("pinned client should connect to resolved address");
+            .await?;
 
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         server_handle.abort();
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_build_http_flv_client_keeps_redirects_disabled() {
+    async fn test_build_http_flv_client_keeps_redirects_disabled() -> TestResult {
         let response = b"HTTP/1.1 302 Found\r\nLocation: /next.flv\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
-        let (addr, server_handle) = spawn_http_response_server(response)
-            .await
-            .expect("test server should start");
+        let (addr, server_handle) = spawn_http_response_server(response).await?;
 
         let client = build_http_flv_client(
             &format!("http://example.com:{}/stream.flv", addr.port()),
             addr,
-            None,
             &SsrfGuard::disabled(),
-        )
-        .expect("redirect-safe HTTP-FLV client should build");
+        )?;
 
         let response = client
             .get(format!("http://example.com:{}/stream.flv", addr.port()))
             .send()
-            .await
-            .expect("request should return first-hop redirect");
+            .await?;
 
         assert_eq!(response.status(), reqwest::StatusCode::FOUND);
         server_handle.abort();
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_build_http_flv_client_keeps_redirects_disabled_for_ip_literals() {
+    async fn test_build_http_flv_client_keeps_redirects_disabled_for_ip_literals() -> TestResult {
         let response = b"HTTP/1.1 302 Found\r\nLocation: /next.flv\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
-        let (addr, server_handle) = spawn_http_response_server(response)
-            .await
-            .expect("test server should start");
+        let (addr, server_handle) = spawn_http_response_server(response).await?;
 
-        let redirecting_client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .build()
-            .expect("redirecting shared client should build");
         let client = build_http_flv_client(
             &format!("http://{addr}/stream.flv"),
             addr,
-            Some(&redirecting_client),
             &SsrfGuard::disabled(),
-        )
-        .expect("redirect-safe HTTP-FLV client should build for IP literal");
+        )?;
 
         let response = client
             .get(format!("http://{addr}/stream.flv"))
             .send()
-            .await
-            .expect("request should return first-hop redirect");
+            .await?;
 
         assert_eq!(response.status(), reqwest::StatusCode::FOUND);
         server_handle.abort();
+        Ok(())
     }
 
     #[test]
-    fn test_build_http_flv_client_disables_inherited_reqwest_timeouts_for_live_streams() {
+    fn test_build_http_flv_client_disables_inherited_reqwest_timeouts_for_live_streams(
+    ) -> TestResult {
         let client = build_http_flv_client(
             "http://example.com:8080/stream.flv",
             std::net::SocketAddr::from(([203, 0, 113, 10], 8080)),
-            None,
             &SsrfGuard::strict_policy(),
-        )
-        .expect("HTTP-FLV client should build");
+        )?;
 
-        let request = client
-            .get("http://example.com:8080/stream.flv")
-            .build()
-            .expect("request should build");
+        let request = client.get("http://example.com:8080/stream.flv").build()?;
         assert_eq!(
             request.timeout(),
             None,
@@ -1676,24 +1569,21 @@ mod tests {
             !debug_repr.contains("read_timeout: Some(30s)"),
             "live HTTP-FLV client must not inherit the proxy preset read timeout: {debug_repr}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_send_http_flv_request_times_out_before_headers() {
+    async fn test_send_http_flv_request_times_out_before_headers() -> TestResult {
         let response =
             b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
         let (addr, server_handle) =
-            spawn_delayed_http_response_server(StdDuration::from_millis(200), response)
-                .await
-                .expect("test server should start");
+            spawn_delayed_http_response_server(StdDuration::from_millis(200), response).await?;
 
         let client = build_http_flv_client(
             &format!("http://{addr}/stream.flv"),
             addr,
-            None,
             &SsrfGuard::disabled(),
-        )
-        .expect("HTTP-FLV client should build");
+        )?;
 
         let err = send_http_flv_request(
             &client,
@@ -1708,10 +1598,9 @@ mod tests {
             "unexpected error: {err}"
         );
         server_handle.abort();
+        Ok(())
     }
 
-    /// With an explicit disabled SSRF policy, `new_async()` allows
-    /// localhost/private addresses during async construction.
     #[tokio::test]
     async fn test_external_puller_async_creation_allows_private_addresses_when_ssrf_is_explicitly_disabled(
     ) {

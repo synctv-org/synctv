@@ -333,8 +333,7 @@ impl MemberService {
 
     /// Get members of a room with database-level pagination
     ///
-    /// Uses `COUNT(*) OVER()` window function for atomic count + fetch in a single query.
-    /// Returns (members, total_count) tuple.
+    /// Returns the requested page and the total matching member count.
     ///
     /// # Performance
     ///

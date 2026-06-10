@@ -1,5 +1,4 @@
 //! `DatabaseMaintenanceService` file storage cleanup tests.
-#![allow(clippy::unwrap_used)]
 
 use std::sync::{Arc, Mutex};
 
@@ -16,7 +15,7 @@ use synctv_core::{
     },
     Error,
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, ok};
 
 #[derive(Default)]
 struct RecordingFileStorageService {
@@ -50,9 +49,15 @@ impl FileStorageService for RecordingFileStorageService {
         origin: FileStorageCleanupOrigin,
         files: &[FileReferenceTarget],
     ) -> synctv_core::Result<()> {
-        let mut deleted = self.deleted_object_keys.lock().unwrap();
+        let mut deleted = ok(
+            self.deleted_object_keys.lock(),
+            "deleted object key recorder lock should be acquired",
+        );
         deleted.extend(files.iter().map(|file| file.object_key.clone()));
-        let mut origins = self.deleted_origins.lock().unwrap();
+        let mut origins = ok(
+            self.deleted_origins.lock(),
+            "deleted origin recorder lock should be acquired",
+        );
         origins.extend(files.iter().map(|_| origin.as_str().to_string()));
         Ok(())
     }
@@ -112,45 +117,56 @@ async fn old_chat_message_cleanup_deletes_image_objects() {
 
     let user = create_test_user(&pool).await;
     let room = create_test_room(user.id);
-    let room = RoomRepository::new(pool.clone())
-        .create(&room)
-        .await
-        .expect("room should be created");
+    let room = ok(
+        RoomRepository::new(pool.clone()).create(&room).await,
+        "room should be created",
+    );
 
     let old_at = Utc::now() - Duration::days(120);
-    insert_old_chat_message_with_image(
-        &pool,
-        room.id,
-        user.id,
-        9_001,
-        "cleanup-image-1",
-        "normalized/raw/cleanup-image.webp",
-        old_at,
-    )
-    .await
-    .expect("chat message should be inserted");
+    ok(
+        insert_old_chat_message_with_image(
+            &pool,
+            room.id,
+            user.id,
+            9_001,
+            "cleanup-image-1",
+            "normalized/raw/cleanup-image.webp",
+            old_at,
+        )
+        .await,
+        "chat message should be inserted",
+    );
 
     let service = maintenance_with_storage(pool.clone(), storage.clone());
 
-    service
-        .run_cleanup_old_chat_messages()
-        .await
-        .expect("old chat cleanup should succeed");
+    ok(
+        service.run_cleanup_old_chat_messages().await,
+        "old chat cleanup should succeed",
+    );
 
-    let deleted_object_keys = storage.deleted_object_keys.lock().unwrap().clone();
+    let deleted_object_keys = ok(
+        storage.deleted_object_keys.lock(),
+        "deleted object key recorder lock should be acquired",
+    )
+    .clone();
     assert_eq!(
         deleted_object_keys,
         vec!["normalized/raw/cleanup-image.webp".to_string()]
     );
-    let deleted_origins = storage.deleted_origins.lock().unwrap().clone();
+    let deleted_origins = ok(
+        storage.deleted_origins.lock(),
+        "deleted origin recorder lock should be acquired",
+    )
+    .clone();
     assert_eq!(deleted_origins, vec!["retention_expired".to_string()]);
 
-    let message_exists: bool =
+    let message_exists: bool = ok(
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_messages WHERE id = $1)")
             .bind(9_001_i64)
             .fetch_one(&pool)
-            .await
-            .expect("message existence query should succeed");
+            .await,
+        "message existence query should succeed",
+    );
     assert!(!message_exists);
 }
 
@@ -160,75 +176,89 @@ async fn failed_old_file_cleanup_is_persisted_and_retried() {
     let (_container, pool) = create_test_pool().await;
     let user = create_test_user(&pool).await;
     let room = create_test_room(user.id);
-    let room = RoomRepository::new(pool.clone())
-        .create(&room)
-        .await
-        .expect("room should be created");
+    let room = ok(
+        RoomRepository::new(pool.clone()).create(&room).await,
+        "room should be created",
+    );
     let old_at = Utc::now() - Duration::days(120);
-    insert_old_chat_message_with_image(
-        &pool,
-        room.id,
-        user.id,
-        9_002,
-        "retry-image-1",
-        "normalized/raw/retry-image.webp",
-        old_at,
-    )
-    .await
-    .expect("chat message should be inserted");
+    ok(
+        insert_old_chat_message_with_image(
+            &pool,
+            room.id,
+            user.id,
+            9_002,
+            "retry-image-1",
+            "normalized/raw/retry-image.webp",
+            old_at,
+        )
+        .await,
+        "chat message should be inserted",
+    );
 
     let failing_service =
         maintenance_with_storage(pool.clone(), Arc::new(FailingFileStorageService));
-    failing_service
-        .run_cleanup_old_chat_messages()
-        .await
-        .expect("old chat cleanup should succeed even when object cleanup fails");
+    ok(
+        failing_service.run_cleanup_old_chat_messages().await,
+        "old chat cleanup should succeed even when object cleanup fails",
+    );
 
-    let queued: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)::BIGINT FROM file_cleanup_jobs WHERE object_key = $1 AND completed_at IS NULL",
-    )
-    .bind("normalized/raw/retry-image.webp")
-    .fetch_one(&pool)
-    .await
-    .expect("queued cleanup job should be queryable");
+    let queued: i64 = ok(
+        sqlx::query_scalar(
+            "SELECT COUNT(*)::BIGINT FROM file_cleanup_jobs WHERE object_key = $1 AND completed_at IS NULL",
+        )
+        .bind("normalized/raw/retry-image.webp")
+        .fetch_one(&pool)
+        .await,
+        "queued cleanup job should be queryable",
+    );
     assert_eq!(queued, 1);
-    let due = FileStorageRepository::new(pool.clone())
-        .count_due_cleanup_jobs()
-        .await
-        .expect("due cleanup job count should be queryable");
+    let due = ok(
+        FileStorageRepository::new(pool.clone())
+            .count_due_cleanup_jobs()
+            .await,
+        "due cleanup job count should be queryable",
+    );
     assert_eq!(due, 1);
 
     let recording_storage = Arc::new(RecordingFileStorageService::default());
     let retry_service = maintenance_with_storage(pool.clone(), recording_storage.clone());
-    retry_service
-        .run_retry_file_cleanup_jobs()
-        .await
-        .expect("cleanup retry should succeed");
+    ok(
+        retry_service.run_retry_file_cleanup_jobs().await,
+        "cleanup retry should succeed",
+    );
 
-    let deleted_object_keys = recording_storage
-        .deleted_object_keys
-        .lock()
-        .unwrap()
-        .clone();
+    let deleted_object_keys = ok(
+        recording_storage.deleted_object_keys.lock(),
+        "deleted object key recorder lock should be acquired",
+    )
+    .clone();
     assert_eq!(
         deleted_object_keys,
         vec!["normalized/raw/retry-image.webp".to_string()]
     );
-    let deleted_origins = recording_storage.deleted_origins.lock().unwrap().clone();
+    let deleted_origins = ok(
+        recording_storage.deleted_origins.lock(),
+        "deleted origin recorder lock should be acquired",
+    )
+    .clone();
     assert_eq!(deleted_origins, vec!["cleanup_retry".to_string()]);
 
-    let completed: bool = sqlx::query_scalar(
-        "SELECT completed_at IS NOT NULL FROM file_cleanup_jobs WHERE object_key = $1",
-    )
-    .bind("normalized/raw/retry-image.webp")
-    .fetch_one(&pool)
-    .await
-    .expect("completed cleanup job should be queryable");
+    let completed: bool = ok(
+        sqlx::query_scalar(
+            "SELECT completed_at IS NOT NULL FROM file_cleanup_jobs WHERE object_key = $1",
+        )
+        .bind("normalized/raw/retry-image.webp")
+        .fetch_one(&pool)
+        .await,
+        "completed cleanup job should be queryable",
+    );
     assert!(completed);
-    let due_after_retry = FileStorageRepository::new(pool.clone())
-        .count_due_cleanup_jobs()
-        .await
-        .expect("due cleanup job count should be queryable after retry");
+    let due_after_retry = ok(
+        FileStorageRepository::new(pool.clone())
+            .count_due_cleanup_jobs()
+            .await,
+        "due cleanup job count should be queryable after retry",
+    );
     assert_eq!(due_after_retry, 0);
 }
 
@@ -238,44 +268,56 @@ async fn expired_file_reference_cleanup_releases_reference() {
     let (_container, pool) = create_test_pool().await;
     let storage = Arc::new(RecordingFileStorageService::default());
     let repository = FileStorageRepository::new(pool.clone());
-    repository
-        .upsert_object(
+    ok(
+        repository
+            .upsert_object(
+                "database",
+                "database/files/expired.webp",
+                "image/webp",
+                7,
+                &"a".repeat(64),
+                &serde_json::Value::Object(Default::default()),
+            )
+            .await,
+        "object should be registered",
+    );
+    let mut tx = ok(pool.begin().await, "transaction should begin");
+    ok(
+        FileStorageRepository::insert_reference_in_tx(
+            &mut tx,
             "database",
             "database/files/expired.webp",
-            "image/webp",
-            7,
-            &"a".repeat(64),
+            "temporary_file",
+            "temp:1",
+            Some(Utc::now() - Duration::minutes(5)),
             &serde_json::Value::Object(Default::default()),
         )
-        .await
-        .expect("object should be registered");
-    let mut tx = pool.begin().await.expect("transaction should begin");
-    FileStorageRepository::insert_reference_in_tx(
-        &mut tx,
-        "database",
-        "database/files/expired.webp",
-        "temporary_file",
-        "temp:1",
-        Some(Utc::now() - Duration::minutes(5)),
-        &serde_json::Value::Object(Default::default()),
-    )
-    .await
-    .expect("expired reference should insert");
-    tx.commit().await.expect("transaction should commit");
+        .await,
+        "expired reference should insert",
+    );
+    ok(tx.commit().await, "transaction should commit");
 
     let service = maintenance_with_storage(pool.clone(), storage.clone());
-    let released = service
-        .run_cleanup_expired_file_references()
-        .await
-        .expect("expired reference cleanup should succeed");
+    let released = ok(
+        service.run_cleanup_expired_file_references().await,
+        "expired reference cleanup should succeed",
+    );
 
     assert_eq!(released, 1);
     assert_eq!(
-        storage.deleted_object_keys.lock().unwrap().clone(),
+        ok(
+            storage.deleted_object_keys.lock(),
+            "deleted object key recorder lock should be acquired"
+        )
+        .clone(),
         vec!["database/files/expired.webp".to_string()]
     );
     assert_eq!(
-        storage.deleted_origins.lock().unwrap().clone(),
+        ok(
+            storage.deleted_origins.lock(),
+            "deleted origin recorder lock should be acquired"
+        )
+        .clone(),
         vec!["reference_expired".to_string()]
     );
 }
@@ -298,10 +340,10 @@ async fn create_test_user(pool: &sqlx::PgPool) -> User {
         banned_by: None,
         banned_reason: None,
     };
-    UserRepository::new(pool.clone())
-        .create(&user)
-        .await
-        .expect("user should be created")
+    ok(
+        UserRepository::new(pool.clone()).create(&user).await,
+        "user should be created",
+    )
 }
 
 fn create_test_room(created_by: UserId) -> Room {

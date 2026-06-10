@@ -203,6 +203,8 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
     #[test]
     fn test_provider_type_as_str() {
         assert_eq!(ProviderType::Bilibili.as_str(), "bilibili");
@@ -211,21 +213,13 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_type_from_str() {
-        assert_eq!(
-            ProviderType::from_str("bilibili").unwrap(),
-            ProviderType::Bilibili
-        );
-        assert_eq!(
-            ProviderType::from_str("Bilibili").unwrap(),
-            ProviderType::Bilibili
-        );
-        assert_eq!(
-            ProviderType::from_str("alist").unwrap(),
-            ProviderType::Alist
-        );
-        assert_eq!(ProviderType::from_str("emby").unwrap(), ProviderType::Emby);
+    fn test_provider_type_from_str() -> TestResult {
+        assert_eq!(ProviderType::from_str("bilibili")?, ProviderType::Bilibili);
+        assert_eq!(ProviderType::from_str("Bilibili")?, ProviderType::Bilibili);
+        assert_eq!(ProviderType::from_str("alist")?, ProviderType::Alist);
+        assert_eq!(ProviderType::from_str("emby")?, ProviderType::Emby);
         assert!(ProviderType::from_str("unknown").is_err());
+        Ok(())
     }
 
     #[test]
@@ -295,16 +289,17 @@ mod tests {
     }
 
     #[test]
-    fn test_credential_data_serialization() {
+    fn test_credential_data_serialization() -> TestResult {
         let mut cookies = HashMap::new();
         cookies.insert("SESSDATA".to_string(), "test_value".to_string());
 
         let cred = CredentialData::bilibili(cookies);
-        let json = serde_json::to_string(&cred).unwrap();
+        let json = serde_json::to_string(&cred)?;
         assert!(json.contains(r#""type":"bilibili"#));
         assert!(json.contains("SESSDATA"));
 
-        let deserialized: CredentialData = serde_json::from_str(&json).unwrap();
+        let deserialized: CredentialData = serde_json::from_str(&json)?;
         assert!(matches!(deserialized, CredentialData::Bilibili { .. }));
+        Ok(())
     }
 }

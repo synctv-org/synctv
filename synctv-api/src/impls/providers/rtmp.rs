@@ -13,29 +13,29 @@ const PUBLISH_KEY_SERVICE_UNAVAILABLE_MESSAGE: &str =
 
 fn parse_room_id(
     room_id: &str,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     crate::impls::parse_room_id_param(room_id, "room_id", public_id_codec)
 }
 
 #[must_use]
-pub fn build_publish_rtmp_url(config: &synctv_core::Config, room_id: &str) -> String {
+pub(crate) fn build_publish_rtmp_url(config: &synctv_core::Config, room_id: &str) -> String {
     let rtmp_host = config.public_rtmp_host();
     let rtmp_port = config.livestream.rtmp_port;
     format!("rtmp://{rtmp_host}:{rtmp_port}/{room_id}")
 }
 
-pub fn live_streaming_unavailable_error() -> ApiError {
+pub(crate) fn live_streaming_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable(LIVESTREAM_UNAVAILABLE_MESSAGE.to_string())
 }
 
-pub fn publish_key_service_unavailable_error() -> ApiError {
+pub(crate) fn publish_key_service_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable(PUBLISH_KEY_SERVICE_UNAVAILABLE_MESSAGE.to_string())
 }
 
 fn build_create_publish_key_request(
     req: CreatePublishKeyRequest,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<(String, MediaId), ApiError> {
     crate::impls::validate_proto_request(&req)?;
     Ok((
@@ -46,7 +46,7 @@ fn build_create_publish_key_request(
 
 fn build_get_stream_info_request(
     req: GetStreamInfoRequest,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<(String, MediaId), ApiError> {
     crate::impls::validate_proto_request(&req)?;
     Ok((
@@ -56,7 +56,7 @@ fn build_get_stream_info_request(
 }
 
 fn encode_public_stream_ids(
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
     room_id: synctv_core::models::RoomId,
     media_id: MediaId,
 ) -> Result<(String, String), ApiError> {
@@ -81,17 +81,13 @@ fn ensure_room_accepts_live_publish(room: &Room) -> Result<(), ApiError> {
     Ok(())
 }
 
-pub async fn fetch_stream_info(
-    infrastructure: &synctv_livestream::api::LiveStreamingInfrastructure,
-    public_id_codec: &crate::PublicIdCodec,
+pub(crate) async fn fetch_stream_info(
+    infrastructure: &synctv_livestream::LiveStreamingInfrastructure,
+    public_id_codec: &synctv_core::PublicIdCodec,
     room_id: &str,
     media_id: &str,
 ) -> Result<GetStreamInfoResponse, ApiError> {
-    match infrastructure
-        .registry()
-        .get_publisher(room_id, media_id)
-        .await
-    {
+    match infrastructure.find_publisher(room_id, media_id).await {
         Ok(Some(pub_info)) => {
             let user_id = public_id_codec
                 .encode_user_id(pub_info.user_id.parse::<UserId>().map_err(|error| {
@@ -251,7 +247,7 @@ impl ClientApiImpl {
     #[must_use]
     pub const fn live_infrastructure(
         &self,
-    ) -> Option<&Arc<synctv_livestream::api::LiveStreamingInfrastructure>> {
+    ) -> Option<&Arc<synctv_livestream::LiveStreamingInfrastructure>> {
         self.live_streaming_infrastructure.as_ref()
     }
 }
@@ -335,44 +331,66 @@ impl AdminApiImpl {
 mod tests {
     use super::*;
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn api_ok<T>(result: Result<T, ApiError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("{error:?}")))
+    }
+
+    fn api_err<T>(result: Result<T, ApiError>) -> TestResult<ApiError> {
+        match result {
+            Ok(_) => Err(test_error("expected API error result")),
+            Err(error) => Ok(error),
+        }
+    }
+
+    fn codec_ok<T>(result: Result<T, String>) -> TestResult<T> {
+        result.map_err(test_error)
+    }
+
     #[test]
-    fn build_get_stream_info_request_rejects_invalid_media_id() {
-        let public_id_codec = crate::PublicIdCodec::plain();
-        let err = build_get_stream_info_request(
+    fn build_get_stream_info_request_rejects_invalid_media_id() -> TestResult {
+        let public_id_codec = synctv_core::PublicIdCodec::plain();
+        let err = api_err(build_get_stream_info_request(
             GetStreamInfoRequest {
-                room_id: public_id_codec
-                    .encode_room_id(synctv_core::models::RoomId::expect_positive(123))
-                    .unwrap(),
+                room_id: codec_ok(
+                    public_id_codec
+                        .encode_room_id(synctv_core::models::RoomId::expect_positive(123)),
+                )?,
                 media_id: "bad-media".to_string(),
             },
             &public_id_codec,
-        )
-        .expect_err("get stream info should enforce the RTMP provider proto contract");
+        ))?;
 
         assert!(
             matches!(&err, ApiError::InvalidInput(message) if message.contains("media_id")),
             "unexpected error: {err:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn build_get_stream_info_request_accepts_valid_request() {
-        let public_id_codec = crate::PublicIdCodec::plain();
-        let expected_room_id = public_id_codec
-            .encode_room_id(synctv_core::models::RoomId::expect_positive(123))
-            .unwrap();
+    fn build_get_stream_info_request_accepts_valid_request() -> TestResult {
+        let public_id_codec = synctv_core::PublicIdCodec::plain();
+        let expected_room_id = codec_ok(
+            public_id_codec.encode_room_id(synctv_core::models::RoomId::expect_positive(123)),
+        )?;
         let expected_media_id = synctv_core::models::MediaId::expect_positive(123);
-        let (room_id, media_id) = build_get_stream_info_request(
+        let (room_id, media_id) = api_ok(build_get_stream_info_request(
             GetStreamInfoRequest {
                 room_id: expected_room_id.clone(),
-                media_id: public_id_codec.encode_media_id(expected_media_id).unwrap(),
+                media_id: codec_ok(public_id_codec.encode_media_id(expected_media_id))?,
             },
             &public_id_codec,
-        )
-        .expect("valid stream info request should be accepted");
+        ))?;
 
         assert_eq!(room_id, expected_room_id);
         assert_eq!(media_id, expected_media_id);
+        Ok(())
     }
 
     #[test]

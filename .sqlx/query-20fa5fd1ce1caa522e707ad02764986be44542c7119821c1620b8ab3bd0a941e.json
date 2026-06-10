@@ -6,37 +6,79 @@
       {
         "ordinal": 0,
         "name": "room_id!: RoomId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "room_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "user_id!: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "user_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "last_read_message_id",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "last_read_message_id"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "last_read_message_created_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "last_read_message_created_at"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "last_read_event_id",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "last_read_event_id"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "last_read_event_sequence",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "last_read_event_sequence"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "updated_at!",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_read_states",
+            "name": "updated_at"
+          }
+        }
       }
     ],
     "parameters": {

@@ -7,8 +7,8 @@ use crate::{
     models::{
         id::UserId,
         notification::{
-            CreateNotificationRequest, MarkAllAsReadRequest, MarkAsReadRequest, Notification,
-            NotificationListQuery, NotificationType,
+            default_notification_data, CreateNotificationRequest, MarkAllAsReadRequest,
+            MarkAsReadRequest, Notification, NotificationListQuery, NotificationType,
         },
     },
     repository::NotificationRepository,
@@ -126,6 +126,21 @@ impl UserNotificationService {
         self.create(req).await
     }
 
+    fn system_announcement_request(
+        user_id: UserId,
+        title: String,
+        content: String,
+        data: Option<serde_json::Value>,
+    ) -> CreateNotificationRequest {
+        CreateNotificationRequest {
+            user_id,
+            notification_type: NotificationType::SystemAnnouncement,
+            title,
+            content,
+            data: data.unwrap_or_else(default_notification_data),
+        }
+    }
+
     /// Create a system announcement
     pub async fn create_system_announcement(
         &self,
@@ -134,13 +149,7 @@ impl UserNotificationService {
         content: String,
         data: Option<serde_json::Value>,
     ) -> Result<Notification> {
-        let req = CreateNotificationRequest {
-            user_id,
-            notification_type: NotificationType::SystemAnnouncement,
-            title,
-            content,
-            data: data.unwrap_or_default(),
-        };
+        let req = Self::system_announcement_request(user_id, title, content, data);
 
         self.create(req).await
     }
@@ -233,10 +242,20 @@ impl UserNotificationService {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn test_notification_type_from_str() {
         assert_eq!(
-            "room_invitation".parse::<NotificationType>().unwrap(),
+            ok(
+                "room_invitation".parse::<NotificationType>(),
+                "notification type should parse",
+            ),
             NotificationType::RoomInvitation
         );
     }
@@ -269,5 +288,18 @@ mod tests {
             UserNotificationService::publish_realtime_event_to(&event_tx, event),
             1
         );
+    }
+
+    #[test]
+    fn system_announcement_request_defaults_missing_data_to_empty_object() {
+        let req = UserNotificationService::system_announcement_request(
+            UserId::expect_positive(1),
+            "title".to_string(),
+            "content".to_string(),
+            None,
+        );
+
+        assert_eq!(req.notification_type, NotificationType::SystemAnnouncement);
+        assert_eq!(req.data, serde_json::json!({}));
     }
 }

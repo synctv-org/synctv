@@ -53,6 +53,16 @@ enum FrameType {
     Metadata,
 }
 
+impl FrameType {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Video => "video",
+            Self::Audio => "audio",
+            Self::Metadata => "metadata",
+        }
+    }
+}
+
 fn usize_to_u32_saturating(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
@@ -74,12 +84,14 @@ fn try_send_prior(
     }
 }
 
+fn remote_addr_to_string(remote_addr: Option<SocketAddr>) -> String {
+    remote_addr.map_or_else(String::new, |addr| addr.to_string())
+}
+
 pub struct Common {
-    /* Used to mark the subscriber's the data producer
-    in channels and delete it from map when unsubscribe
-    is called. */
+    // Stable subscriber/publisher id used by StreamHub maps and statistics.
     session_id: Uuid,
-    //only Server Subscriber or Client Publisher needs to send out trunck data.
+    // Present for sessions that write RTMP chunks to a peer.
     packetizer: Option<ChunkPacketizer>,
 
     // Set when the session actually subscribes (receiver) or publishes (sender).
@@ -89,12 +101,12 @@ pub struct Common {
     event_producer: StreamHubEventSender,
     pub session_type: SessionType,
 
-    /*save the client side socket connected to the SeverSession */
+    // Remote peer address used in subscriber/publisher statistics.
     remote_addr: Option<SocketAddr>,
-    /*request URL from client*/
+    // Original request URL from the RTMP peer.
     pub request_url: String,
     pub stream_handler: Arc<RtmpStreamHandler>,
-    /* now used for subscriber session */
+    // StreamHub statistics sink returned by subscribe/publish.
     statistic_data_sender: Option<StatisticDataSender>,
 
     // Separate per-track rate limiting for DoS prevention (sliding window).
@@ -165,6 +177,19 @@ impl Common {
         timestamps.push_back(now);
         true
     }
+
+    fn accept_frame_with_rate_limit(&mut self, frame_type: FrameType) -> bool {
+        if self.check_rate_limit(frame_type) {
+            return true;
+        }
+
+        tracing::warn!(
+            frame_type = frame_type.name(),
+            "frame dropped because the per-track rate limit was exceeded"
+        );
+        false
+    }
+
     pub async fn send_channel_data(&mut self) -> Result<(), SessionError> {
         let mut receiver = self.data_receiver.take().ok_or(SessionError {
             value: SessionErrorValue::NoneFrameDataReceiver,
@@ -280,18 +305,13 @@ impl Common {
         Ok(())
     }
 
-    pub fn on_video_data(
+    pub(crate) fn on_video_data(
         &mut self,
         data: &mut BytesMut,
         timestamp: &u32,
     ) -> Result<(), SessionError> {
-        // Apply per-track frame rate limiting to prevent DoS attacks
-        if !self.check_rate_limit(FrameType::Video) {
-            tracing::warn!(
-                "Video frame dropped: rate limit exceeded ({} FPS max)",
-                MAX_VIDEO_FRAMES_PER_SECOND
-            );
-            return Ok(()); // Drop frame silently
+        if !self.accept_frame_with_rate_limit(FrameType::Video) {
+            return Ok(());
         }
 
         // Save to GOP cache first (borrows data), then zero-copy into channel.
@@ -324,18 +344,13 @@ impl Common {
         Ok(())
     }
 
-    pub fn on_audio_data(
+    pub(crate) fn on_audio_data(
         &mut self,
         data: &mut BytesMut,
         timestamp: &u32,
     ) -> Result<(), SessionError> {
-        // Apply per-track frame rate limiting to prevent DoS attacks
-        if !self.check_rate_limit(FrameType::Audio) {
-            tracing::warn!(
-                "Audio frame dropped: rate limit exceeded ({} FPS max)",
-                MAX_AUDIO_FRAMES_PER_SECOND
-            );
-            return Ok(()); // Drop frame silently
+        if !self.accept_frame_with_rate_limit(FrameType::Audio) {
+            return Ok(());
         }
 
         // Save to GOP cache first (borrows data), then zero-copy into channel.
@@ -368,17 +383,13 @@ impl Common {
         Ok(())
     }
 
-    pub fn on_meta_data(
+    pub(crate) fn on_meta_data(
         &mut self,
         data: &mut BytesMut,
         timestamp: &u32,
     ) -> Result<(), SessionError> {
-        if !self.check_rate_limit(FrameType::Metadata) {
-            tracing::warn!(
-                "Metadata frame dropped: rate limit exceeded ({} /s max)",
-                MAX_METADATA_FRAMES_PER_SECOND
-            );
-            return Ok(()); // Drop frame silently (same as video/audio)
+        if !self.accept_frame_with_rate_limit(FrameType::Metadata) {
+            return Ok(());
         }
 
         // Save to cache first (borrows data), then zero-copy into channel.
@@ -411,9 +422,7 @@ impl Common {
     }
 
     fn get_subscriber_info(&self) -> SubscriberInfo {
-        let remote_addr = self
-            .remote_addr
-            .map_or_else(|| String::from("unknown"), |addr| addr.to_string());
+        let remote_addr = remote_addr_to_string(self.remote_addr);
 
         let sub_type = match self.session_type {
             SessionType::Client => SubscribeType::RtmpRelay,
@@ -422,8 +431,6 @@ impl Common {
 
         SubscriberInfo {
             id: self.session_id,
-            /*rtmp local client subscribe from local rtmp session
-            and publish(relay) the rtmp steam to remote RTMP server*/
             sub_type,
             sub_data_type: crate::streamhub::define::SubDataType::Frame,
             notify_info: NotifyInfo {
@@ -434,9 +441,7 @@ impl Common {
     }
 
     fn get_publisher_info(&self) -> PublisherInfo {
-        let remote_addr = self
-            .remote_addr
-            .map_or_else(|| String::from("unknown"), |addr| addr.to_string());
+        let remote_addr = remote_addr_to_string(self.remote_addr);
 
         let pub_type = match self.session_type {
             SessionType::Client => PublishType::RtmpRelay,
@@ -454,7 +459,6 @@ impl Common {
         }
     }
 
-    /* Subscribe from stream hub and push stream data to players or other rtmp nodes */
     pub async fn subscribe_from_stream_hub(
         &mut self,
         app_name: String,
@@ -497,9 +501,7 @@ impl Common {
         if let Some(sender) = &statistic_data_sender {
             let statistic_subscriber = StatisticData::Subscriber {
                 id: self.session_id,
-                remote_addr: self
-                    .remote_addr
-                    .map_or_else(|| "unknown".to_string(), |a| a.to_string()),
+                remote_addr: remote_addr_to_string(self.remote_addr),
                 start_time: chrono::Local::now(),
                 sub_type: SubscribeType::RtmpPull,
             };
@@ -539,7 +541,6 @@ impl Common {
         Ok(())
     }
 
-    /* Publish RTMP streams to stream hub, the streams can be pushed from remote or pulled from remote to local */
     pub async fn publish_to_stream_hub(
         &mut self,
         app_name: String,
@@ -561,11 +562,11 @@ impl Common {
             result_sender: event_result_sender,
         };
 
-        if self.event_producer.try_send(publish_event).is_err() {
-            return Err(SessionError {
-                value: SessionErrorValue::StreamHubEventSendErr,
-            });
-        }
+        send_event_with_backpressure_timeout(&self.event_producer, publish_event)
+            .await
+            .map_err(|err| SessionError {
+                value: SessionErrorValue::ChannelError(err),
+            })?;
 
         let result = event_result_receiver.await??;
         self.data_sender = Some(result.0.ok_or(SessionError {
@@ -614,7 +615,7 @@ impl Common {
             }
             Ok(()) => {
                 tracing::info!(
-                    "unpublish_to_stream_hub successfully.app_name: {app_name}, stream_name: {stream_name}"
+                    "unpublish_to_stream_hub succeeded, app_name: {app_name}, stream_name: {stream_name}"
                 );
             }
         }
@@ -641,11 +642,7 @@ impl Common {
 /// - Metadata reads without blocking frame processing
 #[derive(Default)]
 pub struct RtmpStreamHandler {
-    /*cache is used to save RTMP sequence/gops/meta data
-    which needs to be send to client(player) */
-    /*The cache will be used in different threads(save
-    cache in one thread and send cache data to different clients
-    in other threads) */
+    /// Cached sequence headers, metadata, and GOPs shared by publisher and subscribers.
     pub cache: RwLock<Option<Arc<SplitCache>>>,
 }
 
@@ -659,13 +656,17 @@ impl RtmpStreamHandler {
 
     /// Set the cache (called once when publishing starts).
     /// Uses a blocking write lock but is only called once per stream.
-    pub fn set_cache(&self, cache: SplitCache) {
+    pub(crate) fn set_cache(&self, cache: SplitCache) {
         *self.cache.write() = Some(Arc::new(cache));
     }
 
     /// Save video data to cache.
     /// Acquires write locks only on video_seq and gops, not on audio_seq or metadata.
-    pub fn save_video_data(&self, chunk_body: &BytesMut, timestamp: u32) -> Result<(), CacheError> {
+    pub(crate) fn save_video_data(
+        &self,
+        chunk_body: &BytesMut,
+        timestamp: u32,
+    ) -> Result<(), CacheError> {
         if let Some(cache) = &*self.cache.read() {
             cache.save_video_data(chunk_body, timestamp)?;
         }
@@ -674,7 +675,11 @@ impl RtmpStreamHandler {
 
     /// Save audio data to cache.
     /// Acquires write locks only on audio_seq and gops, not on video_seq or metadata.
-    pub fn save_audio_data(&self, chunk_body: &BytesMut, timestamp: u32) -> Result<(), CacheError> {
+    pub(crate) fn save_audio_data(
+        &self,
+        chunk_body: &BytesMut,
+        timestamp: u32,
+    ) -> Result<(), CacheError> {
         if let Some(cache) = &*self.cache.read() {
             cache.save_audio_data(chunk_body, timestamp)?;
         }
@@ -683,7 +688,7 @@ impl RtmpStreamHandler {
 
     /// Save metadata to cache.
     /// Acquires write lock only on metadata, not on video_seq, audio_seq, or gops.
-    pub fn save_metadata(&self, chunk_body: &BytesMut, timestamp: u32) {
+    pub(crate) fn save_metadata(&self, chunk_body: &BytesMut, timestamp: u32) {
         if let Some(cache) = &*self.cache.read() {
             cache.save_metadata(chunk_body, timestamp);
         }
@@ -763,8 +768,75 @@ impl fmt::Debug for Common {
 mod tests {
     use super::*;
     use crate::rtmp::session::define::SessionType;
+    use crate::streamhub::define::FrameDataSender;
     use std::sync::Arc;
     use tokio::sync::mpsc;
+
+    fn send_publish_result(event: StreamHubEvent) {
+        let StreamHubEvent::Publish { result_sender, .. } = event else {
+            panic!("expected publish event");
+        };
+
+        let (frame_sender, _frame_receiver) = mpsc::channel(8);
+        let (stat_sender, _stat_receiver) = mpsc::unbounded_channel();
+        result_sender
+            .send(Ok((
+                Some(FrameDataSender::bounded(frame_sender)),
+                None,
+                Some(stat_sender),
+            )))
+            .expect("publish result should be delivered");
+    }
+
+    fn assert_rtmp_identifier(
+        identifier: StreamIdentifier,
+        expected_app: &str,
+        expected_stream: &str,
+    ) {
+        let StreamIdentifier::Rtmp {
+            app_name,
+            stream_name,
+        } = identifier;
+        assert_eq!(app_name, expected_app);
+        assert_eq!(stream_name, expected_stream);
+    }
+
+    fn assert_unsubscribe_event(event: StreamHubEvent, expected_app: &str, expected_stream: &str) {
+        let StreamHubEvent::UnSubscribe { identifier, .. } = event else {
+            panic!("expected unsubscribe event, got {event:?}");
+        };
+        assert_rtmp_identifier(identifier, expected_app, expected_stream);
+    }
+
+    fn assert_unpublish_event(event: StreamHubEvent, expected_app: &str, expected_stream: &str) {
+        let StreamHubEvent::UnPublish { identifier } = event else {
+            panic!("expected unpublish event, got {event:?}");
+        };
+        assert_rtmp_identifier(identifier, expected_app, expected_stream);
+    }
+
+    #[test]
+    fn remote_addr_to_string_uses_empty_string_for_absent_address() {
+        assert_eq!(remote_addr_to_string(None), "");
+    }
+
+    #[test]
+    fn remote_addr_to_string_formats_present_address() {
+        let addr = "127.0.0.1:1935".parse().expect("valid socket address");
+        assert_eq!(remote_addr_to_string(Some(addr)), "127.0.0.1:1935");
+    }
+
+    #[test]
+    fn rate_limit_rejects_frames_after_track_budget_is_exhausted() {
+        let (event_sender, _event_rx) = mpsc::channel(1);
+        let mut common = Common::new(None, event_sender, SessionType::Server, None);
+
+        for _ in 0..MAX_METADATA_FRAMES_PER_SECOND {
+            assert!(common.accept_frame_with_rate_limit(FrameType::Metadata));
+        }
+
+        assert!(!common.accept_frame_with_rate_limit(FrameType::Metadata));
+    }
 
     #[tokio::test]
     async fn test_unsubscribe_retries_when_event_channel_is_temporarily_full() {
@@ -812,19 +884,7 @@ mod tests {
             "unsubscribe should succeed after capacity frees"
         );
 
-        match unsubscribe {
-            StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {
-                StreamIdentifier::Rtmp {
-                    app_name,
-                    stream_name,
-                } => {
-                    assert_eq!(app_name, "live");
-                    assert_eq!(stream_name, "room/stream");
-                }
-                other => panic!("unexpected stream identifier: {other:?}"),
-            },
-            other => panic!("expected unsubscribe event, got {other:?}"),
-        }
+        assert_unsubscribe_event(unsubscribe, "live", "room/stream");
     }
 
     #[tokio::test]
@@ -840,6 +900,68 @@ mod tests {
             .unsubscribe_from_stream_hub("live".to_string(), "room/stream".to_string())
             .await
             .expect_err("closed event channel must surface unsubscribe failure");
+
+        assert!(matches!(err.value, SessionErrorValue::ChannelError(_)));
+    }
+
+    #[tokio::test]
+    async fn test_publish_retries_when_event_channel_is_temporarily_full() {
+        let (event_sender, mut event_rx) = mpsc::channel(1);
+        let mut common = Common::new(None, event_sender.clone(), SessionType::Server, None);
+        common.request_url = "/live/room/stream".to_string();
+
+        event_sender
+            .try_send(StreamHubEvent::UnPublish {
+                identifier: StreamIdentifier::Rtmp {
+                    app_name: "live".to_string(),
+                    stream_name: "blocker".to_string(),
+                },
+            })
+            .expect("prefill event channel");
+
+        let publish_task = tokio::spawn(async move {
+            common
+                .publish_to_stream_hub("live".to_string(), "room/stream".to_string(), 1, None)
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !publish_task.is_finished(),
+            "publish should wait for temporary backpressure"
+        );
+
+        let first = event_rx
+            .recv()
+            .await
+            .expect("blocked event should be readable");
+        assert!(matches!(first, StreamHubEvent::UnPublish { .. }));
+
+        let publish = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("publish should eventually be delivered")
+            .expect("event channel should stay open");
+        send_publish_result(publish);
+
+        let result = publish_task.await.expect("publish task should join");
+        assert!(
+            result.is_ok(),
+            "publish should succeed after capacity frees"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_publish_returns_error_when_event_channel_is_closed() {
+        let (event_sender, event_rx) = mpsc::channel(1);
+        drop(event_rx);
+
+        let mut common = Common::new(None, event_sender, SessionType::Server, None);
+        common.request_url = "/live/room/stream".to_string();
+
+        let err = common
+            .publish_to_stream_hub("live".to_string(), "room/stream".to_string(), 1, None)
+            .await
+            .expect_err("closed event channel must surface publish failure");
 
         assert!(matches!(err.value, SessionErrorValue::ChannelError(_)));
     }
@@ -889,19 +1011,7 @@ mod tests {
             "unpublish should succeed after capacity frees"
         );
 
-        match unpublish {
-            StreamHubEvent::UnPublish { identifier } => match identifier {
-                StreamIdentifier::Rtmp {
-                    app_name,
-                    stream_name,
-                } => {
-                    assert_eq!(app_name, "live");
-                    assert_eq!(stream_name, "room/stream");
-                }
-                other => panic!("unexpected stream identifier: {other:?}"),
-            },
-            other => panic!("expected unpublish event, got {other:?}"),
-        }
+        assert_unpublish_event(unpublish, "live", "room/stream");
     }
 
     #[tokio::test]
@@ -951,18 +1061,6 @@ mod tests {
             .recv()
             .await
             .expect("timed-out subscribe should emit rollback unsubscribe");
-        match rollback {
-            StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {
-                StreamIdentifier::Rtmp {
-                    app_name,
-                    stream_name,
-                } => {
-                    assert_eq!(app_name, "live");
-                    assert_eq!(stream_name, "room/stream");
-                }
-                other => panic!("unexpected stream identifier: {other:?}"),
-            },
-            other => panic!("expected rollback unsubscribe event, got {other:?}"),
-        }
+        assert_unsubscribe_event(rollback, "live", "room/stream");
     }
 }

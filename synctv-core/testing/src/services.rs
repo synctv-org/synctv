@@ -12,18 +12,13 @@ use synctv_core::cache::{KeyBuilder, UsernameCache};
 use synctv_core::models::{ProviderInstance, ProviderInstanceListQuery, User};
 use synctv_core::repository::SettingsRepository;
 use synctv_core::service::{
-    auth::{
-        brute_force::InMemoryAttemptTracker, jwt::JwtService,
-        token_blacklist::InMemoryTokenBlacklistStore,
-    },
+    auth::{jwt::JwtService, token_blacklist::InMemoryTokenBlacklistStore},
     rate_limit::RequestRateLimiterService,
-    remote_provider_manager::ProviderInstanceStore,
     room::RoomServiceOptions,
     user::{UserServiceDependencies, UserServiceRuntimeOptions},
-    AccountRegistrationOutcome, BruteForceProtection, BruteForceProtectionService, RateLimiter,
-    RemoteProviderManager, RoomService, SettingsRegistry, SettingsService,
-    StreamingPublishKeyService, TokenBlacklistStore, UserService, WebSocketTicketService,
-    WsTicketService,
+    AccountRegistrationOutcome, BruteForceProtection, BruteForceProtectionService,
+    ProviderInstanceStore, RateLimiter, RemoteProviderManager, RoomService, SettingsRegistry,
+    SettingsService, TokenBlacklistStore, UserService,
 };
 
 #[derive(Clone)]
@@ -93,7 +88,7 @@ impl ProviderInstanceStore for EmptyProviderInstanceStore {
 }
 
 #[must_use]
-pub fn create_empty_provider_instance_store() -> Arc<dyn ProviderInstanceStore> {
+fn create_empty_provider_instance_store() -> Arc<dyn ProviderInstanceStore> {
     Arc::new(EmptyProviderInstanceStore)
 }
 
@@ -259,76 +254,13 @@ pub fn create_test_jwt_service() -> JwtService {
         .expect("Failed to create JWT service")
 }
 
-/// Creates a JWT service with custom secret for testing
-///
-/// # Arguments
-///
-/// * `secret` - JWT secret key (must be at least 32 bytes)
-///
-/// # Example
-///
-/// ```text
-/// let jwt_service = create_test_jwt_service_with_secret("my-custom-secret-32-chars-long!!");
-/// ```
-#[must_use]
-pub fn create_test_jwt_service_with_secret(secret: &str) -> JwtService {
-    JwtService::new(secret).expect("Failed to create JWT service")
-}
-
-/// Creates a brute force protection service for testing
-///
-/// Uses in-memory tracking with test-specific thresholds.
-///
-/// # Example
-///
-/// ```text
-/// use synctv_core_testing::create_test_brute_force_protection;
-///
-/// let protection = create_test_brute_force_protection();
-/// protection.record_failure("user", ip).await?;
-/// ```
-#[must_use]
-pub fn create_test_brute_force_protection() -> BruteForceProtection {
-    BruteForceProtection::in_memory("test".to_string())
-}
-
 /// Creates a brute-force protection service trait object for testing.
 #[must_use]
 pub fn create_test_brute_force_protection_service() -> Arc<dyn BruteForceProtectionService> {
-    Arc::new(create_test_brute_force_protection())
+    Arc::new(BruteForceProtection::in_memory("test".to_string()))
 }
 
-/// Creates an attempt tracker for testing
-///
-/// Uses test-specific capacity and TTL values.
-///
-/// # Example
-///
-/// ```text
-/// use synctv_core_testing::create_test_attempt_tracker;
-///
-/// let tracker = create_test_attempt_tracker();
-/// tracker.record_failure("user", now, ttl).await?;
-/// ```
-#[must_use]
-pub fn create_test_attempt_tracker() -> InMemoryAttemptTracker {
-    InMemoryAttemptTracker::new(1000, 900)
-}
-
-/// Creates a token blacklist store for testing
-///
-/// Uses in-memory storage with test-specific capacity and TTL values.
-///
-/// # Example
-///
-/// ```text
-/// use synctv_core_testing::create_test_token_blacklist_store;
-///
-/// let store = create_test_token_blacklist_store();
-/// store.blacklist("jti:123", ttl).await?;
-/// ```
-#[must_use]
-pub fn create_test_token_blacklist_store() -> InMemoryTokenBlacklistStore {
+fn create_test_token_blacklist_store() -> InMemoryTokenBlacklistStore {
     InMemoryTokenBlacklistStore::new(
         constants::token_blacklist::CAPACITY as u64,
         constants::token_blacklist::SHORT_TTL_SECS,
@@ -353,7 +285,7 @@ pub fn create_test_user_service(pool: sqlx::PgPool) -> UserService {
             username_cache: UsernameCache::local_only("test:username:".to_string(), 128, 60),
             token_blacklist: create_test_token_blacklist_store_service(),
             key_builder: KeyBuilder::new("test"),
-            brute_force: Arc::new(create_test_brute_force_protection_service()),
+            brute_force: create_test_brute_force_protection_service(),
             password_complexity: synctv_core::config::PasswordComplexityConfig::default(),
         },
         UserServiceRuntimeOptions {
@@ -388,23 +320,4 @@ pub fn create_test_room_service(pool: sqlx::PgPool) -> RoomService {
 #[must_use]
 pub fn create_test_request_rate_limiter(prefix: &str) -> Arc<dyn RequestRateLimiterService> {
     Arc::new(RateLimiter::local_only(prefix.to_string()))
-}
-
-/// Creates a WebSocket ticket service trait object for testing.
-#[must_use]
-pub fn create_test_websocket_ticket_service(
-    ticket_ttl_secs: Option<u64>,
-) -> Arc<dyn WebSocketTicketService> {
-    Arc::new(WsTicketService::local_only(ticket_ttl_secs))
-}
-
-/// Creates a publish-key service trait object for testing.
-#[must_use]
-pub fn create_test_streaming_publish_key_service(
-    token_ttl_hours: i64,
-) -> Arc<dyn StreamingPublishKeyService> {
-    Arc::new(
-        synctv_core::service::PublishKeyService::new(create_test_jwt_service(), token_ttl_hours)
-            .expect("publish key service should build"),
-    )
 }

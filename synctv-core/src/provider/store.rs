@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{RedisConnectionRuntime, SharedStateProfile};
+use crate::RedisConnectionRuntime;
 
 async fn run_provider_redis_op<T, F>(
     timeout: Duration,
@@ -506,25 +506,6 @@ impl ProviderStoreResolver for ProviderStoreRegistry {
     }
 }
 
-pub fn build_provider_store_resolver_from_runtime(
-    redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
-    key_prefix: impl Into<String>,
-) -> Arc<dyn ProviderStoreResolver> {
-    Arc::new(ProviderStoreRegistry::from_runtime(
-        redis_runtime,
-        key_prefix,
-    ))
-}
-
-pub fn build_provider_store_resolver_from_profile(
-    profile: &SharedStateProfile,
-) -> Arc<dyn ProviderStoreResolver> {
-    build_provider_store_resolver_from_runtime(
-        profile.shared_runtime(),
-        profile.key_prefix().to_string(),
-    )
-}
-
 // VersionedPlayback
 
 /// Cached playback result with a version tag and expiry timestamp.
@@ -547,6 +528,7 @@ impl VersionedPlayback {
 mod tests {
     use super::*;
     use crate::test_helpers::failing_redis_runtime;
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
     use redis::AsyncCommands;
     use std::sync::Arc;
 
@@ -575,7 +557,7 @@ mod tests {
             std::future::pending::<redis::RedisResult<()>>(),
         )
         .await
-        .expect_err("pending Redis operation must be bounded by operation timeout");
+        .failed("pending Redis operation must be bounded by operation timeout");
 
         assert!(
             matches!(&err, StoreError::Backend(message) if message.contains("test pending op") && message.contains("timed out")),
@@ -593,12 +575,23 @@ mod tests {
     #[tokio::test]
     async fn test_in_memory_store_get_set() {
         let store = InMemoryProviderStore::new(100);
-        assert!(store.get_raw("key1").await.unwrap().is_none());
+        assert!(store
+            .get_raw("key1")
+            .await
+            .checked("operation should succeed")
+            .is_none());
         store
             .set_raw("key1", b"hello", Duration::from_mins(1))
             .await
-            .unwrap();
-        assert_eq!(store.get_raw("key1").await.unwrap().unwrap(), b"hello");
+            .checked("operation should succeed");
+        assert_eq!(
+            store
+                .get_raw("key1")
+                .await
+                .checked("operation should succeed")
+                .checked("operation should succeed"),
+            b"hello"
+        );
     }
 
     #[tokio::test]
@@ -607,15 +600,25 @@ mod tests {
         store
             .set_raw("key1", b"hello", Duration::from_mins(1))
             .await
-            .unwrap();
-        store.delete("key1").await.unwrap();
-        assert!(store.get_raw("key1").await.unwrap().is_none());
+            .checked("operation should succeed");
+        store
+            .delete("key1")
+            .await
+            .checked("operation should succeed");
+        assert!(store
+            .get_raw("key1")
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[tokio::test]
     async fn test_in_memory_store_lock() {
         let store = InMemoryProviderStore::new(100);
-        let guard = store.lock("mylock", Duration::from_secs(10)).await.unwrap();
+        let guard = store
+            .lock("mylock", Duration::from_secs(10))
+            .await
+            .checked("operation should succeed");
         // Second lock should fail
         assert!(store.lock("mylock", Duration::from_secs(10)).await.is_err());
         drop(guard);
@@ -626,11 +629,17 @@ mod tests {
     #[tokio::test]
     async fn test_in_memory_stale_guard_does_not_delete_new_owner_lock() {
         let store = InMemoryProviderStore::new(100);
-        let first_guard = store.lock("mylock", Duration::from_secs(1)).await.unwrap();
+        let first_guard = store
+            .lock("mylock", Duration::from_secs(1))
+            .await
+            .checked("operation should succeed");
 
         tokio::time::sleep(Duration::from_millis(1200)).await;
 
-        let second_guard = store.lock("mylock", Duration::from_secs(10)).await.unwrap();
+        let second_guard = store
+            .lock("mylock", Duration::from_secs(10))
+            .await
+            .checked("operation should succeed");
         drop(first_guard);
 
         assert!(
@@ -649,8 +658,15 @@ mod tests {
         store
             .set_raw("key1", b"value", Duration::from_mins(1))
             .await
-            .unwrap();
-        assert_eq!(store.get_raw("key1").await.unwrap().unwrap(), b"value");
+            .checked("operation should succeed");
+        assert_eq!(
+            store
+                .get_raw("key1")
+                .await
+                .checked("operation should succeed")
+                .checked("operation should succeed"),
+            b"value"
+        );
     }
 
     #[tokio::test]
@@ -663,9 +679,12 @@ mod tests {
         store
             .set("typed_key", &data, Duration::from_mins(1))
             .await
-            .unwrap();
-        let retrieved: Option<TestData> = store.get("typed_key").await.unwrap();
-        assert_eq!(retrieved.unwrap(), data);
+            .checked("operation should succeed");
+        let retrieved: Option<TestData> = store
+            .get("typed_key")
+            .await
+            .checked("operation should succeed");
+        assert_eq!(retrieved.checked("operation should succeed"), data);
     }
 
     #[tokio::test]
@@ -697,15 +716,26 @@ mod tests {
         store1
             .set_raw("key1", b"value1", Duration::from_mins(1))
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         // Second load returns the same (cached) store instance
         let store2 = registry.load("bilibili");
-        assert_eq!(store2.get_raw("key1").await.unwrap().unwrap(), b"value1");
+        assert_eq!(
+            store2
+                .get_raw("key1")
+                .await
+                .checked("operation should succeed")
+                .checked("operation should succeed"),
+            b"value1"
+        );
 
         // Different provider name creates a separate store
         let store3 = registry.load("emby");
-        assert!(store3.get_raw("key1").await.unwrap().is_none());
+        assert!(store3
+            .get_raw("key1")
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[test]
@@ -723,11 +753,15 @@ mod tests {
         store
             .set_raw("cache-key", b"value", Duration::from_mins(1))
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         let second = registry.load("bilibili");
         assert_eq!(
-            second.get_raw("cache-key").await.unwrap().unwrap(),
+            second
+                .get_raw("cache-key")
+                .await
+                .checked("operation should succeed")
+                .checked("operation should succeed"),
             b"value",
             "same prefixed store should be reused"
         );
@@ -735,24 +769,23 @@ mod tests {
         let other_registry = ProviderStoreRegistry::local_only("tenant-b:");
         let other = other_registry.load("bilibili");
         assert!(
-            other.get_raw("cache-key").await.unwrap().is_none(),
+            other
+                .get_raw("cache-key")
+                .await
+                .checked("operation should succeed")
+                .is_none(),
             "different configured prefixes must isolate provider cache state"
         );
-    }
-
-    #[test]
-    fn test_build_provider_store_resolver_from_runtime_uses_configured_prefix() {
-        let resolver = build_provider_store_resolver_from_runtime(None, "tenant-local:");
-        assert_eq!(resolver.key_prefix(), "tenant-local:");
-        let _store = resolver.load("demo");
     }
 
     #[test]
     fn test_store_lock_guard_drop_without_runtime_does_not_panic() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let guard = StoreLockGuard::new(|| {
-                let _ = tokio::runtime::Handle::try_current()
-                    .expect("release callback should not assume runtime in this test");
+                assert!(
+                    tokio::runtime::Handle::try_current().is_ok(),
+                    "release callback should not assume runtime in this test"
+                );
             });
             drop(guard);
         }));
@@ -784,15 +817,21 @@ mod tests {
         let store = RedisProviderStore::from_runtime(crate::shared_runtime(shared_conn.clone()));
         let lock_key = "provider-lock-race";
 
-        let first_guard = store.lock(lock_key, Duration::from_secs(1)).await.unwrap();
+        let first_guard = store
+            .lock(lock_key, Duration::from_secs(1))
+            .await
+            .checked("operation should succeed");
         tokio::time::sleep(Duration::from_millis(1200)).await;
 
-        let second_guard = store.lock(lock_key, Duration::from_secs(30)).await.unwrap();
+        let second_guard = store
+            .lock(lock_key, Duration::from_secs(30))
+            .await
+            .checked("operation should succeed");
 
         drop(first_guard);
 
         let mut conn = shared_conn.read().await.clone();
-        let value: Option<String> = conn.get(lock_key).await.unwrap();
+        let value: Option<String> = conn.get(lock_key).await.checked("operation should succeed");
         assert!(
             value.is_some(),
             "dropping stale guard must not delete lock held by newer owner"

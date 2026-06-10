@@ -7,6 +7,13 @@ use synctv_cluster::NodeRegistry;
 use synctv_core::config::ClusterChannelConfig;
 use tokio::sync::{broadcast, mpsc};
 
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+type TestResult = std::result::Result<(), BoxError>;
+
+fn missing(message: &'static str) -> BoxError {
+    anyhow::anyhow!(message).into()
+}
+
 struct NoopRealtimeEventHandler;
 
 #[async_trait]
@@ -138,14 +145,6 @@ impl RoomMessageRuntime for FixedMetricsRoomRuntime {
         Ok(0)
     }
 
-    fn spawn_shared_subscription_cleanup_task(
-        &self,
-        _cleanup_interval: Duration,
-        _cancel_token: CancellationToken,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        Some(tokio::spawn(async {}))
-    }
-
     async fn shutdown(&self) {}
 
     fn background_shutdown_requested(&self) -> bool {
@@ -171,7 +170,7 @@ fn test_realtime_config_default_tracks_core_cluster_capacity() {
 }
 
 #[tokio::test]
-async fn test_realtime_manager_single_node() {
+async fn test_realtime_manager_single_node() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -187,15 +186,12 @@ async fn test_realtime_manager_single_node() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config).await.unwrap();
+    let manager = RealtimeManager::new(config).await?;
 
     // Subscribe a client
     let room_id = RoomId::expect_positive(10_000_092);
     let user_id = UserId::expect_positive(10_000_010);
-    let (mut rx, conn_id) = manager
-        .subscribe(room_id, user_id)
-        .await
-        .expect("subscribe should succeed");
+    let (mut rx, conn_id) = manager.subscribe(room_id, user_id).await?;
 
     // Broadcast event
     let event = RealtimeEvent::ChatMessage {
@@ -226,7 +222,10 @@ async fn test_realtime_manager_single_node() {
     ));
 
     // Verify message received
-    let received = rx.recv().await.unwrap();
+    let received = rx
+        .recv()
+        .await
+        .ok_or_else(|| missing("local subscriber channel closed"))?;
     assert_eq!(received.event_type(), "chat_message");
 
     // Cleanup
@@ -234,6 +233,53 @@ async fn test_realtime_manager_single_node() {
 
     let metrics = manager.metrics();
     assert_eq!(metrics.total_connections, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_local_critical_broadcast_does_not_panic_on_current_thread_runtime() -> TestResult {
+    let message_hub = Arc::new(RoomMessageHub::new());
+    let config = RealtimeConfig {
+        distributed_transport_factory: None,
+        message_runtime: message_hub.clone(),
+        distributed_enabled: false,
+        node_id: "test_local_critical_current_thread".to_string(),
+        dedup_window: Duration::from_secs(1),
+        critical_channel_capacity: 4,
+        publish_channel_capacity: 4,
+        key_prefix: "synctv:".to_string(),
+        catchup_window_secs: 300,
+        stream_max_length: 10_000,
+        event_handler: None,
+        parent_cancel_token: None,
+    };
+    let manager = RealtimeManager::new(config).await?;
+    let room_id = RoomId::expect_positive(10_000_212);
+    let user_id = UserId::expect_positive(10_000_213);
+    let mut rx = message_hub
+        .subscribe(
+            room_id,
+            user_id,
+            ConnectionId::new("local-critical-current-thread"),
+        )
+        .await?;
+
+    let event = RealtimeEvent::UserLeft {
+        event_id: synctv_common::snanoid!(16),
+        room_id,
+        user_id,
+        username: "leaver".to_string(),
+        timestamp: Utc::now(),
+    };
+
+    assert_eq!(manager.broadcast_local(event), 1);
+    assert!(matches!(
+        rx.recv().await,
+        Some(RealtimeEvent::UserLeft { .. })
+    ));
+
+    manager.shutdown().await;
+    Ok(())
 }
 
 #[test]
@@ -262,7 +308,7 @@ fn test_realtime_config_debug_reports_transport_configuration_without_backend_na
 }
 
 #[tokio::test]
-async fn test_realtime_manager_respects_injected_message_runtime() {
+async fn test_realtime_manager_respects_injected_message_runtime() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(FixedMetricsRoomRuntime::new(7, 11)),
@@ -278,17 +324,16 @@ async fn test_realtime_manager_respects_injected_message_runtime() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config)
-        .await
-        .expect("realtime manager should preserve injected message runtime");
+    let manager = RealtimeManager::new(config).await?;
     let metrics = manager.metrics();
 
     assert_eq!(metrics.total_rooms, 7);
     assert_eq!(metrics.total_connections, 11);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_admin_event_channel_subscription() {
+async fn test_admin_event_channel_subscription() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -304,7 +349,7 @@ async fn test_admin_event_channel_subscription() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config).await.unwrap();
+    let manager = RealtimeManager::new(config).await?;
 
     // Subscribe to admin events
     let mut admin_rx = manager.subscribe_admin_events();
@@ -318,32 +363,38 @@ async fn test_admin_event_channel_subscription() {
         timestamp: Utc::now(),
     };
 
-    let _ = manager.admin_event_tx().send(event.clone());
+    manager
+        .admin_event_tx()
+        .send(event.clone())
+        .map_err(|_| missing("admin event channel should accept KickPublisher event"))?;
 
     // Verify event received
-    let received = admin_rx.recv().await.unwrap();
+    let received = admin_rx
+        .recv()
+        .await
+        .map_err(|_| missing("admin event channel closed"))?;
     assert_eq!(received.event_type(), "kick_publisher");
 
-    if let RealtimeEvent::KickPublisher {
+    let RealtimeEvent::KickPublisher {
         room_id,
         media_id,
         reason,
         ..
     } = &received
-    {
-        assert_eq!(*room_id, RoomId::expect_positive(10_000_092));
-        assert_eq!(
-            *media_id,
-            synctv_core::models::MediaId::expect_positive(10_000_093)
-        );
-        assert_eq!(reason, "user_banned");
-    } else {
-        panic!("Expected KickPublisher event");
-    }
+    else {
+        return Err(missing("expected KickPublisher event"));
+    };
+    assert_eq!(*room_id, RoomId::expect_positive(10_000_092));
+    assert_eq!(
+        *media_id,
+        synctv_core::models::MediaId::expect_positive(10_000_093)
+    );
+    assert_eq!(reason, "user_banned");
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_admin_event_channel_multiple_subscribers() {
+async fn test_admin_event_channel_multiple_subscribers() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -359,7 +410,7 @@ async fn test_admin_event_channel_multiple_subscribers() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config).await.unwrap();
+    let manager = RealtimeManager::new(config).await?;
 
     // Subscribe two receivers
     let mut rx1 = manager.subscribe_admin_events();
@@ -373,17 +424,28 @@ async fn test_admin_event_channel_multiple_subscribers() {
         reason: "room_deleted".to_string(),
         timestamp: Utc::now(),
     };
-    let _ = manager.admin_event_tx().send(event);
+    manager
+        .admin_event_tx()
+        .send(event)
+        .map_err(|_| missing("admin event channel should accept broadcast event"))?;
 
     // Both receivers should get the event
-    let r1 = rx1.recv().await.unwrap();
-    let r2 = rx2.recv().await.unwrap();
+    let r1 = rx1
+        .recv()
+        .await
+        .map_err(|_| missing("first admin event channel closed"))?;
+    let r2 = rx2
+        .recv()
+        .await
+        .map_err(|_| missing("second admin event channel closed"))?;
     assert_eq!(r1.event_type(), "kick_publisher");
     assert_eq!(r2.event_type(), "kick_publisher");
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_outbox_side_effect_broadcast_does_not_poison_dedup_or_replay_subscribers() {
+async fn test_outbox_side_effect_broadcast_does_not_poison_dedup_or_replay_subscribers(
+) -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -399,7 +461,7 @@ async fn test_outbox_side_effect_broadcast_does_not_poison_dedup_or_replay_subsc
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config).await.unwrap();
+    let manager = RealtimeManager::new(config).await?;
     let mut lifecycle_rx = manager.subscribe_lifecycle_events();
     let mut admin_rx = manager.subscribe_admin_events();
     let event = RealtimeEvent::KickPublisher {
@@ -418,7 +480,7 @@ async fn test_outbox_side_effect_broadcast_does_not_poison_dedup_or_replay_subsc
     let first = lifecycle_rx
         .recv()
         .await
-        .expect("side-effect broadcast should reach lifecycle listeners");
+        .map_err(|_| missing("side-effect broadcast should reach lifecycle listeners"))?;
     assert_eq!(first.event_id(), "outbox-side-effect-retryable");
     assert!(
         tokio::time::timeout(Duration::from_millis(20), admin_rx.recv())
@@ -436,7 +498,7 @@ async fn test_outbox_side_effect_broadcast_does_not_poison_dedup_or_replay_subsc
     let second = second_rx
         .recv()
         .await
-        .expect("regular local broadcast should not be deduped by prior outbox side effect");
+        .map_err(|_| missing("regular local broadcast should reach admin subscribers"))?;
     assert_eq!(second.event_id(), "outbox-side-effect-retryable");
 
     let mut third_rx = manager.subscribe_admin_events();
@@ -447,10 +509,11 @@ async fn test_outbox_side_effect_broadcast_does_not_poison_dedup_or_replay_subsc
             .is_err(),
         "regular local broadcast should still populate dedup for later duplicates"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_outbox_side_effect_ignores_non_lifecycle_events() {
+async fn test_outbox_side_effect_ignores_non_lifecycle_events() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -466,7 +529,7 @@ async fn test_outbox_side_effect_ignores_non_lifecycle_events() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config).await.unwrap();
+    let manager = RealtimeManager::new(config).await?;
     let mut lifecycle_rx = manager.subscribe_lifecycle_events();
     let mut admin_rx = manager.subscribe_admin_events();
     let event = RealtimeEvent::RoomSettingsChanged {
@@ -474,7 +537,7 @@ async fn test_outbox_side_effect_ignores_non_lifecycle_events() {
         room_id: RoomId::expect_positive(10_000_092),
         user_id: UserId::expect_positive(10_000_093),
         username: "tester".to_string(),
-        settings_json: serde_json::to_vec(&serde_json::json!({"allow_guest_join": true})).unwrap(),
+        settings_json: serde_json::to_vec(&serde_json::json!({"allow_guest_join": true}))?,
         version: 1,
         timestamp: Utc::now(),
     };
@@ -492,6 +555,7 @@ async fn test_outbox_side_effect_ignores_non_lifecycle_events() {
             .is_err(),
         "non-lifecycle outbox events should not replay to admin subscribers"
     );
+    Ok(())
 }
 
 /// Test that RealtimeManager handles the non-distributed mode degradation gracefully
@@ -502,7 +566,7 @@ async fn test_outbox_side_effect_ignores_non_lifecycle_events() {
 /// 2. The service logs an appropriate warning about local-only invalidation
 /// 3. The RealtimeManager operates normally in single-node mode
 #[tokio::test]
-async fn test_non_cluster_mode_with_event_handler() {
+async fn test_non_cluster_mode_with_event_handler() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -519,17 +583,12 @@ async fn test_non_cluster_mode_with_event_handler() {
     };
 
     // Create RealtimeManager with a remote-event handler but no Redis.
-    let manager = RealtimeManager::new(config)
-        .await
-        .expect("RealtimeManager::new should succeed with an event handler but no Redis");
+    let manager = RealtimeManager::new(config).await?;
 
     // Verify the manager operates normally in single-node mode
     let room_id = RoomId::expect_positive(10_000_092);
     let user_id = UserId::expect_positive(10_000_010);
-    let (mut rx, conn_id) = manager
-        .subscribe(room_id, user_id)
-        .await
-        .expect("subscribe should succeed");
+    let (mut rx, conn_id) = manager.subscribe(room_id, user_id).await?;
 
     // Broadcast should work locally
     let event = RealtimeEvent::ChatMessage {
@@ -554,7 +613,10 @@ async fn test_non_cluster_mode_with_event_handler() {
     );
 
     // Verify message received locally
-    let received = rx.recv().await.expect("Should receive local message");
+    let received = rx
+        .recv()
+        .await
+        .ok_or_else(|| missing("local message channel closed"))?;
     assert_eq!(received.event_type(), "chat_message");
 
     // Cleanup
@@ -566,12 +628,13 @@ async fn test_non_cluster_mode_with_event_handler() {
         !metrics.distributed_enabled,
         "Metrics should show distributed transport is not enabled"
     );
+    Ok(())
 }
 
 /// Test that RealtimeManager works correctly when both Redis and
 /// CacheInvalidationService are not provided (pure single-node mode).
 #[tokio::test]
-async fn test_non_cluster_mode_without_event_handler() {
+async fn test_non_cluster_mode_without_event_handler() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -588,17 +651,12 @@ async fn test_non_cluster_mode_without_event_handler() {
     };
 
     // Create RealtimeManager without a remote-event handler and without Redis.
-    let manager = RealtimeManager::new(config)
-        .await
-        .expect("RealtimeManager::new should succeed without an event handler and Redis");
+    let manager = RealtimeManager::new(config).await?;
 
     // Verify normal operation
     let room_id = RoomId::expect_positive(10_000_094);
     let user_id = UserId::expect_positive(10_000_095);
-    let (mut rx, conn_id) = manager
-        .subscribe(room_id, user_id)
-        .await
-        .expect("subscribe should succeed");
+    let (mut rx, conn_id) = manager.subscribe(room_id, user_id).await?;
 
     let event = RealtimeEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
@@ -615,14 +673,18 @@ async fn test_non_cluster_mode_without_event_handler() {
     assert_eq!(result.local_sent, 1);
     assert!(!result.redis_sent);
 
-    let received = rx.recv().await.expect("Should receive message");
+    let received = rx
+        .recv()
+        .await
+        .ok_or_else(|| missing("local message channel closed"))?;
     assert_eq!(received.event_type(), "chat_message");
 
     manager.unsubscribe(&conn_id);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_shutdown_times_out_non_cooperative_heartbeat_handle() {
+async fn test_shutdown_times_out_non_cooperative_heartbeat_handle() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -638,10 +700,7 @@ async fn test_shutdown_times_out_non_cooperative_heartbeat_handle() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config)
-        .await
-        .unwrap()
-        .test_with_heartbeat_shutdown_timeout(Duration::from_millis(50));
+    let manager = RealtimeManager::new(config).await?;
 
     let stuck = tokio::spawn(async {
         futures::future::pending::<()>().await;
@@ -656,10 +715,11 @@ async fn test_shutdown_times_out_non_cooperative_heartbeat_handle() {
         elapsed < Duration::from_secs(1),
         "Shutdown should time out stuck heartbeat handle quickly, took {elapsed:?}"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_shutdown_unregisters_node_after_heartbeat_stops() {
+async fn test_shutdown_unregisters_node_after_heartbeat_stops() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -675,20 +735,14 @@ async fn test_shutdown_unregisters_node_after_heartbeat_stops() {
         parent_cancel_token: None,
     };
 
-    let manager = Arc::new(
-        RealtimeManager::new(config)
-            .await
-            .unwrap()
-            .test_with_heartbeat_shutdown_timeout(Duration::from_millis(200)),
-    );
-    let registry = Arc::new(
-        NodeRegistry::new_local_only("shutdown-race-node".to_string(), 30, "test:").unwrap(),
-    );
+    let manager = Arc::new(RealtimeManager::new(config).await?);
+    let registry = Arc::new(NodeRegistry::new_local_only(
+        "shutdown-race-node".to_string(),
+        30,
+        "test:",
+    )?);
 
-    registry
-        .register("localhost:8080".to_string())
-        .await
-        .unwrap();
+    registry.register("localhost:8080".to_string()).await?;
     manager.test_set_heartbeat_registry(registry.clone()).await;
 
     let cancel = manager.cancel_token();
@@ -700,14 +754,18 @@ async fn test_shutdown_unregisters_node_after_heartbeat_stops() {
             cancel.cancelled().await;
             cancel_seen_tx
                 .send(())
-                .expect("test should observe heartbeat cancellation");
-            allow_finish_rx
-                .await
-                .expect("test should allow heartbeat task to finish");
-            registry_for_task
+                .expect("shutdown race test should receive cancellation signal");
+            assert!(
+                allow_finish_rx.await.is_ok(),
+                "heartbeat finish signal should stay open"
+            );
+            let register_result = registry_for_task
                 .register("localhost:8080".to_string())
-                .await
-                .unwrap();
+                .await;
+            assert!(
+                register_result.is_ok(),
+                "late heartbeat registration should succeed: {register_result:?}"
+            );
         }))
         .await;
 
@@ -719,7 +777,7 @@ async fn test_shutdown_unregisters_node_after_heartbeat_stops() {
     // Shutdown should be waiting for the heartbeat handle to complete.
     cancel_seen_rx
         .await
-        .expect("shutdown should cancel heartbeat task promptly");
+        .map_err(|_| missing("heartbeat cancellation signal closed"))?;
     // Node is still registered because shutdown awaits heartbeat before unregistering.
     assert!(
         registry
@@ -732,9 +790,9 @@ async fn test_shutdown_unregisters_node_after_heartbeat_stops() {
     // Allow the heartbeat task to finish (and re-register the node).
     allow_finish_tx
         .send(())
-        .expect("heartbeat task should still be waiting to finish");
+        .map_err(|()| missing("heartbeat task finished before release"))?;
     // Now shutdown can proceed: heartbeat stopped → unregister.
-    shutdown_handle.await.unwrap();
+    shutdown_handle.await?;
 
     // The late re-registration must be cleaned up by unregister.
     assert!(
@@ -744,10 +802,11 @@ async fn test_shutdown_unregisters_node_after_heartbeat_stops() {
             .is_none(),
         "shutdown must unregister the node even after a late heartbeat re-registration"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_shutdown_waits_for_tracked_critical_retry_tasks() {
+async fn test_shutdown_waits_for_tracked_critical_retry_tasks() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -763,7 +822,7 @@ async fn test_shutdown_waits_for_tracked_critical_retry_tasks() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config).await.unwrap();
+    let manager = RealtimeManager::new(config).await?;
 
     let retry_gate = Arc::new(tokio::sync::Notify::new());
     let retry_gate_clone = Arc::clone(&retry_gate);
@@ -792,16 +851,18 @@ async fn test_shutdown_waits_for_tracked_critical_retry_tasks() {
     );
 
     retry_gate.notify_waiters();
-    shutdown_handle.await.unwrap();
+    shutdown_handle.await?;
 
     assert!(
         finished.load(Ordering::SeqCst),
         "tracked critical retry task should finish before shutdown returns"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_shutdown_stops_accepting_new_critical_redis_work_before_waiting_for_retries() {
+async fn test_shutdown_stops_accepting_new_critical_redis_work_before_waiting_for_retries(
+) -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -817,16 +878,14 @@ async fn test_shutdown_stops_accepting_new_critical_redis_work_before_waiting_fo
         parent_cancel_token: None,
     };
 
-    let mut manager = RealtimeManager::new(config).await.unwrap();
+    let mut manager = RealtimeManager::new(config).await?;
     let (critical_tx, mut critical_rx) = mpsc::channel::<PublishRequest>(1);
-    critical_tx
-        .try_send(PublishRequest::new(RealtimeEvent::KickUser {
-            event_id: synctv_common::snanoid!(16),
-            user_id: UserId::expect_positive(10_000_096),
-            reason: "fill queue".to_string(),
-            timestamp: Utc::now(),
-        }))
-        .expect("pre-fill critical queue");
+    critical_tx.try_send(PublishRequest::new(RealtimeEvent::KickUser {
+        event_id: synctv_common::snanoid!(16),
+        user_id: UserId::expect_positive(10_000_096),
+        reason: "fill queue".to_string(),
+        timestamp: Utc::now(),
+    }))?;
     manager.redis_critical_tx = Some(critical_tx);
 
     manager.shutdown_started.store(true, Ordering::Release);
@@ -856,7 +915,7 @@ async fn test_shutdown_stops_accepting_new_critical_redis_work_before_waiting_fo
     let queued = critical_rx
         .recv()
         .await
-        .expect("pre-filled request should still be present");
+        .ok_or_else(|| missing("pre-filled request should still be present"))?;
     assert_eq!(queued.event.event_type(), "kick_user");
     assert!(
         tokio::time::timeout(Duration::from_millis(100), critical_rx.recv())
@@ -864,10 +923,11 @@ async fn test_shutdown_stops_accepting_new_critical_redis_work_before_waiting_fo
             .is_err(),
         "no new critical publish should be enqueued after drain closes"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_shutdown_also_cancels_room_message_hub_background_tasks() {
+async fn test_shutdown_also_cancels_room_message_hub_background_tasks() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -883,7 +943,7 @@ async fn test_shutdown_also_cancels_room_message_hub_background_tasks() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config).await.unwrap();
+    let manager = RealtimeManager::new(config).await?;
 
     assert!(
         !manager.message_hub().background_shutdown_requested(),
@@ -896,10 +956,11 @@ async fn test_shutdown_also_cancels_room_message_hub_background_tasks() {
         manager.message_hub().background_shutdown_requested(),
         "cluster shutdown must also cancel room hub background tasks"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_shutdown_still_allows_critical_events_to_reach_redis_channels() {
+async fn test_shutdown_still_allows_critical_events_to_reach_redis_channels() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -915,7 +976,7 @@ async fn test_shutdown_still_allows_critical_events_to_reach_redis_channels() {
         parent_cancel_token: None,
     };
 
-    let mut manager = RealtimeManager::new(config).await.unwrap();
+    let mut manager = RealtimeManager::new(config).await?;
     let (critical_tx, mut critical_rx) = mpsc::channel::<PublishRequest>(4);
     manager.redis_critical_tx = Some(critical_tx);
     manager.shutdown_started.store(true, Ordering::Release);
@@ -936,13 +997,14 @@ async fn test_shutdown_still_allows_critical_events_to_reach_redis_channels() {
 
     let published = tokio::time::timeout(Duration::from_millis(100), critical_rx.recv())
         .await
-        .expect("critical event should reach Redis queue during shutdown")
-        .expect("critical channel should stay open");
+        .map_err(|_| missing("critical event should reach Redis queue during shutdown"))?
+        .ok_or_else(|| missing("critical channel should stay open"))?;
     assert_eq!(published.event.event_type(), event.event_type());
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_shutdown_still_blocks_non_critical_events_from_redis_channels() {
+async fn test_shutdown_still_blocks_non_critical_events_from_redis_channels() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -958,13 +1020,10 @@ async fn test_shutdown_still_blocks_non_critical_events_from_redis_channels() {
         parent_cancel_token: None,
     };
 
-    let mut manager = RealtimeManager::new(config).await.unwrap();
+    let mut manager = RealtimeManager::new(config).await?;
     let room_id = RoomId::expect_positive(10_000_099);
     let user_id = UserId::expect_positive(10_000_098);
-    let (mut room_rx, _conn_id) = manager
-        .subscribe(room_id, user_id)
-        .await
-        .expect("subscribe should succeed");
+    let (mut room_rx, _conn_id) = manager.subscribe(room_id, user_id).await?;
     let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(4);
     manager.redis_publish_tx = Some(publish_tx);
     manager.shutdown_started.store(true, Ordering::Release);
@@ -1002,6 +1061,7 @@ async fn test_shutdown_still_blocks_non_critical_events_from_redis_channels() {
             .is_err(),
         "non-critical event must not reach local subscribers during shutdown"
     );
+    Ok(())
 }
 
 /// Test that RealtimeManager tracks epoch mismatch state and quarantine.
@@ -1012,7 +1072,7 @@ async fn test_shutdown_still_blocks_non_critical_events_from_redis_channels() {
 /// 3. Quarantine state is reflected in metrics
 /// 4. Leader elector can be set for resigning leadership
 #[tokio::test]
-async fn test_epoch_mismatch_enforcement() {
+async fn test_epoch_mismatch_enforcement() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -1035,8 +1095,7 @@ async fn test_epoch_mismatch_enforcement() {
             leader_runtime: Some(Arc::new(synctv_core::service::AlwaysLeader)),
         },
     )
-    .await
-    .expect("RealtimeManager::new should succeed");
+    .await?;
 
     // Verify initial state: not quarantined
     assert!(
@@ -1052,10 +1111,7 @@ async fn test_epoch_mismatch_enforcement() {
 
     let room_id = RoomId::expect_positive(10_000_100);
     let user_id = UserId::expect_positive(10_000_101);
-    let (_rx, conn_id) = manager
-        .subscribe(room_id, user_id)
-        .await
-        .expect("subscribe should succeed");
+    let (_rx, conn_id) = manager.subscribe(room_id, user_id).await?;
 
     // Broadcast should work in non-quarantined state
     let event = RealtimeEvent::ChatMessage {
@@ -1076,10 +1132,11 @@ async fn test_epoch_mismatch_enforcement() {
     );
 
     manager.unsubscribe(&conn_id);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_quarantined_broadcast_is_rejected_without_poisoning_dedup() {
+async fn test_quarantined_broadcast_is_rejected_without_poisoning_dedup() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -1095,16 +1152,13 @@ async fn test_quarantined_broadcast_is_rejected_without_poisoning_dedup() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config)
-        .await
-        .expect("RealtimeManager::new should succeed");
+    let manager = RealtimeManager::new(config).await?;
     let room_id = RoomId::expect_positive(10_000_102);
     let user_id = UserId::expect_positive(10_000_103);
     let mut rx = manager
         .message_hub()
         .subscribe(room_id, user_id, ConnectionId::new("conn-quarantine"))
-        .await
-        .expect("subscribe should succeed");
+        .await?;
 
     manager.is_quarantined.store(true, Ordering::Release);
 
@@ -1144,10 +1198,11 @@ async fn test_quarantined_broadcast_is_rejected_without_poisoning_dedup() {
         ),
         "event should be delivered after quarantine is lifted"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_cluster_metrics_reports_dependency_injection_state() {
+async fn test_cluster_metrics_reports_dependency_injection_state() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -1163,9 +1218,7 @@ async fn test_cluster_metrics_reports_dependency_injection_state() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config.clone())
-        .await
-        .expect("RealtimeManager::new should succeed");
+    let manager = RealtimeManager::new(config.clone()).await?;
 
     let metrics = manager.metrics();
     assert!(
@@ -1186,8 +1239,7 @@ async fn test_cluster_metrics_reports_dependency_injection_state() {
             leader_runtime: Some(Arc::new(synctv_core::service::AlwaysLeader)),
         },
     )
-    .await
-    .expect("RealtimeManager::new_with_runtime should succeed");
+    .await?;
     let metrics = manager.metrics();
     assert!(
         metrics.has_connection_manager,
@@ -1197,10 +1249,11 @@ async fn test_cluster_metrics_reports_dependency_injection_state() {
         metrics.has_leader_elector,
         "metrics should reflect injected leader elector"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_critical_events_do_not_fall_back_to_droppable_normal_channel() {
+async fn test_critical_events_do_not_fall_back_to_droppable_normal_channel() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -1216,23 +1269,19 @@ async fn test_critical_events_do_not_fall_back_to_droppable_normal_channel() {
         parent_cancel_token: None,
     };
 
-    let mut manager = RealtimeManager::new(config)
-        .await
-        .expect("RealtimeManager::new should succeed");
+    let mut manager = RealtimeManager::new(config).await?;
 
     let (normal_tx, mut normal_rx) = mpsc::channel::<PublishRequest>(1);
-    normal_tx
-        .try_send(PublishRequest::new(RealtimeEvent::ChatMessage {
-            event_id: synctv_common::snanoid!(16),
-            room_id: RoomId::expect_positive(10_000_104),
-            user_id: UserId::expect_positive(10_000_105),
-            username: "buffer".to_string(),
-            message: "fill channel".to_string(),
-            timestamp: Utc::now(),
-            display_position: None,
-            display_color: None,
-        }))
-        .expect("pre-fill normal channel");
+    normal_tx.try_send(PublishRequest::new(RealtimeEvent::ChatMessage {
+        event_id: synctv_common::snanoid!(16),
+        room_id: RoomId::expect_positive(10_000_104),
+        user_id: UserId::expect_positive(10_000_105),
+        username: "buffer".to_string(),
+        message: "fill channel".to_string(),
+        timestamp: Utc::now(),
+        display_position: None,
+        display_color: None,
+    }))?;
 
     manager.redis_publish_tx = Some(normal_tx);
     manager.redis_critical_tx = None;
@@ -1254,18 +1303,19 @@ async fn test_critical_events_do_not_fall_back_to_droppable_normal_channel() {
     let buffered = normal_rx
         .recv()
         .await
-        .expect("buffered message should still exist");
+        .ok_or_else(|| missing("buffered message should still exist"))?;
     assert_eq!(buffered.event.event_type(), "chat_message");
 
     let delivered = tokio::time::timeout(Duration::from_millis(100), normal_rx.recv())
         .await
-        .expect("critical event should be queued instead of dropped")
-        .expect("critical event should arrive on fallback channel");
+        .map_err(|_| missing("critical event should be queued"))?
+        .ok_or_else(|| missing("critical event should arrive on fallback channel"))?;
     assert_eq!(delivered.event.event_type(), critical_event.event_type());
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_publish_only_enqueues_redis_without_rebroadcasting_locally() {
+async fn test_publish_only_enqueues_redis_without_rebroadcasting_locally() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -1281,16 +1331,13 @@ async fn test_publish_only_enqueues_redis_without_rebroadcasting_locally() {
         parent_cancel_token: None,
     };
 
-    let mut manager = RealtimeManager::new(config)
-        .await
-        .expect("RealtimeManager::new should succeed");
+    let mut manager = RealtimeManager::new(config).await?;
     let room_id = RoomId::expect_positive(10_000_107);
     let user_id = UserId::expect_positive(10_000_108);
     let mut room_rx = manager
         .message_hub()
         .subscribe(room_id, user_id, ConnectionId::new("publish-only-conn"))
-        .await
-        .expect("subscribe should succeed");
+        .await?;
     let (critical_tx, mut critical_rx) = mpsc::channel::<PublishRequest>(4);
     manager.redis_critical_tx = Some(critical_tx);
 
@@ -1309,8 +1356,8 @@ async fn test_publish_only_enqueues_redis_without_rebroadcasting_locally() {
 
     let published = tokio::time::timeout(Duration::from_millis(100), critical_rx.recv())
         .await
-        .expect("event should reach Redis queue")
-        .expect("critical queue should stay open");
+        .map_err(|_| missing("event should reach Redis queue"))?
+        .ok_or_else(|| missing("critical queue should stay open"))?;
     assert_eq!(published.event.event_type(), event.event_type());
     assert!(
         tokio::time::timeout(Duration::from_millis(100), room_rx.recv())
@@ -1318,10 +1365,11 @@ async fn test_publish_only_enqueues_redis_without_rebroadcasting_locally() {
             .is_err(),
         "publish_only must not duplicate local delivery"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_publish_only_user_notification_does_not_hit_admin_channel() {
+async fn test_publish_only_user_notification_does_not_hit_admin_channel() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -1337,9 +1385,7 @@ async fn test_publish_only_user_notification_does_not_hit_admin_channel() {
         parent_cancel_token: None,
     };
 
-    let mut manager = RealtimeManager::new(config)
-        .await
-        .expect("RealtimeManager::new should succeed");
+    let mut manager = RealtimeManager::new(config).await?;
     let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(4);
     manager.redis_publish_tx = Some(publish_tx);
     let mut admin_rx = manager.subscribe_admin_events();
@@ -1361,8 +1407,8 @@ async fn test_publish_only_user_notification_does_not_hit_admin_channel() {
 
     let published = tokio::time::timeout(Duration::from_millis(100), publish_rx.recv())
         .await
-        .expect("user notification should reach Redis queue")
-        .expect("publish queue should stay open");
+        .map_err(|_| missing("user notification should reach Redis queue"))?
+        .ok_or_else(|| missing("publish queue should stay open"))?;
     assert_eq!(published.event.event_type(), event.event_type());
     assert!(
         tokio::time::timeout(Duration::from_millis(100), admin_rx.recv())
@@ -1370,10 +1416,11 @@ async fn test_publish_only_user_notification_does_not_hit_admin_channel() {
             .is_err(),
         "publish_only must not emit UserNotification to the local admin channel"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_publish_only_confirmed_waits_for_publisher_ack() {
+async fn test_publish_only_confirmed_waits_for_publisher_ack() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -1389,9 +1436,7 @@ async fn test_publish_only_confirmed_waits_for_publisher_ack() {
         parent_cancel_token: None,
     };
 
-    let mut manager = RealtimeManager::new(config)
-        .await
-        .expect("RealtimeManager::new should succeed");
+    let mut manager = RealtimeManager::new(config).await?;
     let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(4);
     manager.redis_publish_tx = Some(publish_tx);
 
@@ -1404,8 +1449,10 @@ async fn test_publish_only_confirmed_waits_for_publisher_ack() {
     tokio::pin!(publish);
 
     let queued = tokio::select! {
-        queued = publish_rx.recv() => queued.expect("event should be queued"),
-        result = &mut publish => panic!("confirmed publish completed before publisher ack: {result:?}"),
+        queued = publish_rx.recv() => queued.ok_or_else(|| missing("event should be queued"))?,
+        result = &mut publish => return Err(anyhow::anyhow!(
+            "confirmed publish completed before publisher ack: {result:?}"
+        ).into()),
     };
     assert_eq!(queued.event.event_type(), "cache_invalidate");
     assert!(
@@ -1413,10 +1460,11 @@ async fn test_publish_only_confirmed_waits_for_publisher_ack() {
         "confirmed publish must not complete just because the queue accepted the event"
     );
     drop(queued);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_publish_only_confirmed_observes_publisher_success_ack() {
+async fn test_publish_only_confirmed_observes_publisher_success_ack() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -1432,9 +1480,7 @@ async fn test_publish_only_confirmed_observes_publisher_success_ack() {
         parent_cancel_token: None,
     };
 
-    let mut manager = RealtimeManager::new(config)
-        .await
-        .expect("RealtimeManager::new should succeed");
+    let mut manager = RealtimeManager::new(config).await?;
     let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(4);
     manager.redis_publish_tx = Some(publish_tx);
 
@@ -1447,17 +1493,18 @@ async fn test_publish_only_confirmed_observes_publisher_success_ack() {
     tokio::pin!(publish);
 
     let mut queued = tokio::select! {
-        queued = publish_rx.recv() => queued.expect("event should be queued"),
-        result = &mut publish => panic!("confirmed publish completed before publisher ack: {result:?}"),
+        queued = publish_rx.recv() => queued.ok_or_else(|| missing("event should be queued"))?,
+        result = &mut publish => return Err(anyhow::anyhow!(
+            "confirmed publish completed before publisher ack: {result:?}"
+        ).into()),
     };
     queued.acknowledge_success();
-    (&mut publish)
-        .await
-        .expect("confirmed publish should observe publisher success ack");
+    (&mut publish).await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_broadcast_cache_invalidate_reaches_admin_channel() {
+async fn test_broadcast_cache_invalidate_reaches_admin_channel() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -1473,9 +1520,7 @@ async fn test_broadcast_cache_invalidate_reaches_admin_channel() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config)
-        .await
-        .expect("RealtimeManager::new should succeed");
+    let manager = RealtimeManager::new(config).await?;
     let mut admin_rx = manager.subscribe_admin_events();
     let event = RealtimeEvent::CacheInvalidate {
         event_id: synctv_common::snanoid!(16),
@@ -1493,13 +1538,14 @@ async fn test_broadcast_cache_invalidate_reaches_admin_channel() {
 
     let received = tokio::time::timeout(Duration::from_millis(100), admin_rx.recv())
         .await
-        .expect("CacheInvalidate should reach admin subscribers")
-        .expect("admin channel should stay open");
+        .map_err(|_| missing("CacheInvalidate should reach admin subscribers"))?
+        .map_err(|_| missing("admin channel should stay open"))?;
     assert_eq!(received.event_id(), event.event_id());
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_drop_aborts_injected_connection_manager_background_tasks() {
+async fn test_drop_aborts_injected_connection_manager_background_tasks() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -1516,8 +1562,6 @@ async fn test_drop_aborts_injected_connection_manager_background_tasks() {
     };
 
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-    connection_manager.start();
-    tokio::time::sleep(Duration::from_millis(10)).await;
     let manager = RealtimeManager::new_with_runtime(
         config,
         RealtimeManagerRuntime {
@@ -1525,8 +1569,7 @@ async fn test_drop_aborts_injected_connection_manager_background_tasks() {
             leader_runtime: None,
         },
     )
-    .await
-    .expect("RealtimeManager::new_with_runtime should succeed");
+    .await?;
 
     drop(manager);
     tokio::task::yield_now().await;
@@ -1535,11 +1578,12 @@ async fn test_drop_aborts_injected_connection_manager_background_tasks() {
         !connection_manager.background_tasks_running(),
         "drop fallback must clear ConnectionManager background tasks when graceful shutdown was never awaited"
     );
+    Ok(())
 }
 
 /// Test that RealtimeManager metrics include quarantine state.
 #[tokio::test]
-async fn test_cluster_metrics_includes_quarantine_state() {
+async fn test_cluster_metrics_includes_quarantine_state() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -1555,9 +1599,7 @@ async fn test_cluster_metrics_includes_quarantine_state() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config)
-        .await
-        .expect("RealtimeManager::new should succeed");
+    let manager = RealtimeManager::new(config).await?;
 
     let metrics = manager.metrics();
 
@@ -1570,11 +1612,12 @@ async fn test_cluster_metrics_includes_quarantine_state() {
         !metrics.is_quarantined,
         "Should not be quarantined initially"
     );
+    Ok(())
 }
 
 /// Test that explicit local-only unit tests still construct a manager without Redis.
 #[tokio::test]
-async fn test_local_only_manager_without_redis_still_builds() {
+async fn test_local_only_manager_without_redis_still_builds() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -1597,12 +1640,13 @@ async fn test_local_only_manager_without_redis_still_builds() {
         "RealtimeManager::new should support explicit local-only tests without Redis"
     );
 
-    let manager = result.expect("local-only RealtimeManager should still initialize");
+    let manager = result?;
     let metrics = manager.metrics();
     assert!(
         !metrics.distributed_enabled,
         "manager should remain local-only without distributed transport"
     );
+    Ok(())
 }
 
 /// Test that distributed mode fails closed when Redis wiring is missing.
@@ -1671,13 +1715,13 @@ async fn test_distributed_enabled_with_partial_redis_wiring_returns_configuratio
     );
 }
 
-/// Test that non-distributed mode (distributed_enabled=false) works without Redis.
+/// Test that non-distributed mode works without Redis.
 #[tokio::test]
 async fn test_non_cluster_mode_works_without_redis() {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
-        distributed_enabled: false, // Cluster mode disabled
+        distributed_enabled: false,
         node_id: "test_non_cluster_no_redis".to_string(),
         dedup_window: Duration::from_secs(1),
         critical_channel_capacity: 1000,
@@ -1704,7 +1748,7 @@ async fn test_non_cluster_mode_works_without_redis() {
 /// cache/shared-state features, but local fan-out must not start Redis
 /// Pub/Sub consumers unless distributed mode is explicitly enabled.
 #[tokio::test]
-async fn test_non_cluster_mode_with_distributed_transport_remains_local_only() {
+async fn test_non_cluster_mode_with_distributed_transport_remains_local_only() -> TestResult {
     let transport_factory = StubTransportFactory::default();
     let config = RealtimeConfig {
         distributed_transport_factory: Some(Arc::new(transport_factory.clone())),
@@ -1721,9 +1765,7 @@ async fn test_non_cluster_mode_with_distributed_transport_remains_local_only() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config)
-        .await
-        .expect("standalone mode must ignore Redis fan-out transport");
+    let manager = RealtimeManager::new(config).await?;
 
     assert!(
         manager.redis_publish_tx().is_none(),
@@ -1738,10 +1780,11 @@ async fn test_non_cluster_mode_with_distributed_transport_remains_local_only() {
         0,
         "standalone mode should ignore injected distributed transport"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_realtime_manager_uses_injected_transport_factory() {
+async fn test_realtime_manager_uses_injected_transport_factory() -> TestResult {
     let factory = Arc::new(StubTransportFactory::default());
     let config = RealtimeConfig {
         distributed_transport_factory: Some(factory.clone()),
@@ -1758,9 +1801,7 @@ async fn test_realtime_manager_uses_injected_transport_factory() {
         parent_cancel_token: None,
     };
 
-    let manager = RealtimeManager::new(config)
-        .await
-        .expect("realtime manager should accept trait-object transport factory");
+    let manager = RealtimeManager::new(config).await?;
 
     assert_eq!(
         factory.start_count.load(Ordering::Relaxed),
@@ -1779,4 +1820,5 @@ async fn test_realtime_manager_uses_injected_transport_factory() {
         1,
         "cluster shutdown must delegate to the injected transport"
     );
+    Ok(())
 }

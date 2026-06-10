@@ -6,7 +6,13 @@
       {
         "ordinal": 0,
         "name": "family_revoked_at!",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "auth_token_blacklist",
+            "name": "family_revoked_at"
+          }
+        }
       }
     ],
     "parameters": {

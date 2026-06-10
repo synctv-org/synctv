@@ -3,7 +3,6 @@
 //! Tests for version-based optimistic locking in `PlaybackService`.
 //! Validates retry behavior, conflict detection, and version management.
 //!
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -12,7 +11,7 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{Media, MediaId, User, UserId, UserRole, UserStatus},
-    repository::{playback::RoomPlaybackStateRepository, MediaRepository, UserRepository},
+    repository::{MediaRepository, RoomPlaybackStateRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
         InMemoryTokenBlacklistStore, RoomService, UserService,
@@ -20,9 +19,10 @@ use synctv_core::{
     Error,
 };
 use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{TestOptionExt, TestResultExt};
 fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = JwtService::new(secret).checked("JWT service should be created");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -41,7 +41,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+    RoomService::new_for_tests(pool, user_service).checked("room service should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -89,7 +89,7 @@ async fn attach_test_media(
     let media = MediaRepository::new(pool.clone())
         .create(&media)
         .await
-        .expect("test media should be created");
+        .checked("test media should be created");
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
     state.target.clear();
@@ -97,7 +97,7 @@ async fn attach_test_media(
     playback_repo
         .update(&state)
         .await
-        .expect("playback state should attach test media")
+        .checked("playback state should attach test media")
 }
 
 // Optimistic Lock Tests: Repository Level
@@ -113,7 +113,10 @@ async fn test_repo_update_with_matching_version_succeeds() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("ol_repo_match")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("ol_repo_match"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -124,17 +127,23 @@ async fn test_repo_update_with_matching_version_succeeds() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
-    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("test operation should succeed");
     let state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // Update with matching version
     let mut updated = state.clone();
     updated.position = 50.0;
-    let result = playback_repo.update(&updated).await.unwrap();
+    let result = playback_repo
+        .update(&updated)
+        .await
+        .checked("test operation should succeed");
 
     assert_eq!(
         result.version,
@@ -158,7 +167,10 @@ async fn test_repo_update_with_stale_version_fails() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("ol_repo_stale")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("ol_repo_stale"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -169,17 +181,23 @@ async fn test_repo_update_with_stale_version_fails() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
-    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("test operation should succeed");
     let state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // First update succeeds, version becomes 1
     let mut first_update = state.clone();
     first_update.position = 100.0;
-    let first_result = playback_repo.update(&first_update).await.unwrap();
+    let first_result = playback_repo
+        .update(&first_update)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(first_result.version, state.version + 1);
 
     // Second update with stale version 0 should fail
@@ -193,7 +211,11 @@ async fn test_repo_update_with_stale_version_fails() {
     );
 
     // Verify data wasn't corrupted
-    let current = playback_repo.get(&room.id).await.unwrap().unwrap();
+    let current = playback_repo
+        .get(&room.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert_eq!(
         current.version, first_result.version,
         "Version should remain at the first update"
@@ -214,7 +236,10 @@ async fn test_repo_version_increments_sequentially() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("ol_repo_seq")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("ol_repo_seq"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -225,20 +250,26 @@ async fn test_repo_version_increments_sequentially() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
-    let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let mut state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(state.version, 0);
 
     // Multiple sequential updates
     for (expected_version, position) in [10.0, 20.0, 30.0, 40.0, 50.0].into_iter().enumerate() {
         state.position = position;
-        state = playback_repo.update(&state).await.unwrap();
+        state = playback_repo
+            .update(&state)
+            .await
+            .checked("test operation should succeed");
         assert_eq!(
             state.version,
-            i64::try_from(expected_version + 1).expect("version index should fit in i64"),
+            i64::try_from(expected_version + 1).checked("version index should fit in i64"),
             "Version should be {}",
             expected_version + 1
         );
@@ -258,7 +289,10 @@ async fn test_concurrent_seek_with_retry() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("ol_seek_retry")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("ol_seek_retry"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -269,10 +303,13 @@ async fn test_concurrent_seek_with_retry() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
-    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("test operation should succeed");
     let _state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // Spawn 5 concurrent seek operations
@@ -308,7 +345,7 @@ async fn test_concurrent_seek_with_retry() {
                     "OptimisticLockConflict should not leak to caller"
                 );
             }
-            Err(e) => panic!("Task panicked: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("seek task should complete: {e:?}")),
         }
     }
 
@@ -316,7 +353,10 @@ async fn test_concurrent_seek_with_retry() {
 
     // Final state should be valid
     let playback_service = room_service.playback_service();
-    let state = playback_service.get_state(&room.id).await.unwrap();
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         state.position >= 0.0,
         "Final position should be non-negative"
@@ -334,7 +374,10 @@ async fn test_retry_handles_version_conflicts() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("ol_retry")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("ol_retry"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -345,30 +388,40 @@ async fn test_retry_handles_version_conflicts() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
-    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("test operation should succeed");
     let _state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // First operation
     let _state1 = playback_service
         .seek(room.id, owner.id, 50.0)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Simulate external update (version conflict)
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
-    let mut state = playback_repo.get(&room.id).await.unwrap().unwrap();
+    let mut state = playback_repo
+        .get(&room.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     state.position = 999.0;
-    playback_repo.update(&state).await.unwrap();
+    playback_repo
+        .update(&state)
+        .await
+        .checked("test operation should succeed");
 
     // Second operation should still succeed via retry
     let state2 = playback_service
         .seek(room.id, owner.id, 100.0)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(
         state2.seek_applied || state2.state.position >= 999.0 - 1.0,
@@ -387,7 +440,10 @@ async fn test_retry_exhaustion_returns_degraded_response() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("ol_exhaust")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("ol_exhaust"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -398,10 +454,13 @@ async fn test_retry_exhaustion_returns_degraded_response() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
-    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("test operation should succeed");
     let _state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // Spawn many concurrent seeks to trigger retry exhaustion
@@ -444,7 +503,7 @@ async fn test_retry_exhaustion_returns_degraded_response() {
                 // Other errors are OK
                 let _ = e;
             }
-            Err(e) => panic!("Task panicked: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("seek task should complete: {e:?}")),
         }
     }
 
@@ -452,7 +511,11 @@ async fn test_retry_exhaustion_returns_degraded_response() {
     assert!(success_count > 0, "At least one seek should succeed");
 
     // We may or may not get degraded responses depending on contention level
-    println!("Success: {success_count}, Degraded: {degraded_count}");
+    tracing::info!(
+        success_count,
+        degraded_count,
+        "retry exhaustion result counts"
+    );
 }
 
 // Optimistic Lock Tests: Concurrent Mixed Operations
@@ -468,7 +531,10 @@ async fn test_concurrent_mixed_operations() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("ol_mixed")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("ol_mixed"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -479,10 +545,13 @@ async fn test_concurrent_mixed_operations() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
-    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("test operation should succeed");
     let _state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // Spawn different types of operations concurrently
@@ -544,7 +613,7 @@ async fn test_concurrent_mixed_operations() {
     let initial_version = RoomPlaybackStateRepository::new(pool.clone())
         .get(&room.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .map_or(0, |state| state.version);
     let mut successful_responses = 0;
     for result in &seek_results {
@@ -560,7 +629,7 @@ async fn test_concurrent_mixed_operations() {
                     "OptimisticLockConflict should not leak"
                 );
             }
-            Err(e) => panic!("Task panicked: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("seek task should complete: {e:?}")),
         }
     }
     for result in &play_results {
@@ -572,7 +641,7 @@ async fn test_concurrent_mixed_operations() {
                     "OptimisticLockConflict should not leak"
                 );
             }
-            Err(e) => panic!("Task panicked: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("play task should complete: {e:?}")),
         }
     }
     for result in &speed_results {
@@ -584,7 +653,7 @@ async fn test_concurrent_mixed_operations() {
                     "OptimisticLockConflict should not leak"
                 );
             }
-            Err(e) => panic!("Task panicked: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("speed task should complete: {e:?}")),
         }
     }
 
@@ -595,7 +664,10 @@ async fn test_concurrent_mixed_operations() {
 
     // Final state should be consistent
     let playback_service = room_service.playback_service();
-    let state = playback_service.get_state(&room.id).await.unwrap();
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(state.speed > 0.0, "Speed should be positive");
     assert!(state.position >= 0.0, "Position should be non-negative");
     assert!(
@@ -625,7 +697,7 @@ async fn test_high_contention_operations_remain_consistent() {
     let owner = user_repo
         .create(&make_user("ol_high_contention"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -636,10 +708,13 @@ async fn test_high_contention_operations_remain_consistent() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
-    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("test operation should succeed");
     let _state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // Spawn 50 concurrent operations
@@ -684,7 +759,7 @@ async fn test_high_contention_operations_remain_consistent() {
         match result {
             Ok(Ok(_)) => success_count += 1,
             Ok(Err(_)) => {}
-            Err(e) => panic!("Task panicked: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("playback task should complete: {e:?}")),
         }
     }
 
@@ -696,7 +771,10 @@ async fn test_high_contention_operations_remain_consistent() {
 
     // Verify final state is valid
     let playback_service = room_service.playback_service();
-    let state = playback_service.get_state(&room.id).await.unwrap();
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         state.speed > 0.0 && state.speed <= 4.0,
         "Speed should be valid"
@@ -716,7 +794,10 @@ async fn test_version_handles_large_values() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("ol_large_ver")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("ol_large_ver"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -727,7 +808,7 @@ async fn test_version_handles_large_values() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
@@ -736,20 +817,30 @@ async fn test_version_handles_large_values() {
         .bind(room.id)
         .execute(&pool)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Get state (should have version 999998)
-    let mut state = playback_repo.get(&room.id).await.unwrap().unwrap();
+    let mut state = playback_repo
+        .get(&room.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert_eq!(state.version, 999_998);
 
     // Update should work and version should increment
     state.position = 100.0;
-    let result = playback_repo.update(&state).await.unwrap();
+    let result = playback_repo
+        .update(&state)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(result.version, 999_999, "Version should be 999999");
 
     // One more update
     let mut state = result;
     state.position = 200.0;
-    let result = playback_repo.update(&state).await.unwrap();
+    let result = playback_repo
+        .update(&state)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(result.version, 1_000_000, "Version should be 1000000");
 }

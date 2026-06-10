@@ -7,7 +7,6 @@
 //! - Cross-role operation restrictions
 //!
 //! Docker tests: cargo test -p synctv-core --test `admin_permission_boundary_tests` -- --ignored --nocapture
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -23,12 +22,12 @@ use synctv_core::{
     },
     Error,
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, ok, some};
 // Test Infrastructure
 
 fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = ok(JwtService::new(secret), "JWT service should be created");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -47,7 +46,10 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+    ok(
+        RoomService::new_for_tests(pool, user_service),
+        "room service should build",
+    )
 }
 
 fn make_user_with_role(username: &str, role: UserRole) -> User {
@@ -68,6 +70,24 @@ fn make_user_with_role(username: &str, role: UserRole) -> User {
         banned_by: None,
         banned_reason: None,
     }
+}
+
+async fn create_user(repo: &UserRepository, username: &str, role: UserRole) -> User {
+    ok(
+        repo.create(&make_user_with_role(username, role)).await,
+        "test user should be created",
+    )
+}
+
+async fn is_banned(repo: &UserRepository, user_id: &UserId) -> bool {
+    ok(repo.is_banned(user_id).await, "ban state should be fetched")
+}
+
+async fn load_user(repo: &UserRepository, user_id: &UserId) -> User {
+    some(
+        ok(repo.get_by_id(user_id).await, "user should be fetched"),
+        "user should exist",
+    )
 }
 
 #[test]
@@ -104,15 +124,9 @@ async fn test_admin_cannot_upgrade_user_to_root() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let admin = user_repo
-        .create(&make_user_with_role("admin_upgrade", UserRole::Admin))
-        .await
-        .unwrap();
+    let admin = create_user(&user_repo, "admin_upgrade", UserRole::Admin).await;
 
-    let user = user_repo
-        .create(&make_user_with_role("user_to_upgrade", UserRole::User))
-        .await
-        .unwrap();
+    let user = create_user(&user_repo, "user_to_upgrade", UserRole::User).await;
 
     // Admin tries to upgrade user to Root - should fail
     // This test documents expected behavior: upgrade requires Root
@@ -122,10 +136,7 @@ async fn test_admin_cannot_upgrade_user_to_root() {
     );
 
     // But admin cannot manage Root users
-    let root_user = user_repo
-        .create(&make_user_with_role("root_target", UserRole::Root))
-        .await
-        .unwrap();
+    let root_user = create_user(&user_repo, "root_target", UserRole::Root).await;
 
     assert!(
         !admin.role.can_manage(&root_user.role),
@@ -139,15 +150,9 @@ async fn test_admin_cannot_demote_root() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let admin = user_repo
-        .create(&make_user_with_role("admin_demoter", UserRole::Admin))
-        .await
-        .unwrap();
+    let admin = create_user(&user_repo, "admin_demoter", UserRole::Admin).await;
 
-    let root_user = user_repo
-        .create(&make_user_with_role("root_to_demote", UserRole::Root))
-        .await
-        .unwrap();
+    let root_user = create_user(&user_repo, "root_to_demote", UserRole::Root).await;
 
     // Verify: Admin cannot manage Root
     assert!(
@@ -162,15 +167,9 @@ async fn test_admin_cannot_ban_root_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let admin = user_repo
-        .create(&make_user_with_role("admin_banner", UserRole::Admin))
-        .await
-        .unwrap();
+    let admin = create_user(&user_repo, "admin_banner", UserRole::Admin).await;
 
-    let root_user = user_repo
-        .create(&make_user_with_role("root_to_ban", UserRole::Root))
-        .await
-        .unwrap();
+    let root_user = create_user(&user_repo, "root_to_ban", UserRole::Root).await;
 
     // Verify: Admin cannot ban Root via role hierarchy
     assert!(
@@ -179,10 +178,7 @@ async fn test_admin_cannot_ban_root_user() {
     );
 
     // Admin can manage regular users
-    let regular_user = user_repo
-        .create(&make_user_with_role("regular_to_ban", UserRole::User))
-        .await
-        .unwrap();
+    let regular_user = create_user(&user_repo, "regular_to_ban", UserRole::User).await;
 
     assert!(
         admin.role.can_manage(&regular_user.role),
@@ -196,15 +192,9 @@ async fn test_root_can_ban_admin() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let root = user_repo
-        .create(&make_user_with_role("root_banner", UserRole::Root))
-        .await
-        .unwrap();
+    let root = create_user(&user_repo, "root_banner", UserRole::Root).await;
 
-    let admin = user_repo
-        .create(&make_user_with_role("admin_to_ban", UserRole::Admin))
-        .await
-        .unwrap();
+    let admin = create_user(&user_repo, "admin_to_ban", UserRole::Admin).await;
 
     // Root can manage Admin
     assert!(
@@ -212,17 +202,19 @@ async fn test_root_can_ban_admin() {
         "Root can ban Admin users"
     );
 
-    let banned = user_repo
-        .ban(
-            &admin.id,
-            Some(&root.id),
-            Some("permission boundary".to_string()),
-        )
-        .await
-        .unwrap();
+    let banned = ok(
+        user_repo
+            .ban(
+                &admin.id,
+                Some(&root.id),
+                Some("permission boundary".to_string()),
+            )
+            .await,
+        "admin should be banned by root",
+    );
 
     assert_eq!(banned.status, UserStatus::Banned);
-    assert!(user_repo.is_banned(&admin.id).await.unwrap());
+    assert!(is_banned(&user_repo, &admin.id).await);
     assert_eq!(banned.role, UserRole::Admin); // Role unchanged
 }
 
@@ -232,15 +224,9 @@ async fn test_admin_can_ban_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let admin = user_repo
-        .create(&make_user_with_role("admin_can_ban", UserRole::Admin))
-        .await
-        .unwrap();
+    let admin = create_user(&user_repo, "admin_can_ban", UserRole::Admin).await;
 
-    let user = user_repo
-        .create(&make_user_with_role("user_to_ban", UserRole::User))
-        .await
-        .unwrap();
+    let user = create_user(&user_repo, "user_to_ban", UserRole::User).await;
 
     // Admin can manage User
     assert!(
@@ -248,17 +234,19 @@ async fn test_admin_can_ban_user() {
         "Admin can ban User users"
     );
 
-    let banned = user_repo
-        .ban(
-            &user.id,
-            Some(&admin.id),
-            Some("permission boundary".to_string()),
-        )
-        .await
-        .unwrap();
+    let banned = ok(
+        user_repo
+            .ban(
+                &user.id,
+                Some(&admin.id),
+                Some("permission boundary".to_string()),
+            )
+            .await,
+        "user should be banned by admin",
+    );
 
     assert_eq!(banned.status, UserStatus::Banned);
-    assert!(user_repo.is_banned(&user.id).await.unwrap());
+    assert!(is_banned(&user_repo, &user.id).await);
     assert_eq!(banned.role, UserRole::User); // Role unchanged
 }
 
@@ -268,15 +256,9 @@ async fn test_role_upgrade_user_to_admin_by_root() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let root = user_repo
-        .create(&make_user_with_role("root_upgrader", UserRole::Root))
-        .await
-        .unwrap();
+    let root = create_user(&user_repo, "root_upgrader", UserRole::Root).await;
 
-    let user = user_repo
-        .create(&make_user_with_role("user_promote", UserRole::User))
-        .await
-        .unwrap();
+    let user = create_user(&user_repo, "user_promote", UserRole::User).await;
 
     // Root can manage User
     assert!(
@@ -287,7 +269,10 @@ async fn test_role_upgrade_user_to_admin_by_root() {
     // Upgrade role from User to Admin
     let mut upgraded = user.clone();
     upgraded.role = UserRole::Admin;
-    let updated = user_repo.update(&upgraded, user.version).await.unwrap();
+    let updated = ok(
+        user_repo.update(&upgraded, user.version).await,
+        "user role should be upgraded",
+    );
 
     assert_eq!(updated.role, UserRole::Admin);
 }
@@ -298,15 +283,9 @@ async fn test_role_downgrade_admin_to_user_by_root() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let root = user_repo
-        .create(&make_user_with_role("root_downgrader", UserRole::Root))
-        .await
-        .unwrap();
+    let root = create_user(&user_repo, "root_downgrader", UserRole::Root).await;
 
-    let admin = user_repo
-        .create(&make_user_with_role("admin_demote", UserRole::Admin))
-        .await
-        .unwrap();
+    let admin = create_user(&user_repo, "admin_demote", UserRole::Admin).await;
 
     // Root can manage Admin
     assert!(
@@ -317,7 +296,10 @@ async fn test_role_downgrade_admin_to_user_by_root() {
     // Downgrade role from Admin to User
     let mut downgraded = admin.clone();
     downgraded.role = UserRole::User;
-    let updated = user_repo.update(&downgraded, admin.version).await.unwrap();
+    let updated = ok(
+        user_repo.update(&downgraded, admin.version).await,
+        "admin role should be downgraded",
+    );
 
     assert_eq!(updated.role, UserRole::User);
 }
@@ -328,15 +310,9 @@ async fn test_admin_cannot_upgrade_user_to_admin() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let admin = user_repo
-        .create(&make_user_with_role("admin_promoter", UserRole::Admin))
-        .await
-        .unwrap();
+    let admin = create_user(&user_repo, "admin_promoter", UserRole::Admin).await;
 
-    let user = user_repo
-        .create(&make_user_with_role("user_promote_fail", UserRole::User))
-        .await
-        .unwrap();
+    let user = create_user(&user_repo, "user_promote_fail", UserRole::User).await;
 
     // Admin can manage User (for ban/approve), but upgrading to Admin
     // typically requires Root. This test documents that can_manage returns true,
@@ -358,28 +334,29 @@ async fn test_room_creator_permissions_vs_user_role() {
     let room_service = make_room_service(pool.clone());
 
     // Regular user creates a room
-    let creator = user_repo
-        .create(&make_user_with_role("room_creator_perm", UserRole::User))
-        .await
-        .unwrap();
+    let creator = create_user(&user_repo, "room_creator_perm", UserRole::User).await;
 
-    let (room, _) = room_service
-        .create_room(
-            "Perm Test Room".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+    let (room, _) = ok(
+        room_service
+            .create_room(
+                "Perm Test Room".to_string(),
+                String::new(),
+                creator.id,
+                None,
+                None,
+            )
+            .await,
+        "room should be created",
+    );
 
     // Creator should have all room permissions despite being UserRole::User
     let perm_service = room_service.permission_service();
-    let perms = perm_service
-        .get_user_permissions_no_cache(&room.id, &creator.id)
-        .await
-        .unwrap();
+    let perms = ok(
+        perm_service
+            .get_user_permissions_no_cache(&room.id, &creator.id)
+            .await,
+        "creator permissions should be fetched",
+    );
 
     // Creator has ALL permissions in the room, regardless of global role
     assert!(perms.0 != 0, "Room Creator should have permissions in room");
@@ -391,22 +368,21 @@ async fn test_banned_user_cannot_login() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let user = user_repo
-        .create(&make_user_with_role("banned_login", UserRole::User))
-        .await
-        .unwrap();
+    let user = create_user(&user_repo, "banned_login", UserRole::User).await;
 
     // Verify user can login initially
     assert!(user.can_login());
 
     // Ban the user
-    let banned = user_repo
-        .ban(&user.id, None, Some("permission boundary".to_string()))
-        .await
-        .unwrap();
+    let banned = ok(
+        user_repo
+            .ban(&user.id, None, Some("permission boundary".to_string()))
+            .await,
+        "user should be banned",
+    );
 
     assert_eq!(banned.status, UserStatus::Banned);
-    assert!(user_repo.is_banned(&user.id).await.unwrap());
+    assert!(is_banned(&user_repo, &user.id).await);
 }
 
 #[tokio::test]
@@ -415,10 +391,7 @@ async fn test_banned_user_cannot_create_room() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let user = user_repo
-        .create(&make_user_with_role("banned_room", UserRole::User))
-        .await
-        .unwrap();
+    let user = create_user(&user_repo, "banned_room", UserRole::User).await;
 
     let mut pending = user;
     pending.status = UserStatus::Banned;
@@ -434,24 +407,20 @@ async fn test_status_and_role_are_independent() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let root = user_repo
-        .create(&make_user_with_role("root_status", UserRole::Root))
-        .await
-        .unwrap();
+    let root = create_user(&user_repo, "root_status", UserRole::Root).await;
 
-    let banned_root = user_repo
-        .ban(&root.id, None, Some("permission boundary".to_string()))
-        .await
-        .unwrap();
+    let banned_root = ok(
+        user_repo
+            .ban(&root.id, None, Some("permission boundary".to_string()))
+            .await,
+        "root should be banned",
+    );
 
     assert_eq!(banned_root.role, UserRole::Root); // Role unchanged
     assert_eq!(banned_root.status, UserStatus::Banned);
-    assert!(user_repo.is_banned(&root.id).await.unwrap());
+    assert!(is_banned(&user_repo, &root.id).await);
 
-    let admin = user_repo
-        .create(&make_user_with_role("admin_status", UserRole::Admin))
-        .await
-        .unwrap();
+    let admin = create_user(&user_repo, "admin_status", UserRole::Admin).await;
 
     let mut pending_admin = admin;
     pending_admin.status = UserStatus::Banned;
@@ -467,14 +436,11 @@ async fn test_role_update_optimistic_lock() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let user = user_repo
-        .create(&make_user_with_role("optimistic_user", UserRole::User))
-        .await
-        .unwrap();
+    let user = create_user(&user_repo, "optimistic_user", UserRole::User).await;
 
     // Read user twice (simulating concurrent reads)
-    let read1 = user_repo.get_by_id(&user.id).await.unwrap().unwrap();
-    let read2 = user_repo.get_by_id(&user.id).await.unwrap().unwrap();
+    let read1 = load_user(&user_repo, &user.id).await;
+    let read2 = load_user(&user_repo, &user.id).await;
 
     // First update succeeds
     let mut update1 = read1.clone();
@@ -498,24 +464,23 @@ async fn test_user_status_transitions() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let user = user_repo
-        .create(&make_user_with_role("status_trans", UserRole::User))
-        .await
-        .unwrap();
+    let user = create_user(&user_repo, "status_trans", UserRole::User).await;
     assert_eq!(user.status, UserStatus::Active);
     assert!(user.can_login());
 
-    let banned = user_repo
-        .ban(&user.id, None, Some("permission boundary".to_string()))
-        .await
-        .unwrap();
+    let banned = ok(
+        user_repo
+            .ban(&user.id, None, Some("permission boundary".to_string()))
+            .await,
+        "user should be banned",
+    );
     assert_eq!(banned.status, UserStatus::Banned);
-    assert!(user_repo.is_banned(&user.id).await.unwrap());
+    assert!(is_banned(&user_repo, &user.id).await);
 
-    let active = user_repo.unban(&user.id).await.unwrap();
+    let active = ok(user_repo.unban(&user.id).await, "user should be unbanned");
     assert_eq!(active.status, UserStatus::Active);
     assert!(active.can_login());
-    assert!(!user_repo.is_banned(&user.id).await.unwrap());
+    assert!(!is_banned(&user_repo, &user.id).await);
 
     let mut pending = active.clone();
     pending.status = UserStatus::Banned;
@@ -536,53 +501,55 @@ async fn test_admin_can_manage_room_with_banned_creator() {
     let room_service = make_room_service(pool.clone());
 
     // User creates room
-    let creator = user_repo
-        .create(&make_user_with_role("banned_creator", UserRole::User))
-        .await
-        .unwrap();
+    let creator = create_user(&user_repo, "banned_creator", UserRole::User).await;
 
-    let (room, _) = room_service
-        .create_room(
-            "Banned Creator Room".to_string(),
-            String::new(),
-            creator.id,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+    let (room, _) = ok(
+        room_service
+            .create_room(
+                "Banned Creator Room".to_string(),
+                String::new(),
+                creator.id,
+                None,
+                None,
+            )
+            .await,
+        "room should be created",
+    );
 
     // Ban the creator
-    let _banned = user_repo
-        .ban(&creator.id, None, Some("permission boundary".to_string()))
-        .await
-        .unwrap();
+    let _banned = ok(
+        user_repo
+            .ban(&creator.id, None, Some("permission boundary".to_string()))
+            .await,
+        "creator should be banned",
+    );
 
     // Admin can still manage the room
-    let admin = user_repo
-        .create(&make_user_with_role("room_admin", UserRole::Admin))
-        .await
-        .unwrap();
+    let admin = create_user(&user_repo, "room_admin", UserRole::Admin).await;
 
     // Join room as admin
-    room_service
-        .join_room(room.id, admin.id, None)
-        .await
-        .unwrap();
+    ok(
+        room_service.join_room(room.id, admin.id, None).await,
+        "admin should join room",
+    );
 
     // Promote admin to room admin role
-    room_service
-        .member_service()
-        .set_member_role(room.id, creator.id, admin.id, RoomRole::Admin)
-        .await
-        .unwrap();
+    ok(
+        room_service
+            .member_service()
+            .set_member_role(room.id, creator.id, admin.id, RoomRole::Admin)
+            .await,
+        "admin should be promoted in room",
+    );
 
     // Verify admin has room permissions
     let perm_service = room_service.permission_service();
-    let perms = perm_service
-        .get_user_permissions_no_cache(&room.id, &admin.id)
-        .await
-        .unwrap();
+    let perms = ok(
+        perm_service
+            .get_user_permissions_no_cache(&room.id, &admin.id)
+            .await,
+        "admin room permissions should be fetched",
+    );
 
     assert!(
         perms.0 != 0,

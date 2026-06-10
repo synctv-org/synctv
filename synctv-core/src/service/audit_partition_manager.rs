@@ -594,6 +594,13 @@ pub async fn ensure_audit_partitions_on_startup(pool: &PgPool) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     const _: () = assert!(
         !STARTUP_RUNS_RETENTION_CLEANUP,
         "per-replica startup initialization must avoid retention cleanup DDL"
@@ -631,7 +638,7 @@ mod tests {
         leader.0.store(true, Ordering::SeqCst);
         tokio::time::advance(std::time::Duration::from_secs(1)).await;
         assert!(
-            wait_task.await.expect("wait task should complete"),
+            ok(wait_task.await, "wait task should complete"),
             "leader election should trigger the initial maintenance wait to finish"
         );
     }
@@ -649,7 +656,8 @@ mod tests {
             "health_status": "warning"
         }"#;
 
-        let health: PartitionHealth = serde_json::from_str(json).unwrap();
+        let health: PartitionHealth =
+            ok(serde_json::from_str(json), "health JSON should deserialize");
         assert_eq!(health.total_partitions, 10);
         assert_eq!(health.missing_count, 1);
         assert_eq!(health.health_status, "warning");
@@ -670,7 +678,10 @@ mod tests {
             ]
         }"#;
 
-        let result: PartitionCreationResult = serde_json::from_str(json).unwrap();
+        let result: PartitionCreationResult = ok(
+            serde_json::from_str(json),
+            "creation result JSON should deserialize",
+        );
         assert_eq!(result.total_requested, 7);
         assert_eq!(result.success_count, 7);
         assert_eq!(result.partitions.len(), 1);
@@ -696,7 +707,7 @@ mod tests {
             ]
         }"#;
 
-        let stats: PartitionStats = serde_json::from_str(json).unwrap();
+        let stats: PartitionStats = ok(serde_json::from_str(json), "stats JSON should deserialize");
         assert_eq!(stats.total_partitions, 3);
         assert_eq!(stats.total_records, 5000);
         assert_eq!(stats.partitions.len(), 2);

@@ -2,7 +2,8 @@ use super::{
     define::{
         DataReceiver, DataSender, FrameData, FrameDataReceiver, FrameDataSender, FrameTrySendError,
         PacketData, PacketDataReceiver, PacketDataSender, StatisticData, StatisticDataReceiver,
-        StatisticDataSender, TStreamHandler, TransceiverEvent, TransceiverEventReceiver,
+        StatisticDataSender, TStreamHandler, TransceiverEvent, TransceiverEventExecuteResultSender,
+        TransceiverEventReceiver,
     },
     errors::{StreamHubError, StreamHubErrorValue},
     statistics::{self, StatisticsStream},
@@ -42,6 +43,18 @@ pub(crate) struct PacketSubscriberDropCounter {
     drop_count: Arc<AtomicU64>,
 }
 
+pub(crate) struct ReceiveEventLoopContext {
+    pub(crate) stream_handler: Arc<dyn TStreamHandler>,
+    pub(crate) exit: broadcast::Sender<()>,
+    pub(crate) receiver: TransceiverEventReceiver,
+    pub(crate) packet_senders: Arc<Mutex<HashMap<Uuid, PacketSubscriberDropCounter>>>,
+    pub(crate) frame_senders: Arc<Mutex<HashMap<Uuid, SubscriberDropCounter>>>,
+    pub(crate) frame_generation: Arc<AtomicU64>,
+    pub(crate) packet_generation: Arc<AtomicU64>,
+    pub(crate) statistic_sender: StatisticDataSender,
+    pub(crate) statistics_data: Arc<Mutex<StatisticsStream>>,
+}
+
 /// How often to log per-subscriber drop warnings (every N drops).
 const DROP_LOG_INTERVAL: u64 = 100;
 
@@ -51,12 +64,22 @@ fn request_synthetic_unpublish(event_sender: Option<&mpsc::UnboundedSender<Trans
     };
 
     if let Err(error) = sender.send(TransceiverEvent::UnPublish {}) {
-        tracing::error!("Failed to send synthetic UnPublish (channel closed): {error}");
+        tracing::error!(
+            "synthetic unpublish request failed because the event channel closed: {error}"
+        );
     }
 }
 
-// Receive audio/video/media info from a publisher and send to subscribers,
-// while also aggregating stream statistics.
+fn send_subscribe_result(
+    result_sender: TransceiverEventExecuteResultSender,
+    result: Result<StatisticDataSender, StreamHubError>,
+) {
+    if result_sender.send(result).is_err() {
+        tracing::debug!("subscriber dropped before subscribe result was delivered");
+    }
+}
+
+/// Fans publisher data out to subscribers and maintains stream statistics.
 pub(crate) struct StreamDataTransceiver {
     data_receiver: DataReceiver,
     event_receiver: TransceiverEventReceiver,
@@ -458,18 +481,21 @@ impl StreamDataTransceiver {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn receive_event_loop(
-        stream_handler: Arc<dyn TStreamHandler>,
-        exit: broadcast::Sender<()>,
-        mut receiver: TransceiverEventReceiver,
-        packet_senders: Arc<Mutex<HashMap<Uuid, PacketSubscriberDropCounter>>>,
-        frame_senders: Arc<Mutex<HashMap<Uuid, SubscriberDropCounter>>>,
-        frame_generation: Arc<AtomicU64>,
-        packet_generation: Arc<AtomicU64>,
-        statistic_sender: StatisticDataSender,
-        statistics_data: Arc<Mutex<StatisticsStream>>,
+        context: ReceiveEventLoopContext,
     ) -> tokio::task::JoinHandle<()> {
+        let ReceiveEventLoopContext {
+            stream_handler,
+            exit,
+            mut receiver,
+            packet_senders,
+            frame_senders,
+            frame_generation,
+            packet_generation,
+            statistic_sender,
+            statistics_data,
+        } = context;
+
         tokio::spawn(async move {
             loop {
                 let Some(val) = receiver.recv().await else {
@@ -492,13 +518,9 @@ impl StreamDataTransceiver {
                             .await
                         {
                             tracing::warn!(
-                                "receive_event_loop send_prior_data err (skipping subscriber): {err}"
+                                "subscriber prior-data delivery failed; skipping subscriber: {err}"
                             );
-                            if result_sender.send(Err(err)).is_err() {
-                                tracing::error!(
-                                    "receive_event_loop failed to return prior-data error: receiver dropped"
-                                );
-                            }
+                            send_subscribe_result(result_sender, Err(err));
                             continue;
                         }
                         match sender {
@@ -528,9 +550,7 @@ impl StreamDataTransceiver {
                             }
                         }
 
-                        if let Err(err) = result_sender.send(Ok(statistic_sender.clone())) {
-                            tracing::error!("receive_event_loop:send statistic send err :{err:?} ");
-                        }
+                        send_subscribe_result(result_sender, Ok(statistic_sender.clone()));
 
                         let mut statistics_data = statistics_data.lock().await;
                         statistics_data.subscriber_count += 1;
@@ -551,7 +571,9 @@ impl StreamDataTransceiver {
                     }
                     TransceiverEvent::UnPublish {} => {
                         if let Err(err) = exit.send(()) {
-                            tracing::error!("TransmitterEvent::UnPublish send error: {err}");
+                            tracing::debug!(
+                                "transceiver shutdown broadcast had no receivers: {err}"
+                            );
                         }
                         break;
                     }
@@ -611,17 +633,17 @@ impl StreamDataTransceiver {
                 .map_err(|error| map_task_join_error("statistics loop", &error))
         });
 
-        let event_handle = Self::receive_event_loop(
-            self.stream_handler,
-            tx,
-            self.event_receiver,
-            self.id_to_packet_sender,
-            self.id_to_frame_sender,
-            self.frame_generation,
-            self.packet_generation,
-            self.statistic_data_sender,
-            self.statistic_data.clone(),
-        );
+        let event_handle = Self::receive_event_loop(ReceiveEventLoopContext {
+            stream_handler: self.stream_handler,
+            exit: tx,
+            receiver: self.event_receiver,
+            packet_senders: self.id_to_packet_sender,
+            frame_senders: self.id_to_frame_sender,
+            frame_generation: self.frame_generation,
+            packet_generation: self.packet_generation,
+            statistic_sender: self.statistic_data_sender,
+            statistics_data: self.statistic_data.clone(),
+        });
         let event_result = event_handle
             .await
             .map_err(|error| map_task_join_error("event loop", &error));

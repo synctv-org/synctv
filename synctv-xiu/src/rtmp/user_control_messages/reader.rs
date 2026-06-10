@@ -27,7 +27,7 @@ impl EventMessagesReader {
             define::RTMP_EVENT_STREAM_IS_RECORDED => self.read_stream_is_recorded(),
 
             _ => Err(errors::EventMessagesError {
-                value: errors::EventMessagesErrorValue::UnknowEventMessageType,
+                value: errors::EventMessagesErrorValue::UnknownEventMessageType,
             }),
         }
     }

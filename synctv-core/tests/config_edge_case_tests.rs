@@ -2,13 +2,14 @@
 //!
 //! Tests trusted proxy matching, database URL password masking,
 //! and config serialization roundtrip.
-//!
-#![allow(clippy::unwrap_used)]
 
 use std::net::IpAddr;
 use synctv_core::config::{Config, DatabaseConfig, RedisConfig, RedisDeploymentMode, ServerConfig};
+use synctv_core_testing::ok;
 
-// Trusted proxy matching
+fn ip(value: &str) -> IpAddr {
+    ok(value.parse(), "IP address should parse")
+}
 
 fn make_server_config(proxies: Vec<String>) -> ServerConfig {
     ServerConfig {
@@ -20,7 +21,7 @@ fn make_server_config(proxies: Vec<String>) -> ServerConfig {
 #[test]
 fn test_is_trusted_proxy_empty_list() {
     let config = make_server_config(vec![]);
-    let ip: IpAddr = "10.0.0.1".parse().unwrap();
+    let ip = ip("10.0.0.1");
     assert!(
         !config.is_trusted_proxy(&ip),
         "Empty proxy list should trust nothing"
@@ -30,53 +31,50 @@ fn test_is_trusted_proxy_empty_list() {
 #[test]
 fn test_is_trusted_proxy_single_ip() {
     let config = make_server_config(vec!["10.0.0.1".to_string()]);
-    assert!(config.is_trusted_proxy(&"10.0.0.1".parse().unwrap()));
-    assert!(!config.is_trusted_proxy(&"10.0.0.2".parse().unwrap()));
+    assert!(config.is_trusted_proxy(&ip("10.0.0.1")));
+    assert!(!config.is_trusted_proxy(&ip("10.0.0.2")));
 }
 
 #[test]
 fn test_is_trusted_proxy_cidr() {
     let config = make_server_config(vec!["10.0.0.0/8".to_string()]);
-    assert!(config.is_trusted_proxy(&"10.0.0.1".parse().unwrap()));
-    assert!(config.is_trusted_proxy(&"10.255.255.255".parse().unwrap()));
-    assert!(!config.is_trusted_proxy(&"11.0.0.1".parse().unwrap()));
+    assert!(config.is_trusted_proxy(&ip("10.0.0.1")));
+    assert!(config.is_trusted_proxy(&ip("10.255.255.255")));
+    assert!(!config.is_trusted_proxy(&ip("11.0.0.1")));
 }
 
 #[test]
 fn test_is_trusted_proxy_multiple_entries() {
     let config = make_server_config(vec!["10.0.0.0/8".to_string(), "192.168.1.100".to_string()]);
-    assert!(config.is_trusted_proxy(&"10.1.2.3".parse().unwrap()));
-    assert!(config.is_trusted_proxy(&"192.168.1.100".parse().unwrap()));
-    assert!(!config.is_trusted_proxy(&"192.168.1.101".parse().unwrap()));
+    assert!(config.is_trusted_proxy(&ip("10.1.2.3")));
+    assert!(config.is_trusted_proxy(&ip("192.168.1.100")));
+    assert!(!config.is_trusted_proxy(&ip("192.168.1.101")));
 }
 
 #[test]
 fn test_is_trusted_proxy_ipv6() {
     let config = make_server_config(vec!["::1".to_string()]);
-    assert!(config.is_trusted_proxy(&"::1".parse().unwrap()));
-    assert!(!config.is_trusted_proxy(&"::2".parse().unwrap()));
+    assert!(config.is_trusted_proxy(&ip("::1")));
+    assert!(!config.is_trusted_proxy(&ip("::2")));
 }
 
 #[test]
 fn test_is_trusted_proxy_ipv6_cidr() {
     let config = make_server_config(vec!["fd00::/8".to_string()]);
-    assert!(config.is_trusted_proxy(&"fd00::1".parse().unwrap()));
-    assert!(config.is_trusted_proxy(&"fdff::1".parse().unwrap()));
-    assert!(!config.is_trusted_proxy(&"fe80::1".parse().unwrap()));
+    assert!(config.is_trusted_proxy(&ip("fd00::1")));
+    assert!(config.is_trusted_proxy(&ip("fdff::1")));
+    assert!(!config.is_trusted_proxy(&ip("fe80::1")));
 }
 
 #[test]
 fn test_is_trusted_proxy_invalid_entry_ignored() {
-    // Invalid entries should be silently skipped
     let config = make_server_config(vec![
         "not-a-valid-ip-or-cidr".to_string(),
         "10.0.0.1".to_string(),
     ]);
-    assert!(config.is_trusted_proxy(&"10.0.0.1".parse().unwrap()));
-    assert!(!config.is_trusted_proxy(&"10.0.0.2".parse().unwrap()));
+    assert!(config.is_trusted_proxy(&ip("10.0.0.1")));
+    assert!(!config.is_trusted_proxy(&ip("10.0.0.2")));
 }
-
-// Database URL password masking in Debug output
 
 #[test]
 fn test_database_config_debug_masks_password() {
@@ -103,11 +101,8 @@ fn test_database_config_debug_no_password() {
         ..DatabaseConfig::default()
     };
     let debug = format!("{config:?}");
-    // No @ sign, so no masking needed
     assert!(debug.contains("db.invalid"));
 }
-
-// Redis config debug masking
 
 #[test]
 fn test_redis_config_debug_masks_password() {
@@ -126,18 +121,20 @@ fn test_redis_config_debug_masks_password() {
     );
 }
 
-// Redis deployment mode parsing
-
 #[test]
 fn test_redis_deployment_mode_rename_all() {
-    let json = serde_json::to_string(&RedisDeploymentMode::Standalone).unwrap();
+    let json = ok(
+        serde_json::to_string(&RedisDeploymentMode::Standalone),
+        "standalone mode should serialize",
+    );
     assert_eq!(json, "\"standalone\"");
-    let json = serde_json::to_string(&RedisDeploymentMode::Sentinel).unwrap();
+    let json = ok(
+        serde_json::to_string(&RedisDeploymentMode::Sentinel),
+        "sentinel mode should serialize",
+    );
     assert_eq!(json, "\"sentinel\"");
     assert!(serde_json::from_str::<RedisDeploymentMode>("\"cluster\"").is_err());
 }
-
-// Config validation edge cases
 
 #[test]
 fn test_config_api_address() {
@@ -157,8 +154,6 @@ fn test_config_debug_redacts_secrets() {
         "Secrets should be redacted in Config Debug output"
     );
 }
-
-// BootstrapConfig security tests
 
 #[test]
 fn test_config_validate_rejects_empty_root_password_when_creating_root() {

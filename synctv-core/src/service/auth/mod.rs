@@ -6,10 +6,7 @@ pub mod security_pipeline;
 pub mod token_blacklist;
 pub mod validator;
 
-pub use brute_force::{
-    brute_force_protection_from_shared_state_profile, BruteForceConfig, BruteForceProtection,
-    BruteForceProtectionService,
-};
+pub use brute_force::{BruteForceConfig, BruteForceProtection, BruteForceProtectionService};
 pub use guest_validator::GuestTokenValidator;
 pub use jwt::{
     Claims, GuestClaims, JwtService, TokenAuthContext, TokenCredentialBinding, TokenType,

@@ -1,21 +1,20 @@
 // SyncTV API Library
 // Provides gRPC and HTTP API services for SyncTV
-#![cfg_attr(test, allow(clippy::unwrap_used))]
 
 #[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
-pub mod chat_event_dispatcher;
-pub mod client_ip;
+pub(crate) mod chat_event_dispatcher;
+pub(crate) mod client_ip;
 pub mod config_adapters;
-pub mod fanout;
+pub(crate) mod fanout;
 pub mod grpc;
 pub mod grpc_support;
 pub mod http;
 pub mod impls;
 mod media_fanout;
 mod membership_event_fanout;
-pub mod observability;
+pub(crate) mod observability;
 #[cfg(feature = "openapi")]
 pub mod openapi;
 mod playback_fanout;
@@ -28,8 +27,4 @@ mod room_lifecycle_fanout;
 pub mod runtime;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub mod webrtc_status;
-
-// Re-export commonly used types
-pub use http::AppState;
-pub use synctv_core::PublicIdCodec;
+pub(crate) mod webrtc_status;

@@ -7,7 +7,7 @@ mod encryption;
 mod storage;
 mod types;
 
-pub use encryption::{EncryptionError, EncryptionResult, FieldEncryption};
+pub use encryption::FieldEncryption;
 pub use storage::{
     CredentialStorage, CredentialStorageError, InMemoryCredentialStorage, Result, StoredCredential,
 };

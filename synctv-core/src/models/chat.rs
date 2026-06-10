@@ -414,15 +414,31 @@ impl ChatPlaybackMessagesQuery {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn chat_message_type_display_parse_and_code_roundtrip() {
         assert_eq!(ChatMessageType::Text.to_string(), "text");
         assert_eq!(
-            " SYSTEM ".parse::<ChatMessageType>().unwrap(),
+            ok(
+                " SYSTEM ".parse::<ChatMessageType>(),
+                "system type should parse"
+            ),
             ChatMessageType::System
         );
         assert_eq!(i16::from(ChatMessageType::Action), 3);
-        assert_eq!(ChatMessageType::try_from(1).unwrap(), ChatMessageType::Text);
+        assert_eq!(
+            ok(
+                ChatMessageType::try_from(1),
+                "chat message type code should parse"
+            ),
+            ChatMessageType::Text
+        );
         assert!(ChatMessageType::try_from(99).is_err());
         assert!("notice".parse::<ChatMessageType>().is_err());
     }

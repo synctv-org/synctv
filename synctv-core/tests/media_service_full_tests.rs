@@ -3,7 +3,6 @@
 //! Tests `add_media` permission check, `add_media_batch` size limit,
 //! `edit_media` cross-room check and optimistic lock retry with real `PostgreSQL`.
 //!
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -23,10 +22,11 @@ use synctv_core::{
     Error,
 };
 use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{TestOptionExt, TestResultExt};
 
 fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = JwtService::new(secret).checked("JWT service should be created");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -45,7 +45,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+    RoomService::new_for_tests(pool, user_service).checked("room service should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -92,35 +92,43 @@ async fn create_top_level_playlist(
     synctv_core::repository::PlaylistRepository::new(pool.clone())
         .create(&playlist)
         .await
-        .expect("Top-level playlist should be created")
+        .checked("top-level playlist should be created")
 }
 
 /// Register the default local `direct_url` provider used when `provider_instance_name` is `None`.
 async fn register_direct_url_provider(room_service: &RoomService) {
-    room_service
+    if let Err(error) = room_service
         .media_service()
         .providers_manager()
         .create_provider("direct_url", "direct_url", &serde_json::json!({}))
         .await
-        .expect("Failed to register direct_url provider");
+    {
+        std::panic::panic_any(format!(
+            "direct_url provider should be registered: {error:?}"
+        ));
+    }
 }
 
 async fn register_bilibili_provider(room_service: &RoomService) {
-    room_service
+    if let Err(error) = room_service
         .media_service()
         .providers_manager()
         .create_provider("bilibili", "bilibili", &serde_json::json!({}))
         .await
-        .expect("Failed to register bilibili provider");
+    {
+        std::panic::panic_any(format!("bilibili provider should be registered: {error:?}"));
+    }
 }
 
 async fn register_alist_provider(room_service: &RoomService) {
-    room_service
+    if let Err(error) = room_service
         .media_service()
         .providers_manager()
         .create_provider("alist", "alist", &serde_json::json!({}))
         .await
-        .expect("Failed to register alist provider");
+    {
+        std::panic::panic_any(format!("alist provider should be registered: {error:?}"));
+    }
 }
 
 #[tokio::test]
@@ -130,8 +138,14 @@ async fn test_add_media_without_permission_denied() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("addm_creator")).await.unwrap();
-    let member = user_repo.create(&make_user("addm_member")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("addm_creator"))
+        .await
+        .checked("test operation should succeed");
+    let member = user_repo
+        .create(&make_user("addm_member"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -142,12 +156,12 @@ async fn test_add_media_without_permission_denied() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     register_direct_url_provider(&room_service).await;
 
     // Revoke CREATE_MEDIA_RESOURCE from member
@@ -160,7 +174,7 @@ async fn test_add_media_without_permission_denied() {
             RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media_service = room_service.media_service();
@@ -180,9 +194,9 @@ async fn test_add_media_without_permission_denied() {
         result.is_err(),
         "Should fail without CREATE_MEDIA_RESOURCE permission"
     );
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::Authorization(_) => {}
-        other => panic!("Expected Authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected Authorization error, got: {other:?}")),
     }
 }
 
@@ -193,7 +207,10 @@ async fn test_add_media_with_permission_succeeds() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("addm2_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("addm2_creator"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -204,7 +221,7 @@ async fn test_add_media_with_permission_succeeds() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     register_direct_url_provider(&room_service).await;
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
@@ -222,7 +239,7 @@ async fn test_add_media_with_permission_succeeds() {
     let result = media_service.add_media(room.id, creator.id, request).await;
 
     assert!(result.is_ok(), "Creator should be able to add media");
-    let media = result.unwrap();
+    let media = result.checked("test operation should succeed");
     assert_eq!(media.name, "Good Video");
 }
 
@@ -236,7 +253,7 @@ async fn test_add_media_rejects_credential_ref_for_bilibili() {
     let creator = user_repo
         .create(&make_user("addm_bili_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -247,7 +264,7 @@ async fn test_add_media_rejects_credential_ref_for_bilibili() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     register_bilibili_provider(&room_service).await;
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
@@ -273,11 +290,11 @@ async fn test_add_media_rejects_credential_ref_for_bilibili() {
     let err = media_service
         .add_media(room.id, creator.id, request)
         .await
-        .expect_err("Bilibili media must reject embedded credential references");
+        .failed("Bilibili media must reject embedded credential references");
 
     match err {
         Error::InvalidInput(message) => assert!(message.contains("credential_ref")),
-        other => panic!("expected InvalidInput, got {other:?}"),
+        other => std::panic::panic_any(format!("expected InvalidInput, got {other:?}")),
     }
 }
 
@@ -291,7 +308,7 @@ async fn test_add_media_with_bilibili_without_repo_allows_anonymous_playback() {
     let creator = user_repo
         .create(&make_user("addm_bili_missing_repo"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -302,7 +319,7 @@ async fn test_add_media_with_bilibili_without_repo_allows_anonymous_playback() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     register_bilibili_provider(&room_service).await;
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
@@ -323,9 +340,7 @@ async fn test_add_media_with_bilibili_without_repo_allows_anonymous_playback() {
         .media_service()
         .add_media(room.id, creator.id, request)
         .await
-        .expect(
-            "Bilibili media should not require credential repo because anonymous playback is valid",
-        );
+        .checked("Bilibili media should allow anonymous playback without credential repo");
 
     assert_eq!(media.source_provider, "bilibili");
 }
@@ -340,7 +355,7 @@ async fn test_create_dynamic_playlist_with_credential_backed_provider_without_re
     let creator = user_repo
         .create(&make_user("plist_alist_missing_repo"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -351,7 +366,7 @@ async fn test_create_dynamic_playlist_with_credential_backed_provider_without_re
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     register_alist_provider(&room_service).await;
 
     let request = CreatePlaylistRequest {
@@ -371,14 +386,14 @@ async fn test_create_dynamic_playlist_with_credential_backed_provider_without_re
         .playlist_service()
         .create_playlist(room.id, creator.id, request)
         .await
-        .expect_err("credential-backed dynamic playlist should fail closed without repo wiring");
+        .failed("credential-backed dynamic playlist should fail closed without repo wiring");
 
     match err {
         Error::ServiceUnavailable(message) => {
             assert!(message.contains("alist"));
             assert!(message.contains("credential repository"));
         }
-        other => panic!("expected ServiceUnavailable, got {other:?}"),
+        other => std::panic::panic_any(format!("expected ServiceUnavailable, got {other:?}")),
     }
 }
 
@@ -393,7 +408,7 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
     let creator = user_repo
         .create(&make_user("alist_dynamic_runtime_missing_repo"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -404,7 +419,7 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     register_alist_provider(&room_service).await;
 
     let playlist = Playlist {
@@ -429,7 +444,7 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
     let playlist = synctv_core::repository::PlaylistRepository::new(pool.clone())
         .create(&playlist)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let err = room_service
         .media_service()
@@ -445,14 +460,14 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
             },
         )
         .await
-        .expect_err("credential-backed dynamic listing should fail closed without repo wiring");
+        .failed("credential-backed dynamic listing should fail closed without repo wiring");
 
     match err {
         Error::ServiceUnavailable(message) => {
             assert!(message.contains("alist"));
             assert!(message.contains("credential repository"));
         }
-        other => panic!("expected ServiceUnavailable, got {other:?}"),
+        other => std::panic::panic_any(format!("expected ServiceUnavailable, got {other:?}")),
     }
 }
 
@@ -463,16 +478,19 @@ async fn test_add_media_cross_room_playlist_rejected() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("xroom_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("xroom_creator"))
+        .await
+        .checked("test operation should succeed");
 
     let (room_a, _) = room_service
         .create_room("Room A".to_string(), String::new(), creator.id, None, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room_b, _) = room_service
         .create_room("Room B".to_string(), String::new(), creator.id, None, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     register_direct_url_provider(&room_service).await;
 
@@ -507,7 +525,10 @@ async fn test_add_media_batch_over_100_rejected() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("batch_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("batch_creator"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -518,7 +539,7 @@ async fn test_add_media_batch_over_100_rejected() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     register_direct_url_provider(&room_service).await;
     let playlist = create_top_level_playlist(&pool, &room.id).await;
@@ -540,14 +561,14 @@ async fn test_add_media_batch_over_100_rejected() {
         .await;
 
     assert!(result.is_err(), "Batch of 101 items should be rejected");
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::InvalidInput(msg) => {
             assert!(
                 msg.contains("100") || msg.contains("batch") || msg.contains("exceed"),
                 "Should mention batch size limit: {msg}"
             );
         }
-        other => panic!("Expected InvalidInput error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected InvalidInput error, got: {other:?}")),
     }
 }
 
@@ -561,7 +582,7 @@ async fn test_add_media_batch_empty_returns_empty() {
     let creator = user_repo
         .create(&make_user("batch_empty_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -572,7 +593,7 @@ async fn test_add_media_batch_empty_returns_empty() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media_service = room_service.media_service();
 
@@ -582,7 +603,7 @@ async fn test_add_media_batch_empty_returns_empty() {
         .await;
 
     assert!(result.is_ok(), "Empty batch should succeed");
-    let media_list = result.unwrap();
+    let media_list = result.checked("test operation should succeed");
     assert!(media_list.is_empty(), "Empty batch should return empty vec");
 }
 
@@ -596,7 +617,7 @@ async fn test_add_media_batch_exactly_100_accepted() {
     let creator = user_repo
         .create(&make_user("batch100_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -607,7 +628,7 @@ async fn test_add_media_batch_exactly_100_accepted() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     register_direct_url_provider(&room_service).await;
     let playlist = create_top_level_playlist(&pool, &room.id).await;
@@ -632,7 +653,7 @@ async fn test_add_media_batch_exactly_100_accepted() {
         result.is_ok(),
         "Batch of exactly 100 items should be accepted"
     );
-    let media_list = result.unwrap();
+    let media_list = result.checked("test operation should succeed");
     assert_eq!(
         media_list.len(),
         100,
@@ -650,7 +671,7 @@ async fn test_add_media_batch_uses_batch_target_playlist() {
     let creator = user_repo
         .create(&make_user("batch_target_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -661,7 +682,7 @@ async fn test_add_media_batch_uses_batch_target_playlist() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     register_direct_url_provider(&room_service).await;
     let target_playlist = create_top_level_playlist(&pool, &room.id).await;
@@ -682,7 +703,7 @@ async fn test_add_media_batch_uses_batch_target_playlist() {
         .media_service()
         .add_media_batch(room.id, creator.id, Some(target_playlist.id), requests)
         .await
-        .expect("batch add should succeed");
+        .checked("batch add should succeed");
 
     assert_eq!(media_list.len(), 2);
     assert!(
@@ -703,7 +724,7 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
     let creator = user_repo
         .create(&make_user("edit_olr_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -714,7 +735,7 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     register_direct_url_provider(&room_service).await;
     let playlist = create_top_level_playlist(&pool, &room.id).await;
@@ -732,22 +753,23 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
     let media = media_service
         .add_media(room.id, creator.id, add_req)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Continuously bump media version to trigger retry exhaustion
-    let media_id_str = media.id.to_string();
+    let media_id = media.id.as_i64();
     let pool_clone = pool.clone();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
 
     let bumper = tokio::spawn(async move {
         while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-            let _ = sqlx::query("UPDATE media SET position = position + 1 WHERE id = $1")
-                .bind(&media_id_str)
+            sqlx::query("UPDATE media SET position = position + 1 WHERE id = $1::bigint")
+                .bind(media_id)
                 .execute(&pool_clone)
-                .await;
+                .await?;
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
+        Ok::<_, sqlx::Error>(())
     });
 
     let edit_req = EditMediaRequest {
@@ -761,7 +783,10 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
         .await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let _ = bumper.await;
+    bumper
+        .await
+        .checked("bumper task should not panic")
+        .checked("bumper task should update media positions");
 
     // Either success (got lucky) or Internal (retry exhaustion)
     match result {
@@ -776,10 +801,10 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
             );
         }
         Err(Error::OptimisticLockConflict) => {
-            panic!("OptimisticLockConflict should not leak to caller");
+            std::panic::panic_any("OptimisticLockConflict should not leak to caller".to_string());
         }
         Err(other) => {
-            panic!("Unexpected error: {other:?}");
+            std::panic::panic_any(format!("unexpected edit media error: {other:?}"));
         }
     }
 }
@@ -794,7 +819,7 @@ async fn test_move_media_rejects_conflicting_anchor_flags() {
     let owner = user_repo
         .create(&make_user("move_media_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -805,7 +830,7 @@ async fn test_move_media_rejects_conflicting_anchor_flags() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
 
@@ -826,7 +851,10 @@ async fn test_move_media_rejects_conflicting_anchor_flags() {
         updated_at: chrono::Utc::now(),
         version: 0,
     };
-    let media = media_repo.create(&media).await.unwrap();
+    let media = media_repo
+        .create(&media)
+        .await
+        .checked("test operation should succeed");
 
     let conflicting_anchor = room_service
         .media_service()
@@ -843,7 +871,7 @@ async fn test_move_media_rejects_conflicting_anchor_flags() {
             },
         )
         .await
-        .unwrap_err();
+        .failed("operation should fail");
     assert!(matches!(conflicting_anchor, Error::InvalidInput(_)));
 }
 
@@ -857,7 +885,7 @@ async fn test_move_media_reorders_using_anchor_positions() {
     let owner = user_repo
         .create(&make_user("move_media_order_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -868,7 +896,7 @@ async fn test_move_media_reorders_using_anchor_positions() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
@@ -891,7 +919,7 @@ async fn test_move_media_reorders_using_anchor_positions() {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let media2 = media_repo
         .create(&synctv_core::models::Media {
             id: synctv_core::models::MediaId::new(),
@@ -910,7 +938,7 @@ async fn test_move_media_reorders_using_anchor_positions() {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let moved = room_service
         .media_service()
@@ -927,10 +955,18 @@ async fn test_move_media_reorders_using_anchor_positions() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let updated1 = media_repo.get_by_id(&media1.id).await.unwrap().unwrap();
-    let updated2 = media_repo.get_by_id(&media2.id).await.unwrap().unwrap();
+    let updated1 = media_repo
+        .get_by_id(&media1.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
+    let updated2 = media_repo
+        .get_by_id(&media2.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert_eq!(moved.len(), 1);
     assert_eq!(moved[0].id, media2.id);
     assert!(updated2.position < updated1.position);
@@ -946,7 +982,7 @@ async fn test_move_media_batch_preserves_request_order() {
     let owner = user_repo
         .create(&make_user("move_media_batch_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -957,7 +993,7 @@ async fn test_move_media_batch_preserves_request_order() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
@@ -982,19 +1018,19 @@ async fn test_move_media_batch_preserves_request_order() {
     let media1 = media_repo
         .create(&make_media("Media 1", 1024.0))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let media2 = media_repo
         .create(&make_media("Media 2", 2048.0))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let _media3 = media_repo
         .create(&make_media("Media 3", 3072.0))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let media4 = media_repo
         .create(&make_media("Media 4", 4096.0))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let moved = room_service
         .media_service()
@@ -1011,10 +1047,13 @@ async fn test_move_media_batch_preserves_request_order() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(moved.len(), 2);
-    let ordered = media_repo.get_by_playlist(&playlist.id).await.unwrap();
+    let ordered = media_repo
+        .get_by_playlist(&playlist.id)
+        .await
+        .checked("test operation should succeed");
     let ordered_names: Vec<String> = ordered.into_iter().map(|item| item.name).collect();
     assert_eq!(
         ordered_names,
@@ -1037,7 +1076,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
     let owner = user_repo
         .create(&make_user("move_media_cross_playlist_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1048,7 +1087,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let src = create_top_level_playlist(&pool, &room.id).await;
     let dst = synctv_core::repository::PlaylistRepository::new(pool.clone())
@@ -1069,7 +1108,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
     let moving = media_repo
@@ -1090,7 +1129,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let existing = media_repo
         .create(&synctv_core::models::Media {
             id: synctv_core::models::MediaId::new(),
@@ -1109,7 +1148,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let moved = room_service
         .media_service()
@@ -1126,7 +1165,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(moved.len(), 1);
     let moved_item = &moved[0];
@@ -1135,7 +1174,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
     assert!(media_repo
         .get_by_playlist(&src.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_empty());
 }
 
@@ -1149,7 +1188,7 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
     let owner = user_repo
         .create(&make_user("move_all_media_scope_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1160,7 +1199,7 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let src = create_top_level_playlist(&pool, &room.id).await;
     let dst = synctv_core::repository::PlaylistRepository::new(pool.clone())
@@ -1181,7 +1220,7 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
     let _a = media_repo
@@ -1202,7 +1241,7 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let _b = media_repo
         .create(&synctv_core::models::Media {
             id: synctv_core::models::MediaId::new(),
@@ -1221,7 +1260,7 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
             version: 0,
         })
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let moved = room_service
         .media_service()
@@ -1238,13 +1277,13 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
             },
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(moved.len(), 2);
     let dst_names: Vec<String> = media_repo
         .get_by_playlist(&dst.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .into_iter()
         .map(|item| item.name)
         .collect();
@@ -1252,6 +1291,6 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
     assert!(media_repo
         .get_by_playlist(&src.id)
         .await
-        .unwrap()
+        .checked("test operation should succeed")
         .is_empty());
 }

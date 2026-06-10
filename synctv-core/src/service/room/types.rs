@@ -140,20 +140,21 @@ impl AuthorizedAdminActor {
 pub struct RoomServiceOptions {
     pub distributed_lock: Option<Arc<dyn crate::service::distributed_lock::CoordinationLock>>,
     pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
-    pub version_fence: Option<Arc<dyn crate::cache::VersionFenceStore>>,
-    pub playback_l2_cache: Option<crate::cache::PlaybackStateCache>,
-    pub room_settings_l2_cache: Option<Arc<dyn crate::cache::CacheL2Backend>>,
-    pub room_settings_cache_key_prefix: Option<String>,
+    pub version_fence: Arc<dyn crate::cache::VersionFenceStore>,
+    pub playback_l2_cache: crate::cache::PlaybackStateCache,
+    pub room_settings_l2_cache: Arc<dyn crate::cache::CacheL2Backend>,
+    pub room_settings_cache_key_prefix: String,
     pub credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
     pub credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    pub provider_access_service: Option<Arc<dyn crate::provider::ProviderAccessService>>,
     pub audit_service: Option<Arc<AuditService>>,
     pub brute_force_service: Option<Arc<dyn crate::service::auth::BruteForceProtectionService>>,
     pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
     pub user_notification_service: Option<Arc<crate::service::UserNotificationService>>,
     pub opaque_password_service: Arc<OpaquePasswordService>,
     pub opaque_password_registration_session_store:
-        Option<Arc<dyn RoomOpaquePasswordRegistrationSessionStore>>,
-    pub opaque_password_login_session_store: Option<Arc<dyn RoomOpaquePasswordLoginSessionStore>>,
+        Arc<dyn RoomOpaquePasswordRegistrationSessionStore>,
+    pub opaque_password_login_session_store: Arc<dyn RoomOpaquePasswordLoginSessionStore>,
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     pub media_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
     pub room_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
@@ -162,23 +163,48 @@ pub struct RoomServiceOptions {
 
 impl RoomServiceOptions {
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_defaults_with_settings(pool: sqlx::PgPool) -> Self {
+        let settings_service = Arc::new(crate::service::SettingsService::new(
+            crate::repository::SettingsRepository::new(pool.clone()),
+            pool,
+        ));
+        Self {
+            settings_registry: Some(Arc::new(crate::service::SettingsRegistry::new(
+                settings_service,
+            ))),
+            ..Self::test_defaults()
+        }
+    }
+
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn test_defaults() -> Self {
         Self {
             distributed_lock: None,
             cache_invalidation: None,
-            version_fence: None,
-            playback_l2_cache: None,
-            room_settings_l2_cache: None,
-            room_settings_cache_key_prefix: None,
+            version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
+            playback_l2_cache: crate::cache::PlaybackStateCache::new(
+                Arc::new(crate::cache::NoopCacheL2),
+                crate::service::PlaybackService::DEFAULT_CACHE_SIZE,
+                crate::service::PlaybackService::DEFAULT_CACHE_TTL_SECS,
+                crate::service::PlaybackService::DEFAULT_CACHE_TTL_SECS,
+                "playback_state:".to_string(),
+            ),
+            room_settings_l2_cache: Arc::new(crate::cache::NoopCacheL2),
+            room_settings_cache_key_prefix: "room_settings:".to_string(),
             credential_encryption: None,
             credential_repo: None,
+            provider_access_service: None,
             audit_service: None,
             brute_force_service: None,
             settings_registry: None,
             user_notification_service: None,
             opaque_password_service: Arc::new(OpaquePasswordService::new_ephemeral_for_process()),
-            opaque_password_registration_session_store: None,
-            opaque_password_login_session_store: None,
+            opaque_password_registration_session_store:
+                crate::service::room::local_room_opaque_password_registration_session_store(),
+            opaque_password_login_session_store:
+                crate::service::room::local_room_opaque_password_login_session_store(),
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,

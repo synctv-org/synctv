@@ -474,6 +474,13 @@ impl RoomSettings {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn test_dynamic_validation() {
         assert!(RoomSettingsRegistry::validate_setting("chat_enabled", "true").is_ok());
@@ -495,10 +502,16 @@ mod tests {
         let mut settings = RoomSettings::default();
         assert!(settings.chat_enabled.0);
 
-        RoomSettingsRegistry::apply_setting(&mut settings, "chat_enabled", "false").unwrap();
+        ok(
+            RoomSettingsRegistry::apply_setting(&mut settings, "chat_enabled", "false"),
+            "chat_enabled setting should apply",
+        );
         assert!(!settings.chat_enabled.0);
 
-        RoomSettingsRegistry::apply_setting(&mut settings, "max_members", "42").unwrap();
+        ok(
+            RoomSettingsRegistry::apply_setting(&mut settings, "max_members", "42"),
+            "max_members setting should apply",
+        );
         assert_eq!(settings.max_members.0, 42);
     }
 
@@ -519,7 +532,10 @@ mod tests {
     #[test]
     fn test_set_by_key_delegates_to_registry() {
         let mut settings = RoomSettings::default();
-        settings.set_by_key("chat_enabled", "false").unwrap();
+        ok(
+            settings.set_by_key("chat_enabled", "false"),
+            "set_by_key should apply chat_enabled",
+        );
         assert!(!settings.chat_enabled.0);
     }
 

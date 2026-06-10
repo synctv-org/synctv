@@ -583,6 +583,13 @@ pub fn validate_path_for_traversal(path: &str) -> Result<(), ValidationError> {
 mod tests {
     use super::*;
 
+    fn result_err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
+        match result {
+            Ok(_) => std::panic::panic_any(context.to_string()),
+            Err(error) => error,
+        }
+    }
+
     #[test]
     fn test_media_name_validation_uses_character_count() {
         assert!(validate_media_name(&"a".repeat(MEDIA_NAME_MAX)).is_ok());
@@ -847,12 +854,12 @@ mod tests {
     #[test]
     fn test_validation_error_messages() {
         let validator = UsernameValidator::new();
-        let err = validator.validate("ab").unwrap_err();
+        let err = result_err(validator.validate("ab"), "short username should fail");
         assert!(err.to_string().contains("username"));
         assert!(err.to_string().contains('3'));
 
         let validator = PasswordValidator::new();
-        let err = validator.validate("weak").unwrap_err();
+        let err = result_err(validator.validate("weak"), "weak password should fail");
         assert!(err.to_string().contains("password"));
         assert!(err.to_string().contains('8'));
     }
@@ -875,7 +882,7 @@ mod tests {
                 assert!(msgs.contains("email"));
                 assert!(msgs.contains("password"));
             }
-            _ => panic!("Expected Multiple errors"),
+            _ => std::panic::panic_any("Expected Multiple errors"),
         }
     }
 
@@ -905,7 +912,7 @@ mod tests {
         // Single error should be Field variant, not Multiple
         match result {
             Err(ValidationError::Field { field, .. }) => assert_eq!(field, "username"),
-            _ => panic!("Expected Field error for single validation failure"),
+            _ => std::panic::panic_any("Expected Field error for single validation failure"),
         }
     }
 

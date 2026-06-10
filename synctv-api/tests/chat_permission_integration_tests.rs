@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
+mod support;
+
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -89,7 +91,7 @@ fn make_chat_service_with_audit(
             cache_size: 1000,
             cache_ttl_secs: 300,
             room_settings_repo: Some(room_settings_repo.clone()),
-            ..synctv_core::service::permission::PermissionServiceRuntime::default()
+            ..synctv_core::service::permission::PermissionServiceRuntime::local_only()
         },
     )
     .expect("permission service should build");
@@ -126,7 +128,6 @@ fn make_client_api(
     chat_service: Arc<synctv_core::service::ChatService>,
 ) -> ClientApiImpl {
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-    connection_manager.start();
 
     ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
@@ -137,16 +138,16 @@ fn make_client_api(
             publish_key_service: None,
             jwt_service: JwtService::new(TEST_JWT_SECRET).unwrap(),
             live_streaming_infrastructure: None,
-            providers_manager: None,
             settings_registry: None,
-            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
             chat_service: Some(chat_service),
-            credential_encryption: None,
-            provider_stores: None,
+            provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
+                "test:provider:",
+            )),
             email_api: None,
             passkey_service: None,
         },
-        synctv_api::impls::ClientApiRuntime::test_disabled(),
+        support::client_api_runtime(),
     )
 }
 

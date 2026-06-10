@@ -3,7 +3,6 @@
 //! Tests playback control including seek, speed, media switching, and
 //! optimistic lock behavior with real `PostgreSQL` via testcontainers.
 //!
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -23,9 +22,10 @@ use synctv_core::{
     Error,
 };
 use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{TestOptionExt, TestResultExt};
 fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = JwtService::new(secret).checked("JWT service should be created");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -44,7 +44,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+    RoomService::new_for_tests(pool, user_service).checked("room service should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -91,7 +91,7 @@ async fn create_top_level_playlist(
     synctv_core::repository::PlaylistRepository::new(pool.clone())
         .create(&playlist)
         .await
-        .expect("Top-level playlist should be created")
+        .checked("top-level playlist should be created")
 }
 
 async fn attach_test_media(
@@ -118,12 +118,12 @@ async fn attach_test_media(
     let media = MediaRepository::new(pool.clone())
         .create(&media)
         .await
-        .expect("test media should be created");
+        .checked("test media should be created");
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
     let mut state = playback_repo
         .create_or_get(&room_id)
         .await
-        .expect("playback state should be created");
+        .checked("playback state should be created");
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
     state.target.clear();
@@ -131,7 +131,7 @@ async fn attach_test_media(
     playback_repo
         .update(&state)
         .await
-        .expect("playback state should attach test media")
+        .checked("playback state should attach test media")
 }
 
 #[tokio::test]
@@ -144,7 +144,7 @@ async fn test_seek_negative_rejected() {
     let owner = user_repo
         .create(&make_user("seek_neg_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -155,21 +155,21 @@ async fn test_seek_negative_rejected() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
 
     let result = playback_service.seek(room.id, owner.id, -5.0).await;
 
     assert!(result.is_err());
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::InvalidInput(msg) => {
             assert!(
                 msg.contains("non-negative") || msg.contains("negative"),
                 "Error should mention non-negative: {msg}"
             );
         }
-        other => panic!("Expected InvalidInput error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected InvalidInput error, got: {other:?}")),
     }
 }
 
@@ -183,7 +183,7 @@ async fn test_speed_zero_rejected() {
     let owner = user_repo
         .create(&make_user("speed_zero_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -194,21 +194,21 @@ async fn test_speed_zero_rejected() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
 
     let result = playback_service.change_speed(room.id, owner.id, 0.0).await;
 
     assert!(result.is_err());
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::InvalidInput(msg) => {
             assert!(
                 msg.contains("Speed") || msg.contains("speed"),
                 "Error should mention speed: {msg}"
             );
         }
-        other => panic!("Expected InvalidInput error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected InvalidInput error, got: {other:?}")),
     }
 }
 
@@ -222,7 +222,7 @@ async fn test_speed_above_max_rejected() {
     let owner = user_repo
         .create(&make_user("speed_max_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -233,21 +233,21 @@ async fn test_speed_above_max_rejected() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
 
     let result = playback_service.change_speed(room.id, owner.id, 17.0).await;
 
     assert!(result.is_err());
-    match result.unwrap_err() {
+    match result.failed("operation should fail") {
         Error::InvalidInput(msg) => {
             assert!(
                 msg.contains("Speed") || msg.contains("16"),
                 "Error should mention speed limit: {msg}"
             );
         }
-        other => panic!("Expected InvalidInput error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected InvalidInput error, got: {other:?}")),
     }
 }
 
@@ -259,7 +259,10 @@ async fn test_switch_media_resets_position() {
     let room_service = make_room_service(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("switch_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("switch_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -270,7 +273,7 @@ async fn test_switch_media_resets_position() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
 
@@ -291,7 +294,10 @@ async fn test_switch_media_resets_position() {
         updated_at: Utc::now(),
         version: 0,
     };
-    let media = media_repo.create(&media).await.unwrap();
+    let media = media_repo
+        .create(&media)
+        .await
+        .checked("test operation should succeed");
 
     // First seek to a non-zero position
     let playback_service = room_service.playback_service();
@@ -299,13 +305,13 @@ async fn test_switch_media_resets_position() {
     playback_service
         .seek(room.id, owner.id, 42.5)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Switch media should reset position to 0
     let state = playback_service
         .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(
         (state.position - 0.0).abs() < f64::EPSILON,
@@ -331,7 +337,7 @@ async fn test_switch_media_rejects_target() {
     let owner = user_repo
         .create(&make_user("switch_media_relpath_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -342,7 +348,7 @@ async fn test_switch_media_rejects_target() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media = Media {
         id: MediaId::new(),
@@ -360,7 +366,10 @@ async fn test_switch_media_rejects_target() {
         updated_at: Utc::now(),
         version: 0,
     };
-    let media = media_repo.create(&media).await.unwrap();
+    let media = media_repo
+        .create(&media)
+        .await
+        .checked("test operation should succeed");
 
     let result = room_service
         .playback_service()
@@ -387,7 +396,7 @@ async fn test_switch_media_rejects_inactive_creator() {
     let owner = user_repo
         .create(&make_user("switch_inactive_creator_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -398,12 +407,12 @@ async fn test_switch_media_rejects_inactive_creator() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media_creator = user_repo
         .create(&make_user("switch_inactive_media_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media = Media {
         id: MediaId::new(),
@@ -421,7 +430,10 @@ async fn test_switch_media_rejects_inactive_creator() {
         updated_at: Utc::now(),
         version: 0,
     };
-    let media = media_repo.create(&media).await.unwrap();
+    let media = media_repo
+        .create(&media)
+        .await
+        .checked("test operation should succeed");
 
     user_repo
         .ban(
@@ -430,21 +442,21 @@ async fn test_switch_media_rejects_inactive_creator() {
             Some("playback service test".to_string()),
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = room_service
         .playback_service()
         .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await;
 
-    match result.expect_err("media created by banned user must not be playable") {
+    match result.failed("media created by banned user must not be playable") {
         Error::Authorization(message) => {
             assert!(
                 message.contains("creator") && message.contains("active"),
                 "error should explain creator status: {message}"
             );
         }
-        other => panic!("expected authorization error, got: {other:?}"),
+        other => std::panic::panic_any(format!("expected authorization error, got: {other:?}")),
     }
 }
 
@@ -459,7 +471,7 @@ async fn test_switch_with_empty_target_clears_playback_state() {
     let owner = user_repo
         .create(&make_user("switch_clear_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -470,7 +482,7 @@ async fn test_switch_with_empty_target_clears_playback_state() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let media = Media {
         id: MediaId::new(),
@@ -488,22 +500,25 @@ async fn test_switch_with_empty_target_clears_playback_state() {
         updated_at: Utc::now(),
         version: 0,
     };
-    let media = media_repo.create(&media).await.unwrap();
+    let media = media_repo
+        .create(&media)
+        .await
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
     playback_service
         .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     playback_service
         .seek(room.id, owner.id, 33.0)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let state = playback_service
         .switch(room.id, owner.id, None, None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(state.playing_media_id.is_none());
     assert!(state.playing_playlist_id.is_none());
@@ -520,12 +535,15 @@ async fn test_playback_optimistic_lock_concurrent() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("olc_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("olc_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room("OLC Room".to_string(), String::new(), owner.id, None, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     attach_test_media(&pool, room.id, owner.id).await;
 
     // Spawn multiple concurrent seek operations
@@ -555,7 +573,7 @@ async fn test_playback_optimistic_lock_concurrent() {
                     "OptimisticLockConflict should not leak to caller"
                 );
             }
-            Err(e) => panic!("Task panicked: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("seek task should complete: {e:?}")),
         }
     }
 
@@ -563,7 +581,10 @@ async fn test_playback_optimistic_lock_concurrent() {
 
     // Final state should be valid
     let playback_service = room_service.playback_service();
-    let state = playback_service.get_state(&room.id).await.unwrap();
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         state.position >= 0.0,
         "Final position should be non-negative"
@@ -586,7 +607,7 @@ async fn test_rapid_sequential_seek_operations() {
     let owner = user_repo
         .create(&make_user("rapid_seek_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -597,7 +618,7 @@ async fn test_rapid_sequential_seek_operations() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     attach_test_media(&pool, room.id, owner.id).await;
 
     // Spawn 10 concurrent seek operations
@@ -631,7 +652,7 @@ async fn test_rapid_sequential_seek_operations() {
                 positions.push(response.state.position);
             }
             Ok(Err(_)) => {} // Some may fail due to conflicts
-            Err(e) => panic!("Task panicked: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("seek task should complete: {e:?}")),
         }
     }
 
@@ -639,7 +660,10 @@ async fn test_rapid_sequential_seek_operations() {
 
     // Final state should be valid
     let playback_service = room_service.playback_service();
-    let state = playback_service.get_state(&room.id).await.unwrap();
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         state.position >= 0.0,
         "Final position should be non-negative"
@@ -668,7 +692,7 @@ async fn test_play_next_concurrent_playlist_modification() {
     let owner = user_repo
         .create(&make_user("playnext_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -679,7 +703,7 @@ async fn test_play_next_concurrent_playlist_modification() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
 
@@ -702,7 +726,10 @@ async fn test_play_next_concurrent_playlist_modification() {
             updated_at: Utc::now(),
             version: 0,
         };
-        let media = media_repo.create(&media).await.unwrap();
+        let media = media_repo
+            .create(&media)
+            .await
+            .checked("test operation should succeed");
         media_ids.push(media.id);
     }
 
@@ -710,10 +737,13 @@ async fn test_play_next_concurrent_playlist_modification() {
     playback_service
         .switch(room.id, owner.id, Some(media_ids[0]), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Verify we're playing first media
-    let state = playback_service.get_state(&room.id).await.unwrap();
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert_eq!(state.playing_media_id, Some(media_ids[0]));
 
     // Set up RoomSettings with auto_play enabled
@@ -723,10 +753,10 @@ async fn test_play_next_concurrent_playlist_modification() {
     let result = playback_service
         .play_next(&room.id, &settings)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(result.is_some(), "play_next should return new state");
-    let new_state = result.unwrap();
+    let new_state = result.checked("test operation should succeed");
     assert_eq!(new_state.playing_media_id, Some(media_ids[1]));
 }
 
@@ -748,7 +778,7 @@ async fn test_play_next_at_end_of_playlist() {
     let owner = user_repo
         .create(&make_user("playlist_end_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -759,7 +789,7 @@ async fn test_play_next_at_end_of_playlist() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
 
@@ -782,7 +812,10 @@ async fn test_play_next_at_end_of_playlist() {
             updated_at: Utc::now(),
             version: 0,
         };
-        let media = media_repo.create(&media).await.unwrap();
+        let media = media_repo
+            .create(&media)
+            .await
+            .checked("test operation should succeed");
         media_ids.push(media.id);
     }
 
@@ -790,7 +823,7 @@ async fn test_play_next_at_end_of_playlist() {
     playback_service
         .switch(room.id, owner.id, Some(media_ids[2]), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Sequential mode (no loop) - play_next should return None
     let settings = RoomSettings {
@@ -805,7 +838,7 @@ async fn test_play_next_at_end_of_playlist() {
     let result = playback_service
         .play_next(&room.id, &settings)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // At end of playlist with no loop, should return None
     // (or the implementation may return the state unchanged)
@@ -827,12 +860,15 @@ async fn test_play_next_with_loop_enabled() {
     let media_repo = MediaRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("loop_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("loop_owner"))
+        .await
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room("Loop Room".to_string(), String::new(), owner.id, None, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
 
@@ -855,7 +891,10 @@ async fn test_play_next_with_loop_enabled() {
             updated_at: Utc::now(),
             version: 0,
         };
-        let media = media_repo.create(&media).await.unwrap();
+        let media = media_repo
+            .create(&media)
+            .await
+            .checked("test operation should succeed");
         media_ids.push(media.id);
     }
 
@@ -863,7 +902,7 @@ async fn test_play_next_with_loop_enabled() {
     playback_service
         .switch(room.id, owner.id, Some(media_ids[2]), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Loop (RepeatAll) mode enabled via auto_play
     let settings = RoomSettings {
@@ -880,11 +919,11 @@ async fn test_play_next_with_loop_enabled() {
     let result = playback_service
         .play_next(&room.id, &settings)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // With loop, should return to first item
     assert!(result.is_some(), "With loop, play_next should return state");
-    let state = result.unwrap();
+    let state = result.checked("test operation should succeed");
     assert_eq!(state.playing_media_id, Some(media_ids[0]));
 }
 
@@ -899,7 +938,7 @@ async fn test_empty_playlist_handling() {
     let owner = user_repo
         .create(&make_user("empty_playlist_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -910,7 +949,7 @@ async fn test_empty_playlist_handling() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
     let settings = RoomSettings::default();
@@ -919,7 +958,7 @@ async fn test_empty_playlist_handling() {
     let result = playback_service
         .play_next(&room.id, &settings)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(
         result.is_none(),
@@ -927,7 +966,10 @@ async fn test_empty_playlist_handling() {
     );
 
     // Get state should work
-    let state = playback_service.get_state(&room.id).await.unwrap();
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         state.playing_media_id.is_none(),
         "No media should be playing"
@@ -950,7 +992,7 @@ async fn test_concurrent_speed_changes() {
     let owner = user_repo
         .create(&make_user("speed_concurrent_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -961,7 +1003,7 @@ async fn test_concurrent_speed_changes() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Spawn 10 concurrent speed change operations
     let mut handles = vec![];
@@ -989,7 +1031,7 @@ async fn test_concurrent_speed_changes() {
         match result {
             Ok(Ok(_)) => success_count += 1,
             Ok(Err(_)) => {} // Some may fail due to conflicts
-            Err(e) => panic!("Task panicked: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("playback task should complete: {e:?}")),
         }
     }
 
@@ -1000,7 +1042,10 @@ async fn test_concurrent_speed_changes() {
 
     // Final state should have a valid speed
     let playback_service = room_service.playback_service();
-    let state = playback_service.get_state(&room.id).await.unwrap();
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(state.speed > 0.0, "Speed should be positive");
     assert!(state.speed <= 4.0, "Speed should be <= max");
 }
@@ -1017,7 +1062,7 @@ async fn test_state_consistency_after_mixed_operations() {
     let owner = user_repo
         .create(&make_user("mixed_ops_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1028,7 +1073,7 @@ async fn test_state_consistency_after_mixed_operations() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
 
@@ -1049,7 +1094,10 @@ async fn test_state_consistency_after_mixed_operations() {
         updated_at: Utc::now(),
         version: 0,
     };
-    let media = media_repo.create(&media).await.unwrap();
+    let media = media_repo
+        .create(&media)
+        .await
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
 
@@ -1057,13 +1105,13 @@ async fn test_state_consistency_after_mixed_operations() {
     playback_service
         .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Seek
     let seek_response = playback_service
         .seek(room.id, owner.id, 50.0)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(seek_response.seek_applied, "Seek should be applied");
     assert!(
         (seek_response.state.position - 50.0).abs() < f64::EPSILON,
@@ -1075,7 +1123,7 @@ async fn test_state_consistency_after_mixed_operations() {
     let speed_state = playback_service
         .change_speed(room.id, owner.id, 1.5)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(
         speed_state.position >= 50.0,
         "Position must not move backward after changing speed"
@@ -1085,7 +1133,7 @@ async fn test_state_consistency_after_mixed_operations() {
     let paused_state = playback_service
         .set_playing(room.id, owner.id, false)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(
         paused_state.position >= speed_state.position,
         "Pause should preserve or advance the effective position"
@@ -1096,14 +1144,17 @@ async fn test_state_consistency_after_mixed_operations() {
     let resumed_state = playback_service
         .set_playing(room.id, owner.id, true)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(
         (resumed_state.position - paused_state.position).abs() < 0.1,
         "Resume should preserve the paused position"
     );
 
     // Verify final state is consistent.
-    let state = playback_service.get_state(&room.id).await.unwrap();
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
 
     assert_eq!(state.playing_media_id, Some(media.id));
     assert!(
@@ -1130,7 +1181,7 @@ async fn test_seek_success_returns_applied_true() {
     let owner = user_repo
         .create(&make_user("seek_response_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1141,7 +1192,7 @@ async fn test_seek_success_returns_applied_true() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
     attach_test_media(&pool, room.id, owner.id).await;
@@ -1150,7 +1201,7 @@ async fn test_seek_success_returns_applied_true() {
     let response = playback_service
         .seek(room.id, owner.id, 42.5)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(
         response.seek_applied,
@@ -1178,7 +1229,7 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
     let owner = user_repo
         .create(&make_user("seek_retry_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1189,7 +1240,7 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
     attach_test_media(&pool, room.id, owner.id).await;
@@ -1231,7 +1282,7 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
                 }
             }
             Ok(Err(_)) => {} // Other errors are OK
-            Err(e) => panic!("Task panicked: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("playback task should complete: {e:?}")),
         }
     }
 
@@ -1239,7 +1290,10 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
     // Note: degraded_count may be 0 if all succeed within retry budget
 
     // Final state should be valid
-    let final_state = playback_service.get_state(&room.id).await.unwrap();
+    let final_state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("test operation should succeed");
     assert!(
         final_state.position >= 0.0,
         "Final position should be non-negative"
@@ -1260,7 +1314,7 @@ async fn test_seek_response_always_contains_valid_state() {
     let owner = user_repo
         .create(&make_user("seek_state_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1271,7 +1325,7 @@ async fn test_seek_response_always_contains_valid_state() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let playback_service = room_service.playback_service();
     attach_test_media(&pool, room.id, owner.id).await;
@@ -1280,13 +1334,13 @@ async fn test_seek_response_always_contains_valid_state() {
     playback_service
         .seek(room.id, owner.id, 100.0)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Now seek to a different position
     let response = playback_service
         .seek(room.id, owner.id, 200.0)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Response should have valid state (either at 200 if applied, or playback position)
     assert!(
@@ -1309,7 +1363,7 @@ async fn test_seek_degraded_response_has_informative_message() {
     let owner = user_repo
         .create(&make_user("seek_msg_owner"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -1320,7 +1374,7 @@ async fn test_seek_degraded_response_has_informative_message() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     attach_test_media(&pool, room.id, owner.id).await;
 
     // Spawn many concurrent seeks
@@ -1361,7 +1415,7 @@ async fn test_seek_degraded_response_has_informative_message() {
                 }
             }
             Ok(Err(_)) => {}
-            Err(e) => panic!("Task panicked: {e:?}"),
+            Err(e) => std::panic::panic_any(format!("playback task should complete: {e:?}")),
         }
     }
 }

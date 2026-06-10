@@ -146,9 +146,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_client_actor_user_accepts_active_user() {
+    fn validate_client_actor_user_accepts_active_user() -> Result<(), tonic::Status> {
         let user = make_actor_user("root", UserStatus::Active);
-        validate_client_actor_user(&user).expect("active actor should be accepted");
+        validate_client_actor_user(&user)?;
+        Ok(())
     }
 
     #[test]
@@ -181,11 +182,12 @@ mod tests {
     }
 
     #[test]
-    fn enum_mapping_preserves_status_user_sort() {
+    fn enum_mapping_preserves_status_user_sort() -> Result<(), tonic::Status> {
         assert_eq!(
-            map_user_list_sort_by(crate::proto::UserListSortBy::Status as i32).unwrap(),
+            map_user_list_sort_by(crate::proto::UserListSortBy::Status as i32)?,
             synctv_proto::admin::UserListSortBy::Status as i32
         );
+        Ok(())
     }
 
     #[test]

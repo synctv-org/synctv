@@ -79,25 +79,26 @@ pub struct PermissionServiceRuntime {
     pub cache_ttl_secs: u64,
     pub room_settings_repo: Option<RoomSettingsRepository>,
     pub invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
-    pub version_fence: Option<Arc<dyn VersionFenceStore>>,
-    pub member_permission_l2_cache: Option<Arc<dyn CacheL2Backend>>,
+    pub version_fence: Arc<dyn VersionFenceStore>,
+    pub member_permission_l2_cache: Arc<dyn CacheL2Backend>,
     pub member_permission_cache_key_prefix: String,
-    pub room_settings_l2_cache: Option<Arc<dyn CacheL2Backend>>,
+    pub room_settings_l2_cache: Arc<dyn CacheL2Backend>,
     pub room_settings_cache_key_prefix: String,
 }
 
-impl Default for PermissionServiceRuntime {
-    fn default() -> Self {
+impl PermissionServiceRuntime {
+    #[must_use]
+    pub fn local_only() -> Self {
         Self {
             settings_registry: None,
             cache_size: PermissionService::DEFAULT_CACHE_SIZE,
             cache_ttl_secs: PermissionService::DEFAULT_CACHE_TTL_SECS,
             room_settings_repo: None,
             invalidation_service: None,
-            version_fence: None,
-            member_permission_l2_cache: None,
+            version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
+            member_permission_l2_cache: Arc::new(crate::cache::NoopCacheL2),
             member_permission_cache_key_prefix: "member_permission:".to_string(),
-            room_settings_l2_cache: None,
+            room_settings_l2_cache: Arc::new(crate::cache::NoopCacheL2),
             room_settings_cache_key_prefix: "room_settings:".to_string(),
         }
     }

@@ -17,6 +17,21 @@ pub(super) struct UserOwnedRoomEntries {
 }
 
 impl UserService {
+    async fn insert_deleted_room_outbox_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: &RoomId,
+        deleted_room_outbox_events: &HashMap<RoomId, NewRealtimeOutboxEvent>,
+    ) -> Result<()> {
+        if let (Some(outbox), Some(event)) = (
+            &self.realtime_outbox,
+            deleted_room_outbox_events.get(room_id),
+        ) {
+            outbox.insert_with_executor(event, &mut **tx).await?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn query_owned_room_ids_in_tx(
         &self,
         user_id: &UserId,
@@ -182,12 +197,8 @@ impl UserService {
             for room_id in &owned_room_ids {
                 let impact =
                     crate::service::room::soft_delete_room_and_cleanup_in_tx(tx, room_id).await?;
-                if let (Some(outbox), Some(event)) = (
-                    &self.realtime_outbox,
-                    deleted_room_outbox_events.get(room_id),
-                ) {
-                    outbox.insert_with_executor(event, &mut **tx).await?;
-                }
+                self.insert_deleted_room_outbox_tx(tx, room_id, deleted_room_outbox_events)
+                    .await?;
                 deleted_playlists += impact.deleted_playlist_ids.len();
                 deleted_media += impact.deleted_media_ids.len();
                 if impact.playback_rows_deleted > 0 {

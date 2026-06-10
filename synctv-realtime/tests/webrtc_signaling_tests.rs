@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use synctv_core::models::id::{RoomId, UserId};
-use synctv_realtime::sync::events::{RealtimeEvent, WebRTCSignalKind};
-use synctv_realtime::{ConnectionId, ConnectionManager, RoomMessageHub};
+use synctv_realtime::sync::{ConnectionId, ConnectionManager, RoomMessageHub};
+use synctv_realtime::sync::{RealtimeEvent, WebRTCSignalKind};
 
 fn stable_test_id(s: &str) -> i64 {
     s.bytes().fold(0_i64, |acc, byte| {
@@ -589,52 +589,4 @@ fn test_large_sdp_payload() {
     } else {
         panic!("Expected WebRTCSignaling");
     }
-}
-
-// Test 11: Broadcast to user's all connections
-
-/// Test broadcasting signaling to all connections of a user.
-#[tokio::test]
-async fn test_broadcast_to_user_all_connections() {
-    let hub = RoomMessageHub::new();
-    let room = rid("room1");
-    let user = uid("user1");
-
-    // Same user with multiple connections (e.g., multiple tabs)
-    let mut rx1 = hub
-        .subscribe(room, user, ConnectionId::new("conn1"))
-        .await
-        .expect("subscribe should succeed");
-    let mut rx2 = hub
-        .subscribe(room, user, ConnectionId::new("conn2"))
-        .await
-        .expect("subscribe should succeed");
-    let mut rx3 = hub
-        .subscribe(room, user, ConnectionId::new("conn3"))
-        .await
-        .expect("subscribe should succeed");
-
-    // Broadcast to user (all connections)
-    let event = RealtimeEvent::WebRTCSignaling {
-        event_id: synctv_common::snanoid!(16),
-        room_id: room,
-        message_type: WebRTCSignalKind::Offer,
-        from: "other|conn0".to_string(),
-        to: format!("{user}:conn1"), // Target first connection
-        data: "SDP".to_string(),
-        timestamp: chrono::Utc::now(),
-    };
-
-    // broadcast_to_user sends to all user connections
-    let sent = hub.broadcast_to_user(&room, &user, &event);
-    assert_eq!(sent, 3, "Should send to all 3 connections");
-
-    // All should receive
-    let r1 = tokio::time::timeout(Duration::from_millis(100), rx1.recv()).await;
-    let r2 = tokio::time::timeout(Duration::from_millis(100), rx2.recv()).await;
-    let r3 = tokio::time::timeout(Duration::from_millis(100), rx3.recv()).await;
-
-    assert!(r1.is_ok());
-    assert!(r2.is_ok());
-    assert!(r3.is_ok());
 }

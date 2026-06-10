@@ -32,7 +32,7 @@ const RELATED_SUBTITLE_FETCH_LIMIT: usize = 32;
 fn alist_headers() -> HashMap<String, String> {
     HashMap::from([(
         "User-Agent".to_string(),
-        synctv_media_providers::error::PROVIDER_USER_AGENT.to_string(),
+        synctv_media_providers::PROVIDER_USER_AGENT.to_string(),
     )])
 }
 
@@ -237,7 +237,7 @@ fn signed_m3u8_segment_proxy_base(
 ///
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
 pub struct AlistProvider {
-    provider_instance_manager: Option<Arc<RemoteProviderManager>>,
+    provider_instance_manager: Arc<RemoteProviderManager>,
     client_manager: Arc<ProviderClientManager>,
 }
 
@@ -255,7 +255,7 @@ impl AlistProvider {
         provider_instance_manager: Arc<RemoteProviderManager>,
     ) -> Result<Self, ProviderError> {
         Ok(Self {
-            provider_instance_manager: Some(provider_instance_manager),
+            provider_instance_manager,
             client_manager: Arc::new(ProviderClientManager::new()?),
         })
     }
@@ -265,26 +265,17 @@ impl AlistProvider {
         provider_instance_manager: Arc<RemoteProviderManager>,
         client_manager: Arc<ProviderClientManager>,
     ) -> Self {
-        Self::with_optional_manager_and_client_manager(
-            Some(provider_instance_manager),
-            client_manager,
-        )
-    }
-
-    #[must_use]
-    pub fn with_optional_manager_and_client_manager(
-        provider_instance_manager: Option<Arc<RemoteProviderManager>>,
-        client_manager: Arc<ProviderClientManager>,
-    ) -> Self {
         Self {
             provider_instance_manager,
             client_manager,
         }
     }
 
+    #[cfg(test)]
     pub fn new_local_only() -> Result<Self, ProviderError> {
         Ok(Self {
-            provider_instance_manager: None,
+            provider_instance_manager:
+                crate::service::remote_provider_manager::empty_provider_instance_manager(),
             client_manager: Arc::new(ProviderClientManager::new()?),
         })
     }
@@ -294,10 +285,10 @@ impl AlistProvider {
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
     ) -> Result<AlistClientArc, ProviderError> {
-        match (instance_name, self.provider_instance_manager.as_ref()) {
-            (None, _) => Ok(self.client_manager.local_alist_client()),
-            (Some(_), Some(manager)) => {
-                manager
+        match instance_name {
+            None => Ok(self.client_manager.local_alist_client()),
+            Some(_) => {
+                self.provider_instance_manager
                     .resolve_client_required_with_context(
                         instance_name,
                         request_context,
@@ -306,10 +297,6 @@ impl AlistProvider {
                     )
                     .await
             }
-            (Some(_), None) => Err(ProviderError::Internal(
-                "provider instance manager is required for remote Alist playback resolution"
-                    .to_string(),
-            )),
         }
     }
 
@@ -572,44 +559,25 @@ impl AlistProvider {
             )
         })?;
 
-        if let Some(access_service) = &ctx.provider_access_service {
-            let binding = access_service
-                .alist_binding(
-                    *credential_owner_id,
-                    &config.server_id,
-                    super::bound_provider_instance_name(ctx),
-                    ctx.request_context(),
-                )
-                .await?;
-            return Ok(ResolvedAlistBinding {
-                path: config.path,
-                password: config.password,
-                credential_owner_id: binding.credential_owner_id,
-                credential_revision: binding.credential_revision,
-            });
-        }
-
-        let repo = ctx.credential_repo.ok_or_else(|| {
-            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
+        let access_service = ctx.provider_access_service.as_ref().ok_or_else(|| {
+            ProviderError::Internal(
+                "provider_access_service not available in ProviderContext".to_string(),
+            )
         })?;
-        let resolved_credential = super::credential_resolver::resolve_credential_record_for_owner(
-            repo,
-            Self::NAME,
-            *credential_owner_id,
-            &config.server_id,
-            ctx.request_context(),
-        )
-        .await?;
-
-        match resolved_credential.credential {
-            crate::models::ProviderCredential::Alist { .. } => Ok(ResolvedAlistBinding {
-                path: config.path,
-                password: config.password,
-                credential_owner_id: credential_owner_id.to_string(),
-                credential_revision: resolved_credential.revision,
-            }),
-            _ => Err(ProviderError::InvalidCredentialType),
-        }
+        let binding = access_service
+            .alist_binding(
+                *credential_owner_id,
+                &config.server_id,
+                super::bound_provider_instance_name(ctx),
+                ctx.request_context(),
+            )
+            .await?;
+        Ok(ResolvedAlistBinding {
+            path: config.path,
+            password: config.password,
+            credential_owner_id: binding.credential_owner_id,
+            credential_revision: binding.credential_revision,
+        })
     }
 
     /// Resolve AlistSourceConfig into credentials owned by the media/playlist creator.
@@ -625,88 +593,26 @@ impl AlistProvider {
             )
         })?;
 
-        if let Some(access_service) = &ctx.provider_access_service {
-            let access = access_service
-                .alist_access(
-                    *credential_owner_id,
-                    &config.server_id,
-                    super::bound_provider_instance_name(ctx),
-                    ctx.request_context(),
-                )
-                .await?;
-            return Ok(ResolvedAlistConfig {
-                host: access.host,
-                token: access.token,
-                path: config.path,
-                password: config.password,
-                provider_instance_name: access.provider_instance_name,
-            });
-        }
-
-        let repo = ctx.credential_repo.ok_or_else(|| {
-            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
+        let access_service = ctx.provider_access_service.as_ref().ok_or_else(|| {
+            ProviderError::Internal(
+                "provider_access_service not available in ProviderContext".to_string(),
+            )
         })?;
-        let resolved_credential = super::credential_resolver::resolve_credential_record_for_owner(
-            repo,
-            Self::NAME,
-            *credential_owner_id,
-            &config.server_id,
-            ctx.request_context(),
-        )
-        .await?;
-
-        match resolved_credential.credential {
-            crate::models::ProviderCredential::Alist {
-                host,
-                username,
-                password,
-                otp_secret,
-            } => {
-                let otp_code = otp_secret.as_deref().map_or_else(
-                    || Ok(String::new()),
-                    |secret| {
-                        crate::models::ProviderCredential::current_alist_otp_code(secret)
-                            .map_err(ProviderError::InvalidConfig)
-                    },
-                )?;
-                let login_req = synctv_media_providers::grpc::alist::LoginReq {
-                    host: host.clone(),
-                    username,
-                    credential: Some(
-                        synctv_media_providers::grpc::alist::login_req::Credential::HashedPassword(
-                            password,
-                        ),
-                    ),
-                    otp_code,
-                };
-                let instance_name = super::bound_provider_instance_name(ctx);
-                let token = self
-                    .provider_login(login_req, instance_name, ctx.request_context())
-                    .await?;
-
-                Ok(ResolvedAlistConfig {
-                    host,
-                    token,
-                    path: config.path,
-                    password: config.password,
-                    provider_instance_name: instance_name.map(std::string::ToString::to_string),
-                })
-            }
-            _ => Err(ProviderError::InvalidCredentialType),
-        }
-    }
-
-    /// Internal login for credential resolution
-    async fn provider_login(
-        &self,
-        req: synctv_media_providers::grpc::alist::LoginReq,
-        instance_name: Option<&str>,
-        request_context: Option<&super::ExecutionControl>,
-    ) -> Result<String, ProviderError> {
-        let client = self
-            .get_client_with_context(instance_name, request_context)
+        let access = access_service
+            .alist_access(
+                *credential_owner_id,
+                &config.server_id,
+                super::bound_provider_instance_name(ctx),
+                ctx.request_context(),
+            )
             .await?;
-        client.login(req).await.map_err(std::convert::Into::into)
+        Ok(ResolvedAlistConfig {
+            host: access.host,
+            token: access.token,
+            path: config.path,
+            password: config.password,
+            provider_instance_name: access.provider_instance_name,
+        })
     }
 
     async fn enrich_related_subtitles(
@@ -1198,14 +1104,7 @@ impl super::proxy::ProviderProxy for AlistProvider {
         ctx: &super::proxy::ProxyRequestContext<'_>,
     ) -> Result<super::proxy::ProxyAction, ProviderError> {
         let sub_path = ctx.sub_path;
-
-        let (version, rest) = sub_path
-            .split_once('/')
-            .map_or((sub_path, None), |(version, rest)| (version, Some(rest)));
-
-        if version.is_empty() {
-            return Err(ProviderError::NotFound);
-        }
+        let version = super::proxy::proxy_version_segment(sub_path)?;
 
         let versioned =
             super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
@@ -1219,7 +1118,9 @@ impl super::proxy::ProviderProxy for AlistProvider {
             return super::proxy::action_for_signed_target_url(ctx, version, url, headers);
         }
 
-        if let Some(rest) = rest {
+        let (_, rest) = super::proxy::split_versioned_proxy_path(sub_path)?;
+
+        {
             if rest == "thumbnail" {
                 let url = versioned
                     .result
@@ -1262,9 +1163,7 @@ impl super::proxy::ProviderProxy for AlistProvider {
                             subtitle_path,
                         )
                     };
-                let Ok(index) = index_str.parse::<usize>() else {
-                    return Err(ProviderError::NotFound);
-                };
+                let index = super::proxy::parse_proxy_index(index_str)?;
                 let subtitle = playback_info
                     .subtitles
                     .get(index)
@@ -1298,9 +1197,7 @@ impl super::proxy::ProviderProxy for AlistProvider {
                             stream_path,
                         )
                     };
-                let Ok(index) = index_str.parse::<usize>() else {
-                    return Err(ProviderError::NotFound);
-                };
+                let index = super::proxy::parse_proxy_index(index_str)?;
                 let url = playback_info
                     .urls
                     .get(index)
@@ -1321,9 +1218,7 @@ impl super::proxy::ProviderProxy for AlistProvider {
                     .playback_infos
                     .get(mode_name)
                     .ok_or(ProviderError::NotFound)?;
-                let index = index_str
-                    .parse::<usize>()
-                    .map_err(|_| ProviderError::NotFound)?;
+                let index = super::proxy::parse_proxy_index(index_str)?;
                 let url = playback_info
                     .urls
                     .get(index)
@@ -1362,9 +1257,8 @@ impl super::proxy::ProviderProxy for AlistProvider {
                 }
                 _ => {}
             }
+            Err(ProviderError::NotFound)
         }
-
-        Err(ProviderError::NotFound)
     }
 }
 
@@ -1848,6 +1742,7 @@ mod tests {
     use super::*;
     use crate::models::UserId;
     use crate::provider::provider_client::AlistTranscodingTask;
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
     use async_trait::async_trait;
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -1881,11 +1776,11 @@ mod tests {
         async fn fs_get(&self, request: FsGetReq) -> Result<FsGetResp, AlistError> {
             assert_eq!(
                 request.headers.get("User-Agent").map(String::as_str),
-                Some(synctv_media_providers::error::PROVIDER_USER_AGENT)
+                Some(synctv_media_providers::PROVIDER_USER_AGENT)
             );
             self.requested_paths
                 .lock()
-                .expect("requested_paths mutex should not be poisoned")
+                .checked("requested_paths mutex should not be poisoned")
                 .push(request.path.clone());
 
             Ok(FsGetResp {
@@ -2041,7 +1936,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_alist_credential_dependencies_use_creator_credential() {
-        let provider = AlistProvider::new_local_only().expect("provider should build");
+        let provider = AlistProvider::new_local_only().checked("provider should build");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_credential_owner_id(UserId::expect_positive(2));
@@ -2053,7 +1948,7 @@ mod tests {
                     "server_id": "alist-main"
                 }),
             )
-            .expect("Alist dependency extraction should succeed");
+            .checked("Alist dependency extraction should succeed");
 
         assert_eq!(
             dependencies,
@@ -2067,7 +1962,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_alist_credential_dependencies_require_explicit_creator_credential_owner() {
-        let provider = AlistProvider::new_local_only().expect("provider should build");
+        let provider = AlistProvider::new_local_only().checked("provider should build");
         let ctx = ProviderContext::new("test").with_user_id(UserId::expect_positive(1));
         let err = provider
             .credential_dependencies(
@@ -2077,7 +1972,7 @@ mod tests {
                     "server_id": "alist-main"
                 }),
             )
-            .expect_err("Alist must not silently fall back to viewer credentials");
+            .failed("Alist must not silently fall back to viewer credentials");
 
         assert!(
             err.to_string().contains("credential_owner_id"),
@@ -2088,14 +1983,16 @@ mod tests {
     #[tokio::test]
     async fn test_fs_search_falls_back_to_list_when_upstream_search_is_unavailable() {
         let default_clients = ProviderClientManager::new_for_tests()
-            .expect("default provider HTTP client should build");
+            .checked("default provider HTTP client should build");
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
             Arc::new(SearchUnavailableAlistClient),
             default_clients.local_bilibili_client(),
             default_clients.local_emby_client(),
         ));
-        let provider =
-            AlistProvider::with_optional_manager_and_client_manager(None, client_manager);
+        let provider = AlistProvider::with_client_manager(
+            crate::service::remote_provider_manager::empty_provider_instance_manager(),
+            client_manager,
+        );
 
         let response = provider
             .fs_search(
@@ -2112,7 +2009,7 @@ mod tests {
                 None,
             )
             .await
-            .expect("search unavailable should fall back to unfiltered list");
+            .checked("search unavailable should fall back to unfiltered list");
 
         assert_eq!(response.total, 2);
         assert_eq!(response.content.len(), 2);
@@ -2124,14 +2021,16 @@ mod tests {
     #[tokio::test]
     async fn test_fs_search_fallback_preserves_scope_filter() {
         let default_clients = ProviderClientManager::new_for_tests()
-            .expect("default provider HTTP client should build");
+            .checked("default provider HTTP client should build");
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
             Arc::new(SearchUnavailableAlistClient),
             default_clients.local_bilibili_client(),
             default_clients.local_emby_client(),
         ));
-        let provider =
-            AlistProvider::with_optional_manager_and_client_manager(None, client_manager);
+        let provider = AlistProvider::with_client_manager(
+            crate::service::remote_provider_manager::empty_provider_instance_manager(),
+            client_manager,
+        );
 
         let files = provider
             .fs_search(
@@ -2148,7 +2047,7 @@ mod tests {
                 None,
             )
             .await
-            .expect("search unavailable should fall back to listing files only");
+            .checked("search unavailable should fall back to listing files only");
         assert_eq!(files.total, 1);
         assert_eq!(files.content[0].name, "video.mp4");
 
@@ -2167,14 +2066,14 @@ mod tests {
                 None,
             )
             .await
-            .expect("search unavailable should fall back to listing directories only");
+            .checked("search unavailable should fall back to listing directories only");
         assert_eq!(directories.total, 1);
         assert_eq!(directories.content[0].name, "folder");
     }
 
     #[tokio::test]
     async fn test_prepare_alist_config_rejects_provider_instance_name() {
-        let provider = AlistProvider::new_local_only().expect("provider should build");
+        let provider = AlistProvider::new_local_only().checked("provider should build");
         let config = json!({
             "path": "/media/movies/test.mp4",
             "provider_instance_name": "remote-alist-1",
@@ -2220,7 +2119,7 @@ mod tests {
             "path": "/media/movies",
             "server_id": "srv-xyz"
         });
-        let parsed = AlistSourceConfig::try_from(&config).unwrap();
+        let parsed = AlistSourceConfig::try_from(&config).checked("operation should succeed");
         assert_eq!(parsed.server_id, "srv-xyz");
         assert_eq!(parsed.path, "/media/movies");
     }
@@ -2337,7 +2236,7 @@ mod tests {
             "password": "dir-password",
             "server_id": "test-server"
         });
-        let parsed = AlistSourceConfig::try_from(&config).unwrap();
+        let parsed = AlistSourceConfig::try_from(&config).checked("operation should succeed");
         assert_eq!(parsed.password, Some("dir-password".to_string()));
     }
 
@@ -2527,16 +2426,16 @@ mod tests {
         let transcoded = result
             .playback_infos
             .get("transcoded_HD")
-            .expect("transcoded HD mode should exist");
+            .checked("transcoded HD mode should exist");
         assert_eq!(transcoded.format, "hls");
         assert_eq!(
             transcoded.headers.get("User-Agent").map(String::as_str),
-            Some(synctv_media_providers::error::PROVIDER_USER_AGENT)
+            Some(synctv_media_providers::PROVIDER_USER_AGENT)
         );
         assert_eq!(transcoded.subtitles.len(), 3);
         assert!(transcoded.subtitles.iter().all(|sub| {
             sub.headers.get("User-Agent").map(String::as_str)
-                == Some(synctv_media_providers::error::PROVIDER_USER_AGENT)
+                == Some(synctv_media_providers::PROVIDER_USER_AGENT)
         }));
         assert!(transcoded
             .subtitles
@@ -2550,11 +2449,11 @@ mod tests {
         let direct = result
             .playback_infos
             .get("direct")
-            .expect("direct fallback should exist");
+            .checked("direct fallback should exist");
         assert_eq!(direct.format, "mkv");
         assert_eq!(
             direct.headers.get("User-Agent").map(String::as_str),
-            Some(synctv_media_providers::error::PROVIDER_USER_AGENT)
+            Some(synctv_media_providers::PROVIDER_USER_AGENT)
         );
         assert_eq!(direct.subtitles.len(), 3);
         assert_eq!(result.metadata["transcoding_count"], json!(2));
@@ -2776,7 +2675,7 @@ mod tests {
             recording_client
                 .requested_paths
                 .lock()
-                .expect("requested_paths mutex should not be poisoned")
+                .checked("requested_paths mutex should not be poisoned")
                 .as_slice(),
             ["/movies/movie.zh-CN.srt"]
         );
@@ -2820,7 +2719,7 @@ mod tests {
         });
 
         // After the fix, the config should be rejected
-        let parsed = AlistSourceConfig::try_from(&config).unwrap();
+        let parsed = AlistSourceConfig::try_from(&config).checked("operation should succeed");
         let result = validate_path_for_traversal(&parsed.path);
         assert!(
             result.is_err(),

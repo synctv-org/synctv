@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
+mod support;
+
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -58,7 +60,6 @@ fn make_client_api(
     room_service: Arc<RoomService>,
 ) -> synctv_api::impls::ClientApiImpl {
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-    connection_manager.start();
 
     synctv_api::impls::ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
@@ -69,16 +70,16 @@ fn make_client_api(
             publish_key_service: None,
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
-            providers_manager: None,
             settings_registry: None,
-            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
             chat_service: None,
-            credential_encryption: None,
-            provider_stores: None,
+            provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
+                "test:provider:",
+            )),
             email_api: None,
             passkey_service: None,
         },
-        synctv_api::impls::ClientApiRuntime::test_disabled(),
+        support::client_api_runtime(),
     )
 }
 
@@ -120,7 +121,7 @@ async fn test_join_room_response_exposes_pending_membership_contract() {
         .await
         .unwrap();
 
-    let public_id_codec = synctv_api::PublicIdCodec::plain();
+    let public_id_codec = synctv_core::PublicIdCodec::plain();
     let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let response = client_api
         .join_room(

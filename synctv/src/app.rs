@@ -37,7 +37,8 @@ use synctv_realtime::sync::{
 use synctv_api::realtime_fanout::{
     distributed_realtime_fanout_service, local_realtime_fanout_service, RealtimeFanoutService,
 };
-use synctv_api::runtime::{RealtimeConnectionService, RealtimeEventService};
+use synctv_api::runtime::RealtimeEventService;
+use synctv_realtime::sync::ConnectionRuntime;
 
 use crate::bootstrap::cluster::{
     build_cluster_coordination_provider, init_cluster_discovery, ClusterCoordinationProvider,
@@ -71,38 +72,6 @@ struct CoreState {
     cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
 }
 
-struct RuntimeModeProfiles {
-    cluster_runtime: bool,
-    cache_shared_state_profile: synctv_core::SharedStateProfile,
-    realtime_shared_state_profile: synctv_core::SharedStateProfile,
-    local_realtime_profile: synctv_core::SharedStateProfile,
-}
-
-impl RuntimeModeProfiles {
-    fn from_config(
-        config: &Config,
-        shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
-    ) -> Self {
-        let cluster_runtime = cluster_runtime_enabled(config);
-        let cache_shared_state_profile = synctv_core::SharedStateProfile::for_cluster_runtime(
-            shared_runtime.clone(),
-            &config.redis.key_prefix,
-            cluster_runtime,
-        );
-        let realtime_shared_state_profile =
-            build_realtime_state_profile(shared_runtime, &config.redis.key_prefix, cluster_runtime);
-        let local_realtime_profile =
-            build_realtime_state_profile(None, &config.redis.key_prefix, false);
-
-        Self {
-            cluster_runtime,
-            cache_shared_state_profile,
-            realtime_shared_state_profile,
-            local_realtime_profile,
-        }
-    }
-}
-
 struct RuntimeModePlan {
     cluster_runtime: bool,
     cache_shared_state_profile: synctv_core::SharedStateProfile,
@@ -113,16 +82,19 @@ struct RuntimeModePlan {
 
 impl RuntimeModePlan {
     fn from_infrastructure(infra: &Infrastructure) -> Self {
-        let profiles =
-            RuntimeModeProfiles::from_config(&infra.config, infra.shared_runtime.clone());
-        let realtime_outbox = Arc::new(RealtimeOutboxRepository::new(infra.pool.clone()));
+        let (
+            cluster_runtime,
+            cache_shared_state_profile,
+            realtime_shared_state_profile,
+            local_realtime_profile,
+        ) = runtime_profiles_from_config(&infra.config, infra.shared_runtime.clone());
 
         Self {
-            cluster_runtime: profiles.cluster_runtime,
-            cache_shared_state_profile: profiles.cache_shared_state_profile,
-            realtime_shared_state_profile: profiles.realtime_shared_state_profile,
-            local_realtime_profile: profiles.local_realtime_profile,
-            realtime_outbox,
+            cluster_runtime,
+            cache_shared_state_profile,
+            realtime_shared_state_profile,
+            local_realtime_profile,
+            realtime_outbox: Arc::new(RealtimeOutboxRepository::new(infra.pool.clone())),
         }
     }
 
@@ -133,6 +105,33 @@ impl RuntimeModePlan {
     fn realtime_outbox(&self) -> Arc<RealtimeOutboxRepository> {
         self.realtime_outbox.clone()
     }
+}
+
+fn runtime_profiles_from_config(
+    config: &Config,
+    shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+) -> (
+    bool,
+    synctv_core::SharedStateProfile,
+    synctv_core::SharedStateProfile,
+    synctv_core::SharedStateProfile,
+) {
+    let cluster_runtime = cluster_runtime_enabled(config);
+    let cache_shared_state_profile = synctv_core::SharedStateProfile::for_cluster_runtime(
+        shared_runtime.clone(),
+        &config.redis.key_prefix,
+        cluster_runtime,
+    );
+    let realtime_shared_state_profile =
+        build_realtime_state_profile(shared_runtime, &config.redis.key_prefix, cluster_runtime);
+    let local_realtime_profile =
+        build_realtime_state_profile(None, &config.redis.key_prefix, false);
+    (
+        cluster_runtime,
+        cache_shared_state_profile,
+        realtime_shared_state_profile,
+        local_realtime_profile,
+    )
 }
 
 /// Leader election and singleton background tasks.
@@ -255,7 +254,7 @@ impl RealtimeEventHandler for CoreRealtimeEventHandler {
 /// Cluster infrastructure.
 struct ClusterState {
     realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
-    realtime_connection_service: Arc<dyn RealtimeConnectionService>,
+    realtime_connection_service: Arc<dyn ConnectionRuntime>,
     realtime_event_service: Arc<dyn RealtimeEventService>,
     node_registry: Option<Arc<dyn synctv_cluster::discovery::ClusterNodeDirectory>>,
     health_monitor: Option<Arc<dyn synctv_cluster::discovery::ClusterHealthRuntime>>,
@@ -265,7 +264,7 @@ struct ClusterState {
 /// Server components (livestream, WebRTC, providers).
 struct ServerComponents {
     livestream_state: Option<LivestreamState>,
-    live_infra: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
+    live_infra: Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     stun_server: Option<Arc<synctv_core::service::StunServer>>,
     webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     providers: synctv_core::provider::ProviderSet,
@@ -494,7 +493,7 @@ fn build_realtime_state_profile(
 fn build_connection_manager(
     limits: ConnectionLimits,
     profile: &synctv_core::SharedStateProfile,
-) -> Result<Arc<dyn RealtimeConnectionService>> {
+) -> Result<Arc<dyn ConnectionRuntime>> {
     build_realtime_connection_runtime(limits, profile).map_err(|error| {
         anyhow::anyhow!("Failed to initialize realtime connection runtime: {error}")
     })
@@ -542,7 +541,7 @@ fn start_room_notification_bridge(
 async fn build_local_realtime_manager(
     config: &Config,
     node_id: &str,
-    connection_manager: Arc<dyn RealtimeConnectionService>,
+    connection_manager: Arc<dyn ConnectionRuntime>,
     message_runtime: Arc<dyn RoomMessageRuntime>,
     cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
     permission_service: Option<synctv_core::service::PermissionService>,
@@ -819,12 +818,13 @@ impl Application {
         // Uses the cluster node_id so invalidation messages are correctly attributed.
         // When Redis is not configured, cache invalidation operates in no-op mode.
         let key_builder = KeyBuilder::from_config(&infra.config);
-        let cache_invalidation =
-            synctv_core::cache::cache_invalidation_runtime_from_shared_state_profile(
+        let cache_invalidation: Arc<dyn CacheInvalidationRuntime> = Arc::new(
+            synctv_core::cache::CacheInvalidationService::from_shared_state_profile(
                 &runtime_plan.cache_shared_state_profile,
                 infra.node_id.clone(),
                 key_builder.cache_invalidation_stream(),
-            )?;
+            )?,
+        );
         let cache_invalidation_listener_task =
             register_cache_invalidation_shutdown_hook(shutdown, cache_invalidation.clone());
 
@@ -1390,7 +1390,6 @@ impl Application {
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<ServerComponents> {
         // Livestream
-        let livestream_cancel = shutdown.register_token("livestream_tracker_cleanup");
         let (livestream_state, live_infra, background_handles) = init_livestream(
             &infra.config,
             &core.services,
@@ -1399,7 +1398,6 @@ impl Application {
                 leader_runtime: leader.leader_runtime.clone(),
             }),
             &infra.node_id,
-            livestream_cancel,
         )
         .await?;
         for (i, handle) in background_handles.into_iter().enumerate() {
@@ -1468,6 +1466,7 @@ impl Application {
             chat_service: core.services.chat_service.clone(),
             audit_service: core.services.audit_service.clone(),
             user_cache: core.services.user_cache.clone(),
+            provider_stores: core.services.provider_stores.clone(),
             live_streaming_infrastructure: servers.live_infra,
             stun_server: servers.stun_server,
             webrtc_status: servers.webrtc_status,
@@ -1513,7 +1512,11 @@ mod tests {
             RealtimeManager::new(RealtimeConfig {
                 distributed_transport_factory: None,
                 message_runtime: build_room_message_runtime(
-                    &synctv_core::SharedStateProfile::from_runtime(None, "activation-test:", false),
+                    &synctv_core::SharedStateProfile::for_cluster_runtime(
+                        None,
+                        "activation-test:",
+                        false,
+                    ),
                 )
                 .expect("local message runtime should initialize"),
                 distributed_enabled: false,
@@ -1530,7 +1533,7 @@ mod tests {
             .await
             .expect("realtime manager should initialize"),
         );
-        let connection_manager: Arc<dyn RealtimeConnectionService> = Arc::new(
+        let connection_manager: Arc<dyn ConnectionRuntime> = Arc::new(
             synctv_realtime::sync::ConnectionManager::new(ConnectionLimits::default()),
         );
         let registry = Arc::new(
@@ -1744,45 +1747,55 @@ mod tests {
     }
 
     #[test]
-    fn test_runtime_mode_profile_keeps_standalone_local_state() {
+    fn test_runtime_mode_plan_keeps_standalone_local_state() {
         let mut config = minimal_valid_startup_config();
         config.cluster.enabled = false;
 
-        let profile = RuntimeModeProfiles::from_config(&config, None);
+        let (
+            cluster_runtime,
+            cache_shared_state_profile,
+            realtime_shared_state_profile,
+            local_realtime_profile,
+        ) = runtime_profiles_from_config(&config, None);
 
-        assert!(!profile.cluster_runtime);
+        assert!(!cluster_runtime);
         assert_eq!(
-            profile.cache_shared_state_profile.state_mode(),
+            cache_shared_state_profile.state_mode(),
             synctv_core::SharedStateMode::LocalOnly
         );
         assert_eq!(
-            profile.realtime_shared_state_profile.state_mode(),
+            realtime_shared_state_profile.state_mode(),
             synctv_core::SharedStateMode::LocalOnly
         );
         assert_eq!(
-            profile.local_realtime_profile.state_mode(),
+            local_realtime_profile.state_mode(),
             synctv_core::SharedStateMode::LocalOnly
         );
     }
 
     #[test]
-    fn test_runtime_mode_profile_uses_cluster_shared_state() {
+    fn test_runtime_mode_plan_uses_cluster_shared_state() {
         let mut config = minimal_valid_startup_config();
         config.cluster.enabled = true;
 
-        let profile = RuntimeModeProfiles::from_config(&config, None);
+        let (
+            cluster_runtime,
+            cache_shared_state_profile,
+            realtime_shared_state_profile,
+            local_realtime_profile,
+        ) = runtime_profiles_from_config(&config, None);
 
-        assert!(profile.cluster_runtime);
+        assert!(cluster_runtime);
         assert_eq!(
-            profile.cache_shared_state_profile.state_mode(),
+            cache_shared_state_profile.state_mode(),
             synctv_core::SharedStateMode::SharedRequired
         );
         assert_eq!(
-            profile.realtime_shared_state_profile.state_mode(),
+            realtime_shared_state_profile.state_mode(),
             synctv_core::SharedStateMode::SharedRequired
         );
         assert_eq!(
-            profile.local_realtime_profile.state_mode(),
+            local_realtime_profile.state_mode(),
             synctv_core::SharedStateMode::LocalOnly
         );
     }
@@ -1917,7 +1930,7 @@ mod tests {
     async fn test_build_local_realtime_manager_supports_single_node_realtime_paths() {
         let config = minimal_valid_startup_config();
         let realtime_profile =
-            synctv_core::SharedStateProfile::from_runtime(None, "test-local:", false);
+            synctv_core::SharedStateProfile::for_cluster_runtime(None, "test-local:", false);
         let connection_manager =
             build_connection_manager(ConnectionLimits::default(), &realtime_profile)
                 .expect("local connection manager should initialize");
@@ -1961,7 +1974,7 @@ mod tests {
         let shared_conn = Arc::new(RwLock::new(conn.clone()));
         let shared_runtime: Arc<dyn RedisConnectionRuntime> =
             Arc::new(SharedRedisConnectionRuntime::new(shared_conn.clone()));
-        let realtime_profile = synctv_core::SharedStateProfile::from_runtime(
+        let realtime_profile = synctv_core::SharedStateProfile::for_cluster_runtime(
             Some(shared_runtime),
             "test-cluster:",
             true,
@@ -1974,7 +1987,7 @@ mod tests {
 
         let realtime_config = RealtimeConfig {
             distributed_transport_factory: Some(
-                synctv_realtime::build_realtime_message_transport_factory(
+                synctv_realtime::sync::build_realtime_message_transport_factory(
                     synctv_core::coordination_runtime_from_client(client),
                 ),
             ),
@@ -2021,8 +2034,11 @@ mod tests {
         let shared_conn = Arc::new(RwLock::new(app_conn));
         let shared_runtime: Arc<dyn RedisConnectionRuntime> =
             Arc::new(SharedRedisConnectionRuntime::new(shared_conn));
-        let realtime_profile =
-            synctv_core::SharedStateProfile::from_runtime(Some(shared_runtime), &prefix, true);
+        let realtime_profile = synctv_core::SharedStateProfile::for_cluster_runtime(
+            Some(shared_runtime),
+            &prefix,
+            true,
+        );
 
         let manager = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
             .expect("distributed mode should build shared realtime connection manager");
@@ -2067,8 +2083,11 @@ mod tests {
         let shared_conn = Arc::new(RwLock::new(first_conn));
         let shared_runtime: Arc<dyn RedisConnectionRuntime> =
             Arc::new(SharedRedisConnectionRuntime::new(shared_conn.clone()));
-        let realtime_profile =
-            synctv_core::SharedStateProfile::from_runtime(Some(shared_runtime), &prefix, true);
+        let realtime_profile = synctv_core::SharedStateProfile::for_cluster_runtime(
+            Some(shared_runtime),
+            &prefix,
+            true,
+        );
 
         let manager = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
             .expect("distributed mode should preserve shared runtime wiring");
@@ -2114,7 +2133,7 @@ mod tests {
         let app_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .expect("App connection manager should be created");
-        let realtime_profile = synctv_core::SharedStateProfile::from_runtime(
+        let realtime_profile = synctv_core::SharedStateProfile::for_cluster_runtime(
             Some(Arc::new(SharedRedisConnectionRuntime::new(Arc::new(
                 RwLock::new(app_conn),
             )))),
@@ -2152,7 +2171,8 @@ mod tests {
 
     #[test]
     fn test_build_connection_manager_returns_error_without_redis_in_cluster_mode() {
-        let realtime_profile = synctv_core::SharedStateProfile::from_runtime(None, "test:", true);
+        let realtime_profile =
+            synctv_core::SharedStateProfile::for_cluster_runtime(None, "test:", true);
         let Err(error) = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
         else {
             panic!("distributed mode without Redis wiring must return an error");

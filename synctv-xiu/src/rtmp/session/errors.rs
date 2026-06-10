@@ -54,10 +54,10 @@ pub enum SessionErrorValue {
     #[error("streamhub channel err: {0}")]
     ChannelError(#[from] StreamHubError),
 
-    #[error("amf0 count not correct error")]
-    Amf0ValueCountNotCorrect,
-    #[error("amf0 value type not correct error")]
-    Amf0ValueTypeNotCorrect,
+    #[error("invalid AMF0 value count")]
+    InvalidAmf0ValueCount,
+    #[error("invalid AMF0 value type")]
+    InvalidAmf0ValueType,
     #[error("stream hub event send error")]
     StreamHubEventSendErr,
     #[error("none frame data sender error")]

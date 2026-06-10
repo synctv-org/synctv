@@ -1,5 +1,5 @@
 use synctv_core::{
-    models::{ReviewRequestId, RoomId, SortDirection as CoreSortDirection, UserId, UserStatus},
+    models::{ReviewRequestId, RoomId, SortDirection as CoreSortDirection, UserId},
     service::{AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox},
 };
 
@@ -7,14 +7,35 @@ use super::{
     i64_to_i32_api, load_creator_status_map, normalize_non_empty_filter,
     prepare_delete_entries_outbox_fanout, proto_admin_room_list_sort_by,
     proto_admin_room_member_list_sort_by, proto_admin_sort_direction, proto_room_status_filter,
-    required_room_settings, try_admin_room_to_proto, try_members_to_proto, AdminApiImpl, ApiError,
-    RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    required_room_settings, room_creator_status_from_map, try_admin_room_to_proto,
+    try_members_to_proto, AdminApiImpl, ApiError, RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 use crate::impls::client::{
     proto_role_filter_to_room_role, proto_role_to_assignable_room_role, proto_role_to_room_role,
 };
 
+pub(in crate::impls::admin) fn username_from_loaded_user(
+    user: synctv_core::models::User,
+) -> Result<String, ApiError> {
+    if user.username.trim().is_empty() {
+        return Err(ApiError::Internal(format!(
+            "Loaded user {} has empty username",
+            user.id
+        )));
+    }
+
+    Ok(user.username)
+}
+
 impl AdminApiImpl {
+    async fn load_member_response_username(&self, target_uid: &UserId) -> Result<String, ApiError> {
+        self.user_service
+            .get_user(target_uid)
+            .await
+            .map_err(ApiError::from)
+            .and_then(username_from_loaded_user)
+    }
+
     pub async fn list_rooms(
         &self,
         req: synctv_proto::admin::ListRoomsRequest,
@@ -83,17 +104,14 @@ impl AdminApiImpl {
         let room_list: Vec<_> = rooms
             .into_iter()
             .map(|r| {
-                let member_count = member_counts.get(&r.id).copied();
+                let member_count = crate::impls::room_member_count_or_zero(&member_counts, &r.id);
                 let creator_username = username_map.get(&r.created_by).map(String::as_str);
-                let creator_status = creator_status_map
-                    .get(&r.created_by)
-                    .copied()
-                    .unwrap_or(UserStatus::Banned);
+                let creator_status = room_creator_status_from_map(&creator_status_map, &r)?;
                 let settings = required_room_settings(&room_settings_map, &r.id)?;
                 try_admin_room_to_proto(
                     &r,
                     Some(settings),
-                    member_count,
+                    Some(member_count),
                     creator_username,
                     creator_status,
                     &self.public_id_codec,
@@ -294,11 +312,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
         prepared_membership_fanout.publish_after_outbox_commit();
 
-        let username = self
-            .user_service
-            .get_user(&target_uid)
-            .await
-            .map_or_else(|_| format!("user_{target_uid}"), |u| u.username);
+        let username = self.load_member_response_username(&target_uid).await?;
         let is_online = self
             .connection_service
             .get_connection_id(&rid, &target_uid)
@@ -366,11 +380,7 @@ impl AdminApiImpl {
         let target_uid = member.user_id;
         prepared_membership_fanout.publish_after_outbox_commit();
 
-        let username = self
-            .user_service
-            .get_user(&target_uid)
-            .await
-            .map_or_else(|_| format!("user_{target_uid}"), |u| u.username);
+        let username = self.load_member_response_username(&target_uid).await?;
         let is_online = self
             .connection_service
             .get_connection_id(&rid, &target_uid)
@@ -520,11 +530,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
         prepared_membership_fanout.publish_after_outbox_commit();
 
-        let username = self
-            .user_service
-            .get_user(&target_uid)
-            .await
-            .map_or_else(|_| format!("user_{target_uid}"), |u| u.username);
+        let username = self.load_member_response_username(&target_uid).await?;
 
         let is_online = self
             .connection_service
@@ -718,15 +724,14 @@ impl AdminApiImpl {
             .iter()
             .map(|room| {
                 let creator_username = username_map.get(&room.created_by).map(String::as_str);
-                let creator_status = creator_status_map
-                    .get(&room.created_by)
-                    .copied()
-                    .unwrap_or(UserStatus::Banned);
+                let creator_status = room_creator_status_from_map(&creator_status_map, room)?;
                 let settings = required_room_settings(&room_settings_map, &room.id)?;
+                let member_count =
+                    crate::impls::room_member_count_or_zero(&member_counts, &room.id);
                 try_admin_room_to_proto(
                     room,
                     Some(settings),
-                    member_counts.get(&room.id).copied(),
+                    Some(member_count),
                     creator_username,
                     creator_status,
                     &self.public_id_codec,

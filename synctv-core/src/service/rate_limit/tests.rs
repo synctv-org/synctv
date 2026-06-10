@@ -5,6 +5,29 @@ use async_trait::async_trait;
 use std::time::Duration;
 use synctv_core_testing::start_redis;
 
+fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
+async fn allow(limiter: &RateLimiter, key: &str, max_requests: u32, window_seconds: u64) {
+    ok(
+        limiter
+            .check_rate_limit(key, max_requests, window_seconds)
+            .await,
+        "rate limit check should allow request",
+    );
+}
+
+fn joined<T>(result: std::result::Result<T, tokio::task::JoinError>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
 #[derive(Clone)]
 struct FailingRedisRuntime;
 
@@ -32,8 +55,10 @@ fn test_retry_after_uses_ceiled_remaining_window() {
 
 #[test]
 fn test_sliding_window_result_requires_count_and_oldest_score() {
-    let (count, oldest) =
-        parse_sliding_window_result(&[3, 1_700_000]).expect("valid script result");
+    let (count, oldest) = ok(
+        parse_sliding_window_result(&[3, 1_700_000]),
+        "valid script result",
+    );
     assert_eq!(count, 3);
     assert_eq!(oldest, 1_700_000);
 
@@ -45,10 +70,7 @@ fn test_sliding_window_result_requires_count_and_oldest_score() {
 
 #[test]
 fn test_quota_count_result_requires_count() {
-    assert_eq!(
-        parse_quota_count_result(&[7]).expect("valid quota result"),
-        7
-    );
+    assert_eq!(ok(parse_quota_count_result(&[7]), "valid quota result"), 7);
     assert!(matches!(
         parse_quota_count_result(&[]),
         Err(RateLimitError::BackendUnavailable(_))
@@ -74,22 +96,23 @@ fn test_extracts_rate_limit_tier_from_transport_scoped_keys() {
 #[test]
 fn test_rate_limiter_without_redis() {
     let limiter = RateLimiter::local_only("test:".to_string());
-    limiter
-        .check_rate_limit_sync("test-user", 5, 1)
-        .expect("limiter without shared runtime should still allow local sync checks");
+    ok(
+        limiter.check_rate_limit_sync("test-user", 5, 1),
+        "limiter without shared runtime should still allow local sync checks",
+    );
 }
 
 #[tokio::test]
 async fn test_local_only_rate_limiter_supports_single_node_checks() {
     let limiter = RateLimiter::local_only("test-local-only:".to_string());
-    limiter
-        .check_rate_limit("test-user", 2, 60)
-        .await
-        .expect("local-only limiter should allow the first request");
-    limiter
-        .check_rate_limit("test-user", 2, 60)
-        .await
-        .expect("local-only limiter should allow requests within the local quota");
+    ok(
+        limiter.check_rate_limit("test-user", 2, 60).await,
+        "local-only limiter should allow the first request",
+    );
+    ok(
+        limiter.check_rate_limit("test-user", 2, 60).await,
+        "local-only limiter should allow requests within the local quota",
+    );
 }
 
 #[tokio::test]
@@ -124,9 +147,10 @@ async fn test_redis_rate_limit_timeout_falls_back_to_in_memory() {
         "timeout-rate-limit:".to_string(),
     );
 
-    let result = tokio::time::timeout(Duration::from_millis(200), backend.check("key", 5, 60))
-        .await
-        .expect("Redis timeout should bound non-strict rate limiting");
+    let result = ok(
+        tokio::time::timeout(Duration::from_millis(200), backend.check("key", 5, 60)).await,
+        "Redis timeout should bound non-strict rate limiting",
+    );
 
     assert!(
         result.is_ok(),
@@ -159,8 +183,8 @@ async fn test_redis_rate_limit_timeout_fails_closed_in_strict_mode() {
         Duration::from_millis(200),
         backend.check_strict("key", 5, 60),
     )
-    .await
-    .expect("Redis timeout should bound strict rate limiting");
+    .await;
+    let result = ok(result, "Redis timeout should bound strict rate limiting");
 
     assert!(
         matches!(result, Err(RateLimitError::BackendUnavailable(_))),
@@ -173,33 +197,35 @@ async fn test_rate_limiter_supports_service_trait_object() {
     let limiter: Arc<dyn RequestRateLimiterService> =
         Arc::new(RateLimiter::local_only("trait-test:".to_string()));
 
-    limiter
-        .check_rate_limit("user-1", 2, 60)
-        .await
-        .expect("trait-object limiter should allow the first request");
-    limiter
-        .check_rate_limit("user-1", 2, 60)
-        .await
-        .expect("trait-object limiter should allow requests within quota");
-}
-
-#[test]
-fn test_request_rate_limiter_from_shared_state_profile_uses_memory_without_shared_runtime() {
-    let profile = SharedStateProfile::from_runtime(None, "test:", false);
-    let limiter = request_rate_limiter_from_shared_state_profile(&profile)
-        .expect("standalone mode should allow local rate limiting");
-
-    assert!(
-        limiter.check_rate_limit_sync("test-user", 1, 60).is_ok(),
-        "helper must return a live trait-object-backed rate limiter"
+    ok(
+        limiter.check_rate_limit("user-1", 2, 60).await,
+        "trait-object limiter should allow the first request",
+    );
+    ok(
+        limiter.check_rate_limit("user-1", 2, 60).await,
+        "trait-object limiter should allow requests within quota",
     );
 }
 
 #[test]
-fn test_request_rate_limiter_from_shared_state_profile_requires_shared_runtime_in_cluster_mode() {
-    let profile = SharedStateProfile::from_runtime(None, "test:", true);
-    let Err(error) = request_rate_limiter_from_shared_state_profile(&profile) else {
-        panic!("cluster runtime must reject local-only rate limiting");
+fn test_rate_limiter_from_shared_state_profile_uses_memory_without_shared_runtime() {
+    let profile = SharedStateProfile::for_cluster_runtime(None, "test:", false);
+    let limiter = ok(
+        RateLimiter::from_shared_state_profile(&profile),
+        "standalone mode should allow local rate limiting",
+    );
+
+    assert!(
+        limiter.check_rate_limit_sync("test-user", 1, 60).is_ok(),
+        "shared-state builder must return a live rate limiter"
+    );
+}
+
+#[test]
+fn test_rate_limiter_from_shared_state_profile_requires_shared_runtime_in_cluster_mode() {
+    let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
+    let Err(error) = RateLimiter::from_shared_state_profile(&profile) else {
+        std::panic::panic_any("cluster runtime must reject local-only rate limiting");
     };
 
     assert!(
@@ -221,13 +247,13 @@ async fn test_rate_limit_basic() {
     );
 
     let key = "user:test1:chat";
-    limiter.reset(key).await.unwrap();
+    ok(limiter.reset(key).await, "rate limit key should reset");
 
     for i in 0..10 {
-        limiter
-            .check_rate_limit(key, 10, 1)
-            .await
-            .unwrap_or_else(|_| panic!("Request {i} should succeed"));
+        ok(
+            limiter.check_rate_limit(key, 10, 1).await,
+            &format!("Request {i} should succeed"),
+        );
     }
 
     let result = limiter.check_rate_limit(key, 10, 1).await;
@@ -237,7 +263,7 @@ async fn test_rate_limit_basic() {
     ));
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    limiter.check_rate_limit(key, 10, 1).await.unwrap();
+    allow(&limiter, key, 10, 1).await;
 }
 
 #[tokio::test]
@@ -251,10 +277,10 @@ async fn test_rate_limit_sliding_window() {
     );
 
     let key = "user:test2:chat";
-    limiter.reset(key).await.unwrap();
+    ok(limiter.reset(key).await, "rate limit key should reset");
 
     for _ in 0..5 {
-        limiter.check_rate_limit(key, 5, 1).await.unwrap();
+        allow(&limiter, key, 5, 1).await;
     }
     assert!(limiter.check_rate_limit(key, 5, 1).await.is_err());
 
@@ -262,7 +288,7 @@ async fn test_rate_limit_sliding_window() {
     assert!(limiter.check_rate_limit(key, 5, 1).await.is_err());
 
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    limiter.check_rate_limit(key, 5, 1).await.unwrap();
+    allow(&limiter, key, 5, 1).await;
 }
 
 #[tokio::test]
@@ -276,10 +302,10 @@ async fn test_rejected_redis_requests_do_not_extend_window() {
     );
 
     let key = "user:rejected_requests_do_not_extend_window:auth";
-    limiter.reset(key).await.unwrap();
+    ok(limiter.reset(key).await, "rate limit key should reset");
 
-    limiter.check_rate_limit(key, 2, 2).await.unwrap();
-    limiter.check_rate_limit(key, 2, 2).await.unwrap();
+    allow(&limiter, key, 2, 2).await;
+    allow(&limiter, key, 2, 2).await;
     assert!(matches!(
         limiter.check_rate_limit(key, 2, 2).await,
         Err(RateLimitError::RateLimitExceeded { .. })
@@ -292,7 +318,7 @@ async fn test_rejected_redis_requests_do_not_extend_window() {
     ));
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1_050)).await;
-    limiter.check_rate_limit(key, 2, 2).await.unwrap();
+    allow(&limiter, key, 2, 2).await;
 }
 
 #[tokio::test]
@@ -306,16 +332,16 @@ async fn test_get_quota() {
     );
 
     let key = "user:test3:chat";
-    limiter.reset(key).await.unwrap();
+    ok(limiter.reset(key).await, "rate limit key should reset");
 
-    let (remaining, _) = limiter.get_quota(key, 10, 1).await.unwrap();
+    let (remaining, _) = ok(limiter.get_quota(key, 10, 1).await, "quota should load");
     assert_eq!(remaining, 10);
 
     for _ in 0..3 {
-        limiter.check_rate_limit(key, 10, 1).await.unwrap();
+        allow(&limiter, key, 10, 1).await;
     }
 
-    let (remaining, reset_time) = limiter.get_quota(key, 10, 1).await.unwrap();
+    let (remaining, reset_time) = ok(limiter.get_quota(key, 10, 1).await, "quota should reload");
     assert_eq!(remaining, 7);
     assert!(reset_time <= 1);
 }
@@ -326,10 +352,10 @@ async fn test_without_redis_uses_governor_fallback() {
 
     let key = "user:test_gov:chat";
     for i in 0..10 {
-        limiter
-            .check_rate_limit(key, 10, 1)
-            .await
-            .unwrap_or_else(|_| panic!("Governor request {i} should succeed"));
+        ok(
+            limiter.check_rate_limit(key, 10, 1).await,
+            &format!("Governor request {i} should succeed"),
+        );
     }
 
     let result = limiter.check_rate_limit(key, 10, 1).await;
@@ -344,7 +370,7 @@ async fn test_governor_independent_keys() {
     let limiter = RateLimiter::local_only("test:".to_string());
 
     for _ in 0..5 {
-        limiter.check_rate_limit("key1", 5, 1).await.unwrap();
+        allow(&limiter, "key1", 5, 1).await;
     }
     assert!(limiter.check_rate_limit("key1", 5, 1).await.is_err());
     assert!(limiter.check_rate_limit("key2", 5, 1).await.is_ok());
@@ -359,10 +385,10 @@ async fn test_room_password_rate_limit_pattern() {
     let key = format!("room_password_check:{ip}:{room_id}");
 
     for i in 0..5 {
-        limiter
-            .check_rate_limit(&key, 5, 300)
-            .await
-            .unwrap_or_else(|_| panic!("Attempt {} should succeed", i + 1));
+        ok(
+            limiter.check_rate_limit(&key, 5, 300).await,
+            &format!("Attempt {} should succeed", i + 1),
+        );
     }
 
     let result = limiter.check_rate_limit(&key, 5, 300).await;
@@ -381,7 +407,7 @@ async fn test_room_password_rate_limit_per_ip_isolation() {
     let key_ip2 = format!("room_password_check:10.0.0.2:{room_id}");
 
     for _ in 0..5 {
-        limiter.check_rate_limit(&key_ip1, 5, 300).await.unwrap();
+        allow(&limiter, &key_ip1, 5, 300).await;
     }
     assert!(limiter.check_rate_limit(&key_ip1, 5, 300).await.is_err());
     assert!(limiter.check_rate_limit(&key_ip2, 5, 300).await.is_ok());
@@ -396,7 +422,7 @@ async fn test_room_password_rate_limit_per_room_isolation() {
     let key_room2 = format!("room_password_check:{ip}:room_2");
 
     for _ in 0..5 {
-        limiter.check_rate_limit(&key_room1, 5, 300).await.unwrap();
+        allow(&limiter, &key_room1, 5, 300).await;
     }
     assert!(limiter.check_rate_limit(&key_room1, 5, 300).await.is_err());
     assert!(limiter.check_rate_limit(&key_room2, 5, 300).await.is_ok());
@@ -417,7 +443,7 @@ async fn test_concurrent_burst_all_within_limit() {
     let results: Vec<_> = futures::future::join_all(handles)
         .await
         .into_iter()
-        .map(|r| r.unwrap())
+        .map(|result| joined(result, "rate-limit task should join"))
         .collect();
 
     let successes = results.iter().filter(|r| r.is_ok()).count();
@@ -442,7 +468,7 @@ async fn test_concurrent_burst_exceeding_limit() {
     let results: Vec<_> = futures::future::join_all(handles)
         .await
         .into_iter()
-        .map(|r| r.unwrap())
+        .map(|result| joined(result, "rate-limit task should join"))
         .collect();
 
     let successes = results.iter().filter(|r| r.is_ok()).count();
@@ -463,7 +489,10 @@ fn test_check_rate_limit_sync_blocks_over_limit() {
     let limiter = RateLimiter::local_only("sync_block:".to_string());
 
     for _ in 0..5 {
-        limiter.check_rate_limit_sync("sync_key", 5, 1).unwrap();
+        ok(
+            limiter.check_rate_limit_sync("sync_key", 5, 1),
+            "sync rate limit should allow request",
+        );
     }
 
     let result = limiter.check_rate_limit_sync("sync_key", 5, 1);
@@ -478,7 +507,10 @@ fn test_check_rate_limit_sync_uses_grpc_key_prefix() {
     let limiter = RateLimiter::local_only("myprefix:".to_string());
 
     for _ in 0..3 {
-        limiter.check_rate_limit_sync("key1", 3, 1).unwrap();
+        ok(
+            limiter.check_rate_limit_sync("key1", 3, 1),
+            "sync rate limit should allow request",
+        );
     }
     assert!(limiter.check_rate_limit_sync("key1", 3, 1).is_err());
 }
@@ -553,7 +585,7 @@ fn test_rate_limit_error_to_core_error_exceeded() {
         crate::Error::RateLimited(msg) => {
             assert!(msg.contains("30"));
         }
-        other => panic!("Expected RateLimited, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected RateLimited, got: {other:?}")),
     }
 }
 
@@ -566,7 +598,7 @@ fn test_rate_limit_error_to_core_error_redis() {
         crate::Error::Internal(msg) => {
             assert!(msg.contains("Rate limiter Redis error"));
         }
-        other => panic!("Expected Internal, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected Internal, got: {other:?}")),
     }
 }
 
@@ -578,7 +610,7 @@ fn test_rate_limit_error_to_core_error_backend_unavailable() {
         crate::Error::ServiceUnavailable(msg) => {
             assert!(msg.contains("redis unavailable"));
         }
-        other => panic!("Expected ServiceUnavailable, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected ServiceUnavailable, got: {other:?}")),
     }
 }
 
@@ -586,7 +618,7 @@ fn test_rate_limit_error_to_core_error_backend_unavailable() {
 async fn test_get_quota_without_redis_returns_max() {
     let limiter = RateLimiter::local_only("quota_test:".to_string());
 
-    let (remaining, reset) = limiter.get_quota("key", 10, 1).await.unwrap();
+    let (remaining, reset) = ok(limiter.get_quota("key", 10, 1).await, "quota should load");
     assert_eq!(remaining, 10);
     assert_eq!(reset, 0);
 }
@@ -596,15 +628,15 @@ async fn test_get_quota_without_redis_does_not_consume_token() {
     let limiter = RateLimiter::local_only("quota_no_consume:".to_string());
 
     for _ in 0..20 {
-        let (remaining, _) = limiter.get_quota("key", 10, 1).await.unwrap();
+        let (remaining, _) = ok(limiter.get_quota("key", 10, 1).await, "quota should load");
         assert_eq!(remaining, 10);
     }
 
     for i in 0..10 {
-        limiter
-            .check_rate_limit("key", 10, 1)
-            .await
-            .unwrap_or_else(|_| panic!("Request {i} should succeed after get_quota calls"));
+        ok(
+            limiter.check_rate_limit("key", 10, 1).await,
+            &format!("Request {i} should succeed after get_quota calls"),
+        );
     }
 }
 
@@ -613,7 +645,12 @@ async fn test_health_check_without_redis() {
     let limiter = RateLimiter::local_only("health:".to_string());
     let result = limiter.health_check().await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("not configured"));
+    assert!(match result {
+        Ok(()) => {
+            std::panic::panic_any("health check should fail without Redis");
+        }
+        Err(error) => error.contains("not configured"),
+    });
 }
 
 #[tokio::test]
@@ -621,7 +658,7 @@ async fn test_in_memory_different_quotas_are_independent() {
     let limiter = RateLimiter::local_only("quotas:".to_string());
 
     for _ in 0..5 {
-        limiter.check_rate_limit("same_key", 5, 1).await.unwrap();
+        allow(&limiter, "same_key", 5, 1).await;
     }
     assert!(limiter.check_rate_limit("same_key", 5, 1).await.is_err());
     assert!(limiter.check_rate_limit("same_key", 10, 1).await.is_ok());
@@ -635,10 +672,10 @@ async fn test_redis_failure_falls_back_to_in_memory() {
     );
 
     for i in 0..5 {
-        limiter
-            .check_rate_limit("fb_key", 5, 1)
-            .await
-            .unwrap_or_else(|error| panic!("Request {i} should use in-memory fallback: {error}"));
+        ok(
+            limiter.check_rate_limit("fb_key", 5, 1).await,
+            &format!("Request {i} should use in-memory fallback"),
+        );
     }
     assert!(
         matches!(

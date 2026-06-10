@@ -407,58 +407,59 @@ mod tests {
     use super::*;
     use axum::http::StatusCode;
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
     #[test]
-    fn test_exchange_authorization_code_request_deserializes_without_provider() {
+    fn test_exchange_authorization_code_request_deserializes_without_provider() -> TestResult {
         let mut req: ExchangeAuthorizationCodeRequest = serde_json::from_str(
             r#"{"code":"abc123._+-","state":"AbCdEfGh1234567890aBcDeFgHiJkLm"}"#,
-        )
-        .expect("deserialize HTTP exchange request without provider");
+        )?;
 
         assert!(req.provider.is_empty());
         req.provider = "github-main".to_string();
         assert_eq!(req.provider, "github-main");
         assert_eq!(req.code, "abc123._+-");
         assert_eq!(req.state, "AbCdEfGh1234567890aBcDeFgHiJkLm");
+        Ok(())
     }
 
     #[test]
-    fn test_oauth2_path_injected_query_requests_deserialize_without_provider() {
+    fn test_oauth2_path_injected_query_requests_deserialize_without_provider() -> TestResult {
         let authorize: GetAuthorizationUrlRequest =
-            serde_urlencoded::from_str("redirect_url=http%3A%2F%2Flocalhost%2Fcallback")
-                .expect("authorize query should not require provider");
+            serde_urlencoded::from_str("redirect_url=http%3A%2F%2Flocalhost%2Fcallback")?;
         assert!(authorize.provider.is_empty());
         assert_eq!(authorize.redirect_url, "http://localhost/callback");
 
         let bind: GetAuthorizationUrlForBindRequest = serde_urlencoded::from_str(
             "redirect_url=http%3A%2F%2Flocalhost%2Fbind&verification_id=verification-id",
-        )
-        .expect("bind query should not require provider");
+        )?;
         assert!(bind.provider.is_empty());
         assert_eq!(bind.redirect_url, "http://localhost/bind");
         assert_eq!(bind.verification_id, "verification-id");
 
         let unlink: UnlinkProviderRequest = serde_urlencoded::from_str(
             "provider_user_id=remote-user-1&verification_id=verification-id",
-        )
-        .expect("unlink query should not require provider");
+        )?;
         assert!(unlink.provider.is_empty());
         assert_eq!(unlink.verification_id, "verification-id");
         assert_eq!(unlink.provider_user_id, "remote-user-1");
         assert!(unlink.provider_instance_name.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_oauth2_provider_instance_path_request_deserializes_proto_field_name() {
+    fn test_oauth2_provider_instance_path_request_deserializes_proto_field_name() -> TestResult {
         let req: OAuth2ProviderInstancePathRequest =
-            serde_json::from_str(r#"{"provider":"github-main"}"#).expect("deserialize");
+            serde_json::from_str(r#"{"provider":"github-main"}"#)?;
         assert_eq!(req.provider, "github-main");
+        Ok(())
     }
 
     #[test]
-    fn test_oauth2_provider_type_path_request_deserializes_proto_field_name() {
-        let req: OAuth2ProviderTypePathRequest =
-            serde_json::from_str(r#"{"provider":"github"}"#).expect("deserialize");
+    fn test_oauth2_provider_type_path_request_deserializes_proto_field_name() -> TestResult {
+        let req: OAuth2ProviderTypePathRequest = serde_json::from_str(r#"{"provider":"github"}"#)?;
         assert_eq!(req.provider, "github");
+        Ok(())
     }
 
     #[test]

@@ -294,7 +294,7 @@ impl AttemptTracker for RedisAttemptTracker {
             }
             self.mark_degraded();
             tracing::warn!(key = %key, "Redis timeout in brute-force check, using fallback");
-            return Ok(self.fallback.get(key).await.unwrap_or((0, 0)));
+            return Ok(self.fallback_attempts(key).await);
         };
 
         match redis_result {
@@ -313,7 +313,7 @@ impl AttemptTracker for RedisAttemptTracker {
                 }
                 self.mark_degraded();
                 tracing::warn!(key = %key, error = %error, "Redis error in brute-force check, using fallback");
-                Ok(self.fallback.get(key).await.unwrap_or((0, 0)))
+                Ok(self.fallback_attempts(key).await)
             }
         }
     }
@@ -357,10 +357,7 @@ impl AttemptTracker for RedisAttemptTracker {
                 }
                 self.mark_degraded();
                 tracing::warn!(key = %key, error = %error, "Redis error in record_failure, using fallback");
-                let (count, _) = self.fallback.get(key).await.unwrap_or((0, now));
-                self.fallback
-                    .insert(key.to_string(), (count + 1, now))
-                    .await;
+                self.record_fallback_failure(key, now).await;
                 Ok(())
             }
         }

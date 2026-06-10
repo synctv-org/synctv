@@ -1,31 +1,31 @@
-pub mod audit;
-pub mod ban;
+pub(crate) mod audit;
+pub(crate) mod ban;
 pub mod chat;
-pub mod email_bind;
-pub mod email_registration_token;
-pub mod email_token;
-pub mod file_storage;
-pub mod media;
-pub mod notification;
-pub mod playback;
-pub mod playlist;
-pub mod provider_instance;
-pub mod query_builder;
+pub(crate) mod email_bind;
+pub(crate) mod email_registration_token;
+pub(crate) mod email_token;
+pub(crate) mod file_storage;
+pub(crate) mod media;
+pub(crate) mod notification;
+pub(crate) mod playback;
+pub(crate) mod playlist;
+pub(crate) mod provider_instance;
+pub(crate) mod query_builder;
 pub mod realtime_outbox;
-pub mod review;
-pub mod room;
+pub(crate) mod review;
+pub(crate) mod room;
 pub(crate) mod room_cleanup;
 pub mod room_member;
-pub mod room_password;
-pub mod room_resource_event;
-pub mod room_settings;
-pub mod settings;
-pub mod user;
-pub mod user_email;
-pub mod user_oauth_provider;
-pub mod user_password;
-pub mod user_preferences;
-pub mod webauthn_credential;
+pub(crate) mod room_password;
+pub(crate) mod room_resource_event;
+pub(crate) mod room_settings;
+pub(crate) mod settings;
+pub(crate) mod user;
+pub(crate) mod user_email;
+pub(crate) mod user_oauth_provider;
+pub(crate) mod user_password;
+pub(crate) mod user_preferences;
+pub(crate) mod webauthn_credential;
 
 use sha2::{Digest, Sha256};
 
@@ -46,17 +46,14 @@ pub use notification::NotificationRepository;
 pub use playback::RoomPlaybackStateRepository;
 pub use playlist::PlaylistRepository;
 pub use provider_instance::{ProviderInstanceRepository, UserProviderCredentialRepository};
-pub use query_builder::WhereClauseBuilder;
 pub use review::{
     ReviewPage, ReviewRepository, RoomCreationReviewListQuery, RoomCreationReviewRecord,
     RoomJoinReviewListQuery, RoomJoinReviewRecord, UserRegistrationReviewListQuery,
     UserRegistrationReviewRecord,
 };
-pub use room::{JoinRoomContext, RoomRepository};
+pub use room::RoomRepository;
 pub use room_member::RoomMemberRepository;
-pub use room_password::{
-    RoomPasswordCredentialState, RoomPasswordRepository, StoredRoomPasswordCredential,
-};
+pub use room_password::RoomPasswordRepository;
 pub use room_resource_event::{
     NewRoomResourceEvent, RoomResourceEventRepository, RoomResourceEventScope,
 };
@@ -65,10 +62,7 @@ pub use settings::SettingsRepository;
 pub use user::UserRepository;
 pub use user_email::{UserEmailRepository, UserWithEmail};
 pub use user_oauth_provider::UserOAuthProviderRepository;
-pub use user_password::{
-    PasswordCredentialMaterial, PasswordCredentialState, UserPasswordRepository,
-    UserWithPasswordCredential,
-};
+pub use user_password::{PasswordCredentialMaterial, UserPasswordRepository};
 pub use user_preferences::UserPreferencesRepository;
 pub use webauthn_credential::{WebAuthnCredential, WebAuthnCredentialRepository};
 

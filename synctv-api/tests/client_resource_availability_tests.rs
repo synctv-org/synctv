@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
+mod support;
+
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -21,8 +23,8 @@ use synctv_core::{
 use synctv_core_testing::{create_test_pool, TestContainer};
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
-fn public_id_codec() -> synctv_api::PublicIdCodec {
-    synctv_api::PublicIdCodec::plain()
+fn public_id_codec() -> synctv_core::PublicIdCodec {
+    synctv_core::PublicIdCodec::plain()
 }
 
 fn make_user(username: &str) -> User {
@@ -178,16 +180,16 @@ async fn create_client_api_fixture() -> ClientApiFixture {
             publish_key_service: None,
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
-            providers_manager: None,
             settings_registry: None,
-            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
             chat_service: None,
-            credential_encryption: None,
-            provider_stores: None,
+            provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
+                "test:provider:",
+            )),
             email_api: None,
             passkey_service: None,
         },
-        synctv_api::impls::ClientApiRuntime::test_disabled(),
+        support::client_api_runtime(),
     );
 
     ClientApiFixture {
@@ -553,6 +555,17 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
     } = &fixture;
 
     user_repo.ban(&owner.id, None, None).await.unwrap();
+    let connection_id = format!("conn_{}", uuid::Uuid::new_v4().simple());
+    client_api
+        .connection_service
+        .register(connection_id.clone(), owner.id)
+        .await
+        .unwrap();
+    client_api
+        .connection_service
+        .join_room(&connection_id, room.id)
+        .await
+        .unwrap();
 
     let list_response = client_api
         .list_rooms(synctv_proto::client::ListRoomsRequest {
@@ -612,6 +625,11 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
         hot_room.availability,
         synctv_proto::client::ResourceAvailability::CreatorInactive as i32
     );
+
+    client_api
+        .connection_service
+        .unregister(&connection_id)
+        .await;
 
     fixture.cleanup().await;
 }

@@ -64,35 +64,39 @@ mod tests {
         page: i32,
     }
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
     async fn query_handler(ProtoQuery(query): ProtoQuery<PageQuery>) -> &'static str {
         assert_eq!(query.page, 1);
         "ok"
     }
 
     #[tokio::test]
-    async fn proto_query_rejection_uses_app_error_code() {
+    async fn proto_query_rejection_uses_app_error_code() -> TestResult {
         let app = Router::new().route("/test", get(query_handler));
         let request = Request::builder()
             .uri("/test?page=abc")
-            .body(Body::empty())
-            .unwrap();
+            .body(Body::empty())?;
 
-        let response = app.oneshot(request).await.unwrap().into_response();
+        let response = app.oneshot(request).await?.into_response();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await?;
+        let json: serde_json::Value = serde_json::from_slice(&body)?;
 
         assert_eq!(json["status"], 400);
         assert_eq!(json["code"], crate::impls::error_codes::INVALID_ARGUMENT);
-        assert!(json["error"].as_str().unwrap_or_default().contains("page"));
+        assert!(matches!(
+            json["error"].as_str(),
+            Some(message) if message.contains("page")
+        ));
+        Ok(())
     }
 
     #[test]
-    fn protobuf_json_serde_accepts_proto3_int64_strings() {
-        let req =
-            serde_json::from_str::<synctv_proto::client::CreateUserAvatarUploadSessionRequest>(
-                r#"{
+    fn protobuf_json_serde_accepts_proto3_int64_strings() -> TestResult {
+        let req = serde_json::from_str::<synctv_proto::client::CreateUserAvatarUploadSessionRequest>(
+            r#"{
                     "client_avatar_id":"avatar-1",
                     "mime_type":"image/png",
                     "size_bytes":"1764839",
@@ -101,9 +105,9 @@ mod tests {
                     "checksum_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "metadata":{}
                 }"#,
-            )
-            .unwrap();
+        )?;
 
         assert_eq!(req.size_bytes, 1_764_839);
+        Ok(())
     }
 }

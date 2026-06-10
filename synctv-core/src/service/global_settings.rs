@@ -195,13 +195,22 @@ impl RuntimeEmailConfigProvider {
             changes: changes.clone(),
         };
 
-        let _ = provider.current_config();
-
-        let Some(mut subscriptions) = try_subscribe_email_settings(settings) else {
+        if let Err(error) = provider.current_config() {
             tracing::warn!(
-                "Runtime email config changes are disabled because settings storage has no service backend"
+                error = %error,
+                "Failed to load initial runtime email configuration"
             );
-            return provider;
+        }
+
+        let mut subscriptions = match subscribe_email_settings(settings) {
+            Ok(subscriptions) => subscriptions,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Runtime email config changes are disabled because setting subscriptions could not be created"
+                );
+                return provider;
+            }
         };
 
         crate::spawn::spawn_monitored("runtime_email_config_provider_changes", async move {
@@ -256,18 +265,18 @@ struct RuntimeEmailSettingSubscriptions {
     from_name: SettingChangeReceiver<String>,
 }
 
-fn try_subscribe_email_settings(
+fn subscribe_email_settings(
     settings: &SettingsRegistry,
-) -> Option<RuntimeEmailSettingSubscriptions> {
-    Some(RuntimeEmailSettingSubscriptions {
-        enabled: settings.email_enabled.subscribe_changes().ok()?,
-        smtp_host: settings.email_smtp_host.subscribe_changes().ok()?,
-        smtp_port: settings.email_smtp_port.subscribe_changes().ok()?,
-        smtp_username: settings.email_smtp_username.subscribe_changes().ok()?,
-        smtp_password: settings.email_smtp_password.subscribe_changes().ok()?,
-        use_tls: settings.email_use_tls.subscribe_changes().ok()?,
-        from_email: settings.email_from_email.subscribe_changes().ok()?,
-        from_name: settings.email_from_name.subscribe_changes().ok()?,
+) -> crate::Result<RuntimeEmailSettingSubscriptions> {
+    Ok(RuntimeEmailSettingSubscriptions {
+        enabled: settings.email_enabled.subscribe_changes()?,
+        smtp_host: settings.email_smtp_host.subscribe_changes()?,
+        smtp_port: settings.email_smtp_port.subscribe_changes()?,
+        smtp_username: settings.email_smtp_username.subscribe_changes()?,
+        smtp_password: settings.email_smtp_password.subscribe_changes()?,
+        use_tls: settings.email_use_tls.subscribe_changes()?,
+        from_email: settings.email_from_email.subscribe_changes()?,
+        from_name: settings.email_from_name.subscribe_changes()?,
     })
 }
 
@@ -665,8 +674,17 @@ impl SettingsRegistry {
         };
 
         let email_settings = registry.email_settings();
-        if let Ok(settings_service) = registry.storage.settings_service() {
-            settings_service.add_batch_validator(move |context| email_settings.validate(context));
+        match registry.storage.settings_service() {
+            Ok(settings_service) => {
+                settings_service
+                    .add_batch_validator(move |context| email_settings.validate(context));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Email settings batch validator was not registered"
+                );
+            }
         }
         registry
     }
@@ -764,6 +782,20 @@ impl SettingsRegistry {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
+        match result {
+            Ok(_) => std::panic::panic_any(context.to_string()),
+            Err(error) => error,
+        }
+    }
+
     #[test]
     fn test_public_settings_registration_defaults_are_closed() {
         let settings = PublicSettings::defaults();
@@ -777,20 +809,23 @@ mod tests {
 
     #[test]
     fn test_guest_default_permissions_accept_only_guest_safe_permissions() {
-        let allowed: PermissionSet = r#"["view_member_list","view_chat_history","use_webrtc"]"#
-            .parse()
-            .unwrap();
+        let allowed: PermissionSet = ok(
+            r#"["view_member_list","view_chat_history","use_webrtc"]"#.parse(),
+            "guest-safe permission set should parse",
+        );
         assert!(allowed.validate_guest_default().is_ok());
 
-        let empty: PermissionSet = "[]".parse().unwrap();
+        let empty: PermissionSet = ok("[]".parse(), "empty permission set should parse");
         assert!(empty.validate_guest_default().is_ok());
 
-        let rejected: PermissionSet = r#"["view_media_resources","chat","create_media_resource"]"#
-            .parse()
-            .unwrap();
-        let error = rejected
-            .validate_guest_default()
-            .expect_err("media-resource and chat permissions must not be guest defaults");
+        let rejected: PermissionSet = ok(
+            r#"["view_media_resources","chat","create_media_resource"]"#.parse(),
+            "unsafe permission set should parse",
+        );
+        let error = err(
+            rejected.validate_guest_default(),
+            "media-resource and chat permissions must not be guest defaults",
+        );
         assert!(error.to_string().contains("permissions.guest_default"));
         assert!(error.to_string().contains("view_media_resources"));
         assert!(error.to_string().contains("chat"));
@@ -799,15 +834,19 @@ mod tests {
 
     #[test]
     fn test_permission_set_uses_live_control_name_only() {
-        let parsed: PermissionSet = r#"["live_control"]"#.parse().unwrap();
+        let parsed: PermissionSet = ok(
+            r#"["live_control"]"#.parse(),
+            "live_control permission set should parse",
+        );
         assert!(parsed
             .bits()
             .has(crate::models::RoomPermission::LIVE_CONTROL));
         assert_eq!(parsed.to_string(), r#"["live_control"]"#);
 
-        let error = r#"["start_live"]"#
-            .parse::<PermissionSet>()
-            .expect_err("start_live is not a supported permission setting name");
+        let error = err(
+            r#"["start_live"]"#.parse::<PermissionSet>(),
+            "start_live is not a supported permission setting name",
+        );
         assert!(
             error
                 .to_string()
@@ -818,7 +857,7 @@ mod tests {
 
     #[test]
     fn test_permission_set_accepts_chat_name() {
-        let parsed: PermissionSet = r#"["chat"]"#.parse().unwrap();
+        let parsed: PermissionSet = ok(r#"["chat"]"#.parse(), "chat permission set should parse");
         assert!(parsed.bits().has(crate::models::RoomPermission::CHAT));
         assert_eq!(parsed.to_string(), r#"["chat"]"#);
     }
@@ -891,16 +930,21 @@ mod tests {
     async fn test_public_settings_hides_disabled_email_whitelist_domains() {
         let registry = SettingsRegistry::new_for_tests();
 
-        registry
-            .email_whitelist_enabled
-            .set_for_test(&false)
-            .unwrap();
-        registry
-            .email_whitelist
-            .set_for_test(&"example.com,@team.example.org".to_string())
-            .unwrap();
+        ok(
+            registry.email_whitelist_enabled.set_for_test(&false),
+            "email whitelist enabled setting should update",
+        );
+        ok(
+            registry
+                .email_whitelist
+                .set_for_test(&"example.com,@team.example.org".to_string()),
+            "email whitelist setting should update",
+        );
 
-        let settings = registry.to_public_settings().unwrap();
+        let settings = ok(
+            registry.to_public_settings(),
+            "public settings should serialize",
+        );
         assert!(!settings.email_whitelist_enabled);
         assert!(settings.email_whitelist_domains.is_empty());
     }
@@ -909,16 +953,21 @@ mod tests {
     async fn test_public_settings_returns_enabled_email_whitelist_domains() {
         let registry = SettingsRegistry::new_for_tests();
 
-        registry
-            .email_whitelist_enabled
-            .set_for_test(&true)
-            .unwrap();
-        registry
-            .email_whitelist
-            .set_for_test(&"Example.com,@team.example.org,example.com".to_string())
-            .unwrap();
+        ok(
+            registry.email_whitelist_enabled.set_for_test(&true),
+            "email whitelist enabled setting should update",
+        );
+        ok(
+            registry
+                .email_whitelist
+                .set_for_test(&"Example.com,@team.example.org,example.com".to_string()),
+            "email whitelist setting should update",
+        );
 
-        let settings = registry.to_public_settings().unwrap();
+        let settings = ok(
+            registry.to_public_settings(),
+            "public settings should serialize",
+        );
         assert!(settings.email_whitelist_enabled);
         assert_eq!(
             settings.email_whitelist_domains,
@@ -937,9 +986,11 @@ mod tests {
 
     #[test]
     fn test_oauth2_provider_configs_parse_dynamic_instances() {
-        let configs: OAuth2ProviderConfigs = r#"{"github":{"type":"github","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb"}},"corp_oidc":{"type":"oidc","enable_signup":true,"signup_need_review":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb","issuer":"https://idp.example.com"}}}"#
-            .parse()
-            .unwrap();
+        let configs: OAuth2ProviderConfigs = ok(
+            r#"{"github":{"type":"github","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb"}},"corp_oidc":{"type":"oidc","enable_signup":true,"signup_need_review":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb","issuer":"https://idp.example.com"}}}"#
+                .parse(),
+            "OAuth2 provider configs should parse",
+        );
         assert!(configs.policy_for("github").enable_signup);
         assert!(!configs.policy_for("github").signup_need_review);
         assert!(configs.policy_for("corp_oidc").enable_signup);
@@ -953,37 +1004,42 @@ mod tests {
 
     #[test]
     fn test_oauth2_provider_configs_validate_instance_names() {
-        let configs: OAuth2ProviderConfigs =
+        let configs: OAuth2ProviderConfigs = ok(
             r#"{"github_enterprise-1":{"type":"github","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb"}}}"#
-                .parse()
-                .unwrap();
+                .parse(),
+            "OAuth2 provider configs should parse",
+        );
         assert!(configs.validate().is_ok());
 
-        let dotted: OAuth2ProviderConfigs =
+        let dotted: OAuth2ProviderConfigs = ok(
             r#"{"github.enterprise-1":{"type":"github","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb"}}}"#
-                .parse()
-                .unwrap();
+                .parse(),
+            "OAuth2 provider configs should parse",
+        );
         assert!(dotted.validate().is_err());
 
-        let invalid: OAuth2ProviderConfigs =
+        let invalid: OAuth2ProviderConfigs = ok(
             r#"{"bad/name":{"type":"github","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb"}}}"#
-                .parse()
-                .unwrap();
+                .parse(),
+            "OAuth2 provider configs should parse",
+        );
         assert!(invalid.validate().is_err());
     }
 
     #[test]
     fn test_oauth2_provider_configs_validate_rejects_unimplemented_or_invalid_provider() {
-        let unimplemented: OAuth2ProviderConfigs =
+        let unimplemented: OAuth2ProviderConfigs = ok(
             r#"{"microsoft":{"type":"microsoft","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb"}}}"#
-                .parse()
-                .unwrap();
+                .parse(),
+            "OAuth2 provider configs should parse",
+        );
         assert!(unimplemented.validate().is_err());
 
-        let invalid_config: OAuth2ProviderConfigs =
+        let invalid_config: OAuth2ProviderConfigs = ok(
             r#"{"github":{"type":"github","enable_signup":true,"config":{"client_id":"id"}}}"#
-                .parse()
-                .unwrap();
+                .parse(),
+            "OAuth2 provider configs should parse",
+        );
         assert!(invalid_config.validate().is_err());
     }
 
@@ -991,7 +1047,10 @@ mod tests {
     fn test_public_settings_includes_nonempty_custom_publish_host() {
         let mut settings = PublicSettings::defaults();
         settings.custom_publish_host = "rtmp://live.example.com".to_string();
-        let json = serde_json::to_string(&settings).unwrap();
+        let json = ok(
+            serde_json::to_string(&settings),
+            "public settings should serialize",
+        );
         assert!(json.contains("custom_publish_host"));
         assert!(json.contains("rtmp://live.example.com"));
     }

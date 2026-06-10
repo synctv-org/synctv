@@ -134,7 +134,7 @@ impl fmt::Display for CacheDomain {
 }
 
 #[must_use]
-pub fn cache_domain_metric_label(domain: &CacheDomain) -> &'static str {
+fn cache_domain_metric_label(domain: &CacheDomain) -> &'static str {
     match domain {
         CacheDomain::Permission { .. } => "permission",
         CacheDomain::RoomMembership { .. } => "room_membership",
@@ -270,40 +270,6 @@ pub enum FenceRepairDecision {
     ExpirePending,
     AdvanceCommitted,
     Noop,
-}
-
-#[derive(Debug, Default)]
-pub struct NoopVersionFenceStore;
-
-#[async_trait]
-impl VersionFenceStore for NoopVersionFenceStore {
-    async fn current_version(&self, _domain: &CacheDomain) -> Result<Option<i64>> {
-        Ok(None)
-    }
-
-    async fn current_versions(&self, domains: &[CacheDomain]) -> Result<Vec<Option<i64>>> {
-        Ok(vec![None; domains.len()])
-    }
-
-    async fn bump_version(&self, _domain: &CacheDomain) -> Result<i64> {
-        Ok(0)
-    }
-
-    async fn set_version_at_least(&self, _domain: &CacheDomain, version: i64) -> Result<i64> {
-        Ok(version)
-    }
-
-    async fn reserve_next_after_observed_version(
-        &self,
-        _domain: &CacheDomain,
-        observed_version: i64,
-    ) -> Result<i64> {
-        Ok(observed_version + 1)
-    }
-
-    fn is_authoritative(&self) -> bool {
-        false
-    }
 }
 
 #[derive(Debug, Default)]
@@ -957,10 +923,16 @@ impl VersionFenceStore for RedisVersionFenceStore {
             })?
             .map_err(Error::from)?;
 
-            domains.extend(
-                keys.iter()
-                    .filter_map(|key| self.domain_from_pending_key(key)),
-            );
+            for key in keys {
+                if let Some(domain) = self.domain_from_pending_key(&key) {
+                    domains.push(domain);
+                } else {
+                    tracing::warn!(
+                        key = %key,
+                        "Ignoring malformed cache version fence pending key during repair scan"
+                    );
+                }
+            }
             cursor = next_cursor;
             if cursor == 0 {
                 break;
@@ -993,11 +965,6 @@ impl ConsistencyCoordinator {
     #[must_use]
     pub fn new(fence_store: Arc<dyn VersionFenceStore>) -> Self {
         Self { fence_store }
-    }
-
-    #[must_use]
-    pub fn fence_store(&self) -> Arc<dyn VersionFenceStore> {
-        self.fence_store.clone()
     }
 
     #[must_use]
@@ -1479,7 +1446,7 @@ impl ConsistencyCoordinator {
     }
 }
 
-pub fn version_fence_store_from_shared_state_profile(
+pub(crate) fn version_fence_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn VersionFenceStore>> {
     match profile.state_mode() {
@@ -1497,10 +1464,10 @@ pub fn version_fence_store_from_shared_state_profile(
                     profile.key_prefix(),
                 )))
             } else {
-                Ok(Arc::new(NoopVersionFenceStore))
+                Ok(Arc::new(LocalVersionFenceStore::new()))
             }
         }
-        SharedStateMode::LocalOnly => Ok(Arc::new(NoopVersionFenceStore)),
+        SharedStateMode::LocalOnly => Ok(Arc::new(LocalVersionFenceStore::new())),
     }
 }
 
@@ -1582,7 +1549,7 @@ async fn db_version_for_repair(pool: &PgPool, domain: &CacheDomain) -> Option<i6
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::failing_redis_runtime;
+    use crate::test_helpers::{failing_redis_runtime, TestOptionExt, TestResultExt};
 
     #[derive(Debug, Default)]
     struct CommitFailureRepairStore {
@@ -1664,11 +1631,41 @@ mod tests {
         let domain = room_settings_domain(1);
 
         assert!(store.is_authoritative());
-        assert_eq!(store.current_version(&domain).await.unwrap(), None);
-        assert_eq!(store.set_version_at_least(&domain, 5).await.unwrap(), 5);
-        assert_eq!(store.set_version_at_least(&domain, 3).await.unwrap(), 5);
-        assert_eq!(store.bump_version(&domain).await.unwrap(), 6);
-        assert_eq!(store.current_version(&domain).await.unwrap(), Some(6));
+        assert_eq!(
+            store
+                .current_version(&domain)
+                .await
+                .checked("operation should succeed"),
+            None
+        );
+        assert_eq!(
+            store
+                .set_version_at_least(&domain, 5)
+                .await
+                .checked("operation should succeed"),
+            5
+        );
+        assert_eq!(
+            store
+                .set_version_at_least(&domain, 3)
+                .await
+                .checked("operation should succeed"),
+            5
+        );
+        assert_eq!(
+            store
+                .bump_version(&domain)
+                .await
+                .checked("operation should succeed"),
+            6
+        );
+        assert_eq!(
+            store
+                .current_version(&domain)
+                .await
+                .checked("operation should succeed"),
+            Some(6)
+        );
     }
 
     #[tokio::test]
@@ -1680,7 +1677,7 @@ mod tests {
             store
                 .reserve_next_after_observed_version(&domain, 1)
                 .await
-                .unwrap(),
+                .checked("operation should succeed"),
             2
         );
         assert!(
@@ -1690,7 +1687,13 @@ mod tests {
             ),
             "a stale DB snapshot must retry instead of burning an unsatisfiable fence version"
         );
-        assert_eq!(store.current_version(&domain).await.unwrap(), Some(2));
+        assert_eq!(
+            store
+                .current_version(&domain)
+                .await
+                .checked("operation should succeed"),
+            Some(2)
+        );
     }
 
     #[tokio::test]
@@ -1702,17 +1705,21 @@ mod tests {
         let reserved = coordinator
             .reserve_next_after_observed_version(&domain, 0)
             .await
-            .unwrap();
+            .checked("operation should succeed");
         assert_eq!(reserved, 1);
 
-        let state = coordinator.current_state(&domain).await.unwrap().unwrap();
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(state.committed_version, 0);
         assert_eq!(state.pending_version, Some(1));
         assert_eq!(
             coordinator
                 .current_committed_version(&domain)
                 .await
-                .unwrap(),
+                .checked("operation should succeed"),
             None,
             "strong reads must bypass cache while a write has a pending fence"
         );
@@ -1720,16 +1727,20 @@ mod tests {
         coordinator
             .set_version_at_least(&domain, reserved)
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
-        let state = coordinator.current_state(&domain).await.unwrap().unwrap();
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(state.committed_version, 1);
         assert_eq!(state.pending_version, None);
         assert_eq!(
             coordinator
                 .current_committed_version(&domain)
                 .await
-                .unwrap(),
+                .checked("operation should succeed"),
             Some(1)
         );
     }
@@ -1743,15 +1754,19 @@ mod tests {
         let reserved = coordinator
             .begin_observed_write(&domain, 0)
             .await
-            .unwrap()
-            .expect("authoritative local fence should reserve");
+            .checked("operation should succeed")
+            .checked("authoritative local fence should reserve");
         assert_eq!(reserved.version, 1);
 
         coordinator
             .repair_pending_domains(|_| async { Some(1) })
             .await;
 
-        let state = coordinator.current_state(&domain).await.unwrap().unwrap();
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(state.committed_version, 1);
         assert_eq!(state.pending_version, None);
     }
@@ -1765,15 +1780,19 @@ mod tests {
         let reservation = coordinator
             .begin_observed_write(&domain, 0)
             .await
-            .unwrap()
-            .expect("authoritative fence should reserve");
+            .checked("operation should succeed")
+            .checked("authoritative fence should reserve");
         let committed = coordinator
             .commit_reserved_write(&domain, Some(&reservation), 1)
             .await
-            .expect("coordinator should recover committed DB version after fence commit failure");
+            .checked("coordinator should recover committed DB version after fence commit failure");
 
         assert_eq!(committed, 1);
-        let state = coordinator.current_state(&domain).await.unwrap().unwrap();
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(state.committed_version, 1);
         assert_eq!(
             state.pending_version, None,
@@ -1790,22 +1809,26 @@ mod tests {
         let reserved = coordinator
             .begin_observed_write(&domain, 0)
             .await
-            .unwrap()
-            .expect("authoritative local fence should reserve");
+            .checked("operation should succeed")
+            .checked("authoritative local fence should reserve");
         assert_eq!(reserved.version, 1);
 
         coordinator
             .repair_pending_domains(|_| async { Some(0) })
             .await;
 
-        let state = coordinator.current_state(&domain).await.unwrap().unwrap();
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(state.committed_version, 0);
         assert_eq!(state.pending_version, Some(1));
         assert_eq!(
             coordinator
                 .current_committed_version(&domain)
                 .await
-                .unwrap(),
+                .checked("operation should succeed"),
             None
         );
     }
@@ -1819,15 +1842,19 @@ mod tests {
         let reserved = coordinator
             .begin_observed_write(&domain, 0)
             .await
-            .unwrap()
-            .expect("authoritative local fence should reserve");
+            .checked("operation should succeed")
+            .checked("authoritative local fence should reserve");
         assert_eq!(reserved.version, 1);
 
         coordinator
             .repair_after_db_read_with_pending_lease(&domain, 0, Duration::from_millis(0))
             .await;
 
-        let state = coordinator.current_state(&domain).await.unwrap().unwrap();
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(state.committed_version, 0);
         assert_eq!(
             state.pending_version, None,
@@ -1837,7 +1864,7 @@ mod tests {
             coordinator
                 .current_committed_version(&domain)
                 .await
-                .unwrap(),
+                .checked("operation should succeed"),
             Some(0)
         );
     }
@@ -1851,15 +1878,19 @@ mod tests {
         let reserved = coordinator
             .begin_observed_write(&domain, 0)
             .await
-            .unwrap()
-            .expect("authoritative local fence should reserve");
+            .checked("operation should succeed")
+            .checked("authoritative local fence should reserve");
         assert_eq!(reserved.version, 1);
 
         coordinator
             .repair_after_db_read_with_pending_lease(&domain, 0, Duration::from_mins(1))
             .await;
 
-        let state = coordinator.current_state(&domain).await.unwrap().unwrap();
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(state.committed_version, 0);
         assert_eq!(
             state.pending_version,
@@ -1877,15 +1908,19 @@ mod tests {
         let reserved = coordinator
             .begin_observed_write(&domain, 0)
             .await
-            .unwrap()
-            .expect("authoritative local fence should reserve");
+            .checked("operation should succeed")
+            .checked("authoritative local fence should reserve");
         assert_eq!(reserved.version, 1);
 
         coordinator
             .repair_after_db_read_with_pending_lease(&domain, 1, Duration::from_millis(0))
             .await;
 
-        let state = coordinator.current_state(&domain).await.unwrap().unwrap();
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(state.committed_version, 1);
         assert_eq!(
             state.pending_version, None,
@@ -1902,22 +1937,26 @@ mod tests {
         let first = coordinator
             .begin_observed_write(&domain, 0)
             .await
-            .unwrap()
-            .expect("authoritative local fence should reserve");
+            .checked("operation should succeed")
+            .checked("authoritative local fence should reserve");
         assert_eq!(first.version, 1);
 
         let second = coordinator
             .begin_observed_write(&domain, 1)
             .await
-            .unwrap()
-            .expect("observing the first version in DB should allow the next write");
+            .checked("operation should succeed")
+            .checked("observing the first version in DB should allow the next write");
         assert_eq!(second.version, 2);
 
         coordinator
             .abort_reserved_write(&domain, Some(&second))
             .await;
 
-        let state = coordinator.current_state(&domain).await.unwrap().unwrap();
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(
             state.committed_version, 1,
             "a later aborted write must not erase an earlier DB-observed commit"
@@ -1934,8 +1973,8 @@ mod tests {
         let first = coordinator
             .begin_observed_write(&domain, 5)
             .await
-            .unwrap()
-            .expect("first writer should reserve");
+            .checked("operation should succeed")
+            .checked("first writer should reserve");
         assert_eq!(first.version, 6);
 
         assert!(
@@ -1946,7 +1985,11 @@ mod tests {
             "a second writer on the same DB snapshot must not replace the first pending token"
         );
 
-        let state = coordinator.current_state(&domain).await.unwrap().unwrap();
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(state.committed_version, 5);
         assert_eq!(state.pending_version, Some(6));
         assert_eq!(state.pending_token.as_deref(), Some(first.token.as_str()));
@@ -1961,19 +2004,23 @@ mod tests {
         let first = coordinator
             .begin_observed_write(&domain, 5)
             .await
-            .unwrap()
-            .expect("first writer should reserve");
+            .checked("operation should succeed")
+            .checked("first writer should reserve");
         assert_eq!(first.version, 6);
 
         let second = coordinator
             .begin_observed_write(&domain, 6)
             .await
-            .unwrap()
-            .expect("writer that observed the first DB commit should reserve next version");
+            .checked("operation should succeed")
+            .checked("writer that observed the first DB commit should reserve next version");
         assert_eq!(second.version, 7);
         assert_ne!(second.token, first.token);
 
-        let state = coordinator.current_state(&domain).await.unwrap().unwrap();
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(state.committed_version, 6);
         assert_eq!(state.pending_version, Some(7));
         assert_eq!(state.pending_token.as_deref(), Some(second.token.as_str()));
@@ -1981,8 +2028,12 @@ mod tests {
         coordinator
             .commit_reserved_write(&domain, Some(&second), second.version)
             .await
-            .unwrap();
-        let state = coordinator.current_state(&domain).await.unwrap().unwrap();
+            .checked("operation should succeed");
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(state.committed_version, 7);
         assert_eq!(state.pending_version, None);
     }
@@ -1999,29 +2050,44 @@ mod tests {
                 let domain = domain.clone();
                 handles.push(tokio::spawn(async move {
                     for _ in 0..16 {
-                        let observed = store.current_version(&domain).await.unwrap().unwrap_or(0);
+                        let observed = store
+                            .current_version(&domain)
+                            .await
+                            .checked("operation should succeed")
+                            .unwrap_or(0);
                         match store.begin_write(&domain, observed).await {
                             Ok(reservation) => {
                                 if reservation.version % 2 == 0 {
-                                    store.abort_write(&domain, &reservation).await.unwrap();
+                                    store
+                                        .abort_write(&domain, &reservation)
+                                        .await
+                                        .checked("operation should succeed");
                                 } else {
-                                    store.commit_write(&domain, &reservation).await.unwrap();
+                                    store
+                                        .commit_write(&domain, &reservation)
+                                        .await
+                                        .checked("operation should succeed");
                                 }
                             }
                             Err(Error::OptimisticLockConflict) => {}
-                            Err(error) => panic!("unexpected fence error: {error:?}"),
+                            Err(error) => {
+                                std::panic::panic_any(format!("unexpected fence error: {error:?}"))
+                            }
                         }
-                        store.set_version_at_least(&domain, observed).await.unwrap();
+                        store
+                            .set_version_at_least(&domain, observed)
+                            .await
+                            .checked("operation should succeed");
                     }
                 }));
             }
 
             for handle in handles {
-                handle.await.unwrap();
+                handle.await.checked("operation should succeed");
             }
         })
         .await
-        .expect("local fence mixed operations should not deadlock");
+        .checked("local fence mixed operations should not deadlock");
     }
 
     #[tokio::test]
@@ -2029,13 +2095,16 @@ mod tests {
         let store = LocalVersionFenceStore::new();
         let first = room_settings_domain(1);
         let second = room_settings_domain(2);
-        store.set_version_at_least(&first, 7).await.unwrap();
+        store
+            .set_version_at_least(&first, 7)
+            .await
+            .checked("operation should succeed");
 
         assert_eq!(
             store
                 .current_versions(&[first.clone(), second.clone()])
                 .await
-                .unwrap(),
+                .checked("operation should succeed"),
             vec![Some(7), None]
         );
     }
@@ -2045,39 +2114,53 @@ mod tests {
         let store = LocalVersionFenceStore::new();
         let first = room_settings_domain(1);
         let second = room_settings_domain(2);
-        store.set_version_at_least(&first, 7).await.unwrap();
-        let reservation = store.begin_write(&first, 7).await.unwrap();
+        store
+            .set_version_at_least(&first, 7)
+            .await
+            .checked("operation should succeed");
+        let reservation = store
+            .begin_write(&first, 7)
+            .await
+            .checked("operation should succeed");
 
         assert_eq!(
             store
                 .current_versions(&[first.clone(), second.clone()])
                 .await
-                .unwrap(),
+                .checked("operation should succeed"),
             vec![None, None],
             "batch reads must match strong single-domain reads while a fence is pending"
         );
 
-        store.commit_write(&first, &reservation).await.unwrap();
+        store
+            .commit_write(&first, &reservation)
+            .await
+            .checked("operation should succeed");
         assert_eq!(
-            store.current_versions(&[first, second]).await.unwrap(),
+            store
+                .current_versions(&[first, second])
+                .await
+                .checked("operation should succeed"),
             vec![Some(8), None]
         );
     }
 
     #[test]
-    fn local_only_profile_uses_non_authoritative_fence() {
+    fn local_only_profile_uses_local_authoritative_fence() {
         let profile = SharedStateProfile::local_only("test:");
-        let store = version_fence_store_from_shared_state_profile(&profile).unwrap();
+        let store = version_fence_store_from_shared_state_profile(&profile)
+            .checked("operation should succeed");
 
-        assert!(!store.is_authoritative());
+        assert!(store.is_authoritative());
     }
 
     #[test]
-    fn best_effort_profile_without_redis_uses_non_authoritative_fence() {
+    fn best_effort_profile_without_redis_uses_local_authoritative_fence() {
         let profile = SharedStateProfile::new(SharedStateMode::SharedBestEffort, None, "test:");
-        let store = version_fence_store_from_shared_state_profile(&profile).unwrap();
+        let store = version_fence_store_from_shared_state_profile(&profile)
+            .checked("operation should succeed");
 
-        assert!(!store.is_authoritative());
+        assert!(store.is_authoritative());
     }
 
     #[test]
@@ -2087,9 +2170,21 @@ mod tests {
             Some(failing_redis_runtime()),
             "test:",
         );
-        let store = version_fence_store_from_shared_state_profile(&profile).unwrap();
+        let store = version_fence_store_from_shared_state_profile(&profile)
+            .checked("operation should succeed");
 
         assert!(store.is_authoritative());
+    }
+
+    #[test]
+    fn redis_fence_store_parses_valid_pending_key() {
+        let store = RedisVersionFenceStore::new(failing_redis_runtime(), "test:");
+        let key = format!("{}{}", store.key(&room_settings_domain(42)), ":pending");
+
+        assert_eq!(
+            store.domain_from_pending_key(&key),
+            Some(room_settings_domain(42))
+        );
     }
 
     #[test]
@@ -2097,7 +2192,7 @@ mod tests {
         let profile = SharedStateProfile::new(SharedStateMode::SharedRequired, None, "test:");
 
         let Err(error) = version_fence_store_from_shared_state_profile(&profile) else {
-            panic!("required shared-state fences need Redis");
+            std::panic::panic_any("required shared-state fences need Redis");
         };
 
         assert!(

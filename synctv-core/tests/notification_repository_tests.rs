@@ -1,9 +1,8 @@
 //! `NotificationRepository` integration tests
 //!
 //! Tests: `mark_as_read` cross-user guard, `mark_all_as_read` before parameter,
-//!        `delete_older_than` boundary, `list_by_user_with_count` empty `total_count=0`.
+//!        `delete_older_than` boundary, `list_by_user_with_count` pagination counts.
 //!
-#![allow(clippy::unwrap_used)]
 
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
@@ -14,7 +13,7 @@ use synctv_core::{
     },
     repository::{NotificationRepository, UserRepository},
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, ok, some};
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -37,7 +36,10 @@ fn make_user(username: &str) -> User {
 
 async fn create_user(pool: &PgPool, username: &str) -> User {
     let user_repo = UserRepository::new(pool.clone());
-    user_repo.create(&make_user(username)).await.unwrap()
+    ok(
+        user_repo.create(&make_user(username)).await,
+        "notification test user should be created",
+    )
 }
 
 fn make_notif_request(user_id: &UserId, title: &str) -> CreateNotificationRequest {
@@ -61,33 +63,47 @@ async fn test_mark_as_read_cross_user_guard() {
     let user_a = create_user(&pool, "notif_user_a").await;
     let user_b = create_user(&pool, "notif_user_b").await;
 
-    let notif_a = notif_repo
-        .create(&make_notif_request(&user_a.id, "For A"))
-        .await
-        .unwrap();
+    let notif_a = ok(
+        notif_repo
+            .create(&make_notif_request(&user_a.id, "For A"))
+            .await,
+        "notification for user A should be created",
+    );
     assert!(!notif_a.is_read);
 
     // User B tries to mark user A's notification as read
-    let affected = notif_repo
-        .mark_as_read(&user_b.id, &[notif_a.id])
-        .await
-        .unwrap();
+    let affected = ok(
+        notif_repo.mark_as_read(&user_b.id, &[notif_a.id]).await,
+        "cross-user mark-as-read should execute",
+    );
     assert_eq!(
         affected, 0,
         "Foreign user should not be able to mark other user's notifications"
     );
 
     // Verify it's still unread
-    let fetched = notif_repo.get_by_id(notif_a.id).await.unwrap().unwrap();
+    let fetched = some(
+        ok(
+            notif_repo.get_by_id(notif_a.id).await,
+            "notification should be fetched after cross-user attempt",
+        ),
+        "notification should exist after cross-user attempt",
+    );
     assert!(!fetched.is_read);
 
     // User A marks their own notification
-    let affected = notif_repo
-        .mark_as_read(&user_a.id, &[notif_a.id])
-        .await
-        .unwrap();
+    let affected = ok(
+        notif_repo.mark_as_read(&user_a.id, &[notif_a.id]).await,
+        "owner mark-as-read should execute",
+    );
     assert_eq!(affected, 1);
-    let fetched = notif_repo.get_by_id(notif_a.id).await.unwrap().unwrap();
+    let fetched = some(
+        ok(
+            notif_repo.get_by_id(notif_a.id).await,
+            "notification should be fetched after owner mark-as-read",
+        ),
+        "notification should exist after owner mark-as-read",
+    );
     assert!(fetched.is_read);
 }
 
@@ -101,37 +117,46 @@ async fn test_mark_all_as_read_before_parameter() {
 
     let user = create_user(&pool, "notif_user_before").await;
 
-    let n1 = notif_repo
-        .create(&make_notif_request(&user.id, "n1"))
-        .await
-        .unwrap();
+    let n1 = ok(
+        notif_repo.create(&make_notif_request(&user.id, "n1")).await,
+        "first notification should be created",
+    );
 
     // Sleep a bit so timestamps differ
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     let cutoff = Utc::now();
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-    let _n2 = notif_repo
-        .create(&make_notif_request(&user.id, "n2"))
-        .await
-        .unwrap();
+    let _n2 = ok(
+        notif_repo.create(&make_notif_request(&user.id, "n2")).await,
+        "second notification should be created",
+    );
 
     // Mark all before cutoff
-    let affected = notif_repo
-        .mark_all_as_read(&user.id, Some(cutoff))
-        .await
-        .unwrap();
+    let affected = ok(
+        notif_repo.mark_all_as_read(&user.id, Some(cutoff)).await,
+        "mark-all-as-read before cutoff should execute",
+    );
     assert_eq!(
         affected, 1,
         "Only n1 should be marked as read (before cutoff)"
     );
 
     // n1 should be read
-    let fetched_n1 = notif_repo.get_by_id(n1.id).await.unwrap().unwrap();
+    let fetched_n1 = some(
+        ok(
+            notif_repo.get_by_id(n1.id).await,
+            "first notification should be fetched",
+        ),
+        "first notification should exist",
+    );
     assert!(fetched_n1.is_read);
 
     // n2 should still be unread
-    let unread_count = notif_repo.count_unread(&user.id).await.unwrap();
+    let unread_count = ok(
+        notif_repo.count_unread(&user.id).await,
+        "unread notification count should load",
+    );
     assert_eq!(unread_count, 1);
 }
 
@@ -143,19 +168,25 @@ async fn test_mark_all_as_read_without_before() {
 
     let user = create_user(&pool, "notif_user_all").await;
 
-    notif_repo
-        .create(&make_notif_request(&user.id, "x1"))
-        .await
-        .unwrap();
-    notif_repo
-        .create(&make_notif_request(&user.id, "x2"))
-        .await
-        .unwrap();
+    ok(
+        notif_repo.create(&make_notif_request(&user.id, "x1")).await,
+        "first notification should be created",
+    );
+    ok(
+        notif_repo.create(&make_notif_request(&user.id, "x2")).await,
+        "second notification should be created",
+    );
 
-    let affected = notif_repo.mark_all_as_read(&user.id, None).await.unwrap();
+    let affected = ok(
+        notif_repo.mark_all_as_read(&user.id, None).await,
+        "mark-all-as-read should execute",
+    );
     assert_eq!(affected, 2);
 
-    let unread = notif_repo.count_unread(&user.id).await.unwrap();
+    let unread = ok(
+        notif_repo.count_unread(&user.id).await,
+        "unread notification count should load",
+    );
     assert_eq!(unread, 0);
 }
 
@@ -170,31 +201,38 @@ async fn test_delete_older_than_boundary() {
     let user = create_user(&pool, "notif_user_delete").await;
 
     let old_date = Utc::now() - Duration::days(31);
-    sqlx::query(
-        r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
+    ok(
+        sqlx::query(
+            r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
           VALUES ($1, $2, 'Old Notif', 'old', '{}', false, $3, $3)"
-    )
-    .bind(user.id)
-    .bind(i16::from(NotificationType::SystemAnnouncement))
-    .bind(old_date)
-    .execute(&pool)
-    .await
-    .unwrap();
+        )
+        .bind(user.id)
+        .bind(i16::from(NotificationType::SystemAnnouncement))
+        .bind(old_date)
+        .execute(&pool)
+        .await,
+        "old notification fixture should be inserted",
+    );
 
-    notif_repo
-        .create(&make_notif_request(&user.id, "Recent"))
-        .await
-        .unwrap();
+    ok(
+        notif_repo
+            .create(&make_notif_request(&user.id, "Recent"))
+            .await,
+        "recent notification should be created",
+    );
 
     // Delete notifications older than 30 days
-    let deleted = notif_repo.delete_older_than(30).await.unwrap();
+    let deleted = ok(
+        notif_repo.delete_older_than(30).await,
+        "old notifications should be deleted",
+    );
     assert_eq!(deleted, 1, "Should delete only the old notification");
 
     // Recent notification should remain
-    let count = notif_repo
-        .count_by_user(&user.id, None, None)
-        .await
-        .unwrap();
+    let count = ok(
+        notif_repo.count_by_user(&user.id, None, None).await,
+        "notification count should load",
+    );
     assert_eq!(count, 1);
 }
 
@@ -206,13 +244,18 @@ async fn test_delete_older_than_zero_days_deletes_all() {
 
     let user = create_user(&pool, "notif_user_zero").await;
 
-    notif_repo
-        .create(&make_notif_request(&user.id, "Recent"))
-        .await
-        .unwrap();
+    ok(
+        notif_repo
+            .create(&make_notif_request(&user.id, "Recent"))
+            .await,
+        "recent notification should be created",
+    );
 
     // 0 days means everything older than now should be deleted
-    let deleted = notif_repo.delete_older_than(0).await.unwrap();
+    let deleted = ok(
+        notif_repo.delete_older_than(0).await,
+        "zero-day notification delete should execute",
+    );
     // The notification was JUST created so it might be at exactly CURRENT_TIMESTAMP.
     // With `< CURRENT_TIMESTAMP - INTERVAL '0 days'` it should still be within the boundary.
     // Just verify it returns without error (boundary behavior).
@@ -238,10 +281,10 @@ async fn test_list_by_user_with_count_empty_returns_zero() {
         sort_direction: synctv_core::models::SortDirection::Desc,
     };
 
-    let (notifications, total) = notif_repo
-        .list_by_user_with_count(&user.id, &query)
-        .await
-        .unwrap();
+    let (notifications, total) = ok(
+        notif_repo.list_by_user_with_count(&user.id, &query).await,
+        "empty notification list should load",
+    );
 
     assert!(notifications.is_empty());
     assert_eq!(total, 0);
@@ -256,10 +299,12 @@ async fn test_list_by_user_with_count_returns_correct_total() {
     let user = create_user(&pool, "notif_count_user").await;
 
     for i in 0..5 {
-        notif_repo
-            .create(&make_notif_request(&user.id, &format!("notif_{i}")))
-            .await
-            .unwrap();
+        ok(
+            notif_repo
+                .create(&make_notif_request(&user.id, &format!("notif_{i}")))
+                .await,
+            "notification should be created for pagination",
+        );
     }
 
     let query = NotificationListQuery {
@@ -271,13 +316,27 @@ async fn test_list_by_user_with_count_returns_correct_total() {
         sort_direction: synctv_core::models::SortDirection::Desc,
     };
 
-    let (notifications, total) = notif_repo
-        .list_by_user_with_count(&user.id, &query)
-        .await
-        .unwrap();
+    let (notifications, total) = ok(
+        notif_repo.list_by_user_with_count(&user.id, &query).await,
+        "paginated notification list should load",
+    );
 
-    assert_eq!(notifications.len(), 2, "Page should have 2 items");
-    assert_eq!(total, 5, "Total count should be 5");
+    assert_eq!(notifications.len(), 2);
+    assert_eq!(total, 5);
+
+    let out_of_range_query = NotificationListQuery {
+        pagination: PageParams::new(Some(4), Some(2)),
+        ..query
+    };
+    let (notifications, total) = ok(
+        notif_repo
+            .list_by_user_with_count(&user.id, &out_of_range_query)
+            .await,
+        "out-of-range notification list should load",
+    );
+
+    assert!(notifications.is_empty());
+    assert_eq!(total, 5);
 }
 
 // ─── C2: Partition pruning tests for notification queries ─────────────
@@ -294,22 +353,26 @@ async fn test_list_by_user_with_count_has_partition_pruning() {
 
     // Insert a notification older than 6 months via raw SQL
     let old_date = Utc::now() - Duration::days(200);
-    sqlx::query(
-        r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
+    ok(
+        sqlx::query(
+            r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
           VALUES ($1, $2, 'Old Notif', 'old', '{}', false, $3, $3)",
-    )
-    .bind(user.id)
-    .bind(i16::from(NotificationType::SystemAnnouncement))
-    .bind(old_date)
-    .execute(&pool)
-    .await
-    .unwrap();
+        )
+        .bind(user.id)
+        .bind(i16::from(NotificationType::SystemAnnouncement))
+        .bind(old_date)
+        .execute(&pool)
+        .await,
+        "old notification fixture should be inserted",
+    );
 
     // Insert a recent notification
-    notif_repo
-        .create(&make_notif_request(&user.id, "Recent"))
-        .await
-        .unwrap();
+    ok(
+        notif_repo
+            .create(&make_notif_request(&user.id, "Recent"))
+            .await,
+        "recent notification should be created",
+    );
 
     let query = NotificationListQuery {
         pagination: PageParams::default(),
@@ -320,10 +383,10 @@ async fn test_list_by_user_with_count_has_partition_pruning() {
         sort_direction: synctv_core::models::SortDirection::Desc,
     };
 
-    let (notifications, total) = notif_repo
-        .list_by_user_with_count(&user.id, &query)
-        .await
-        .unwrap();
+    let (notifications, total) = ok(
+        notif_repo.list_by_user_with_count(&user.id, &query).await,
+        "partition-pruned notification list should load",
+    );
 
     // Only the recent notification should be returned (old one outside 6-month window)
     assert_eq!(
@@ -345,27 +408,31 @@ async fn test_count_by_user_has_partition_pruning() {
 
     // Insert a notification older than 6 months
     let old_date = Utc::now() - Duration::days(200);
-    sqlx::query(
-        r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
+    ok(
+        sqlx::query(
+            r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
           VALUES ($1, $2, 'Old', 'old', '{}', false, $3, $3)",
-    )
-    .bind(user.id)
-    .bind(i16::from(NotificationType::SystemAnnouncement))
-    .bind(old_date)
-    .execute(&pool)
-    .await
-    .unwrap();
+        )
+        .bind(user.id)
+        .bind(i16::from(NotificationType::SystemAnnouncement))
+        .bind(old_date)
+        .execute(&pool)
+        .await,
+        "old notification fixture should be inserted",
+    );
 
     // Insert a recent one
-    notif_repo
-        .create(&make_notif_request(&user.id, "Recent"))
-        .await
-        .unwrap();
+    ok(
+        notif_repo
+            .create(&make_notif_request(&user.id, "Recent"))
+            .await,
+        "recent notification should be created",
+    );
 
-    let count = notif_repo
-        .count_by_user(&user.id, None, None)
-        .await
-        .unwrap();
+    let count = ok(
+        notif_repo.count_by_user(&user.id, None, None).await,
+        "notification count should load",
+    );
     assert_eq!(
         count, 1,
         "Old notification outside 6-month window should not be counted"
@@ -383,24 +450,31 @@ async fn test_count_unread_has_partition_pruning() {
 
     // Insert an old unread notification (> 6 months)
     let old_date = Utc::now() - Duration::days(200);
-    sqlx::query(
-        r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
+    ok(
+        sqlx::query(
+            r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
           VALUES ($1, $2, 'Old Unread', 'old', '{}', false, $3, $3)",
-    )
-    .bind(user.id)
-    .bind(i16::from(NotificationType::SystemAnnouncement))
-    .bind(old_date)
-    .execute(&pool)
-    .await
-    .unwrap();
+        )
+        .bind(user.id)
+        .bind(i16::from(NotificationType::SystemAnnouncement))
+        .bind(old_date)
+        .execute(&pool)
+        .await,
+        "old unread notification fixture should be inserted",
+    );
 
     // Insert a recent unread notification
-    notif_repo
-        .create(&make_notif_request(&user.id, "Recent Unread"))
-        .await
-        .unwrap();
+    ok(
+        notif_repo
+            .create(&make_notif_request(&user.id, "Recent Unread"))
+            .await,
+        "recent unread notification should be created",
+    );
 
-    let count = notif_repo.count_unread(&user.id).await.unwrap();
+    let count = ok(
+        notif_repo.count_unread(&user.id).await,
+        "unread notification count should load",
+    );
     assert_eq!(
         count, 1,
         "Old unread notification outside 6-month window should not be counted"
@@ -416,15 +490,17 @@ async fn test_mark_as_read_has_partition_pruning() {
 
     let user = create_user(&pool, "notif_prune_mark").await;
 
-    let notif = notif_repo
-        .create(&make_notif_request(&user.id, "Recent"))
-        .await
-        .unwrap();
+    let notif = ok(
+        notif_repo
+            .create(&make_notif_request(&user.id, "Recent"))
+            .await,
+        "recent notification should be created",
+    );
 
-    let affected = notif_repo
-        .mark_as_read(&user.id, &[notif.id])
-        .await
-        .unwrap();
+    let affected = ok(
+        notif_repo.mark_as_read(&user.id, &[notif.id]).await,
+        "mark-as-read should execute",
+    );
     assert_eq!(affected, 1, "Should mark recent notification as read");
 }
 
@@ -437,15 +513,23 @@ async fn test_delete_has_partition_pruning() {
 
     let user = create_user(&pool, "notif_prune_delete").await;
 
-    let notif = notif_repo
-        .create(&make_notif_request(&user.id, "To Delete"))
-        .await
-        .unwrap();
+    let notif = ok(
+        notif_repo
+            .create(&make_notif_request(&user.id, "To Delete"))
+            .await,
+        "notification to delete should be created",
+    );
 
-    notif_repo.delete(&user.id, notif.id).await.unwrap();
+    ok(
+        notif_repo.delete(&user.id, notif.id).await,
+        "notification delete should execute",
+    );
 
     // Verify it was deleted
-    let fetched = notif_repo.get_by_id(notif.id).await.unwrap();
+    let fetched = ok(
+        notif_repo.get_by_id(notif.id).await,
+        "notification should be fetched after delete",
+    );
     assert!(fetched.is_none(), "Notification should be deleted");
 }
 
@@ -458,16 +542,21 @@ async fn test_delete_all_read_has_partition_pruning() {
 
     let user = create_user(&pool, "notif_prune_del_read").await;
 
-    let notif = notif_repo
-        .create(&make_notif_request(&user.id, "Read"))
-        .await
-        .unwrap();
-    notif_repo
-        .mark_as_read(&user.id, &[notif.id])
-        .await
-        .unwrap();
+    let notif = ok(
+        notif_repo
+            .create(&make_notif_request(&user.id, "Read"))
+            .await,
+        "notification to mark read should be created",
+    );
+    ok(
+        notif_repo.mark_as_read(&user.id, &[notif.id]).await,
+        "mark-as-read should execute",
+    );
 
     // Delete all read - should succeed
-    let deleted = notif_repo.delete_all_read(&user.id).await.unwrap();
+    let deleted = ok(
+        notif_repo.delete_all_read(&user.id).await,
+        "delete-all-read should execute",
+    );
     assert_eq!(deleted, 1, "Should delete the read notification");
 }

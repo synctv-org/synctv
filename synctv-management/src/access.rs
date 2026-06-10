@@ -51,16 +51,16 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::ManagementAccessController;
-    use tonic::{Code, Request};
+    use tonic::{metadata::MetadataValue, Code, Request, Status};
 
     #[test]
-    fn management_access_controller_allows_missing_header_when_token_disabled() {
+    fn management_access_controller_allows_missing_header_when_token_disabled() -> Result<(), Status>
+    {
         let controller = ManagementAccessController::new("");
         let request = Request::new(());
 
-        controller
-            .authorize(&request)
-            .expect("disabled management token should allow local requests");
+        controller.authorize(&request)?;
+        Ok(())
     }
 
     #[test]
@@ -80,9 +80,10 @@ mod tests {
     fn management_access_controller_rejects_incorrect_bearer_token() {
         let controller = ManagementAccessController::new("management-secret");
         let mut request = Request::new(());
-        request
-            .metadata_mut()
-            .insert("authorization", "Bearer wrong-secret".parse().unwrap());
+        request.metadata_mut().insert(
+            "authorization",
+            MetadataValue::from_static("Bearer wrong-secret"),
+        );
 
         let error = controller
             .authorize(&request)
@@ -93,15 +94,15 @@ mod tests {
     }
 
     #[test]
-    fn management_access_controller_accepts_matching_bearer_token() {
+    fn management_access_controller_accepts_matching_bearer_token() -> Result<(), Status> {
         let controller = ManagementAccessController::new("management-secret");
         let mut request = Request::new(());
-        request
-            .metadata_mut()
-            .insert("authorization", "Bearer management-secret".parse().unwrap());
+        request.metadata_mut().insert(
+            "authorization",
+            MetadataValue::from_static("Bearer management-secret"),
+        );
 
-        controller
-            .authorize(&request)
-            .expect("matching management bearer token should be accepted");
+        controller.authorize(&request)?;
+        Ok(())
     }
 }

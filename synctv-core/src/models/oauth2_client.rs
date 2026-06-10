@@ -252,6 +252,13 @@ pub struct OAuth2CallbackResponse {
 mod tests {
     use super::*;
 
+    fn json_ok<T>(result: serde_json::Result<T>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn provider_names_codes_and_serde_are_stable() {
         let providers = [
@@ -281,9 +288,15 @@ mod tests {
                 Ok(name)
             );
 
-            let json = serde_json::to_string(&provider).unwrap();
+            let json = json_ok(
+                serde_json::to_string(&provider),
+                "provider should serialize",
+            );
             assert_eq!(
-                serde_json::from_str::<OAuth2Provider>(&json).unwrap(),
+                json_ok(
+                    serde_json::from_str::<OAuth2Provider>(&json),
+                    "provider should deserialize"
+                ),
                 provider
             );
         }

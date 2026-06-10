@@ -75,9 +75,10 @@ impl InMemoryTokenBlacklistStore {
         let Ok(_cleanup_guard) = mutex.try_lock() else {
             return;
         };
-        let _ = self
-            .blacklist_locks
-            .remove_if(key, |_, stored_mutex| Arc::ptr_eq(stored_mutex, mutex));
+        drop(
+            self.blacklist_locks
+                .remove_if(key, |_, stored_mutex| Arc::ptr_eq(stored_mutex, mutex)),
+        );
     }
 }
 
@@ -261,7 +262,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         // xmax = 0 means the row was inserted (no conflict)
         // xmax != 0 means the row already existed (conflict, nothing inserted)
         // See: https://www.postgresql.org/docs/current/functions-info.html
-        let inserted = sqlx::query_scalar!(
+        let insert_outcome = sqlx::query_scalar!(
             "INSERT INTO auth_token_blacklist (jti, expires_at) VALUES ($1, $2) \
              ON CONFLICT (jti) DO NOTHING \
              RETURNING (xmax = 0) as \"inserted!\"",
@@ -277,12 +278,14 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
                 "Failed to blacklist refresh token JTI in PostgreSQL"
             );
             crate::Error::Internal("Failed to rotate refresh token".to_string())
-        })?
-        .unwrap_or(false); // None means conflict occurred, row not returned
+        })?;
 
-        // inserted = true means we inserted a new row (first use)
-        // inserted = false means conflict, key already existed (replay)
-        Ok(!inserted)
+        let already_blacklisted = match insert_outcome {
+            Some(inserted) => !inserted,
+            None => true,
+        };
+
+        Ok(already_blacklisted)
     }
 
     async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
@@ -343,6 +346,21 @@ const L2_NEGATIVE_TTL_SECS: u64 = 15;
 /// Safety margin subtracted from token TTL for L2 positive entries.
 /// Ensures Redis entries expire before the token itself, preventing stale positives.
 const L2_TTL_MARGIN_SECS: u64 = 30;
+
+pub(super) fn parse_l2_blacklist_value(key: &str, value: &str) -> Option<bool> {
+    match value {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => {
+            tracing::warn!(
+                key = %key,
+                value = %value,
+                "Malformed blacklist value in Redis L2"
+            );
+            None
+        }
+    }
+}
 
 /// Tiered [`TokenBlacklistStore`] with L1 (moka) + optional L2 (Redis) + PG primary.
 ///
@@ -431,7 +449,7 @@ impl TieredTokenBlacklistStore {
     }
 
     #[must_use]
-    pub fn from_shared_state_profile(
+    pub(crate) fn from_shared_state_profile(
         durable: impl TokenBlacklistStore + 'static,
         profile: &SharedStateProfile,
     ) -> Self {
@@ -464,9 +482,10 @@ impl TieredTokenBlacklistStore {
         let Ok(_cleanup_guard) = mutex.try_lock() else {
             return;
         };
-        let _ = self
-            .blacklist_locks
-            .remove_if(key, |_, stored_mutex| Arc::ptr_eq(stored_mutex, mutex));
+        drop(
+            self.blacklist_locks
+                .remove_if(key, |_, stored_mutex| Arc::ptr_eq(stored_mutex, mutex)),
+        );
     }
 
     async fn redis_conn_snapshot(&self) -> Option<redis::aio::ConnectionManager> {
@@ -563,16 +582,17 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .redis_get_string(&mut conn, &redis_key, "checked blacklist lookup")
                 .await
             {
-                let is_bl = val == "1";
-                let l1_ttl = if is_bl {
-                    L1_POSITIVE_TTL
-                } else {
-                    L1_NEGATIVE_TTL
-                };
-                self.l1_blacklist
-                    .insert(key.to_string(), (is_bl, Instant::now() + l1_ttl))
-                    .await;
-                return Ok(is_bl);
+                if let Some(is_bl) = parse_l2_blacklist_value(key, &val) {
+                    let l1_ttl = if is_bl {
+                        L1_POSITIVE_TTL
+                    } else {
+                        L1_NEGATIVE_TTL
+                    };
+                    self.l1_blacklist
+                        .insert(key.to_string(), (is_bl, Instant::now() + l1_ttl))
+                        .await;
+                    return Ok(is_bl);
+                }
             }
         }
 

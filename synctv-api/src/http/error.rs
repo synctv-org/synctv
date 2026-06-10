@@ -310,9 +310,10 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
     #[tokio::test]
-    async fn test_error_response_includes_request_id() {
-        // Create a simple app that returns an error
+    async fn test_error_response_includes_request_id() -> TestResult {
         let app = axum::Router::new()
             .route(
                 "/test",
@@ -325,23 +326,21 @@ mod tests {
         let request = Request::builder()
             .uri("/test")
             .header("x-request-id", "test-req-123")
-            .body(Body::empty())
-            .unwrap();
+            .body(Body::empty())?;
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(request).await?;
 
-        // Check that the error response includes request_id in JSON body
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await?;
+        let json: serde_json::Value = serde_json::from_slice(&body)?;
 
         assert_eq!(json["request_id"], "test-req-123");
         assert_eq!(json["error"], "invalid input");
         assert_eq!(json["status"], 400);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_error_response_without_request_id_header() {
-        // When no request ID is provided, a generated one should still be included
+    async fn test_error_response_without_request_id_header() -> TestResult {
         let app = axum::Router::new()
             .route(
                 "/test",
@@ -351,25 +350,24 @@ mod tests {
                 crate::http::middleware::request_id_middleware,
             ));
 
-        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        let request = Request::builder().uri("/test").body(Body::empty())?;
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(request).await?;
 
-        // Check that a generated request_id is present
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await?;
+        let json: serde_json::Value = serde_json::from_slice(&body)?;
 
-        // request_id should be present and not empty
-        let request_id = json["request_id"].as_str();
-        assert!(request_id.is_some());
-        assert!(!request_id.unwrap().is_empty());
+        assert!(matches!(
+            json["request_id"].as_str(),
+            Some(request_id) if !request_id.is_empty()
+        ));
         assert_eq!(json["error"], "resource");
         assert_eq!(json["status"], 404);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_error_response_with_internal_server_error() {
-        // 5xx errors should return generic message but still include request_id
+    async fn test_error_response_with_internal_server_error() -> TestResult {
         let app = axum::Router::new()
             .route(
                 "/test",
@@ -384,25 +382,21 @@ mod tests {
         let request = Request::builder()
             .uri("/test")
             .header("x-request-id", "internal-err-456")
-            .body(Body::empty())
-            .unwrap();
+            .body(Body::empty())?;
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(request).await?;
 
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await?;
+        let json: serde_json::Value = serde_json::from_slice(&body)?;
 
-        // Should include request_id even for 5xx errors
         assert_eq!(json["request_id"], "internal-err-456");
-        // Message should be generic for 5xx
         assert_eq!(json["error"], "Internal server error");
         assert_eq!(json["status"], 500);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_error_response_with_error_code() {
-        // Test that error codes are preserved along with request_id
-        // We use a different approach: use a constant error code
+    async fn test_error_response_with_error_code() -> TestResult {
         let app = axum::Router::new()
             .route(
                 "/test",
@@ -419,17 +413,17 @@ mod tests {
         let request = Request::builder()
             .uri("/test")
             .header("x-request-id", "code-test-789")
-            .body(Body::empty())
-            .unwrap();
+            .body(Body::empty())?;
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(request).await?;
 
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await?;
+        let json: serde_json::Value = serde_json::from_slice(&body)?;
 
         assert_eq!(json["request_id"], "code-test-789");
         assert_eq!(json["code"], 1001);
         assert_eq!(json["status"], 400);
+        Ok(())
     }
 
     #[test]
@@ -746,12 +740,14 @@ mod tests {
     }
 
     #[test]
-    fn test_from_serde_json_error() {
-        let json_err = serde_json::from_str::<serde_json::Value>("invalid json {{{").unwrap_err();
+    fn test_from_serde_json_error() -> TestResult {
+        let Err(json_err) = serde_json::from_str::<serde_json::Value>("invalid json {{{") else {
+            return Err(anyhow::anyhow!("invalid JSON should fail to parse"));
+        };
         let app_err = AppError::from(json_err);
         assert_eq!(app_err.status, StatusCode::BAD_REQUEST);
-        // Should not leak serde error details
         assert_eq!(app_err.message, "Invalid request data format");
+        Ok(())
     }
 
     #[test]
@@ -781,8 +777,8 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(
-            response.headers().get(header::RETRY_AFTER).unwrap(),
-            &HeaderValue::from_static("17")
+            response.headers().get(header::RETRY_AFTER),
+            Some(&HeaderValue::from_static("17"))
         );
     }
 

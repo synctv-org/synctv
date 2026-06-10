@@ -1,7 +1,7 @@
 use {
     super::{
         bytes_errors::{BytesWriteError, BytesWriteErrorValue},
-        bytesio::TNetIO,
+        net_io::TNetIO,
     },
     byteorder::{ByteOrder, WriteBytesExt},
     bytes::{Bytes, BytesMut},
@@ -100,10 +100,8 @@ impl BytesWriter {
     }
 
     pub fn prepend(&mut self, buf: &[u8]) -> Result<(), BytesWriteError> {
-        let tmp_bytes = self.bytes.clone();
-        self.bytes.clear();
-        self.bytes.write_all(buf)?;
-        self.bytes.write_all(tmp_bytes.as_slice())?;
+        self.bytes.reserve(buf.len());
+        self.bytes.splice(0..0, buf.iter().copied());
         Ok(())
     }
 
@@ -235,14 +233,6 @@ mod tests {
         0x00, 0x00, 0x00, 0x09, //flv header size
     ];
 
-    fn i64_to_u8(value: i64) -> u8 {
-        u8::try_from(value).expect("test value should fit in u8")
-    }
-
-    fn i32_to_u8(value: i32) -> u8 {
-        u8::try_from(value).expect("test value should fit in u8")
-    }
-
     #[test]
     fn test_write_vec() {
         let mut v: Vec<u8> = Vec::new();
@@ -256,53 +246,7 @@ mod tests {
 
         let rv = v.write(&FLV_HEADER);
 
-        if let Ok(val) = rv {
-            print!("{val} ");
-        }
-
+        assert!(rv.is_ok(), "FLV header should write to vector");
         assert_eq!(10, v.len());
-    }
-
-    #[test]
-    fn test_bit_opertion() {
-        let pts: i64 = 1_627_702_096;
-
-        let val = i64_to_u8((pts << 1) & 0xFE);
-
-        println!("======={}=======", pts << 1);
-        println!("======={val}=======");
-    }
-
-    #[test]
-    fn test_bit_opertion2() {
-        let flags = 0xC0;
-        let pts: i64 = 1_627_702_096;
-
-        let b9 = i32_to_u8((flags >> 2) & 0x30) /* 0011/0010 */
-            | i64_to_u8(((pts >> 30) & 0x07) << 1) /* PTS 30-32 */
-            | 0x01 /* marker_bit */;
-        assert_eq!(b9, 51);
-
-        let b10 = i64_to_u8((pts >> 22) & 0xFF); /* PTS 22-29 */
-        assert_eq!(b10, 132);
-
-        let b11 = i64_to_u8((pts >> 14) & 0xFE) /* PTS 15-21 */ | 0x01; /* marker_bit */
-        assert_eq!(b11, 19);
-
-        let b12 = i64_to_u8((pts >> 7) & 0xFF); /* PTS 7-14 */
-        assert_eq!(b12, 134);
-
-        let b13 = i64_to_u8((pts << 1) & 0xFE) /* PTS 0-6 */ | 0x01; /* marker_bit */
-        assert_eq!(b13, 161);
-    }
-
-    #[test]
-    fn test_bit_opertion3() {
-        //let flags = 0xC0;
-        let pts: i64 = 1_627_702_096;
-
-        let b12 = ((pts & 0x7fff) << 1) | 1; /* PTS 7-14 */
-        assert_eq!(i64_to_u8((b12 >> 8_u8) & 0xFF), 134);
-        assert_eq!(i64_to_u8(b12 & 0xFF), 161);
     }
 }

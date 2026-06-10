@@ -614,9 +614,13 @@ impl OidcProvider {
     }
 
     fn user_info_from_id_token_claims(claims: OidcIdTokenClaims) -> OAuth2UserInfo {
+        let provider_user_id = claims.sub;
+        let username = first_non_empty([claims.preferred_username, claims.name])
+            .unwrap_or_else(|| provider_user_id.clone());
+
         OAuth2UserInfo {
-            provider_user_id: claims.sub,
-            username: first_non_empty([claims.preferred_username, claims.name]).unwrap_or_default(),
+            provider_user_id,
+            username,
             email: claims.email,
             avatar: claims.picture,
             email_verified: claims.email_verified.unwrap_or(false),
@@ -627,15 +631,18 @@ impl OidcProvider {
         user: OidcUserInfoResponse,
         id_token_claims: OidcIdTokenClaims,
     ) -> OAuth2UserInfo {
+        let provider_user_id = user.sub;
+        let username = first_non_empty([
+            user.preferred_username,
+            user.name,
+            id_token_claims.preferred_username,
+            id_token_claims.name,
+        ])
+        .unwrap_or_else(|| provider_user_id.clone());
+
         OAuth2UserInfo {
-            provider_user_id: user.sub,
-            username: first_non_empty([
-                user.preferred_username,
-                user.name,
-                id_token_claims.preferred_username,
-                id_token_claims.name,
-            ])
-            .unwrap_or_default(),
+            provider_user_id,
+            username,
             email: user.email.or(id_token_claims.email),
             avatar: user.picture.or(id_token_claims.picture),
             email_verified: user
@@ -867,6 +874,7 @@ pub fn oidc_factory_with_ssrf_guard(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
     use jsonwebtoken::jwk::{
         AlgorithmParameters, CommonParameters, KeyAlgorithm, RSAKeyParameters, RSAKeyType,
     };
@@ -945,19 +953,22 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
     async fn spawn_jwks_server(jwks: JwkSet) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("test JWKS server should bind");
+            .checked("test JWKS server should bind");
         let addr = listener
             .local_addr()
-            .expect("test JWKS server should expose local addr");
-        let body = serde_json::to_string(&jwks).expect("JWKS should serialize");
+            .checked("test JWKS server should expose local addr");
+        let body = serde_json::to_string(&jwks).checked("JWKS should serialize");
 
         tokio::spawn(async move {
             let (mut socket, _) = listener
                 .accept()
                 .await
-                .expect("test JWKS server should accept one connection");
+                .checked("test JWKS server should accept one connection");
             let mut request = [0; 1024];
-            let _ = socket.read(&mut request).await;
+            socket
+                .read(&mut request)
+                .await
+                .checked("test JWKS server should read request");
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                 body.len(),
@@ -966,7 +977,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             socket
                 .write_all(response.as_bytes())
                 .await
-                .expect("test JWKS server should write response");
+                .checked("test JWKS server should write response");
         });
 
         format!("http://{addr}/jwks")
@@ -1005,7 +1016,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             "https://example.com/cb".to_string(),
             "https://issuer.example.com/",
         )
-        .unwrap();
+        .checked("operation should succeed");
         assert_eq!(provider.init_config.issuer, "https://issuer.example.com");
     }
 
@@ -1035,8 +1046,12 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             },
         );
         assert!(provider.is_ok());
-        let p = provider.unwrap();
-        let endpoints = p.init_config.static_endpoints.as_ref().unwrap();
+        let p = provider.checked("operation should succeed");
+        let endpoints = p
+            .init_config
+            .static_endpoints
+            .as_ref()
+            .checked("operation should succeed");
         assert_eq!(endpoints.auth, "https://issuer.example.com/authorize");
         assert_eq!(endpoints.token, "https://issuer.example.com/token");
         assert_eq!(
@@ -1094,7 +1109,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             "https://example.com/cb".to_string(),
             "https://issuer.example.com",
         )
-        .unwrap();
+        .checked("operation should succeed");
         assert_eq!(provider.provider_type(), "oidc");
     }
 
@@ -1109,7 +1124,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
                 "jwks_uri": "https://issuer.example.com/jwks"
             }"#,
         )
-        .expect("standard OIDC discovery document should deserialize");
+        .checked("standard OIDC discovery document should deserialize");
 
         assert_eq!(doc.issuer, "https://issuer.example.com");
         assert_eq!(
@@ -1131,7 +1146,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             "token_type": "Bearer",
             "id_token": "header.payload.signature"
         }))
-        .expect("OIDC token response should parse id_token");
+        .checked("OIDC token response should parse id_token");
 
         assert_eq!(
             token.extra_fields().id_token.as_deref(),
@@ -1192,6 +1207,29 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
     }
 
     #[test]
+    fn test_user_info_from_id_token_claims_uses_subject_when_profile_names_missing() {
+        let claims = OidcIdTokenClaims {
+            iss: "https://issuer.example.com".to_string(),
+            sub: "subject-123".to_string(),
+            aud: OidcAudience::One("client".to_string()),
+            _issued_at: 1_700_000_000,
+            azp: None,
+            nonce: Some("nonce".to_string()),
+            preferred_username: None,
+            name: Some("   ".to_string()),
+            email: None,
+            email_verified: None,
+            picture: None,
+        };
+
+        let user = OidcProvider::user_info_from_id_token_claims(claims);
+
+        assert_eq!(user.provider_user_id, "subject-123");
+        assert_eq!(user.username, "subject-123");
+        assert!(!user.email_verified);
+    }
+
+    #[test]
     fn test_userinfo_response_overrides_id_token_profile_claims() {
         let id_token_claims = OidcIdTokenClaims {
             iss: "https://issuer.example.com".to_string(),
@@ -1228,6 +1266,37 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
     }
 
     #[test]
+    fn test_userinfo_response_uses_subject_when_profile_names_missing() {
+        let id_token_claims = OidcIdTokenClaims {
+            iss: "https://issuer.example.com".to_string(),
+            sub: "subject-123".to_string(),
+            aud: OidcAudience::One("client".to_string()),
+            _issued_at: 1_700_000_000,
+            azp: None,
+            nonce: Some("nonce".to_string()),
+            preferred_username: None,
+            name: None,
+            email: None,
+            email_verified: None,
+            picture: None,
+        };
+        let userinfo = OidcUserInfoResponse {
+            sub: "subject-123".to_string(),
+            preferred_username: Some(" ".to_string()),
+            name: None,
+            email: None,
+            email_verified: None,
+            picture: None,
+        };
+
+        let user = OidcProvider::user_info_from_userinfo_response(userinfo, id_token_claims);
+
+        assert_eq!(user.provider_user_id, "subject-123");
+        assert_eq!(user.username, "subject-123");
+        assert!(!user.email_verified);
+    }
+
+    #[test]
     fn test_oidc_id_token_algorithm_rejects_hmac() {
         assert!(!is_supported_oidc_id_token_algorithm(Algorithm::HS256));
         assert!(is_supported_oidc_id_token_algorithm(Algorithm::RS256));
@@ -1239,7 +1308,9 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let cached = CachedJwks {
             jwks_uri: "https://issuer.example.com/jwks".to_string(),
             jwks: jwk_set_with_key(jwk_with_algorithm(Some(KeyAlgorithm::RS256))),
-            fetched_at: now.checked_sub(Duration::from_mins(1)).unwrap(),
+            fetched_at: now
+                .checked_sub(Duration::from_mins(1))
+                .checked("operation should succeed"),
         };
 
         assert!(cached_jwks_is_fresh(
@@ -1258,9 +1329,9 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             jwks: cached.jwks.clone(),
             fetched_at: now
                 .checked_sub(OIDC_JWKS_CACHE_TTL)
-                .unwrap()
+                .checked("operation should succeed")
                 .checked_sub(Duration::from_secs(1))
-                .unwrap(),
+                .checked("operation should succeed"),
         };
         assert!(!cached_jwks_is_fresh(
             &expired,
@@ -1284,7 +1355,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             },
             &synctv_common::ssrf::SsrfGuard::disabled(),
         )
-        .unwrap();
+        .checked("operation should succeed");
         let jwks_uri = "http://127.0.0.1:9/jwks";
         let cached_key = jwk_with_kid_and_algorithm("cached-kid", Some(KeyAlgorithm::RS256));
         *provider.jwks_cache.write().await = Some(CachedJwks {
@@ -1293,7 +1364,10 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             fetched_at: Instant::now(),
         });
 
-        let jwk = provider.jwk_for_kid(jwks_uri, "cached-kid").await.unwrap();
+        let jwk = provider
+            .jwk_for_kid(jwks_uri, "cached-kid")
+            .await
+            .checked("operation should succeed");
 
         assert_eq!(jwk.common.key_id.as_deref(), Some("cached-kid"));
     }
@@ -1315,7 +1389,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             },
             &synctv_common::ssrf::SsrfGuard::disabled(),
         )
-        .unwrap();
+        .checked("operation should succeed");
         *provider.jwks_cache.write().await = Some(CachedJwks {
             jwks_uri: jwks_uri.clone(),
             jwks: jwk_set_with_key(jwk_with_kid_and_algorithm(
@@ -1328,11 +1402,11 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let jwk = provider
             .jwk_for_kid(&jwks_uri, "rotated-kid")
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         assert_eq!(jwk.common.key_id.as_deref(), Some("rotated-kid"));
         let cache = provider.jwks_cache.read().await;
-        let cached = cache.as_ref().expect("JWKS cache should be refreshed");
+        let cached = cache.as_ref().checked("JWKS cache should be refreshed");
         assert!(cached.jwks.find("rotated-kid").is_some());
     }
 
@@ -1354,10 +1428,10 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             },
             &synctv_common::ssrf::SsrfGuard::disabled(),
         )
-        .unwrap();
+        .checked("operation should succeed");
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock should be after epoch")
+            .checked("system clock should be after epoch")
             .as_secs();
         let claims = serde_json::json!({
             "iss": "http://issuer.example.com",
@@ -1370,15 +1444,18 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let token = jsonwebtoken::encode(
             &Header::new(Algorithm::RS256),
             &claims,
-            &EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_KEY).unwrap(),
+            &EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_KEY).checked("operation should succeed"),
         )
-        .unwrap();
-        let resolved = provider.get_resolved().await.unwrap();
+        .checked("operation should succeed");
+        let resolved = provider
+            .get_resolved()
+            .await
+            .checked("operation should succeed");
 
         let id_token_claims = provider
             .validate_id_token(resolved, &token, "nonce-123")
             .await
-            .expect("ID token without kid should validate against the single JWKS key");
+            .checked("ID token without kid should validate against the single JWKS key");
 
         assert_eq!(id_token_claims.sub, "subject-123");
     }
@@ -1386,7 +1463,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
     #[test]
     fn test_validate_jwk_for_id_token_rejects_algorithm_mismatch() {
         let jwk = jwk_with_algorithm(Some(KeyAlgorithm::RS512));
-        let err = validate_jwk_for_id_token(&jwk, Algorithm::RS256).unwrap_err();
+        let err = validate_jwk_for_id_token(&jwk, Algorithm::RS256).failed("operation should fail");
 
         assert!(
             matches!(err, Error::Authentication(message) if message.contains("algorithm")),
@@ -1399,7 +1476,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         let mut jwk = jwk_with_algorithm(Some(KeyAlgorithm::RS256));
         jwk.common.public_key_use = Some(PublicKeyUse::Encryption);
 
-        let err = validate_jwk_for_id_token(&jwk, Algorithm::RS256).unwrap_err();
+        let err = validate_jwk_for_id_token(&jwk, Algorithm::RS256).failed("operation should fail");
 
         assert!(
             matches!(err, Error::Authentication(message) if message.contains("signatures")),
@@ -1418,7 +1495,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
                 "jwks": "https://issuer.example.com/jwks"
             }"#,
         )
-        .expect_err("nonstandard endpoint field names should not deserialize");
+        .failed("nonstandard endpoint field names should not deserialize");
 
         assert!(err.to_string().contains("authorization_endpoint"));
     }
@@ -1437,10 +1514,13 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
                 jwks_url: Some("https://issuer.example.com/jwks".to_string()),
             },
         )
-        .unwrap();
+        .checked("operation should succeed");
 
         let state = "oidc_state_123";
-        let auth = provider.new_auth_url(state, None).await.unwrap();
+        let auth = provider
+            .new_auth_url(state, None)
+            .await
+            .checked("operation should succeed");
         let auth_url = auth.auth_url;
         let pkce_verifier = auth.pkce_verifier;
 
@@ -1478,10 +1558,16 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
                 jwks_url: Some("https://issuer.example.com/jwks".to_string()),
             },
         )
-        .unwrap();
+        .checked("operation should succeed");
 
-        let auth1 = provider.new_auth_url("state_a", None).await.unwrap();
-        let auth2 = provider.new_auth_url("state_b", None).await.unwrap();
+        let auth1 = provider
+            .new_auth_url("state_a", None)
+            .await
+            .checked("operation should succeed");
+        let auth2 = provider
+            .new_auth_url("state_b", None)
+            .await
+            .checked("operation should succeed");
 
         assert_ne!(auth1.auth_url, auth2.auth_url);
         assert_ne!(auth1.pkce_verifier, auth2.pkce_verifier);
@@ -1498,7 +1584,10 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
         });
         let provider = oidc_factory(&config);
         assert!(provider.is_ok());
-        assert_eq!(provider.unwrap().provider_type(), "oidc");
+        assert_eq!(
+            provider.checked("operation should succeed").provider_type(),
+            "oidc"
+        );
     }
 
     #[test]
@@ -1607,7 +1696,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             "userinfo_url": "https://issuer.example.com/userinfo",
             "jwks_url": "https://issuer.example.com/jwks"
         });
-        let config: OidcConfig = serde_json::from_value(json).unwrap();
+        let config: OidcConfig = serde_json::from_value(json).checked("operation should succeed");
         assert_eq!(config.client_id, "oidc_abc");
         assert_eq!(config.client_secret, "oidc_def");
         assert_eq!(config.redirect_url, "https://example.com/cb");
@@ -1637,7 +1726,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             "client_secret": "secret",
             "redirect_url": "https://example.com/cb"
         });
-        let config: OidcConfig = serde_json::from_value(json).unwrap();
+        let config: OidcConfig = serde_json::from_value(json).checked("operation should succeed");
         assert_eq!(config.issuer, ""); // Default
         assert!(config.auth_url.is_none());
         assert!(config.token_url.is_none());
@@ -1657,7 +1746,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             userinfo_url: None,
             jwks_url: None,
         };
-        let json = serde_json::to_value(&config).unwrap();
+        let json = serde_json::to_value(&config).checked("operation should succeed");
         // Optional fields with skip_serializing_if should not appear
         assert!(json.get("auth_url").is_none());
         assert!(json.get("token_url").is_none());
@@ -1680,11 +1769,11 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
                 jwks_url: Some("https://issuer.example.com/jwks".to_string()),
             },
         )
-        .unwrap();
+        .checked("operation should succeed");
 
         let resolved = provider.get_resolved().await;
         assert!(resolved.is_ok());
-        let r = resolved.unwrap();
+        let r = resolved.checked("operation should succeed");
         assert_eq!(
             r.userinfo_url.as_deref(),
             Some("https://issuer.example.com/userinfo")
@@ -1707,10 +1796,16 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
                 jwks_url: Some("https://issuer.example.com/jwks".to_string()),
             },
         )
-        .unwrap();
+        .checked("operation should succeed");
 
-        let r1 = provider.get_resolved().await.unwrap();
-        let r2 = provider.get_resolved().await.unwrap();
+        let r1 = provider
+            .get_resolved()
+            .await
+            .checked("operation should succeed");
+        let r2 = provider
+            .get_resolved()
+            .await
+            .checked("operation should succeed");
         // Same pointer (OnceCell caches the result)
         assert!(std::ptr::eq(r1, r2));
     }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::models::{FromProviderParams, Media};
 use crate::repository::media::MediaRepository;
+use crate::test_helpers::TestResultExt;
 use synctv_core_testing::create_test_pool;
 
 async fn attach_test_media(
@@ -23,7 +24,7 @@ async fn attach_test_media(
     let media = MediaRepository::new(pool.clone())
         .create(&media)
         .await
-        .expect("test media should be created");
+        .checked("test media should be created");
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
     state.target.clear();
@@ -31,7 +32,7 @@ async fn attach_test_media(
     playback_repo
         .update(&state)
         .await
-        .expect("playback state should attach test media")
+        .checked("playback state should attach test media")
 }
 
 /// Integration test: Create and get playback state
@@ -49,24 +50,36 @@ async fn test_create_or_get_playback_state() {
 
     // Create owner user first
     let owner = UserFixture::new().with_username("playback_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     // Create room
     let room = RoomFixture::new()
         .with_name("Playback Test Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playback state
-    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("operation should succeed");
     assert_eq!(state.room_id, room.id);
     assert!(state.playing_media_id.is_none());
     assert!(!state.is_playing);
     assert_eq!(state.version, 0);
 
     // Get existing playback state (should return same state)
-    let state2 = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state2 = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("operation should succeed");
     assert_eq!(state2.room_id, room.id);
     assert_eq!(state2.version, 0); // version should still be 0
 }
@@ -79,7 +92,10 @@ async fn test_get_nonexistent_playback_state() {
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
     let room_id = RoomId::expect_positive(90_001);
-    let result = playback_repo.get(&room_id).await.unwrap();
+    let result = playback_repo
+        .get(&room_id)
+        .await
+        .checked("operation should succeed");
     assert!(result.is_none());
 }
 
@@ -105,13 +121,19 @@ async fn test_update_playback_state() {
     let owner = UserFixture::new()
         .with_username("playback_update_owner")
         .build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Playback Update Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playlist hierarchy (root + child with name)
     let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
@@ -133,10 +155,16 @@ async fn test_update_playback_state() {
         provider_instance_name: None,
         position: 0.0,
     });
-    let media = media_repo.create(&media).await.unwrap();
+    let media = media_repo
+        .create(&media)
+        .await
+        .checked("operation should succeed");
 
     // Create playback state
-    let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let mut state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("operation should succeed");
 
     // Update state with valid media_id reference
     state.position = 120.5;
@@ -144,7 +172,10 @@ async fn test_update_playback_state() {
     state.is_playing = true;
     state.playing_media_id = Some(media.id);
 
-    let updated = playback_repo.update(&state).await.unwrap();
+    let updated = playback_repo
+        .update(&state)
+        .await
+        .checked("operation should succeed");
     assert!((updated.position - 120.5).abs() < f64::EPSILON);
     assert!((updated.speed - 1.5).abs() < f64::EPSILON);
     assert!(updated.is_playing);
@@ -167,21 +198,33 @@ async fn test_optimistic_lock_conflict() {
 
     // Create owner and room
     let owner = UserFixture::new().with_username("lock_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Lock Test Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playback state
-    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("operation should succeed");
 
     // First update succeeds
     let mut state1 = state.clone();
     state1.position = 50.0;
-    let updated1 = playback_repo.update(&state1).await.unwrap();
+    let updated1 = playback_repo
+        .update(&state1)
+        .await
+        .checked("operation should succeed");
     assert_eq!(updated1.version, 1);
 
     // Second update with stale version fails (optimistic lock conflict)
@@ -206,23 +249,35 @@ async fn test_version_increments_on_update() {
 
     // Create owner and room
     let owner = UserFixture::new().with_username("version_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Version Test Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playback state
-    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("operation should succeed");
     let mut state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
     assert_eq!(state.version, 1);
 
     // Multiple updates
     for position in [10.0, 20.0, 30.0, 40.0, 50.0] {
         state.position = position;
-        state = playback_repo.update(&state).await.unwrap();
+        state = playback_repo
+            .update(&state)
+            .await
+            .checked("operation should succeed");
         assert!((state.position - position).abs() < f64::EPSILON);
     }
 }
@@ -242,36 +297,57 @@ async fn test_boundary_conditions() {
 
     // Create owner and room
     let owner = UserFixture::new().with_username("boundary_owner").build();
-    let owner = user_repo.create(&owner).await.unwrap();
+    let owner = user_repo
+        .create(&owner)
+        .await
+        .checked("operation should succeed");
 
     let room = RoomFixture::new()
         .with_name("Boundary Test Room")
         .with_owner(owner.id)
         .build();
-    let room = room_repo.create(&room).await.unwrap();
+    let room = room_repo
+        .create(&room)
+        .await
+        .checked("operation should succeed");
 
     // Create playback state
-    let state = playback_repo.create_or_get(&room.id).await.unwrap();
+    let state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("operation should succeed");
     let mut state = attach_test_media(&pool, &playback_repo, state, owner.id).await;
 
     // Test zero position
     state.position = 0.0;
-    state = playback_repo.update(&state).await.unwrap();
+    state = playback_repo
+        .update(&state)
+        .await
+        .checked("operation should succeed");
     assert!((state.position - 0.0).abs() < f64::EPSILON);
 
     // Test very large position (e.g., long video)
     state.position = 7200.5; // 2 hours
-    state = playback_repo.update(&state).await.unwrap();
+    state = playback_repo
+        .update(&state)
+        .await
+        .checked("operation should succeed");
     assert!((state.position - 7200.5).abs() < f64::EPSILON);
 
     // Test very small speed (but not zero)
     state.speed = 0.25;
-    state = playback_repo.update(&state).await.unwrap();
+    state = playback_repo
+        .update(&state)
+        .await
+        .checked("operation should succeed");
     assert!((state.speed - 0.25).abs() < f64::EPSILON);
 
     // Test very large speed
     state.speed = 4.0;
-    state = playback_repo.update(&state).await.unwrap();
+    state = playback_repo
+        .update(&state)
+        .await
+        .checked("operation should succeed");
     assert!((state.speed - 4.0).abs() < f64::EPSILON);
 
     // Test negative position (should be allowed for some edge cases)

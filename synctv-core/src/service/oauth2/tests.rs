@@ -6,6 +6,34 @@ use crate::test_helpers::failing_redis_runtime;
 use crate::{Error, SharedStateMode, SharedStateProfile};
 use async_trait::async_trait;
 
+fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
+fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
+    match result {
+        Ok(_) => std::panic::panic_any(context.to_string()),
+        Err(error) => error,
+    }
+}
+
+fn some<T>(value: Option<T>, context: &str) -> T {
+    match value {
+        Some(value) => value,
+        None => std::panic::panic_any(context.to_string()),
+    }
+}
+
+fn joined<T>(result: std::result::Result<T, tokio::task::JoinError>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
 #[tokio::test]
 async fn test_redis_oauth_state_store_accepts_trait_object_runtime() {
     let runtime = failing_redis_runtime();
@@ -19,10 +47,12 @@ async fn test_redis_oauth_state_store_accepts_trait_object_runtime() {
 
 #[test]
 fn test_state_store_from_shared_state_profile_uses_memory_without_shared_runtime() {
-    let profile = SharedStateProfile::from_runtime(None, "test:", false);
+    let profile = SharedStateProfile::for_cluster_runtime(None, "test:", false);
 
-    let store = state_store_from_shared_state_profile(&profile)
-        .expect("standalone mode should allow local OAuth2 state storage");
+    let store = ok(
+        state_store_from_shared_state_profile(&profile),
+        "standalone mode should allow local OAuth2 state storage",
+    );
 
     assert!(
         !store.supports_cross_node_single_use(),
@@ -32,10 +62,10 @@ fn test_state_store_from_shared_state_profile_uses_memory_without_shared_runtime
 
 #[test]
 fn test_state_store_from_shared_state_profile_requires_shared_runtime_in_cluster_mode() {
-    let profile = SharedStateProfile::from_runtime(None, "test:", true);
+    let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
 
     let Err(error) = state_store_from_shared_state_profile(&profile) else {
-        panic!("cluster mode must reject local OAuth2 state storage");
+        std::panic::panic_any("cluster mode must reject local OAuth2 state storage");
     };
 
     assert!(
@@ -52,8 +82,10 @@ async fn test_state_store_from_shared_state_profile_accepts_trait_object_runtime
     let profile =
         SharedStateProfile::new(SharedStateMode::SharedBestEffort, Some(runtime), "test:");
 
-    let store = state_store_from_shared_state_profile(&profile)
-        .expect("shared runtime profile should yield a distributed OAuth2 state store");
+    let store = ok(
+        state_store_from_shared_state_profile(&profile),
+        "shared runtime profile should yield a distributed OAuth2 state store",
+    );
 
     assert!(
         store.supports_cross_node_single_use(),
@@ -139,14 +171,16 @@ fn create_test_service_with_runtime(
     runtime: OAuth2ServiceRuntime,
 ) -> OAuth2Service {
     let state_store = local_oauth_state_store();
-    OAuth2Service::new_without_repository_for_tests(
-        state_store,
-        crate::oauth2::ProviderRegistry::new(),
-        synctv_common::ssrf::SsrfGuard::strict_policy(),
-        cluster_mode,
-        runtime,
+    ok(
+        OAuth2Service::new_without_repository_for_tests(
+            state_store,
+            crate::oauth2::ProviderRegistry::new(),
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+            cluster_mode,
+            runtime,
+        ),
+        "Failed to create OAuth2 service",
     )
-    .expect("Failed to create OAuth2 service")
 }
 
 fn create_test_service_with_domains(domains: Vec<String>) -> OAuth2Service {
@@ -166,7 +200,11 @@ fn create_test_settings_registry(guard: &synctv_common::ssrf::SsrfGuard) -> Arc<
 #[test]
 fn test_redirect_relative_path_rejected() {
     let result = OAuth2Service::validate_redirect_url_with_allowlist("/dashboard", &[]);
-    assert!(result.is_err());
+    let error = err(result, "relative redirect path should fail");
+    assert!(
+        error.to_string().contains("absolute http(s) URL"),
+        "error should mention missing host, got: {error:?}"
+    );
 }
 
 #[test]
@@ -198,8 +236,8 @@ fn test_redirect_absolute_url_rejected_when_no_domains_configured() {
     let result =
         OAuth2Service::validate_redirect_url_with_allowlist("https://example.com/callback", &[]);
     assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput(msg) if msg.contains("allowlist")));
+    let error = err(result, "absolute redirect should require allowlist");
+    assert!(matches!(&error, Error::InvalidInput(msg) if msg.contains("allowlist")));
 }
 
 #[test]
@@ -230,8 +268,8 @@ fn test_redirect_http_url_rejected_for_non_loopback_host() {
         &domains,
     );
     assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput(msg) if msg.contains("HTTPS")));
+    let error = err(result, "non-loopback HTTP redirect should fail");
+    assert!(matches!(&error, Error::InvalidInput(msg) if msg.contains("HTTPS")));
 }
 
 #[test]
@@ -240,8 +278,8 @@ fn test_redirect_absolute_url_rejected_for_wrong_domain() {
     let result =
         OAuth2Service::validate_redirect_url_with_allowlist("https://evil.com/callback", &domains);
     assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput(msg) if msg.contains("not in the allowed")));
+    let error = err(result, "wrong-domain redirect should fail");
+    assert!(matches!(&error, Error::InvalidInput(msg) if msg.contains("not in the allowed")));
 }
 
 #[test]
@@ -258,8 +296,8 @@ fn test_redirect_ftp_scheme_rejected() {
     let result =
         OAuth2Service::validate_redirect_url_with_allowlist("ftp://example.com/file", &domains);
     assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput(msg) if msg.contains("Invalid URL scheme")));
+    let error = err(result, "FTP redirect should fail");
+    assert!(matches!(&error, Error::InvalidInput(msg) if msg.contains("Invalid URL scheme")));
 }
 
 #[test]
@@ -270,8 +308,8 @@ fn test_redirect_url_with_credentials_rejected() {
         &domains,
     );
     assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput(msg) if msg.contains("credentials")));
+    let error = err(result, "credentialed redirect should fail");
+    assert!(matches!(&error, Error::InvalidInput(msg) if msg.contains("credentials")));
 }
 
 #[test]
@@ -356,8 +394,14 @@ async fn test_store_and_consume_state() {
         nonce: None,
     };
 
-    service.store_state("token_abc", &state).await.unwrap();
-    let retrieved = service.consume_state("token_abc").await.unwrap();
+    ok(
+        service.store_state("token_abc", &state).await,
+        "state should store",
+    );
+    let retrieved = ok(
+        service.consume_state("token_abc").await,
+        "state should consume",
+    );
 
     assert_eq!(retrieved.instance_name, "github");
     assert_eq!(retrieved.pkce_verifier, "verifier123");
@@ -380,7 +424,10 @@ async fn test_state_single_use_consumed_on_first_retrieval() {
         nonce: None,
     };
 
-    service.store_state("token_once", &state).await.unwrap();
+    ok(
+        service.store_state("token_once", &state).await,
+        "single-use state should store",
+    );
 
     // First consume succeeds
     let result = service.consume_state("token_once").await;
@@ -389,7 +436,7 @@ async fn test_state_single_use_consumed_on_first_retrieval() {
     // Second consume fails (state was removed)
     let result = service.consume_state("token_once").await;
     assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = err(result, "replayed state should fail");
     assert!(
         matches!(&err, Error::Authentication(msg) if msg.contains("Invalid or expired")),
         "Expected authentication error for replayed state, got: {err}"
@@ -402,9 +449,10 @@ async fn test_state_invalid_token_rejected() {
 
     let result = service.consume_state("nonexistent_token").await;
     assert!(result.is_err());
-    assert!(
-        matches!(result.unwrap_err(), Error::Authentication(msg) if msg.contains("Invalid or expired"))
-    );
+    assert!(matches!(
+        err(result, "missing state should fail"),
+        Error::Authentication(msg) if msg.contains("Invalid or expired")
+    ));
 }
 
 #[tokio::test]
@@ -420,11 +468,21 @@ async fn test_state_preserves_bind_user_id() {
         nonce: None,
     };
 
-    service.store_state("bind_token", &state).await.unwrap();
-    let retrieved = service.consume_state("bind_token").await.unwrap();
+    ok(
+        service.store_state("bind_token", &state).await,
+        "bound state should store",
+    );
+    let retrieved = ok(
+        service.consume_state("bind_token").await,
+        "bound state should consume",
+    );
 
     assert_eq!(
-        retrieved.bind_user_id.as_ref().unwrap().to_string(),
+        some(
+            retrieved.bind_user_id.as_ref(),
+            "bind user id should persist"
+        )
+        .to_string(),
         "93001"
     );
 }
@@ -441,7 +499,10 @@ async fn test_verify_state_consumes_token() {
         nonce: None,
     };
 
-    service.store_state("verify_tok", &state).await.unwrap();
+    ok(
+        service.store_state("verify_tok", &state).await,
+        "verified state should store",
+    );
 
     // verify_state delegates to consume_state
     let result = service.verify_state("verify_tok").await;
@@ -459,7 +520,10 @@ async fn test_register_and_list_providers() {
     let service = create_test_service();
 
     // Initially empty
-    let providers = service.list_available_instances().await.unwrap();
+    let providers = ok(
+        service.list_available_instances().await,
+        "provider list should load",
+    );
     assert!(providers.is_empty());
 
     // Register a mock provider
@@ -471,7 +535,10 @@ async fn test_register_and_list_providers() {
         )
         .await;
 
-    let providers = service.list_available_instances().await.unwrap();
+    let providers = ok(
+        service.list_available_instances().await,
+        "provider list should reload",
+    );
     assert_eq!(providers.len(), 1);
     assert_eq!(providers[0].0, "github");
     assert_eq!(providers[0].1, OAuth2Provider::GitHub);
@@ -489,10 +556,10 @@ async fn test_signup_policy_for_registered_provider() {
         )
         .await;
 
-    let policy = service
-        .signup_policy_for("github")
-        .await
-        .expect("registered provider should have a signup policy");
+    let policy = ok(
+        service.signup_policy_for("github").await,
+        "registered provider should have a signup policy",
+    );
     assert_eq!(policy, OAuth2SignupPolicy::default());
 }
 
@@ -515,32 +582,35 @@ async fn test_list_available_instances_uses_runtime_ssrf_policy_for_dynamic_oidc
         .allow_private_network_targets(true)
         .build();
     let registry = create_test_settings_registry(&guard);
-    let configs: crate::service::OAuth2ProviderConfigs = r#"{"casdoor_oidc":{"type":"oidc","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"http://127.0.0.1:18081/oauth/callback","issuer":"http://127.0.0.1:18000"}}}"#
-        .parse()
-        .expect("test OAuth2 provider config should parse");
-    registry
-        .oauth2_providers
-        .set_for_test(&configs)
-        .expect("test settings seed should validate");
+    let configs: crate::service::OAuth2ProviderConfigs = ok(
+        r#"{"casdoor_oidc":{"type":"oidc","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"http://127.0.0.1:18081/oauth/callback","issuer":"http://127.0.0.1:18000"}}}"#.parse(),
+        "test OAuth2 provider config should parse",
+    );
+    ok(
+        registry.oauth2_providers.set_for_test(&configs),
+        "test settings seed should validate",
+    );
 
-    let service = OAuth2Service::new_without_repository_for_tests(
-        local_oauth_state_store(),
-        crate::oauth2::providers::provider_registry(guard),
-        synctv_common::ssrf::SsrfGuard::builder()
-            .allow_private_network_targets(true)
-            .build(),
-        false,
-        OAuth2ServiceRuntime {
-            settings_registry: Some(registry),
-            ..OAuth2ServiceRuntime::default()
-        },
-    )
-    .expect("OAuth2 service should be created");
+    let service = ok(
+        OAuth2Service::new_without_repository_for_tests(
+            local_oauth_state_store(),
+            crate::oauth2::providers::provider_registry(guard),
+            synctv_common::ssrf::SsrfGuard::builder()
+                .allow_private_network_targets(true)
+                .build(),
+            false,
+            OAuth2ServiceRuntime {
+                settings_registry: Some(registry),
+                ..OAuth2ServiceRuntime::default()
+            },
+        ),
+        "OAuth2 service should be created",
+    );
 
-    let providers = service
-        .list_available_instances()
-        .await
-        .expect("runtime SSRF policy should allow local Casdoor OIDC issuer");
+    let providers = ok(
+        service.list_available_instances().await,
+        "runtime SSRF policy should allow local Casdoor OIDC issuer",
+    );
     assert_eq!(providers.len(), 1);
     assert_eq!(providers[0].0, "casdoor_oidc");
     assert_eq!(providers[0].1, OAuth2Provider::Oidc);
@@ -572,7 +642,10 @@ async fn test_register_multiple_providers() {
         )
         .await;
 
-    let providers = service.list_available_instances().await.unwrap();
+    let providers = ok(
+        service.list_available_instances().await,
+        "provider list should load",
+    );
     assert_eq!(providers.len(), 3);
 
     let names: Vec<&str> = providers.iter().map(|(n, _, _)| n.as_str()).collect();
@@ -593,7 +666,6 @@ async fn test_register_provider_replaces_existing() {
         )
         .await;
 
-    // Re-register with same name but different type
     service
         .register_provider(
             "github".to_string(),
@@ -602,12 +674,13 @@ async fn test_register_provider_replaces_existing() {
         )
         .await;
 
-    let providers = service.list_available_instances().await.unwrap();
+    let providers = ok(
+        service.list_available_instances().await,
+        "provider list should reload",
+    );
     assert_eq!(providers.len(), 1);
     assert_eq!(providers[0].1, OAuth2Provider::Oidc);
 }
-
-// Tests: Authorization URL Generation with PKCE
 
 #[tokio::test]
 async fn test_get_authorization_url_success() {
@@ -620,17 +693,19 @@ async fn test_get_authorization_url_success() {
         )
         .await;
 
-    let (auth_url, state_token) = service.get_authorization_url("github", None).await.unwrap();
+    let (auth_url, state_token) = ok(
+        service.get_authorization_url("github", None).await,
+        "authorization URL should generate",
+    );
 
-    // Auth URL should contain the mock base URL and the state parameter
     assert!(auth_url.contains("https://provider.example.com/auth"));
     assert!(auth_url.contains("state="));
-
-    // State token should be a 32-char shared base62 token
     assert_eq!(state_token.len(), 32);
 
-    // State should be stored and consumable
-    let state = service.verify_state(&state_token).await.unwrap();
+    let state = ok(
+        service.verify_state(&state_token).await,
+        "state should verify",
+    );
     assert_eq!(state.instance_name, "github");
     assert_eq!(state.pkce_verifier, "test_pkce_verifier_abc123");
     assert!(state.redirect_url.is_none());
@@ -648,10 +723,12 @@ async fn test_get_authorization_url_with_redirect() {
         )
         .await;
 
-    let err = service
-        .get_authorization_url("github", Some("/rooms/123".to_string()))
-        .await
-        .expect_err("relative redirect URL must be rejected");
+    let err = err(
+        service
+            .get_authorization_url("github", Some("/rooms/123".to_string()))
+            .await,
+        "relative redirect URL must be rejected",
+    );
     assert!(matches!(err, Error::InvalidInput(_)));
 }
 
@@ -666,12 +743,14 @@ async fn test_get_authorization_url_rejects_invalid_redirect() {
         )
         .await;
 
-    // Absolute URL with no allowed domains should be rejected
     let result = service
         .get_authorization_url("github", Some("https://evil.com/steal".to_string()))
         .await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), Error::InvalidInput(_)));
+    assert!(matches!(
+        err(result, "invalid redirect should fail"),
+        Error::InvalidInput(_)
+    ));
 }
 
 #[tokio::test]
@@ -697,7 +776,7 @@ async fn test_get_authorization_url_unknown_provider() {
 
     let result = service.get_authorization_url("nonexistent", None).await;
     assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = err(result, "unknown provider should fail");
     assert!(
         matches!(&err, Error::InvalidInput(msg) if msg.contains("not found")),
         "Expected provider not found error, got: {err}"
@@ -715,19 +794,16 @@ async fn test_get_authorization_url_with_allowed_redirect_domains() {
         )
         .await;
 
-    // Allowed domain works
     let result = service
         .get_authorization_url("github", Some("https://myapp.com/callback".to_string()))
         .await;
     assert!(result.is_ok());
 
-    // Subdomain also works
     let result = service
         .get_authorization_url("github", Some("https://auth.myapp.com/cb".to_string()))
         .await;
     assert!(result.is_ok());
 
-    // Disallowed domain rejected
     let result = service
         .get_authorization_url("github", Some("https://evil.com/steal".to_string()))
         .await;
@@ -745,21 +821,24 @@ async fn test_get_authorization_url_accepts_loopback_native_client_redirects() {
         )
         .await;
 
-    let (_, loopback_state_token) = service
-        .get_authorization_url(
-            "github",
-            Some("http://127.0.0.1:34567/oauth/callback".to_string()),
-        )
-        .await
-        .expect("native loopback redirects should not require domain allowlist");
-    let loopback_state = service.verify_state(&loopback_state_token).await.unwrap();
+    let (_, loopback_state_token) = ok(
+        service
+            .get_authorization_url(
+                "github",
+                Some("http://127.0.0.1:34567/oauth/callback".to_string()),
+            )
+            .await,
+        "native loopback redirects should not require domain allowlist",
+    );
+    let loopback_state = ok(
+        service.verify_state(&loopback_state_token).await,
+        "loopback state should verify",
+    );
     assert_eq!(
         loopback_state.redirect_url.as_deref(),
         Some("http://127.0.0.1:34567/oauth/callback")
     );
 }
-
-// Tests: Authorization URL with User Binding (PKCE)
 
 #[tokio::test]
 async fn test_get_authorization_url_with_user_stores_user_id() {
@@ -773,16 +852,24 @@ async fn test_get_authorization_url_with_user_stores_user_id() {
         .await;
 
     let user_id = UserId::expect_positive(93_002);
-    let (auth_url, state_token) = service
-        .get_authorization_url_with_user("logto", None, Some(user_id))
-        .await
-        .unwrap();
+    let (auth_url, state_token) = ok(
+        service
+            .get_authorization_url_with_user("logto", None, Some(user_id))
+            .await,
+        "authorization URL with user should generate",
+    );
 
     assert!(auth_url.contains("https://provider.example.com/auth"));
 
-    let state = service.verify_state(&state_token).await.unwrap();
+    let state = ok(
+        service.verify_state(&state_token).await,
+        "bound state should verify",
+    );
     assert_eq!(state.instance_name, "logto");
-    assert_eq!(state.bind_user_id.as_ref().unwrap().to_string(), "93002");
+    assert_eq!(
+        some(state.bind_user_id.as_ref(), "bind user id should persist").to_string(),
+        "93002"
+    );
     assert_eq!(state.pkce_verifier, "test_pkce_verifier_abc123");
 }
 
@@ -797,12 +884,17 @@ async fn test_get_authorization_url_with_user_none_user_id() {
         )
         .await;
 
-    let (_, state_token) = service
-        .get_authorization_url_with_user("github", None, None)
-        .await
-        .unwrap();
+    let (_, state_token) = ok(
+        service
+            .get_authorization_url_with_user("github", None, None)
+            .await,
+        "authorization URL without user should generate",
+    );
 
-    let state = service.verify_state(&state_token).await.unwrap();
+    let state = ok(
+        service.verify_state(&state_token).await,
+        "unbound state should verify",
+    );
     assert!(state.bind_user_id.is_none());
 }
 
@@ -823,8 +915,6 @@ async fn test_get_authorization_url_with_user_rejects_bad_redirect() {
     assert!(result.is_err());
 }
 
-// Tests: Code Exchange for User Info
-
 #[tokio::test]
 async fn test_exchange_code_for_user_info_success() {
     let service = create_test_service();
@@ -836,10 +926,12 @@ async fn test_exchange_code_for_user_info_success() {
         )
         .await;
 
-    let user_info = service
-        .exchange_code_for_user_info("github", "auth_code_123", "pkce_verifier_abc")
-        .await
-        .unwrap();
+    let user_info = ok(
+        service
+            .exchange_code_for_user_info("github", "auth_code_123", "pkce_verifier_abc")
+            .await,
+        "code exchange should return user info",
+    );
 
     assert_eq!(user_info.provider_user_id, "provider_user_42");
     assert_eq!(user_info.username, "testuser");
@@ -862,7 +954,7 @@ async fn test_exchange_code_unknown_provider() {
         .await;
     assert!(result.is_err());
     assert!(matches!(
-        result.unwrap_err(),
+        err(result, "unknown exchange provider should fail"),
         Error::InvalidInput(msg) if msg.contains("not found")
     ));
 }
@@ -885,14 +977,12 @@ async fn test_exchange_code_provider_returns_error() {
         .exchange_code_for_user_info("failing", "bad_code", "verifier")
         .await;
     assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = err(result, "failing provider should return exchange error");
     assert!(
         matches!(&err, Error::Internal(msg) if msg.contains("invalid_grant")),
         "Expected internal error with invalid_grant, got: {err}"
     );
 }
-
-// Tests: Full Authorization Flow (URL -> State -> Exchange)
 
 #[tokio::test]
 async fn test_full_oauth2_login_flow() {
@@ -905,39 +995,44 @@ async fn test_full_oauth2_login_flow() {
         )
         .await;
 
-    // Step 1: Generate authorization URL
-    let err = service
-        .get_authorization_url("github", Some("/dashboard".to_string()))
-        .await
-        .expect_err("relative redirect URL must be rejected");
+    let err = err(
+        service
+            .get_authorization_url("github", Some("/dashboard".to_string()))
+            .await,
+        "relative redirect URL must be rejected",
+    );
     assert!(matches!(err, Error::InvalidInput(_)));
-    let (auth_url, state_token) = service
-        .get_authorization_url(
-            "github",
-            Some("http://127.0.0.1:34567/dashboard".to_string()),
-        )
-        .await
-        .unwrap();
+    let (auth_url, state_token) = ok(
+        service
+            .get_authorization_url(
+                "github",
+                Some("http://127.0.0.1:34567/dashboard".to_string()),
+            )
+            .await,
+        "loopback authorization URL should generate",
+    );
     assert!(auth_url.contains("state="));
 
-    // Step 2: Verify state (simulating callback)
-    let state = service.verify_state(&state_token).await.unwrap();
+    let state = ok(
+        service.verify_state(&state_token).await,
+        "login state should verify",
+    );
     assert_eq!(state.instance_name, "github");
     assert_eq!(
         state.redirect_url.as_deref(),
         Some("http://127.0.0.1:34567/dashboard")
     );
 
-    // Step 3: Exchange code with PKCE verifier from stored state
-    let user_info = service
-        .exchange_code_for_user_info("github", "callback_code", &state.pkce_verifier)
-        .await
-        .unwrap();
+    let user_info = ok(
+        service
+            .exchange_code_for_user_info("github", "callback_code", &state.pkce_verifier)
+            .await,
+        "callback code should exchange",
+    );
     assert_eq!(user_info.username, "testuser");
     assert_eq!(user_info.provider, OAuth2Provider::GitHub);
     assert_eq!(user_info.provider_instance_name, "github");
 
-    // Step 4: State cannot be replayed
     let replay = service.verify_state(&state_token).await;
     assert!(replay.is_err());
 }
@@ -955,15 +1050,21 @@ async fn test_full_oauth2_bind_flow() {
 
     let user_id = UserId::expect_positive(93_003);
 
-    // Step 1: Generate auth URL with user binding
-    let (_, state_token) = service
-        .get_authorization_url_with_user("logto", None, Some(user_id))
-        .await
-        .unwrap();
+    let (_, state_token) = ok(
+        service
+            .get_authorization_url_with_user("logto", None, Some(user_id))
+            .await,
+        "bound authorization URL should generate",
+    );
 
-    // Step 2: Verify state carries user ID
-    let state = service.verify_state(&state_token).await.unwrap();
-    assert_eq!(state.bind_user_id.as_ref().unwrap().to_string(), "93003");
+    let state = ok(
+        service.verify_state(&state_token).await,
+        "bound state should verify",
+    );
+    assert_eq!(
+        some(state.bind_user_id.as_ref(), "bind user id should persist").to_string(),
+        "93003"
+    );
     assert_eq!(state.instance_name, "logto");
 }
 
@@ -989,26 +1090,21 @@ async fn test_allowed_redirect_domains_are_constructor_configured() {
         )
         .await;
 
-    // Allowed domain
     let result = service
         .get_authorization_url("github", Some("https://example.com/cb".to_string()))
         .await;
     assert!(result.is_ok());
 
-    // Another allowed domain
     let result = service
         .get_authorization_url("github", Some("https://myapp.io/cb".to_string()))
         .await;
     assert!(result.is_ok());
 
-    // Non-allowed domain
     let result = service
         .get_authorization_url("github", Some("https://other.com/cb".to_string()))
         .await;
     assert!(result.is_err());
 }
-
-// Tests: OAuth2State serialization (used for storage path)
 
 #[test]
 fn test_oauth2_state_serialization_roundtrip() {
@@ -1021,15 +1117,19 @@ fn test_oauth2_state_serialization_roundtrip() {
         nonce: Some("oidc_nonce_123".to_string()),
     };
 
-    let json = serde_json::to_string(&state).unwrap();
-    let deserialized: OAuth2State = serde_json::from_str(&json).unwrap();
+    let json = ok(serde_json::to_string(&state), "state should serialize");
+    let deserialized: OAuth2State = ok(serde_json::from_str(&json), "state should deserialize");
 
     assert_eq!(deserialized.instance_name, state.instance_name);
     assert_eq!(deserialized.redirect_url, state.redirect_url);
     assert_eq!(deserialized.pkce_verifier, state.pkce_verifier);
     assert_eq!(deserialized.nonce, state.nonce);
     assert_eq!(
-        deserialized.bind_user_id.as_ref().unwrap().to_string(),
+        some(
+            deserialized.bind_user_id.as_ref(),
+            "bind user id should deserialize"
+        )
+        .to_string(),
         "93004"
     );
 }
@@ -1045,20 +1145,17 @@ fn test_oauth2_state_serialization_none_fields() {
         nonce: None,
     };
 
-    let json = serde_json::to_string(&state).unwrap();
-    let deserialized: OAuth2State = serde_json::from_str(&json).unwrap();
+    let json = ok(serde_json::to_string(&state), "state should serialize");
+    let deserialized: OAuth2State = ok(serde_json::from_str(&json), "state should deserialize");
 
     assert!(deserialized.redirect_url.is_none());
     assert!(deserialized.bind_user_id.is_none());
 }
 
-// Tests: Concurrent State Operations
-
 #[tokio::test]
 async fn test_multiple_concurrent_states() {
     let service = create_test_service();
 
-    // Store multiple states
     for i in 0..10 {
         let state = OAuth2State {
             instance_name: format!("provider_{i}"),
@@ -1068,27 +1165,26 @@ async fn test_multiple_concurrent_states() {
             pkce_verifier: format!("verifier_{i}"),
             nonce: None,
         };
-        service
-            .store_state(&format!("token_{i}"), &state)
-            .await
-            .unwrap();
+        ok(
+            service.store_state(&format!("token_{i}"), &state).await,
+            "state should store",
+        );
     }
 
-    // Each state should be independently consumable
     for i in 0..10 {
-        let state = service.consume_state(&format!("token_{i}")).await.unwrap();
+        let state = ok(
+            service.consume_state(&format!("token_{i}")).await,
+            "state should consume",
+        );
         assert_eq!(state.instance_name, format!("provider_{i}"));
         assert_eq!(state.pkce_verifier, format!("verifier_{i}"));
     }
 
-    // All consumed, none should remain
     for i in 0..10 {
         let result = service.consume_state(&format!("token_{i}")).await;
         assert!(result.is_err());
     }
 }
-
-// Tests: PKCE Verifier Integrity
 
 #[tokio::test]
 async fn test_pkce_verifier_preserved_through_state_lifecycle() {
@@ -1114,14 +1210,15 @@ async fn test_pkce_verifier_preserved_through_state_lifecycle() {
         )
         .await;
 
-    // Generate URL -- PKCE verifier should be stored in state
-    let (_, state_token) = service
-        .get_authorization_url("test_pkce", None)
-        .await
-        .unwrap();
+    let (_, state_token) = ok(
+        service.get_authorization_url("test_pkce", None).await,
+        "authorization URL should generate",
+    );
 
-    // Retrieve state and check PKCE verifier is intact
-    let state = service.verify_state(&state_token).await.unwrap();
+    let state = ok(
+        service.verify_state(&state_token).await,
+        "state should verify",
+    );
     assert_eq!(
         state.pkce_verifier,
         "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
@@ -1139,16 +1236,20 @@ async fn test_each_auth_url_gets_unique_state_token() {
         )
         .await;
 
-    let (_, token1) = service.get_authorization_url("github", None).await.unwrap();
-    let (_, token2) = service.get_authorization_url("github", None).await.unwrap();
+    let (_, token1) = ok(
+        service.get_authorization_url("github", None).await,
+        "first authorization URL should generate",
+    );
+    let (_, token2) = ok(
+        service.get_authorization_url("github", None).await,
+        "second authorization URL should generate",
+    );
 
     assert_ne!(
         token1, token2,
         "Each authorization request must get a unique state token"
     );
 }
-
-// Tests: OAuth2 Concurrent State Consumption (only one succeeds)
 
 #[tokio::test]
 async fn test_concurrent_state_consumption_only_first_succeeds() {
@@ -1162,12 +1263,11 @@ async fn test_concurrent_state_consumption_only_first_succeeds() {
         nonce: None,
     };
 
-    service
-        .store_state("concurrent_token", &state)
-        .await
-        .unwrap();
+    ok(
+        service.store_state("concurrent_token", &state).await,
+        "concurrent state should store",
+    );
 
-    // Spawn multiple concurrent consumers
     let mut handles = Vec::new();
     for _ in 0..20 {
         let svc = service.clone();
@@ -1179,7 +1279,7 @@ async fn test_concurrent_state_consumption_only_first_succeeds() {
     let mut success_count = 0;
     let mut failure_count = 0;
     for h in handles {
-        match h.await.unwrap() {
+        match joined(h.await, "state consumer task should join") {
             Ok(state) => {
                 assert_eq!(state.pkce_verifier, "concurrent_verifier");
                 success_count += 1;
@@ -1190,11 +1290,9 @@ async fn test_concurrent_state_consumption_only_first_succeeds() {
         }
     }
 
-    // With the Mutex-based store, exactly one consumer must succeed.
     assert_eq!(success_count, 1, "Exactly one consumer must succeed");
     assert_eq!(failure_count, 19, "All other consumers must fail");
 
-    // Token is fully consumed -- no further consumption should succeed
     let replay = service.consume_state("concurrent_token").await;
     assert!(replay.is_err(), "Token should be fully consumed");
 }
@@ -1210,10 +1308,11 @@ async fn test_concurrent_verify_state_only_first_succeeds() {
         )
         .await;
 
-    // Generate an auth URL (stores state internally)
-    let (_, state_token) = service.get_authorization_url("github", None).await.unwrap();
+    let (_, state_token) = ok(
+        service.get_authorization_url("github", None).await,
+        "authorization URL should generate",
+    );
 
-    // Spawn concurrent verify_state attempts
     let mut handles = Vec::new();
     for _ in 0..10 {
         let svc = service.clone();
@@ -1223,20 +1322,16 @@ async fn test_concurrent_verify_state_only_first_succeeds() {
 
     let mut success_count = 0;
     for h in handles {
-        if h.await.unwrap().is_ok() {
+        if joined(h.await, "verify_state task should join").is_ok() {
             success_count += 1;
         }
     }
 
-    // Exactly one should succeed with the Mutex-based store
     assert_eq!(success_count, 1, "Exactly one verify must succeed");
 
-    // No further verification should succeed
     let replay = service.verify_state(&state_token).await;
     assert!(replay.is_err(), "State token should be consumed");
 }
-
-// Tests: State Isolation Between Tokens
 
 #[tokio::test]
 async fn test_consuming_one_state_does_not_affect_others() {
@@ -1251,40 +1346,36 @@ async fn test_consuming_one_state_does_not_affect_others() {
             pkce_verifier: format!("verifier_{i}"),
             nonce: None,
         };
-        service
-            .store_state(&format!("isolated_token_{i}"), &state)
-            .await
-            .unwrap();
+        ok(
+            service
+                .store_state(&format!("isolated_token_{i}"), &state)
+                .await,
+            "isolated state should store",
+        );
     }
 
-    // Consume token 2
-    let consumed = service.consume_state("isolated_token_2").await.unwrap();
+    let consumed = ok(
+        service.consume_state("isolated_token_2").await,
+        "isolated token should consume",
+    );
     assert_eq!(consumed.instance_name, "provider_2");
 
-    // Other tokens should still be available
     for i in [0, 1, 3, 4] {
-        let state = service
-            .consume_state(&format!("isolated_token_{i}"))
-            .await
-            .unwrap();
+        let state = ok(
+            service.consume_state(&format!("isolated_token_{i}")).await,
+            "other isolated token should consume",
+        );
         assert_eq!(state.instance_name, format!("provider_{i}"));
     }
 
-    // Token 2 is consumed, should fail
     let result = service.consume_state("isolated_token_2").await;
     assert!(result.is_err());
 }
 
-// Tests: CSRF Protection - Defense in Depth
-
-/// Test that state tokens with expired `created_at` timestamps are rejected
-/// even if they somehow persist in the store (defense-in-depth).
 #[tokio::test]
 async fn test_state_expired_created_at_rejected() {
     let service = create_test_service();
 
-    // Create a state with a created_at timestamp that is already expired
-    // (6 minutes ago, which exceeds the 5-minute TTL)
     let expired_time = chrono::Utc::now() - chrono::Duration::seconds(360);
     let state = OAuth2State {
         instance_name: "github".to_string(),
@@ -1295,26 +1386,24 @@ async fn test_state_expired_created_at_rejected() {
         nonce: None,
     };
 
-    // Store the state directly (bypassing normal TTL enforcement)
-    service.store_state("expired_token", &state).await.unwrap();
+    ok(
+        service.store_state("expired_token", &state).await,
+        "expired state fixture should store",
+    );
 
-    // Consumption should fail due to created_at check, even though token exists
     let result = service.consume_state("expired_token").await;
     assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = err(result, "expired state should fail");
     assert!(
         matches!(&err, Error::Authentication(msg) if msg.contains("Invalid or expired")),
         "Expected authentication error for expired state, got: {err}"
     );
 }
 
-/// Test that state tokens just within the TTL are accepted
 #[tokio::test]
 async fn test_state_within_ttl_accepted() {
     let service = create_test_service();
 
-    // Create a state with a created_at timestamp that is just within TTL
-    // (4 minutes ago, which is less than the 5-minute TTL)
     let within_ttl_time = chrono::Utc::now() - chrono::Duration::seconds(240);
     let state = OAuth2State {
         instance_name: "github".to_string(),
@@ -1325,25 +1414,21 @@ async fn test_state_within_ttl_accepted() {
         nonce: None,
     };
 
-    service
-        .store_state("within_ttl_token", &state)
-        .await
-        .unwrap();
+    ok(
+        service.store_state("within_ttl_token", &state).await,
+        "within-TTL state should store",
+    );
 
-    // Consumption should succeed
     let result = service.consume_state("within_ttl_token").await;
     assert!(result.is_ok());
-    let retrieved = result.unwrap();
+    let retrieved = ok(result, "within-TTL state should consume");
     assert_eq!(retrieved.pkce_verifier, "valid_verifier");
 }
 
-/// Test that state tokens at the exact TTL boundary are handled correctly
 #[tokio::test]
 async fn test_state_at_ttl_boundary() {
     let service = create_test_service();
 
-    // Create a state just past the TTL boundary (TTL + 1 second ago)
-    // This ensures the test is deterministic regardless of execution timing
     let past_boundary_time =
         chrono::Utc::now() - chrono::Duration::seconds(OAUTH2_STATE_TTL_SECONDS_I64 + 1);
     let state = OAuth2State {
@@ -1355,14 +1440,15 @@ async fn test_state_at_ttl_boundary() {
         nonce: None,
     };
 
-    service.store_state("boundary_token", &state).await.unwrap();
+    ok(
+        service.store_state("boundary_token", &state).await,
+        "boundary state should store",
+    );
 
-    // Past TTL seconds, the state should be rejected (> TTL)
     let result = service.consume_state("boundary_token").await;
     assert!(result.is_err());
 }
 
-/// Test that `verify_state` includes the `created_at` expiry check
 #[tokio::test]
 async fn test_verify_state_checks_created_at_expiry() {
     let service = create_test_service();
@@ -1374,7 +1460,6 @@ async fn test_verify_state_checks_created_at_expiry() {
         )
         .await;
 
-    // Manually create an expired state
     let expired_time = chrono::Utc::now() - chrono::Duration::seconds(360);
     let state = OAuth2State {
         instance_name: "github".to_string(),
@@ -1385,22 +1470,20 @@ async fn test_verify_state_checks_created_at_expiry() {
         nonce: None,
     };
 
-    service
-        .store_state("verify_expired_token", &state)
-        .await
-        .unwrap();
+    ok(
+        service.store_state("verify_expired_token", &state).await,
+        "verify-expired state should store",
+    );
 
-    // verify_state should also reject expired tokens
     let result = service.verify_state("verify_expired_token").await;
     assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = err(result, "expired verify_state should fail");
     assert!(
         matches!(&err, Error::Authentication(msg) if msg.contains("Invalid or expired")),
         "Expected authentication error for expired state in verify_state, got: {err}"
     );
 }
 
-/// Test that provider mismatch is detected during code exchange
 #[tokio::test]
 async fn test_csrf_protection_provider_mismatch_detected() {
     let service = create_test_service();
@@ -1419,11 +1502,15 @@ async fn test_csrf_protection_provider_mismatch_detected() {
         )
         .await;
 
-    // Generate state for github
-    let (_, state_token) = service.get_authorization_url("github", None).await.unwrap();
+    let (_, state_token) = ok(
+        service.get_authorization_url("github", None).await,
+        "authorization URL should generate",
+    );
 
-    // Verify the state contains github as provider
-    let state = service.verify_state(&state_token).await.unwrap();
+    let state = ok(
+        service.verify_state(&state_token).await,
+        "state should verify",
+    );
     assert_eq!(state.instance_name, "github");
 
     // API handlers compare this instance name against the callback route.
@@ -1440,7 +1527,7 @@ async fn test_distributed_mode_without_redis_returns_error() {
         "Distributed mode without shared single-use state must return an error"
     );
 
-    let err = result.unwrap_err();
+    let err = err(result, "cluster mode without shared state should fail");
     let err_msg = err.to_string();
 
     assert!(
@@ -1462,7 +1549,7 @@ async fn test_cluster_mode_error_message_is_actionable() {
     let state_store = local_oauth_state_store();
 
     let result = OAuth2Service::validate_cluster_state_store(true, state_store.as_ref());
-    let err_msg = result.unwrap_err().to_string();
+    let err_msg = err(result, "cluster mode should produce actionable error").to_string();
 
     assert!(
         err_msg.contains("Configure a shared state backend"),

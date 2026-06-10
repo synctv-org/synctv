@@ -55,7 +55,7 @@ pub struct ProviderContext<'a> {
     /// Repository required by credential-backed providers.
     pub credential_repo: Option<&'a UserProviderCredentialRepository>,
 
-    /// Typed provider access service for cached credential/session resolution (optional)
+    /// Typed provider access service for cached credential/session resolution.
     pub provider_access_service: Option<Arc<dyn ProviderAccessService>>,
 
     /// Proxy signing key for generating HMAC-signed proxy URLs (optional)

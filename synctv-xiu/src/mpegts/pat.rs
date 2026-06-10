@@ -13,10 +13,7 @@ fn invalid_data_error(message: &str) -> Error {
 #[derive(Debug, Clone)]
 pub struct Pat {
     transport_stream_id: u16,
-    version_number: u8, //5bits
-    //continuity_counter: u8, //s4 bits
-
-    //pub pmt_count: usize,
+    version_number: u8,
     pub pmt: Vec<pmt::Pmt>,
 }
 
@@ -32,8 +29,6 @@ impl Pat {
         Self {
             transport_stream_id: 1,
             version_number: 0,
-            //continuity_counter: 0,
-            //pmt_count: 0,
             pmt: Vec::new(),
         }
     }
@@ -47,7 +42,6 @@ impl Default for PatMuxer {
         Self::new()
     }
 }
-//ITU-T H.222.0
 impl PatMuxer {
     #[must_use]
     pub const fn new() -> Self {
@@ -57,36 +51,27 @@ impl PatMuxer {
     }
 
     pub fn write(&mut self, pat: &Pat) -> Result<BytesMut, MpegTsError> {
-        /*table id*/
         let table_id = u8::try_from(epat_pid::PAT_TID_PAS)
             .map_err(|_| invalid_data_error("PAT table id exceeds u8"))?;
         self.bytes_writer.write_u8(table_id)?;
 
-        /*section length*/
         let pmt_len = u16::try_from(pat.pmt.len())
             .map_err(|_| invalid_data_error("PAT PMT count exceeds u16"))?;
         let length = pmt_len.saturating_mul(4).saturating_add(9);
         self.bytes_writer.write_u16::<BigEndian>(0xb000 | length)?;
-        /*transport_stream_id*/
         self.bytes_writer
             .write_u16::<BigEndian>(pat.transport_stream_id)?;
-        /*version_number*/
         self.bytes_writer
             .write_u8(0xC1 | (pat.version_number << 1))?;
 
-        /*section_number*/
-        /*last_section_number*/
         self.bytes_writer.write_u16::<BigEndian>(0x00)?;
 
         for ele in &pat.pmt {
-            /*program number*/
             self.bytes_writer
                 .write_u16::<BigEndian>(ele.program_number)?;
-            /*PID*/
             self.bytes_writer.write_u16::<BigEndian>(0xE000 | ele.pid)?;
         }
 
-        /*crc32*/
         let crc32_value = crc32::gen_crc32(0xffff_ffff, self.bytes_writer.get_current_bytes());
         self.bytes_writer.write_u32::<LittleEndian>(crc32_value)?;
 

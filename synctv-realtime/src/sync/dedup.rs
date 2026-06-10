@@ -104,7 +104,7 @@ impl MessageDeduplicator {
     /// where the catchup window is 5 minutes plus retry buffers up to 5+ minutes.
     /// See [`DEFAULT_DEDUP_TTL`] for the full rationale.
     #[must_use]
-    pub fn with_defaults() -> Self {
+    pub(crate) fn with_defaults() -> Self {
         Self::new(DEFAULT_DEDUP_TTL)
     }
 
@@ -116,7 +116,7 @@ impl MessageDeduplicator {
         usize::try_from(self.cache.entry_count()).unwrap_or(usize::MAX)
     }
 
-    /// Check if there are any tracked events
+    /// Check whether there are no tracked events.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -146,7 +146,7 @@ impl MessageDeduplicator {
         self.cache.insert(key, ());
     }
 
-    /// Clear all tracked events (for testing)
+    /// Clear all tracked events.
     pub fn clear(&self) {
         self.cache.invalidate_all();
         self.cache.run_pending_tasks();
@@ -178,21 +178,17 @@ mod tests {
             content_hash: 0,
         };
 
-        // First call should return true
         assert!(dedup.should_process(&key));
 
-        // Immediate second call should return false (duplicate)
         assert!(!dedup.should_process(&key));
 
-        // Wait for expiration (simulated by clearing)
         dedup.clear();
 
-        // After expiration, should process again
         assert!(dedup.should_process(&key));
     }
 
     #[tokio::test]
-    async fn test_dedup_concurrent_should_process() {
+    async fn test_dedup_concurrent_should_process() -> Result<(), tokio::task::JoinError> {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
 
@@ -224,20 +220,20 @@ mod tests {
         }
 
         for h in handles {
-            h.await.expect("task panicked");
+            h.await?;
         }
 
-        // Exactly one thread should have processed the event
         assert_eq!(
             success_count.load(Ordering::Relaxed),
             1,
             "Expected exactly 1 successful should_process, got {}",
             success_count.load(Ordering::Relaxed)
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_dedup_from_event() {
+    async fn test_dedup_from_event() -> std::result::Result<(), DedupKeyError> {
         let dedup = MessageDeduplicator::with_defaults();
 
         let event = crate::sync::events::RealtimeEvent::ChatMessage {
@@ -251,10 +247,11 @@ mod tests {
             display_color: None,
         };
 
-        let key = DedupKey::try_from_event(&event).unwrap();
+        let key = DedupKey::try_from_event(&event)?;
 
         assert!(dedup.should_process(&key));
         assert!(!dedup.should_process(&key));
+        Ok(())
     }
 
     #[test]

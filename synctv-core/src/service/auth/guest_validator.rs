@@ -186,6 +186,20 @@ mod tests {
     use crate::models::{RoomId, UserId};
     use crate::service::auth::token_blacklist::InMemoryTokenBlacklistStore;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
+        match result {
+            Ok(_) => std::panic::panic_any(context.to_string()),
+            Err(error) => error,
+        }
+    }
+
     struct FailingBlacklistStore;
 
     #[async_trait::async_trait]
@@ -217,10 +231,10 @@ mod tests {
     }
 
     fn create_test_jwt_service() -> Arc<JwtService> {
-        Arc::new(
-            JwtService::new("test-secret-for-guest-validator-that-is-long-enough-1234567890")
-                .unwrap(),
-        )
+        Arc::new(ok(
+            JwtService::new("test-secret-for-guest-validator-that-is-long-enough-1234567890"),
+            "JWT service should build",
+        ))
     }
 
     fn create_test_validator_with_blacklist() -> GuestTokenValidator {
@@ -243,10 +257,16 @@ mod tests {
         let jwt = create_test_jwt_service();
         let room_id = RoomId::new();
 
-        let token = jwt.sign_guest_token(&room_id).unwrap();
-        let claims = validator.validate_async(&token).await.unwrap();
+        let token = ok(jwt.sign_guest_token(&room_id), "guest token should sign");
+        let claims = ok(
+            validator.validate_async(&token).await,
+            "guest token should validate",
+        );
 
-        assert_eq!(claims.room_id().unwrap(), room_id);
+        assert_eq!(
+            ok(claims.room_id(), "guest claims should include room ID"),
+            room_id
+        );
         assert!(claims.is_guest());
     }
 
@@ -256,25 +276,28 @@ mod tests {
         let jwt = create_test_jwt_service();
         let room_id = RoomId::new();
 
-        // Token with version 5
-        let token = jwt.sign_guest_token_with_version(&room_id, 5).unwrap();
-        let claims = validator
-            .validate_with_version_async(&token, 5)
-            .await
-            .unwrap();
+        let token = ok(
+            jwt.sign_guest_token_with_version(&room_id, 5),
+            "versioned guest token should sign",
+        );
+        let claims = ok(
+            validator.validate_with_version_async(&token, 5).await,
+            "same-version guest token should validate",
+        );
         assert_eq!(claims.gv, 5);
 
-        // Version check passes when token version >= room version
-        let claims = validator
-            .validate_with_version_async(&token, 3)
-            .await
-            .unwrap();
+        let claims = ok(
+            validator.validate_with_version_async(&token, 3).await,
+            "newer guest token should validate",
+        );
         assert_eq!(claims.gv, 5);
 
-        // Version check fails when token version < room version
         let result = validator.validate_with_version_async(&token, 10).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
+        assert!(matches!(
+            err(result, "stale guest token should fail"),
+            Error::Authentication(_)
+        ));
     }
 
     #[tokio::test]
@@ -283,7 +306,10 @@ mod tests {
         let jwt = create_test_jwt_service();
         let user_id = UserId::new();
 
-        let access_token = jwt.sign_access_token(&user_id, 0).unwrap();
+        let access_token = ok(
+            jwt.sign_access_token(&user_id, 0),
+            "access token should sign",
+        );
         let result = validator.validate_async(&access_token).await;
 
         assert!(result.is_err());
@@ -295,19 +321,22 @@ mod tests {
         let jwt = create_test_jwt_service();
         let room_id = RoomId::new();
 
-        let token = jwt.sign_guest_token(&room_id).unwrap();
-        let claims = jwt.verify_guest_token(&token).unwrap();
+        let token = ok(jwt.sign_guest_token(&room_id), "guest token should sign");
+        let claims = ok(jwt.verify_guest_token(&token), "guest token should verify");
 
-        // First, validation should succeed
-        validator.validate_async(&token).await.unwrap();
+        ok(
+            validator.validate_async(&token).await,
+            "guest token should validate before blacklist",
+        );
 
-        // Blacklist the token
-        validator.blacklist_token(&claims.jti, 3600).await.unwrap();
+        ok(
+            validator.blacklist_token(&claims.jti, 3600).await,
+            "guest token should blacklist",
+        );
 
-        // Now validation should fail
         let result = validator.validate_async(&token).await;
         assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = err(result, "blacklisted guest token should fail");
         assert!(matches!(err, Error::Authentication(msg) if msg.contains("revoked")));
     }
 
@@ -317,11 +346,11 @@ mod tests {
         let jwt = create_test_jwt_service();
         let room_id = RoomId::new();
 
-        let token = jwt.sign_guest_token(&room_id).unwrap();
-        let err = validator
-            .validate_async(&token)
-            .await
-            .expect_err("storage errors must fail closed");
+        let token = ok(jwt.sign_guest_token(&room_id), "guest token should sign");
+        let err = err(
+            validator.validate_async(&token).await,
+            "storage errors must fail closed",
+        );
 
         assert!(
             matches!(err, Error::ServiceUnavailable(msg) if msg.contains("temporarily unavailable"))
@@ -334,10 +363,13 @@ mod tests {
         let jwt = create_test_jwt_service();
         let room_id = RoomId::new();
 
-        let token = jwt.sign_guest_token(&room_id).unwrap();
-        let claims = validator.validate(&token).unwrap();
+        let token = ok(jwt.sign_guest_token(&room_id), "guest token should sign");
+        let claims = ok(validator.validate(&token), "guest token should validate");
 
-        assert_eq!(claims.room_id().unwrap(), room_id);
+        assert_eq!(
+            ok(claims.room_id(), "guest claims should include room ID"),
+            room_id
+        );
         assert!(claims.is_guest());
     }
 
@@ -347,13 +379,17 @@ mod tests {
         let jwt = create_test_jwt_service();
         let room_id = RoomId::new();
 
-        let token = jwt.sign_guest_token_with_version(&room_id, 5).unwrap();
+        let token = ok(
+            jwt.sign_guest_token_with_version(&room_id, 5),
+            "versioned guest token should sign",
+        );
 
-        // Version check passes
-        let claims = validator.validate_with_version(&token, 3).unwrap();
+        let claims = ok(
+            validator.validate_with_version(&token, 3),
+            "newer guest token should validate",
+        );
         assert_eq!(claims.gv, 5);
 
-        // Version check fails
         let result = validator.validate_with_version(&token, 10);
         assert!(result.is_err());
     }

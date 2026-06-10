@@ -1,10 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum StreamIdentifier {
-    #[default]
-    Unknown,
     #[serde(rename = "rtmp")]
     Rtmp {
         app_name: String,
@@ -19,9 +17,6 @@ impl fmt::Display for StreamIdentifier {
                 stream_name,
             } => {
                 write!(f, "RTMP - app_name: {app_name}, stream_name: {stream_name}")
-            }
-            Self::Unknown => {
-                write!(f, "Unknown")
             }
         }
     }

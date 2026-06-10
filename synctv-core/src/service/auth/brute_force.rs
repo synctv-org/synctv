@@ -125,138 +125,6 @@ pub trait BruteForceProtectionService: Send + Sync {
     ) -> Result<()>;
 }
 
-/// Build a brute-force protection service behind the service abstraction.
-///
-/// Callers should depend on the returned trait object instead of choosing the
-/// concrete local or shared implementation directly.
-pub fn brute_force_protection_from_shared_state_profile(
-    profile: &SharedStateProfile,
-) -> Result<Arc<dyn BruteForceProtectionService>> {
-    Ok(Arc::new(BruteForceProtection::from_shared_state_profile(
-        profile,
-    )?))
-}
-
-#[async_trait]
-impl<T> BruteForceProtectionService for Arc<T>
-where
-    T: BruteForceProtectionService + ?Sized,
-{
-    async fn check_allowed(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
-        self.as_ref().check_allowed(username, ip).await
-    }
-
-    async fn check_allowed_with_control(
-        &self,
-        username: &str,
-        ip: Option<IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<()> {
-        self.as_ref()
-            .check_allowed_with_control(username, ip, control)
-            .await
-    }
-
-    async fn record_failure(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
-        self.as_ref().record_failure(username, ip).await
-    }
-
-    async fn record_failure_with_control(
-        &self,
-        username: &str,
-        ip: Option<IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<()> {
-        self.as_ref()
-            .record_failure_with_control(username, ip, control)
-            .await
-    }
-
-    async fn check_subject_key_allowed_with_control(
-        &self,
-        subject_key: &str,
-        ip: Option<IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<()> {
-        self.as_ref()
-            .check_subject_key_allowed_with_control(subject_key, ip, control)
-            .await
-    }
-
-    async fn record_subject_key_failure_with_control(
-        &self,
-        subject_key: &str,
-        ip: Option<IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<()> {
-        self.as_ref()
-            .record_subject_key_failure_with_control(subject_key, ip, control)
-            .await
-    }
-
-    async fn record_ip_failure(&self, ip: Option<IpAddr>) -> Result<()> {
-        self.as_ref().record_ip_failure(ip).await
-    }
-
-    async fn record_ip_failure_with_control(
-        &self,
-        ip: Option<IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<()> {
-        self.as_ref()
-            .record_ip_failure_with_control(ip, control)
-            .await
-    }
-
-    async fn check_ip_allowed(&self, ip: Option<IpAddr>) -> Result<()> {
-        self.as_ref().check_ip_allowed(ip).await
-    }
-
-    async fn check_ip_allowed_with_control(
-        &self,
-        ip: Option<IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<()> {
-        self.as_ref()
-            .check_ip_allowed_with_control(ip, control)
-            .await
-    }
-
-    async fn reset(&self, username: &str) -> Result<()> {
-        self.as_ref().reset(username).await
-    }
-
-    async fn reset_with_control(
-        &self,
-        username: &str,
-        control: Option<&ExecutionControl>,
-    ) -> Result<()> {
-        self.as_ref().reset_with_control(username, control).await
-    }
-
-    async fn reset_subject_key_with_control(
-        &self,
-        subject_key: &str,
-        control: Option<&ExecutionControl>,
-    ) -> Result<()> {
-        self.as_ref()
-            .reset_subject_key_with_control(subject_key, control)
-            .await
-    }
-
-    async fn reset_ip(&self, ip: &IpAddr) -> Result<()> {
-        self.as_ref().reset_ip(ip).await
-    }
-
-    async fn reset_ip_with_control(
-        &self,
-        ip: &IpAddr,
-        control: Option<&ExecutionControl>,
-    ) -> Result<()> {
-        self.as_ref().reset_ip_with_control(ip, control).await
-    }
-}
-
 /// Lockout thresholds and durations
 const TIER1_THRESHOLD: u64 = 5;
 const TIER1_LOCKOUT_SECS: u64 = 60; // 1 minute
@@ -527,7 +395,7 @@ impl BruteForceProtection {
         Self::new_with_config(key_prefix, username_tracker, ip_tracker, config)
     }
 
-    pub fn from_shared_state_profile(profile: &SharedStateProfile) -> Result<Self> {
+    pub(crate) fn from_shared_state_profile(profile: &SharedStateProfile) -> Result<Self> {
         match profile.state_mode() {
             SharedStateMode::SharedRequired => Ok(Self::with_redis_runtime_fail_closed(
                 profile.require_shared_runtime("brute-force protection state")?,

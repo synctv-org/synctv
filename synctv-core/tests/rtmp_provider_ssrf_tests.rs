@@ -4,8 +4,6 @@
 //! These tests verify that `RtmpProvider` correctly rejects source_config
 //! that contains URL fields (which could be abused for SSRF).
 
-#![allow(clippy::unwrap_used)]
-
 use serde_json::json;
 use synctv_core::models::{MediaId, RoomId, UserId};
 use synctv_core::provider::{
@@ -52,7 +50,7 @@ async fn test_rtmp_provider_validate_source_config_rejects_url_field() {
                 "Error message should mention URL or not supported: {msg}"
             );
         } else if let Err(err) = result {
-            panic!("Expected InvalidConfig error, got: {err:?}");
+            std::panic::panic_any(format!("Expected InvalidConfig error, got: {err:?}"));
         }
     }
 }

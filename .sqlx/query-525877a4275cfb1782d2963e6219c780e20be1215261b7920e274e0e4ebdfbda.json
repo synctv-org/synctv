@@ -6,42 +6,90 @@
       {
         "ordinal": 0,
         "name": "storage_backend",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_blobs",
+            "name": "storage_backend"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "object_key",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_blobs",
+            "name": "object_key"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "mime_type",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_blobs",
+            "name": "mime_type"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "size_bytes",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "file_blobs",
+            "name": "size_bytes"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "checksum_sha256",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_blobs",
+            "name": "checksum_sha256"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "data",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "file_blobs",
+            "name": "data"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "metadata: serde_json::Value",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "file_blobs",
+            "name": "metadata"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "created_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_blobs",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {

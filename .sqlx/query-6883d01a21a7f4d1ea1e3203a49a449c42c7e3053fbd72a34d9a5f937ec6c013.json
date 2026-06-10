@@ -6,12 +6,19 @@
       {
         "ordinal": 0,
         "name": "user_id: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_join_requests",
+            "name": "user_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "requested_role!: RoomRole",
-        "type_info": "Int2"
+        "type_info": "Int2",
+        "origin": "Expression"
       }
     ],
     "parameters": {

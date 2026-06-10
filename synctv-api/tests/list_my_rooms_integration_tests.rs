@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
+mod support;
+
 use chrono::Utc;
 use std::sync::Arc;
 use synctv_core::{
@@ -54,7 +56,6 @@ fn make_client_api(
     room_service: Arc<RoomService>,
 ) -> synctv_api::impls::ClientApiImpl {
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-    connection_manager.start();
 
     synctv_api::impls::ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
@@ -65,16 +66,16 @@ fn make_client_api(
             publish_key_service: None,
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
-            providers_manager: None,
             settings_registry: None,
-            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
             chat_service: None,
-            credential_encryption: None,
-            provider_stores: None,
+            provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
+                "test:provider:",
+            )),
             email_api: None,
             passkey_service: None,
         },
-        synctv_api::impls::ClientApiRuntime::test_disabled(),
+        support::client_api_runtime(),
     )
 }
 
@@ -148,7 +149,7 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
     assert_eq!(created_only.rooms.len(), 1);
     assert_eq!(
         created_only.rooms[0].room.as_ref().unwrap().id,
-        synctv_api::PublicIdCodec::plain()
+        synctv_core::PublicIdCodec::plain()
             .encode_room_id(created_room.id)
             .unwrap()
     );
@@ -178,7 +179,7 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
     assert_eq!(participating_only.rooms.len(), 1);
     assert_eq!(
         participating_only.rooms[0].room.as_ref().unwrap().id,
-        synctv_api::PublicIdCodec::plain()
+        synctv_core::PublicIdCodec::plain()
             .encode_room_id(participating_room.id)
             .unwrap()
     );

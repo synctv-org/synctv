@@ -162,6 +162,7 @@ struct SsrfGuardInner {
 
 #[derive(Clone)]
 struct SsrfPolicy {
+    deny_all: bool,
     allow_private_network_targets: bool,
     default_denied_ip_ranges: Vec<IpNet>,
     host_allowlist_denied_ip_ranges: Vec<IpNet>,
@@ -195,10 +196,23 @@ fn normalize_host(host: &str) -> String {
     host.trim_end_matches('.').to_ascii_lowercase()
 }
 
-fn parse_ranges(ranges: &[&str]) -> Vec<IpNet> {
+fn parse_builtin_cidr(range: &str) -> Result<IpNet, String> {
+    range
+        .parse()
+        .map_err(|error| format!("built-in SSRF CIDR `{range}` must parse: {error}"))
+}
+
+fn valid_acl_config<T, E: std::fmt::Display>(
+    result: Result<T, E>,
+    context: &str,
+) -> Result<T, String> {
+    result.map_err(|error| format!("{context}: {error}"))
+}
+
+fn parse_ranges(ranges: &[&str]) -> Result<Vec<IpNet>, String> {
     ranges
         .iter()
-        .map(|range| range.parse().expect("default CIDR should parse"))
+        .map(|range| parse_builtin_cidr(range))
         .collect()
 }
 
@@ -208,6 +222,10 @@ fn contains_ip(ranges: &[IpNet], ip: &IpAddr) -> bool {
 
 impl SsrfPolicy {
     fn is_ip_allowed(&self, ip: &IpAddr) -> bool {
+        if self.deny_all {
+            return false;
+        }
+
         if contains_ip(&self.extra_allowed_ip_ranges, ip) {
             return true;
         }
@@ -237,11 +255,19 @@ impl SsrfPolicy {
     }
 
     fn is_host_blocked(&self, host: &str) -> bool {
+        if self.deny_all {
+            return true;
+        }
+
         let host = normalize_host(host);
         !self.allowed_hosts.contains(&host) && self.denied_hosts.contains(&host)
     }
 
     fn allows_non_default_ports_for_ip(&self, ip: &IpAddr) -> bool {
+        if self.deny_all {
+            return false;
+        }
+
         self.allow_private_network_targets && contains_ip(&self.default_denied_ip_ranges, ip)
             || contains_ip(&self.extra_allowed_ip_ranges, ip)
     }
@@ -358,6 +384,10 @@ impl SsrfGuard {
     #[must_use]
     pub fn is_port_blocked_for_host(&self, port: u16, host: &str) -> bool {
         self.inner.as_ref().is_some_and(|inner| {
+            if inner.policy.deny_all {
+                return true;
+            }
+
             !inner.policy.allowed_hosts.contains(&normalize_host(host))
                 && inner.acl.is_port_allowed(port).is_denied()
         })
@@ -449,8 +479,20 @@ impl SsrfGuardBuilder {
 
     /// Build the [`SsrfGuard`] with configured policy.
     #[must_use]
-    #[allow(clippy::unwrap_used)] // Parsing constant CIDR strings cannot fail
     pub fn build(self) -> SsrfGuard {
+        match self.try_build() {
+            Ok(guard) => guard,
+            Err(error) => {
+                tracing::error!(
+                    error = %error,
+                    "Invalid SSRF guard configuration; falling back to deny-all policy"
+                );
+                SsrfGuard::deny_all_fallback(&error)
+            }
+        }
+    }
+
+    fn try_build(self) -> Result<SsrfGuard, String> {
         let allow_non_global_ip_ranges =
             self.allow_private_network_targets || !self.extra_allowed_ip_ranges.is_empty();
         let mut builder = HttpAcl::builder();
@@ -472,29 +514,25 @@ impl SsrfGuardBuilder {
 
         // Apply default denied ranges
         for range_str in DEFAULT_EXTRA_DENIED_RANGES {
-            let range: IpNet = range_str.parse().unwrap();
-            builder = builder.add_denied_ip_range(range).expect("valid IP range");
+            let range = parse_builtin_cidr(range_str)?;
+            builder = valid_acl_config(builder.add_denied_ip_range(range), "valid IP range")?;
         }
 
         // Apply denied hosts that were not explicitly allowlisted.
         for host in denied_hosts.difference(&allowed_hosts) {
-            builder = builder
-                .add_denied_host(host.clone())
-                .expect("valid hostname");
+            builder = valid_acl_config(builder.add_denied_host(host.clone()), "valid hostname")?;
         }
 
         // Apply extra denied ranges to the underlying ACL where they cannot
         // conflict with explicit allow ranges. The guard's own policy below is
         // authoritative for IP decisions.
         for range in &extra_denied_ip_ranges {
-            builder = builder.add_denied_ip_range(*range).expect("valid IP range");
+            builder = valid_acl_config(builder.add_denied_ip_range(*range), "valid IP range")?;
         }
 
         // Apply extra allowed hosts
         for host in &allowed_hosts {
-            builder = builder
-                .add_allowed_host(host.clone())
-                .expect("valid hostname");
+            builder = valid_acl_config(builder.add_allowed_host(host.clone()), "valid hostname")?;
         }
 
         let acl = builder
@@ -503,16 +541,17 @@ impl SsrfGuardBuilder {
             .host_acl_default(true)
             .http(self.allow_http)
             .https(self.allow_https)
-            .try_build()
-            .expect("SSRF ACL configuration is valid");
+            .try_build();
+        let acl = valid_acl_config(acl, "SSRF ACL configuration is valid")?;
 
-        let mut default_denied_ip_ranges = parse_ranges(DEFAULT_NON_GLOBAL_DENIED_RANGES);
-        default_denied_ip_ranges.extend(parse_ranges(DEFAULT_EXTRA_DENIED_RANGES));
+        let mut default_denied_ip_ranges = parse_ranges(DEFAULT_NON_GLOBAL_DENIED_RANGES)?;
+        default_denied_ip_ranges.extend(parse_ranges(DEFAULT_EXTRA_DENIED_RANGES)?);
 
         let policy = Arc::new(SsrfPolicy {
+            deny_all: false,
             allow_private_network_targets: self.allow_private_network_targets,
             default_denied_ip_ranges,
-            host_allowlist_denied_ip_ranges: parse_ranges(HOST_ALLOWLIST_DENIED_RANGES),
+            host_allowlist_denied_ip_ranges: parse_ranges(HOST_ALLOWLIST_DENIED_RANGES)?,
             extra_denied_ip_ranges,
             extra_allowed_ip_ranges,
             denied_hosts,
@@ -524,7 +563,43 @@ impl SsrfGuardBuilder {
             policy: policy.clone(),
         }) as Arc<dyn Resolve>;
 
-        SsrfGuard {
+        Ok(SsrfGuard {
+            inner: Some(Arc::new(SsrfGuardInner {
+                acl,
+                resolver,
+                policy,
+            })),
+        })
+    }
+}
+
+impl SsrfGuard {
+    fn deny_all_fallback(reason: &str) -> Self {
+        tracing::error!(
+            reason,
+            "Using deny-all SSRF fallback after configuration failure"
+        );
+
+        let acl = HttpAcl::builder()
+            .try_build()
+            .expect("default SSRF ACL configuration must build");
+        let policy = Arc::new(SsrfPolicy {
+            deny_all: true,
+            allow_private_network_targets: false,
+            default_denied_ip_ranges: Vec::new(),
+            host_allowlist_denied_ip_ranges: Vec::new(),
+            extra_denied_ip_ranges: Vec::new(),
+            extra_allowed_ip_ranges: Vec::new(),
+            denied_hosts: HashSet::new(),
+            allowed_hosts: HashSet::new(),
+        });
+        let resolver = Arc::new(SsrfDnsResolver {
+            acl: Arc::new(acl.clone()),
+            inner: Arc::new(SystemDnsResolver),
+            policy: policy.clone(),
+        }) as Arc<dyn Resolve>;
+
+        Self {
             inner: Some(Arc::new(SsrfGuardInner {
                 acl,
                 resolver,
@@ -539,6 +614,8 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
+    type TestResult<T = ()> = Result<T, String>;
+
     struct StaticDnsResolver {
         addresses: Vec<SocketAddr>,
     }
@@ -550,16 +627,53 @@ mod tests {
         }
     }
 
-    fn resolver_for_test(guard: &SsrfGuard, addresses: Vec<SocketAddr>) -> Arc<dyn Resolve> {
+    fn resolver_for_test(
+        guard: &SsrfGuard,
+        addresses: Vec<SocketAddr>,
+    ) -> TestResult<Arc<dyn Resolve>> {
         let inner = guard
             .inner
             .as_ref()
-            .expect("test guard should expose SSRF internals");
-        Arc::new(SsrfDnsResolver {
+            .ok_or_else(|| "test guard should expose SSRF internals".to_string())?;
+        Ok(Arc::new(SsrfDnsResolver {
             acl: Arc::new(inner.acl.clone()),
             inner: Arc::new(StaticDnsResolver { addresses }),
             policy: inner.policy.clone(),
-        })
+        }))
+    }
+
+    fn parse_test_dns_name(value: &str) -> TestResult<Name> {
+        value
+            .parse()
+            .map_err(|error| format!("valid DNS name `{value}` should parse: {error}"))
+    }
+
+    fn parse_test_cidr(value: &str) -> TestResult<IpNet> {
+        value
+            .parse()
+            .map_err(|error| format!("test CIDR `{value}` should parse: {error}"))
+    }
+
+    fn acl_for_test(guard: &SsrfGuard) -> TestResult<&HttpAcl> {
+        guard
+            .acl()
+            .ok_or_else(|| "test guard should expose ACL".to_string())
+    }
+
+    fn assert_resolution_blocked(
+        result: Result<Addrs, BoxError>,
+        expected_host: &str,
+    ) -> TestResult {
+        let Err(error) = result else {
+            return Err(format!(
+                "DNS results for `{expected_host}` should fail with a typed SSRF error"
+            ));
+        };
+        let blocked = error
+            .downcast_ref::<SsrfResolutionBlocked>()
+            .ok_or_else(|| "DNS resolution error should expose typed SSRF denial".to_string())?;
+        assert_eq!(blocked.host(), expected_host);
+        Ok(())
     }
 
     // Default policy tests (migrated from synctv-ssrf)
@@ -634,12 +748,13 @@ mod tests {
     }
 
     #[test]
-    fn test_acl_allows_public_hostnames() {
+    fn test_acl_allows_public_hostnames() -> TestResult {
         let guard = SsrfGuard::strict_policy();
-        let acl = guard.acl().expect("strict policy should expose ACL");
+        let acl = acl_for_test(&guard)?;
         assert!(acl.is_host_allowed("example.com").is_allowed());
         assert!(acl.is_host_allowed("api.bilibili.com").is_allowed());
         assert!(acl.is_host_allowed("github.com").is_allowed());
+        Ok(())
     }
 
     #[test]
@@ -706,16 +821,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dns_resolver_allows_private_ip_for_explicit_allowed_host() {
+    async fn test_dns_resolver_allows_private_ip_for_explicit_allowed_host() -> TestResult {
         let guard = SsrfGuard::builder()
             .extra_allowed_host("internal.example".to_string())
             .build();
-        let resolver = resolver_for_test(&guard, vec![SocketAddr::from(([10, 0, 0, 42], 443))]);
+        let resolver = resolver_for_test(&guard, vec![SocketAddr::from(([10, 0, 0, 42], 443))])?;
 
         let resolved = resolver
-            .resolve("internal.example".parse().expect("valid DNS name"))
+            .resolve(parse_test_dns_name("internal.example")?)
             .await
-            .expect("DNS resolution should succeed")
+            .map_err(|error| format!("DNS resolution should succeed: {error}"))?
             .collect::<Vec<_>>();
 
         assert_eq!(resolved, vec![SocketAddr::from(([10, 0, 0, 42], 443))]);
@@ -723,59 +838,47 @@ mod tests {
             guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42))),
             "host-specific allowlist must not globally allow private IPs"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_dns_resolver_still_blocks_private_ip_for_non_allowlisted_host() {
+    async fn test_dns_resolver_still_blocks_private_ip_for_non_allowlisted_host() -> TestResult {
         let guard = SsrfGuard::strict_policy();
-        let resolver = resolver_for_test(&guard, vec![SocketAddr::from(([10, 0, 0, 42], 443))]);
+        let resolver = resolver_for_test(&guard, vec![SocketAddr::from(([10, 0, 0, 42], 443))])?;
 
-        let result = resolver
-            .resolve("example.com".parse().expect("valid DNS name"))
-            .await;
-        let Err(err) = result else {
-            panic!("private DNS results should fail with a typed SSRF error");
-        };
-
-        let blocked = err
-            .downcast_ref::<SsrfResolutionBlocked>()
-            .expect("DNS resolution error should expose typed SSRF denial");
-        assert_eq!(blocked.host(), "example.com");
+        let result = resolver.resolve(parse_test_dns_name("example.com")?).await;
+        assert_resolution_blocked(result, "example.com")
     }
 
     #[tokio::test]
-    async fn test_dns_resolver_allows_public_ip_with_zero_port() {
+    async fn test_dns_resolver_allows_public_ip_with_zero_port() -> TestResult {
         let guard = SsrfGuard::strict_policy();
-        let resolver = resolver_for_test(&guard, vec![SocketAddr::from(([8, 8, 8, 8], 0))]);
+        let resolver = resolver_for_test(&guard, vec![SocketAddr::from(([8, 8, 8, 8], 0))])?;
 
         let resolved = resolver
-            .resolve("example.com".parse().expect("valid DNS name"))
+            .resolve(parse_test_dns_name("example.com")?)
             .await
-            .expect("DNS resolution should not reject public IPs just because DNS uses port 0")
+            .map_err(|error| {
+                format!("DNS resolution should accept public IPs with port 0: {error}")
+            })?
             .collect::<Vec<_>>();
 
         assert_eq!(resolved, vec![SocketAddr::from(([8, 8, 8, 8], 0))]);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_dns_resolver_blocks_metadata_ip_for_explicit_allowed_host() {
+    async fn test_dns_resolver_blocks_metadata_ip_for_explicit_allowed_host() -> TestResult {
         let guard = SsrfGuard::builder()
             .extra_allowed_host("internal.example".to_string())
             .build();
         let resolver =
-            resolver_for_test(&guard, vec![SocketAddr::from(([169, 254, 169, 254], 80))]);
+            resolver_for_test(&guard, vec![SocketAddr::from(([169, 254, 169, 254], 80))])?;
 
         let result = resolver
-            .resolve("internal.example".parse().expect("valid DNS name"))
+            .resolve(parse_test_dns_name("internal.example")?)
             .await;
-        let Err(err) = result else {
-            panic!("metadata DNS results should fail with a typed SSRF error");
-        };
-
-        let blocked = err
-            .downcast_ref::<SsrfResolutionBlocked>()
-            .expect("DNS resolution error should expose typed SSRF denial");
-        assert_eq!(blocked.host(), "internal.example");
+        assert_resolution_blocked(result, "internal.example")
     }
 
     #[test]
@@ -791,17 +894,14 @@ mod tests {
     }
 
     #[test]
-    fn test_allowed_ip_range_overrides_private_default() {
+    fn test_allowed_ip_range_overrides_private_default() -> TestResult {
         let guard = SsrfGuard::builder()
-            .extra_allowed_ip_range(
-                "10.0.8.0/24"
-                    .parse()
-                    .expect("test CIDR must parse successfully"),
-            )
+            .extra_allowed_ip_range(parse_test_cidr("10.0.8.0/24")?)
             .build();
 
         assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 8, 42))));
         assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 9, 42))));
+        Ok(())
     }
 
     #[test]
@@ -827,17 +927,14 @@ mod tests {
     }
 
     #[test]
-    fn test_extra_allowed_ip_range_allows_non_default_ports_for_that_range() {
+    fn test_extra_allowed_ip_range_allows_non_default_ports_for_that_range() -> TestResult {
         let guard = SsrfGuard::builder()
-            .extra_allowed_ip_range(
-                "10.0.8.0/24"
-                    .parse()
-                    .expect("test CIDR must parse successfully"),
-            )
+            .extra_allowed_ip_range(parse_test_cidr("10.0.8.0/24")?)
             .build();
 
         assert!(!guard.is_port_blocked_for_ip(8080, &IpAddr::V4(Ipv4Addr::new(10, 0, 8, 42))));
         assert!(guard.is_port_blocked_for_ip(8080, &IpAddr::V4(Ipv4Addr::new(10, 0, 9, 42))));
+        Ok(())
     }
 
     #[test]
@@ -858,18 +955,33 @@ mod tests {
         assert!(guard.is_port_blocked_for_host(18000, "public.example"));
     }
 
+    #[tokio::test]
+    async fn test_invalid_builder_config_uses_deny_all_fallback() -> TestResult {
+        let guard = SsrfGuard::builder()
+            .extra_allowed_host("invalid host name".to_string())
+            .build();
+        let public_ip = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+        let resolver = resolver_for_test(&guard, vec![SocketAddr::from(([8, 8, 8, 8], 443))])?;
+
+        assert!(guard.acl().is_some());
+        assert!(guard.dns_resolver().is_some());
+        assert!(guard.is_host_blocked("example.com"));
+        assert!(guard.is_ip_blocked(&public_ip));
+        assert!(guard.is_ip_blocked_for_host("example.com", &public_ip));
+        assert!(guard.is_port_blocked_for_host(443, "example.com"));
+
+        let result = resolver.resolve(parse_test_dns_name("example.com")?).await;
+        assert_resolution_blocked(result, "example.com")
+    }
+
     // Builder tests
 
     #[test]
-    fn test_builder_extra_denied_ip_range() {
+    fn test_builder_extra_denied_ip_range() -> TestResult {
         // Use a global IP range (Cloudflare's 104.16.0.0/12) to test custom deny rules.
         // Non-global ranges like 203.0.113.0/24 are already blocked by default.
         let guard = SsrfGuard::builder()
-            .extra_denied_ip_range(
-                "104.16.0.0/12"
-                    .parse()
-                    .expect("test CIDR must parse successfully"),
-            )
+            .extra_denied_ip_range(parse_test_cidr("104.16.0.0/12")?)
             .build();
         // Custom denied range is blocked
         assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(104, 16, 0, 1))));
@@ -877,6 +989,7 @@ mod tests {
         assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
         // Public IPs outside the denied range still allowed
         assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        Ok(())
     }
 
     #[test]
@@ -892,22 +1005,24 @@ mod tests {
     }
 
     #[test]
-    fn test_builder_disallow_http() {
+    fn test_builder_disallow_http() -> TestResult {
         let guard = SsrfGuard::builder().allow_http(false).build();
-        let acl = guard.acl().expect("builder policy should expose ACL");
+        let acl = acl_for_test(&guard)?;
         // HTTP should be disallowed
         assert!(acl.is_scheme_allowed("http").is_denied());
         // HTTPS should still be allowed
         assert!(acl.is_scheme_allowed("https").is_allowed());
+        Ok(())
     }
 
     #[test]
-    fn test_builder_disallow_https() {
+    fn test_builder_disallow_https() -> TestResult {
         let guard = SsrfGuard::builder().allow_https(false).build();
-        let acl = guard.acl().expect("builder policy should expose ACL");
+        let acl = acl_for_test(&guard)?;
         // HTTPS should be disallowed
         assert!(acl.is_scheme_allowed("https").is_denied());
         // HTTP should still be allowed
         assert!(acl.is_scheme_allowed("http").is_allowed());
+        Ok(())
     }
 }

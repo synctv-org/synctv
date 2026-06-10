@@ -30,7 +30,7 @@ pub trait OAuthStateStore: Send + Sync {
     fn supports_cross_node_single_use(&self) -> bool;
 }
 
-pub fn state_store_from_shared_state_profile(
+pub(crate) fn state_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn OAuthStateStore>> {
     match profile.state_mode() {
@@ -55,8 +55,7 @@ pub fn local_oauth_state_store() -> Arc<dyn OAuthStateStore> {
     Arc::new(InMemoryOAuthStateStore::new())
 }
 
-#[must_use]
-pub fn shared_oauth_state_store(
+fn shared_oauth_state_store(
     runtime: Arc<dyn RedisConnectionRuntime>,
     key_prefix: impl Into<String>,
 ) -> Arc<dyn OAuthStateStore> {

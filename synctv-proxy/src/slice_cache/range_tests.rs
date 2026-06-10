@@ -1,27 +1,32 @@
 use super::*;
 
+type ClientRangeTestResult = Result<(), ClientRangeError>;
+type ContentRangeTestResult = Result<(), anyhow::Error>;
+
 #[test]
-fn parse_client_range_plan_supports_single_range_forms() {
+fn parse_client_range_plan_supports_single_range_forms() -> ClientRangeTestResult {
     assert_eq!(
-        parse_client_range_plan("bytes=10-20").unwrap(),
+        parse_client_range_plan("bytes=10-20")?,
         ClientRangePlan::Explicit { start: 10, end: 20 }
     );
     assert_eq!(
-        parse_client_range_plan("bytes=10-").unwrap(),
+        parse_client_range_plan("bytes=10-")?,
         ClientRangePlan::OpenEnded { start: 10 }
     );
     assert_eq!(
-        parse_client_range_plan("bytes=-50").unwrap(),
+        parse_client_range_plan("bytes=-50")?,
         ClientRangePlan::Suffix { suffix_len: 50 }
     );
+    Ok(())
 }
 
 #[test]
-fn parse_client_range_plan_detects_multi_range_passthrough() {
+fn parse_client_range_plan_detects_multi_range_passthrough() -> ClientRangeTestResult {
     assert_eq!(
-        parse_client_range_plan("bytes=0-10,20-30").unwrap(),
+        parse_client_range_plan("bytes=0-10,20-30")?,
         ClientRangePlan::MultiRange
     );
+    Ok(())
 }
 
 #[test]
@@ -41,7 +46,7 @@ fn parse_client_range_plan_rejects_invalid_ranges() {
 }
 
 #[test]
-fn range_bounds_for_total_clamps_and_resolves_forms() {
+fn range_bounds_for_total_clamps_and_resolves_forms() -> ClientRangeTestResult {
     assert_eq!(
         range_bounds_for_total(
             ClientRangePlan::Explicit {
@@ -49,22 +54,22 @@ fn range_bounds_for_total_clamps_and_resolves_forms() {
                 end: 999
             },
             100
-        )
-        .unwrap(),
+        )?,
         (10, 99)
     );
     assert_eq!(
-        range_bounds_for_total(ClientRangePlan::OpenEnded { start: 90 }, 100).unwrap(),
+        range_bounds_for_total(ClientRangePlan::OpenEnded { start: 90 }, 100)?,
         (90, 99)
     );
     assert_eq!(
-        range_bounds_for_total(ClientRangePlan::Suffix { suffix_len: 20 }, 100).unwrap(),
+        range_bounds_for_total(ClientRangePlan::Suffix { suffix_len: 20 }, 100)?,
         (80, 99)
     );
     assert_eq!(
-        range_bounds_for_total(ClientRangePlan::Suffix { suffix_len: 200 }, 100).unwrap(),
+        range_bounds_for_total(ClientRangePlan::Suffix { suffix_len: 200 }, 100)?,
         (0, 99)
     );
+    Ok(())
 }
 
 #[test]
@@ -92,35 +97,39 @@ fn slice_index_for_byte_uses_zero_based_slice_numbers() {
 }
 
 #[test]
-fn test_parse_content_range_basic() {
-    let cr = parse_content_range("bytes 0-499/1000").unwrap();
+fn test_parse_content_range_basic() -> ContentRangeTestResult {
+    let cr = parse_content_range("bytes 0-499/1000")?;
     assert_eq!(cr.start, 0);
     assert_eq!(cr.end, 500);
     assert_eq!(cr.complete_length, Some(1000));
+    Ok(())
 }
 
 #[test]
-fn test_parse_content_range_large_values() {
-    let cr = parse_content_range("bytes 0-2097151/10485760").unwrap();
+fn test_parse_content_range_large_values() -> ContentRangeTestResult {
+    let cr = parse_content_range("bytes 0-2097151/10485760")?;
     assert_eq!(cr.start, 0);
     assert_eq!(cr.end, 2_097_152);
     assert_eq!(cr.complete_length, Some(10_485_760));
+    Ok(())
 }
 
 #[test]
-fn test_parse_content_range_wildcard_length() {
-    let cr = parse_content_range("bytes 100-199/*").unwrap();
+fn test_parse_content_range_wildcard_length() -> ContentRangeTestResult {
+    let cr = parse_content_range("bytes 100-199/*")?;
     assert_eq!(cr.start, 100);
     assert_eq!(cr.end, 200);
     assert_eq!(cr.complete_length, None);
+    Ok(())
 }
 
 #[test]
-fn test_parse_content_range_with_spaces() {
-    let cr = parse_content_range("bytes  0 - 499 / 1000").unwrap();
+fn test_parse_content_range_with_spaces() -> ContentRangeTestResult {
+    let cr = parse_content_range("bytes  0 - 499 / 1000")?;
     assert_eq!(cr.start, 0);
     assert_eq!(cr.end, 500);
     assert_eq!(cr.complete_length, Some(1000));
+    Ok(())
 }
 
 #[test]
@@ -174,9 +183,10 @@ fn test_parse_content_range_start_greater_than_end() {
 }
 
 #[test]
-fn test_parse_content_range_start_equals_end_is_valid() {
-    let cr = parse_content_range("bytes 100-100/1000").unwrap();
+fn test_parse_content_range_start_equals_end_is_valid() -> ContentRangeTestResult {
+    let cr = parse_content_range("bytes 100-100/1000")?;
     assert_eq!(cr.start, 100);
     assert_eq!(cr.end, 101);
     assert_eq!(cr.complete_length, Some(1000));
+    Ok(())
 }

@@ -1,6 +1,6 @@
 use {
     super::errors::NetConnectionError,
-    crate::bytesio::bytesio::TNetIO,
+    crate::bytesio::net_io::TNetIO,
     crate::flv::amf0::{amf0_writer::Amf0Writer, define::Amf0ValueType},
     crate::rtmp::{
         chunk::{define as chunk_define, packetizer::ChunkPacketizer, ChunkInfo},
@@ -24,6 +24,16 @@ pub struct ConnectProperties {
     pub object_encoding: Option<f64>,
     pub page_url: Option<String>, // http://host/sample.html
     pub pub_type: Option<String>,
+}
+
+pub struct ConnectResponse<'a> {
+    pub transaction_id: f64,
+    pub fmsver: &'a str,
+    pub capabilities: f64,
+    pub code: &'a str,
+    pub level: &'a str,
+    pub description: &'a str,
+    pub encoding: f64,
 }
 
 impl ConnectProperties {
@@ -186,19 +196,22 @@ impl NetConnection {
 
         self.write_chunk().await
     }
-    #[allow(clippy::too_many_arguments)]
     pub async fn write_connect_response(
         &mut self,
-        transaction_id: &f64,
-        fmsver: &str,
-        capabilities: &f64,
-        code: &str,
-        level: &str,
-        description: &str,
-        encoding: &f64,
+        response: ConnectResponse<'_>,
     ) -> Result<(), NetConnectionError> {
+        let ConnectResponse {
+            transaction_id,
+            fmsver,
+            capabilities,
+            code,
+            level,
+            description,
+            encoding,
+        } = response;
+
         self.amf0_writer.write_string(&String::from("_result"))?;
-        self.amf0_writer.write_number(transaction_id)?;
+        self.amf0_writer.write_number(&transaction_id)?;
 
         let mut properties_map_a = IndexMap::new();
 
@@ -208,7 +221,7 @@ impl NetConnection {
         );
         properties_map_a.insert(
             String::from("capabilities"),
-            Amf0ValueType::Number(*capabilities),
+            Amf0ValueType::Number(capabilities),
         );
 
         self.amf0_writer.write_object(&properties_map_a)?;
@@ -229,7 +242,7 @@ impl NetConnection {
         );
         properties_map_b.insert(
             String::from("objectEncoding"),
-            Amf0ValueType::Number(*encoding),
+            Amf0ValueType::Number(encoding),
         );
 
         self.amf0_writer.write_object(&properties_map_b)?;

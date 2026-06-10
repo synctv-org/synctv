@@ -1,7 +1,5 @@
 //! `PermissionService` integration tests for batch checks and role checks.
 
-#![allow(clippy::unwrap_used)]
-
 mod permission_test_support;
 
 use synctv_core::{
@@ -14,6 +12,7 @@ use synctv_core::{
     service::room::RoomServiceOptions,
 };
 use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{TestOptionExt, TestResultExt};
 
 use permission_test_support::{make_room_service, make_user};
 
@@ -34,18 +33,21 @@ async fn test_redis_batch_fence_read_hides_pending_permission_reservation() {
     fence
         .set_version_at_least(&permission_domain, 5)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     fence
         .set_version_at_least(&settings_domain, 3)
         .await
-        .unwrap();
-    let reservation = fence.begin_write(&permission_domain, 5).await.unwrap();
+        .checked("test operation should succeed");
+    let reservation = fence
+        .begin_write(&permission_domain, 5)
+        .await
+        .checked("test operation should succeed");
 
     assert_eq!(
         fence
             .current_versions(&[permission_domain.clone(), settings_domain.clone()])
             .await
-            .unwrap(),
+            .checked("test operation should succeed"),
         vec![None, Some(3)],
         "Redis batch fence reads must not expose committed permission version while a write is pending"
     );
@@ -53,7 +55,7 @@ async fn test_redis_batch_fence_read_hides_pending_permission_reservation() {
         coordinator
             .current_versions(&[permission_domain.clone(), settings_domain.clone()])
             .await
-            .unwrap(),
+            .checked("test operation should succeed"),
         vec![None, Some(3)],
         "coordinator batch reads must preserve the same pending semantics"
     );
@@ -61,12 +63,12 @@ async fn test_redis_batch_fence_read_hides_pending_permission_reservation() {
     fence
         .commit_write(&permission_domain, &reservation)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(
         fence
             .current_versions(&[permission_domain, settings_domain])
             .await
-            .unwrap(),
+            .checked("test operation should succeed"),
         vec![Some(6), Some(3)]
     );
 }
@@ -86,20 +88,20 @@ async fn test_strong_permission_read_rejects_stale_l1_after_fence_bump() {
         pool.clone(),
         user_service,
         RoomServiceOptions {
-            version_fence: Some(fence.clone()),
-            ..RoomServiceOptions::test_defaults()
+            version_fence: fence.clone(),
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
-    .expect("room service should build");
+    .checked("room service should build");
     let user_repo = UserRepository::new(pool.clone());
     let creator = user_repo
         .create(&make_user("perm_fence_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("perm_fence_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -110,17 +112,17 @@ async fn test_strong_permission_read_rejects_stale_l1_after_fence_bump() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let perm_service = room_service.permission_service();
     let initial = perm_service
         .get_user_permissions_strong(&room.id, &member.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(initial.has(RoomPermission::CHAT));
 
     let updated = room_service
@@ -132,7 +134,7 @@ async fn test_strong_permission_read_rejects_stale_l1_after_fence_bump() {
             RoomMemberPermissionBits::CHAT,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(updated.removed_permissions, RoomMemberPermissionBits::CHAT);
 
     let fence_version = fence
@@ -141,14 +143,14 @@ async fn test_strong_permission_read_rejects_stale_l1_after_fence_bump() {
             user_id: member.id,
         })
         .await
-        .unwrap()
-        .expect("permission fence should exist after mutation");
+        .checked("test operation should succeed")
+        .checked("permission fence should exist after mutation");
     assert!(fence_version > 0);
 
     let strong = perm_service
         .get_user_permissions_strong(&room.id, &member.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(
         !strong.has(RoomPermission::CHAT),
         "strong permission read must reject stale L1 after fence bump"
@@ -170,20 +172,20 @@ async fn test_strong_permission_read_rejects_stale_l1_after_room_settings_fence_
         pool.clone(),
         user_service,
         RoomServiceOptions {
-            version_fence: Some(fence.clone()),
-            ..RoomServiceOptions::test_defaults()
+            version_fence: fence.clone(),
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
-    .expect("room service should build");
+    .checked("room service should build");
     let user_repo = UserRepository::new(pool.clone());
     let creator = user_repo
         .create(&make_user("perm_room_fence_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("perm_room_fence_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -194,37 +196,40 @@ async fn test_strong_permission_read_rejects_stale_l1_after_room_settings_fence_
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let perm_service = room_service.permission_service();
     let initial = perm_service
         .get_user_permissions_strong(&room.id, &member.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(initial.has(RoomPermission::CHAT));
 
-    let mut settings = room_service.get_room_settings(&room.id).await.unwrap();
+    let mut settings = room_service
+        .get_room_settings(&room.id)
+        .await
+        .checked("test operation should succeed");
     settings.member_removed_permissions = MemberRemovedPermissions(RoomMemberPermissionBits::CHAT);
     room_service
         .set_room_settings(&room.id, &settings)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let settings_fence = fence
         .current_version(&CacheDomain::RoomSettings { room_id: room.id })
         .await
-        .unwrap()
-        .expect("room settings fence should exist after settings mutation");
+        .checked("test operation should succeed")
+        .checked("room settings fence should exist after settings mutation");
     assert!(settings_fence > 0);
 
     let strong = perm_service
         .get_user_permissions_strong(&room.id, &member.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(
         !strong.has(RoomPermission::CHAT),
         "strong permission read must reject stale L1 after room settings fence bump"
@@ -246,11 +251,11 @@ async fn test_eventual_permission_cache_preserves_room_settings_version() {
         pool.clone(),
         user_service,
         RoomServiceOptions {
-            version_fence: Some(fence.clone()),
-            ..RoomServiceOptions::test_defaults()
+            version_fence: fence.clone(),
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
-    .expect("room service should build");
+    .checked("room service should build");
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
     let settings_repo = RoomSettingsRepository::new(pool.clone());
@@ -258,11 +263,11 @@ async fn test_eventual_permission_cache_preserves_room_settings_version() {
     let creator = user_repo
         .create(&make_user("perm_eventual_settings_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("perm_eventual_settings_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -273,25 +278,31 @@ async fn test_eventual_permission_cache_preserves_room_settings_version() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
-    let mut settings = room_service.get_room_settings(&room.id).await.unwrap();
+    let mut settings = room_service
+        .get_room_settings(&room.id)
+        .await
+        .checked("test operation should succeed");
     settings.member_removed_permissions = MemberRemovedPermissions(0);
     room_service
         .set_room_settings(&room.id, &settings)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let member_row = member_repo
         .get(&room.id, &member.id)
         .await
-        .unwrap()
-        .expect("member should exist");
-    let (_settings, settings_version) = settings_repo.get_with_version(&room.id).await.unwrap();
+        .checked("test operation should succeed")
+        .checked("member should exist");
+    let (_settings, settings_version) = settings_repo
+        .get_with_version(&room.id)
+        .await
+        .checked("test operation should succeed");
     fence
         .set_version_at_least(
             &CacheDomain::Permission {
@@ -301,20 +312,20 @@ async fn test_eventual_permission_cache_preserves_room_settings_version() {
             member_row.version,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     fence
         .set_version_at_least(
             &CacheDomain::RoomSettings { room_id: room.id },
             settings_version,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let perm_service = room_service.permission_service();
     let cached = perm_service
         .get_user_permissions_eventually_consistent(&room.id, &member.id)
         .await
-        .expect("eventual permission read should populate L1");
+        .checked("eventual permission read should populate L1");
     assert!(cached.has(RoomPermission::CHAT));
 
     member_repo
@@ -326,12 +337,12 @@ async fn test_eventual_permission_cache_preserves_room_settings_version() {
             member_row.version,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let strong = perm_service
         .get_user_permissions_strong(&room.id, &member.id)
         .await
-        .expect("strong read should be able to trust the freshly populated L1 entry");
+        .checked("strong read should be able to trust the freshly populated L1 entry");
     assert!(
         strong.has(RoomPermission::CHAT),
         "eventual cache population must store the room settings version so strong reads can trust the entry"
@@ -353,20 +364,20 @@ async fn test_strong_permission_read_treats_missing_fences_as_cache_miss() {
         pool.clone(),
         user_service,
         RoomServiceOptions {
-            version_fence: Some(fence.clone()),
-            ..RoomServiceOptions::test_defaults()
+            version_fence: fence.clone(),
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
-    .expect("room service should build");
+    .checked("room service should build");
     let user_repo = UserRepository::new(pool.clone());
     let creator = user_repo
         .create(&make_user("perm_missing_fence_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("perm_missing_fence_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Permission Missing Fence Room".to_string(),
@@ -376,18 +387,18 @@ async fn test_strong_permission_read_treats_missing_fences_as_cache_miss() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     RoomMemberRepository::new(pool.clone())
         .add(&RoomMember::new(room.id, member.id, RoomRole::Member))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let perm_service = room_service.permission_service();
     let cached = perm_service
         .get_user_permissions_eventually_consistent(&room.id, &member.id)
         .await
-        .expect("eventual permission read should populate source caches");
+        .checked("eventual permission read should populate source caches");
     assert!(cached.has(RoomPermission::CHAT));
 
     room_service
@@ -399,7 +410,7 @@ async fn test_strong_permission_read_treats_missing_fences_as_cache_miss() {
             RoomMemberPermissionBits::CHAT,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let permission_domain = CacheDomain::Permission {
         room_id: room.id,
         user_id: member.id,
@@ -415,12 +426,12 @@ async fn test_strong_permission_read_treats_missing_fences_as_cache_miss() {
         ))
         .query_async(&mut raw_redis)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let strong = perm_service
         .get_user_permissions_strong(&room.id, &member.id)
         .await
-        .expect("strong permission read should fall back to DB when fences are missing");
+        .checked("strong permission read should fall back to DB when fences are missing");
     assert!(
         !strong.has(RoomPermission::CHAT),
         "missing authoritative fences must not allow stale L1 authorization data"
@@ -429,19 +440,25 @@ async fn test_strong_permission_read_treats_missing_fences_as_cache_miss() {
     let member_version = RoomMemberRepository::new(pool.clone())
         .get(&room.id, &member.id)
         .await
-        .unwrap()
-        .unwrap()
+        .checked("test operation should succeed")
+        .checked("test operation should succeed")
         .version;
     let (_settings, settings_version) = RoomSettingsRepository::new(pool.clone())
         .get_with_version(&room.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(
-        fence.current_version(&permission_domain).await.unwrap(),
+        fence
+            .current_version(&permission_domain)
+            .await
+            .checked("test operation should succeed"),
         Some(member_version)
     );
     assert_eq!(
-        fence.current_version(&settings_domain).await.unwrap(),
+        fence
+            .current_version(&settings_domain)
+            .await
+            .checked("test operation should succeed"),
         Some(settings_version)
     );
 }
@@ -456,7 +473,7 @@ async fn test_check_permissions_batch_all_present() {
     let creator = user_repo
         .create(&make_user("batch_perm_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -467,7 +484,7 @@ async fn test_check_permissions_batch_all_present() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let perm_service = room_service.permission_service();
     let result = perm_service
@@ -495,11 +512,11 @@ async fn test_check_permissions_batch_one_missing_fails() {
     let creator = user_repo
         .create(&make_user("batch_miss_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("batch_miss_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -510,12 +527,12 @@ async fn test_check_permissions_batch_one_missing_fails() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let perm_service = room_service.permission_service();
     let result = perm_service
@@ -544,20 +561,20 @@ async fn test_check_permissions_batch_rejects_stale_l1_after_room_settings_fence
         pool.clone(),
         user_service,
         RoomServiceOptions {
-            version_fence: Some(fence.clone()),
-            ..RoomServiceOptions::test_defaults()
+            version_fence: fence.clone(),
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
-    .expect("room service should build");
+    .checked("room service should build");
     let user_repo = UserRepository::new(pool.clone());
     let creator = user_repo
         .create(&make_user("batch_stale_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("batch_stale_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
             "Batch Stale Permission Room".to_string(),
@@ -567,29 +584,32 @@ async fn test_check_permissions_batch_rejects_stale_l1_after_room_settings_fence
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let perm_service = room_service.permission_service();
     let cached = perm_service
         .get_user_permissions_eventually_consistent(&room.id, &member.id)
         .await
-        .expect("eventual permission read should populate stale L1 fixture");
+        .checked("eventual permission read should populate stale L1 fixture");
     assert!(cached.has(RoomPermission::CHAT));
 
-    let mut settings = room_service.get_room_settings(&room.id).await.unwrap();
+    let mut settings = room_service
+        .get_room_settings(&room.id)
+        .await
+        .checked("test operation should succeed");
     settings.member_removed_permissions = MemberRemovedPermissions(RoomMemberPermissionBits::CHAT);
     room_service
         .set_room_settings(&room.id, &settings)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     fence
         .set_version_at_least(&CacheDomain::RoomSettings { room_id: room.id }, 2)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = perm_service
         .check_permissions(&room.id, &member.id, &[RoomPermission::CHAT])
@@ -611,7 +631,7 @@ async fn test_check_role_creator_passes() {
     let creator = user_repo
         .create(&make_user("checkrole_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -622,7 +642,7 @@ async fn test_check_role_creator_passes() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let perm_service = room_service.permission_service();
     let result = perm_service
@@ -642,11 +662,11 @@ async fn test_check_role_member_not_creator_fails() {
     let creator = user_repo
         .create(&make_user("checkrole2_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("checkrole2_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -657,12 +677,12 @@ async fn test_check_role_member_not_creator_fails() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let perm_service = room_service.permission_service();
     let result = perm_service
@@ -682,11 +702,11 @@ async fn test_check_permission_bypasses_stale_l1_after_membership_removed() {
     let creator = user_repo
         .create(&make_user("strong_perm_creator"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let member = user_repo
         .create(&make_user("strong_perm_member"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let (room, _) = room_service
         .create_room(
@@ -697,23 +717,23 @@ async fn test_check_permission_bypasses_stale_l1_after_membership_removed() {
             None,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     room_service
         .join_room(room.id, member.id, None)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let perm_service = room_service.permission_service();
     perm_service
         .get_user_permissions_eventually_consistent(&room.id, &member.id)
         .await
-        .expect("eventual permission read should populate L1");
+        .checked("eventual permission read should populate L1");
 
     RoomMemberRepository::new(pool.clone())
         .remove(&room.id, &member.id)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = perm_service
         .check_permission(&room.id, &member.id, RoomPermission::CHAT)

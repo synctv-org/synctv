@@ -269,9 +269,25 @@ pub fn build_signed_proxy_url(request: SignedProxyUrlRequest<'_>) -> String {
 mod tests {
     use super::*;
 
+    fn ok<T, E: fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    fn some<T>(value: Option<T>, context: &str) -> T {
+        match value {
+            Some(value) => value,
+            None => std::panic::panic_any(context.to_string()),
+        }
+    }
+
     fn test_key() -> ProxySigningKey {
-        ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .expect("test proxy signing key should derive")
+        ok(
+            ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough"),
+            "test proxy signing key should derive",
+        )
     }
 
     fn test_claims() -> ProxyUrlClaims {
@@ -298,7 +314,7 @@ mod tests {
         let key = test_key();
         let claims = test_claims();
         let mut sig = key.sign(&claims);
-        let last = sig.pop().expect("signature should not be empty");
+        let last = some(sig.pop(), "signature should not be empty");
         let tampered = if last == '0' { '1' } else { '0' };
         sig.push(tampered);
         assert!(matches!(
@@ -338,9 +354,10 @@ mod tests {
         let key = test_key();
         let claims = test_claims();
         let query = key.build_signed_query(&claims);
-        let parsed = key
-            .parse_and_verify_query(&query, &claims.provider, &claims.version)
-            .unwrap();
+        let parsed = ok(
+            key.parse_and_verify_query(&query, &claims.provider, &claims.version),
+            "signed query should parse",
+        );
         assert_eq!(parsed.room_id, claims.room_id);
         assert_eq!(parsed.user_id, claims.user_id);
         assert_eq!(parsed.expires_at, claims.expires_at);
@@ -352,9 +369,10 @@ mod tests {
         let mut claims = test_claims();
         claims.target_url = Some("http://example.com/seg.ts".to_string());
         let query = key.build_signed_query(&claims);
-        let parsed = key
-            .parse_and_verify_query(&query, &claims.provider, &claims.version)
-            .unwrap();
+        let parsed = ok(
+            key.parse_and_verify_query(&query, &claims.provider, &claims.version),
+            "signed query with target URL should parse",
+        );
         assert_eq!(parsed.room_id, claims.room_id);
         assert_eq!(parsed.target_url, claims.target_url);
     }
@@ -365,9 +383,10 @@ mod tests {
         let mut claims = test_claims();
         claims.target_url = Some("http://example.com/seg.ts".to_string());
         let query = key.build_signed_query(&claims);
-        let (prefix, _) = query
-            .split_once("&url=")
-            .expect("signed target query should include url");
+        let (prefix, _) = some(
+            query.split_once("&url="),
+            "signed target query should include url",
+        );
         let tampered = format!(
             "{prefix}&url={}",
             urlencoding::encode("http://evil.example/seg.ts")
@@ -407,10 +426,14 @@ mod tests {
 
     #[test]
     fn different_secrets_produce_different_signatures() {
-        let key1 = ProxySigningKey::try_derive_from(b"secret-1-long-enough-for-hmac")
-            .expect("test proxy signing key should derive");
-        let key2 = ProxySigningKey::try_derive_from(b"secret-2-long-enough-for-hmac")
-            .expect("test proxy signing key should derive");
+        let key1 = ok(
+            ProxySigningKey::try_derive_from(b"secret-1-long-enough-for-hmac"),
+            "test proxy signing key should derive",
+        );
+        let key2 = ok(
+            ProxySigningKey::try_derive_from(b"secret-2-long-enough-for-hmac"),
+            "test proxy signing key should derive",
+        );
         let claims = test_claims();
         let sig1 = key1.sign(&claims);
         let sig2 = key2.sign(&claims);
@@ -430,11 +453,10 @@ mod tests {
         };
         let query = key.build_signed_query(&claims);
 
-        // Verify that special chars are encoded (no raw & or = in uid/rid values)
-        // The query should still be parseable back to the original claims
-        let parsed = key
-            .parse_and_verify_query(&query, &claims.provider, &claims.version)
-            .unwrap();
+        let parsed = ok(
+            key.parse_and_verify_query(&query, &claims.provider, &claims.version),
+            "encoded signed query should parse",
+        );
         assert_eq!(parsed.room_id, claims.room_id);
         assert_eq!(parsed.user_id, claims.user_id);
         assert_eq!(parsed.expires_at, claims.expires_at);

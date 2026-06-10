@@ -11,6 +11,27 @@ fn create_test_room_id(id: i64) -> RoomId {
     RoomId::expect_positive(id)
 }
 
+fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
+fn some<T>(value: Option<T>, context: &str) -> T {
+    match value {
+        Some(value) => value,
+        None => std::panic::panic_any(context.to_string()),
+    }
+}
+
+fn joined<T>(result: std::result::Result<T, tokio::task::JoinError>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
 #[tokio::test]
 async fn test_redis_ticket_store_accepts_trait_object_runtime() {
     let runtime = failing_redis_runtime();
@@ -37,49 +58,50 @@ async fn test_ws_ticket_service_supports_service_trait_object() {
     let user_id = create_test_user_id(50_001);
     let room_id = create_test_room_id(50_002);
 
-    let ticket = service
-        .create_ticket(&user_id, &room_id, 7)
-        .await
-        .expect("trait-object service should create ticket");
-    let validated = service
-        .validate_and_consume(&ticket, &room_id)
-        .await
-        .expect("trait-object service should validate ticket");
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_id, 7).await,
+        "trait-object service should create ticket",
+    );
+    let validated = ok(
+        service.validate_and_consume(&ticket, &room_id).await,
+        "trait-object service should validate ticket",
+    );
 
-    assert_eq!(validated.user_id().expect("user ticket"), user_id);
-    assert_eq!(validated.password_version().expect("user ticket"), 7);
+    assert_eq!(some(validated.user_id(), "user ticket"), user_id);
+    assert_eq!(some(validated.password_version(), "user ticket"), 7);
     assert!(!service.supports_cluster_runtime());
     assert_eq!(service.ticket_ttl_secs(), 30);
 }
 
 #[tokio::test]
-async fn test_web_socket_ticket_service_from_shared_state_profile_returns_live_trait_object() {
-    let profile = SharedStateProfile::from_runtime(None, "trait-test:", false);
-    let service = web_socket_ticket_service_from_shared_state_profile(&profile, Some(30))
-        .expect("standalone mode should allow local ticket storage");
+async fn test_web_socket_ticket_shared_state_builder_returns_live_service() {
+    let profile = SharedStateProfile::for_cluster_runtime(None, "trait-test:", false);
+    let service = ok(
+        WsTicketService::from_shared_state_profile(&profile, Some(30)),
+        "standalone mode should allow local ticket storage",
+    );
     let user_id = create_test_user_id(50_003);
     let room_id = create_test_room_id(50_004);
 
-    let ticket = service
-        .create_ticket(&user_id, &room_id, 9)
-        .await
-        .expect("builder should return a live ticket service");
-    let validated = service
-        .validate_and_consume(&ticket, &room_id)
-        .await
-        .expect("ticket created via builder should validate");
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_id, 9).await,
+        "shared-state builder should return a live ticket service",
+    );
+    let validated = ok(
+        service.validate_and_consume(&ticket, &room_id).await,
+        "ticket created via shared-state builder should validate",
+    );
 
-    assert_eq!(validated.user_id().expect("user ticket"), user_id);
-    assert_eq!(validated.password_version().expect("user ticket"), 9);
+    assert_eq!(some(validated.user_id(), "user ticket"), user_id);
+    assert_eq!(some(validated.password_version(), "user ticket"), 9);
     assert!(!service.supports_cluster_runtime());
 }
 
 #[test]
-fn test_web_socket_ticket_service_from_shared_state_profile_requires_shared_runtime_in_cluster_mode(
-) {
-    let profile = SharedStateProfile::from_runtime(None, "trait-test:", true);
-    let Err(error) = web_socket_ticket_service_from_shared_state_profile(&profile, None) else {
-        panic!("cluster runtime must reject local WebSocket ticket storage");
+fn test_web_socket_ticket_shared_state_builder_requires_shared_runtime_in_cluster_mode() {
+    let profile = SharedStateProfile::for_cluster_runtime(None, "trait-test:", true);
+    let Err(error) = WsTicketService::from_shared_state_profile(&profile, None) else {
+        std::panic::panic_any("cluster runtime must reject local WebSocket ticket storage");
     };
 
     assert!(
@@ -107,16 +129,17 @@ async fn test_ticket_service_memory_mode() {
     let user_id = create_test_user_id(50_005);
     let room_id = create_test_room_id(50_006);
 
-    let ticket = service.create_ticket(&user_id, &room_id, 0).await;
-    assert!(ticket.is_ok());
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_id, 0).await,
+        "ticket should be created",
+    );
 
-    let result = service
-        .validate_and_consume(&ticket.unwrap(), &room_id)
-        .await;
-    assert!(result.is_ok());
-    let validated = result.unwrap();
-    assert_eq!(validated.user_id().expect("user ticket"), user_id);
-    assert_eq!(validated.password_version().expect("user ticket"), 0);
+    let validated = ok(
+        service.validate_and_consume(&ticket, &room_id).await,
+        "ticket should validate",
+    );
+    assert_eq!(some(validated.user_id(), "user ticket"), user_id);
+    assert_eq!(some(validated.password_version(), "user ticket"), 0);
 }
 
 #[tokio::test]
@@ -125,7 +148,10 @@ async fn test_ticket_one_time_use_memory_mode() {
     let user_id = create_test_user_id(50_007);
     let room_id = create_test_room_id(50_008);
 
-    let ticket = service.create_ticket(&user_id, &room_id, 0).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_id, 0).await,
+        "ticket should be created",
+    );
 
     let result1 = service.validate_and_consume(&ticket, &room_id).await;
     assert!(result1.is_ok());
@@ -143,26 +169,28 @@ async fn test_guest_ticket_service_memory_mode() {
     let room_id = create_test_room_id(50_039);
     let permissions = RoomPermissionSet::default_guest();
 
-    let ticket = service
-        .create_guest_ticket_with_control(
-            CreateGuestTicketRequest {
-                room_id,
-                guest_id: "guest_1".to_string(),
-                display_name: "Guest One".to_string(),
-                session_id: "session_1".to_string(),
-                token_jti: "jti_1".to_string(),
-                room_guest_version: 3,
-                permissions,
-            },
-            None,
-        )
-        .await
-        .expect("guest ticket should be created");
+    let ticket = ok(
+        service
+            .create_guest_ticket_with_control(
+                CreateGuestTicketRequest {
+                    room_id,
+                    guest_id: "guest_1".to_string(),
+                    display_name: "Guest One".to_string(),
+                    session_id: "session_1".to_string(),
+                    token_jti: "jti_1".to_string(),
+                    room_guest_version: 3,
+                    permissions,
+                },
+                None,
+            )
+            .await,
+        "guest ticket should be created",
+    );
 
-    let validated = service
-        .validate_and_consume(&ticket, &room_id)
-        .await
-        .expect("guest ticket should validate");
+    let validated = ok(
+        service.validate_and_consume(&ticket, &room_id).await,
+        "guest ticket should validate",
+    );
 
     match validated {
         ValidatedTicket::Guest(guest) => {
@@ -173,7 +201,9 @@ async fn test_guest_ticket_service_memory_mode() {
             assert_eq!(guest.room_guest_version, 3);
             assert_eq!(guest.permissions, permissions);
         }
-        ValidatedTicket::User { .. } => panic!("guest ticket returned user principal"),
+        ValidatedTicket::User { .. } => {
+            std::panic::panic_any("guest ticket returned user principal");
+        }
     }
 }
 
@@ -185,32 +215,38 @@ async fn test_guest_ticket_checked_validation_skips_user_validator() {
         result: Err("user validator must not run for guests"),
     };
 
-    let ticket = service
-        .create_guest_ticket_with_control(
-            CreateGuestTicketRequest {
-                room_id,
-                guest_id: "guest_2".to_string(),
-                display_name: "Guest Two".to_string(),
-                session_id: "session_2".to_string(),
-                token_jti: "jti_2".to_string(),
-                room_guest_version: 4,
-                permissions: RoomPermissionSet::default_guest(),
-            },
-            None,
-        )
-        .await
-        .expect("guest ticket should be created");
+    let ticket = ok(
+        service
+            .create_guest_ticket_with_control(
+                CreateGuestTicketRequest {
+                    room_id,
+                    guest_id: "guest_2".to_string(),
+                    display_name: "Guest Two".to_string(),
+                    session_id: "session_2".to_string(),
+                    token_jti: "jti_2".to_string(),
+                    room_guest_version: 4,
+                    permissions: RoomPermissionSet::default_guest(),
+                },
+                None,
+            )
+            .await,
+        "guest ticket should be created",
+    );
 
-    let pending = service
-        .validate_checked(&ticket, &room_id, &rejecting_validator)
-        .await
-        .expect("guest ticket should prevalidate without user validator");
+    let pending = ok(
+        service
+            .validate_checked(&ticket, &room_id, &rejecting_validator)
+            .await,
+        "guest ticket should prevalidate without user validator",
+    );
     assert!(matches!(pending, PendingValidatedTicket::Guest { .. }));
 
-    let committed = service
-        .consume_prevalidated(&ticket, &room_id, &pending)
-        .await
-        .expect("guest ticket should consume after prevalidation");
+    let committed = ok(
+        service
+            .consume_prevalidated(&ticket, &room_id, &pending)
+            .await,
+        "guest ticket should consume after prevalidation",
+    );
     assert!(matches!(committed, ValidatedTicket::Guest(_)));
 
     let consumed_again = service.validate_and_consume(&ticket, &room_id).await;
@@ -227,7 +263,10 @@ async fn test_ticket_room_mismatch_rejected() {
     let room_a = create_test_room_id(50_010);
     let room_b = create_test_room_id(50_011);
 
-    let ticket = service.create_ticket(&user_id, &room_a, 0).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_a, 0).await,
+        "ticket should be created",
+    );
 
     let result = service.validate_and_consume(&ticket, &room_b).await;
     assert!(
@@ -257,7 +296,10 @@ async fn test_ticket_room_mismatch_does_not_consume_ticket() {
     let room_a = create_test_room_id(50_013);
     let room_b = create_test_room_id(50_014);
 
-    let ticket = service.create_ticket(&user_id, &room_a, 7).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_a, 7).await,
+        "ticket should be created",
+    );
 
     let wrong_room_result = service.validate_and_consume(&ticket, &room_b).await;
     assert!(
@@ -270,9 +312,9 @@ async fn test_ticket_room_mismatch_does_not_consume_ticket() {
         correct_room_result.is_ok(),
         "room mismatch must not consume the ticket"
     );
-    let validated = correct_room_result.unwrap();
-    assert_eq!(validated.user_id().expect("user ticket"), user_id);
-    assert_eq!(validated.password_version().expect("user ticket"), 7);
+    let validated = ok(correct_room_result, "correct room should validate");
+    assert_eq!(some(validated.user_id(), "user ticket"), user_id);
+    assert_eq!(some(validated.password_version(), "user ticket"), 7);
 }
 
 #[tokio::test]
@@ -287,7 +329,10 @@ async fn test_ticket_checked_room_mismatch_rejected_without_consuming_ticket() {
         }),
     };
 
-    let ticket = service.create_ticket(&user_id, &room_a, 8).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_a, 8).await,
+        "ticket should be created",
+    );
 
     let wrong_room_result = service
         .validate_checked(&ticket, &room_b, &allow_validator)
@@ -304,9 +349,9 @@ async fn test_ticket_checked_room_mismatch_rejected_without_consuming_ticket() {
         correct_room_result.is_ok(),
         "checked room mismatch must not consume the ticket"
     );
-    let validated = correct_room_result.unwrap();
-    assert_eq!(validated.user_id().expect("user ticket"), user_id);
-    assert_eq!(validated.password_version().expect("user ticket"), 8);
+    let validated = ok(correct_room_result, "correct room should validate");
+    assert_eq!(some(validated.user_id(), "user ticket"), user_id);
+    assert_eq!(some(validated.password_version(), "user ticket"), 8);
 }
 
 #[tokio::test]
@@ -321,11 +366,16 @@ async fn test_ticket_prevalidated_commit_rechecks_room_binding() {
         }),
     };
 
-    let ticket = service.create_ticket(&user_id, &room_a, 9).await.unwrap();
-    let pending = service
-        .validate_checked(&ticket, &room_a, &allow_validator)
-        .await
-        .expect("ticket should prevalidate for its issuing room");
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_a, 9).await,
+        "ticket should be created",
+    );
+    let pending = ok(
+        service
+            .validate_checked(&ticket, &room_a, &allow_validator)
+            .await,
+        "ticket should prevalidate for its issuing room",
+    );
 
     let wrong_room_commit = service
         .consume_prevalidated(&ticket, &room_b, &pending)
@@ -335,13 +385,15 @@ async fn test_ticket_prevalidated_commit_rechecks_room_binding() {
         "prevalidated commit must reject a different room"
     );
 
-    let correct_room_commit = service
-        .consume_prevalidated(&ticket, &room_a, &pending)
-        .await
-        .expect("failed wrong-room commit must leave ticket claimable for the right room");
-    assert_eq!(correct_room_commit.user_id().expect("user ticket"), user_id);
+    let correct_room_commit = ok(
+        service
+            .consume_prevalidated(&ticket, &room_a, &pending)
+            .await,
+        "failed wrong-room commit must leave ticket claimable for the right room",
+    );
+    assert_eq!(some(correct_room_commit.user_id(), "user ticket"), user_id);
     assert_eq!(
-        correct_room_commit.password_version().expect("user ticket"),
+        some(correct_room_commit.password_version(), "user ticket"),
         9
     );
 }
@@ -351,7 +403,10 @@ async fn test_ticket_user_validation_failure_does_not_consume_ticket() {
     let service = WsTicketService::with_memory(Some(30));
     let user_id = create_test_user_id(50_021);
     let room_id = create_test_room_id(50_022);
-    let ticket = service.create_ticket(&user_id, &room_id, 4).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_id, 4).await,
+        "ticket should be created",
+    );
 
     let rejecting_validator = StaticUserValidator {
         result: Err("banned"),
@@ -377,9 +432,9 @@ async fn test_ticket_user_validation_failure_does_not_consume_ticket() {
         second_result.is_ok(),
         "user validation rejection must not consume the ticket"
     );
-    let validated = second_result.unwrap();
-    assert_eq!(validated.user_id().expect("user ticket"), user_id);
-    assert_eq!(validated.password_version().expect("user ticket"), 4);
+    let validated = ok(second_result, "second validation should succeed");
+    assert_eq!(some(validated.user_id(), "user ticket"), user_id);
+    assert_eq!(some(validated.password_version(), "user ticket"), 4);
 }
 
 #[tokio::test]
@@ -387,7 +442,10 @@ async fn test_ticket_user_validation_backend_outage_is_preserved_and_does_not_co
     let service = WsTicketService::with_memory(Some(30));
     let user_id = create_test_user_id(50_023);
     let room_id = create_test_room_id(50_024);
-    let ticket = service.create_ticket(&user_id, &room_id, 4).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_id, 4).await,
+        "ticket should be created",
+    );
 
     let failing_validator = StaticUserValidator {
         result: Err("temporarily unavailable"),
@@ -413,9 +471,9 @@ async fn test_ticket_user_validation_backend_outage_is_preserved_and_does_not_co
         second_result.is_ok(),
         "backend outages must not consume the ticket"
     );
-    let validated = second_result.unwrap();
-    assert_eq!(validated.user_id().expect("user ticket"), user_id);
-    assert_eq!(validated.password_version().expect("user ticket"), 4);
+    let validated = ok(second_result, "second validation should succeed");
+    assert_eq!(some(validated.user_id(), "user ticket"), user_id);
+    assert_eq!(some(validated.password_version(), "user ticket"), 4);
 }
 
 #[tokio::test]
@@ -423,7 +481,10 @@ async fn test_ticket_checked_validation_is_still_one_time_use() {
     let service = WsTicketService::with_memory(Some(30));
     let user_id = create_test_user_id(50_025);
     let room_id = create_test_room_id(50_026);
-    let ticket = service.create_ticket(&user_id, &room_id, 2).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_id, 2).await,
+        "ticket should be created",
+    );
 
     let allow_validator = StaticUserValidator {
         result: Ok(UserValidationResult {
@@ -453,7 +514,10 @@ async fn test_ticket_prevalidation_does_not_consume_until_commit() {
     let service = WsTicketService::with_memory(Some(30));
     let user_id = create_test_user_id(50_027);
     let room_id = create_test_room_id(50_028);
-    let ticket = service.create_ticket(&user_id, &room_id, 5).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_id, 5).await,
+        "ticket should be created",
+    );
 
     let allow_validator = StaticUserValidator {
         result: Ok(UserValidationResult {
@@ -461,28 +525,37 @@ async fn test_ticket_prevalidation_does_not_consume_until_commit() {
         }),
     };
 
-    service
-        .validate_checked(&ticket, &room_id, &allow_validator)
-        .await
-        .expect("prevalidation should succeed");
+    ok(
+        service
+            .validate_checked(&ticket, &room_id, &allow_validator)
+            .await,
+        "prevalidation should succeed",
+    );
 
-    let still_valid = service
-        .validate_and_consume(&ticket, &room_id)
-        .await
-        .expect("prevalidation alone must not consume the ticket");
-    assert_eq!(still_valid.user_id().expect("user ticket"), user_id);
-    assert_eq!(still_valid.password_version().expect("user ticket"), 5);
+    let still_valid = ok(
+        service.validate_and_consume(&ticket, &room_id).await,
+        "prevalidation alone must not consume the ticket",
+    );
+    assert_eq!(some(still_valid.user_id(), "user ticket"), user_id);
+    assert_eq!(some(still_valid.password_version(), "user ticket"), 5);
 
-    let second_ticket = service.create_ticket(&user_id, &room_id, 5).await.unwrap();
-    let pending = service
-        .validate_checked(&second_ticket, &room_id, &allow_validator)
-        .await
-        .expect("second prevalidation should succeed");
-    let committed = service
-        .consume_prevalidated(&second_ticket, &room_id, &pending)
-        .await
-        .expect("commit should consume the prevalidated ticket");
-    assert_eq!(committed.user_id().expect("user ticket"), user_id);
+    let second_ticket = ok(
+        service.create_ticket(&user_id, &room_id, 5).await,
+        "second ticket should be created",
+    );
+    let pending = ok(
+        service
+            .validate_checked(&second_ticket, &room_id, &allow_validator)
+            .await,
+        "second prevalidation should succeed",
+    );
+    let committed = ok(
+        service
+            .consume_prevalidated(&second_ticket, &room_id, &pending)
+            .await,
+        "commit should consume the prevalidated ticket",
+    );
+    assert_eq!(some(committed.user_id(), "user ticket"), user_id);
 
     let consumed_again = service.validate_and_consume(&second_ticket, &room_id).await;
     assert!(
@@ -496,7 +569,10 @@ async fn test_ticket_checked_validation_concurrent_consumption_only_succeeds_onc
     let service = WsTicketService::with_memory(Some(30));
     let user_id = create_test_user_id(50_029);
     let room_id = create_test_room_id(50_030);
-    let ticket = service.create_ticket(&user_id, &room_id, 2).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_id, 2).await,
+        "ticket should be created",
+    );
 
     let validator = Arc::new(StaticUserValidator {
         result: Ok(UserValidationResult {
@@ -519,7 +595,7 @@ async fn test_ticket_checked_validation_concurrent_consumption_only_succeeds_onc
     let results: Vec<_> = futures::future::join_all(handles)
         .await
         .into_iter()
-        .map(|result| result.expect("task should join"))
+        .map(|result| joined(result, "task should join"))
         .collect();
 
     let successes = results.iter().filter(|result| result.is_ok()).count();
@@ -536,18 +612,27 @@ async fn test_in_memory_claim_mismatch_does_not_consume_ticket() {
     let store = InMemoryTicketStore::new(30);
     let user_id = create_test_user_id(50_032);
     let original = WsTicketData::user(&user_id, &room_id, 7);
-    store.store(ticket, &original, 30).await.unwrap();
+    ok(
+        store.store(ticket, &original, 30).await,
+        "ticket should store",
+    );
 
     let mut mismatched = original.clone();
     mismatched.created_at = mismatched.created_at.saturating_add(1);
 
-    let first_claim = store.claim(ticket, &room_id, &mismatched).await.unwrap();
+    let first_claim = ok(
+        store.claim(ticket, &room_id, &mismatched).await,
+        "mismatched claim should complete",
+    );
     assert!(
         !first_claim,
         "claim with mismatched ticket data must fail without consuming the ticket"
     );
 
-    let second_claim = store.claim(ticket, &room_id, &original).await.unwrap();
+    let second_claim = ok(
+        store.claim(ticket, &room_id, &original).await,
+        "original claim should complete",
+    );
     assert!(
         second_claim,
         "ticket must remain claimable after a failed compare-and-delete attempt"
@@ -560,7 +645,10 @@ async fn test_ticket_expiration_memory_mode() {
     let user_id = create_test_user_id(50_033);
     let room_id = create_test_room_id(50_034);
 
-    let ticket = service.create_ticket(&user_id, &room_id, 0).await.unwrap();
+    let ticket = ok(
+        service.create_ticket(&user_id, &room_id, 0).await,
+        "ticket should be created",
+    );
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 

@@ -4,14 +4,15 @@
 //! Both HTTP and gRPC handlers are thin wrappers that call these implementations.
 //!
 //! All methods use grpc-generated types for parameters and return values.
-use synctv_livestream::error::StreamError;
+use std::sync::Arc;
+use synctv_livestream::StreamError;
 
 pub mod admin;
 pub mod client;
-pub mod email;
+pub(crate) mod email;
 pub mod messaging;
-pub mod notification;
-pub mod oauth2;
+pub(crate) mod notification;
+pub(crate) mod oauth2;
 mod playback;
 mod playlist_items_snapshot;
 pub mod providers;
@@ -49,6 +50,70 @@ const LIVESTREAM_REQUEST_FAILED_MESSAGE: &str = "Live streaming request failed";
 const UPSTREAM_PROVIDER_UNAVAILABLE_MESSAGE: &str =
     "Upstream provider service is temporarily unavailable.";
 
+#[derive(Debug)]
+struct DisabledProviderAccessService;
+
+#[async_trait::async_trait]
+impl synctv_core::provider::ProviderAccessService for DisabledProviderAccessService {
+    async fn alist_binding(
+        &self,
+        _user_id: synctv_core::models::UserId,
+        _server_id: &str,
+        _provider_instance_name: Option<&str>,
+        _request_context: Option<&synctv_core::provider::ExecutionControl>,
+    ) -> Result<synctv_core::provider::AlistBinding, synctv_core::provider::ProviderError> {
+        Err(disabled_provider_access_error())
+    }
+
+    async fn alist_access(
+        &self,
+        _user_id: synctv_core::models::UserId,
+        _server_id: &str,
+        _provider_instance_name: Option<&str>,
+        _request_context: Option<&synctv_core::provider::ExecutionControl>,
+    ) -> Result<synctv_core::provider::AlistAccess, synctv_core::provider::ProviderError> {
+        Err(disabled_provider_access_error())
+    }
+
+    async fn bilibili_access(
+        &self,
+        _user_id: synctv_core::models::UserId,
+        _request_context: Option<&synctv_core::provider::ExecutionControl>,
+    ) -> Result<synctv_core::provider::BilibiliAccess, synctv_core::provider::ProviderError> {
+        Err(disabled_provider_access_error())
+    }
+
+    async fn emby_access(
+        &self,
+        _user_id: synctv_core::models::UserId,
+        _server_id: &str,
+        _provider_instance_name: Option<&str>,
+        _request_context: Option<&synctv_core::provider::ExecutionControl>,
+    ) -> Result<synctv_core::provider::EmbyAccess, synctv_core::provider::ProviderError> {
+        Err(disabled_provider_access_error())
+    }
+
+    async fn invalidate(
+        &self,
+        _user_id: synctv_core::models::UserId,
+        _provider: &str,
+        _server_id: &str,
+    ) -> Result<(), synctv_core::provider::ProviderError> {
+        Ok(())
+    }
+}
+
+fn disabled_provider_access_error() -> synctv_core::provider::ProviderError {
+    synctv_core::provider::ProviderError::InvalidConfig(
+        "provider access service is disabled for this test runtime".to_string(),
+    )
+}
+
+pub(crate) fn disabled_provider_access_service(
+) -> Arc<dyn synctv_core::provider::ProviderAccessService> {
+    Arc::new(DisabledProviderAccessService)
+}
+
 pub fn validate_proto_request<M>(message: &M) -> Result<(), ApiError>
 where
     M: prost_reflect::ReflectMessage,
@@ -82,6 +147,20 @@ pub(crate) fn proto_page_size_usize(
         .map_err(|_| ApiError::Internal("page size exceeds usize::MAX".to_string()))
 }
 
+pub(crate) fn playlist_media_count_or_zero(
+    counts: &std::collections::HashMap<synctv_core::models::PlaylistId, i64>,
+    playlist_id: &synctv_core::models::PlaylistId,
+) -> i64 {
+    counts.get(playlist_id).copied().unwrap_or(0)
+}
+
+pub(crate) fn room_member_count_or_zero(
+    counts: &std::collections::HashMap<synctv_core::models::RoomId, i32>,
+    room_id: &synctv_core::models::RoomId,
+) -> i32 {
+    counts.get(room_id).copied().unwrap_or(0)
+}
+
 fn invalid_id_input(field: &'static str, err: impl std::fmt::Display) -> ApiError {
     ApiError::InvalidInput(format!("Invalid {field}: {err}"))
 }
@@ -89,7 +168,7 @@ fn invalid_id_input(field: &'static str, err: impl std::fmt::Display) -> ApiErro
 pub fn parse_id_param<T>(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<T, ApiError>
 where
     T: synctv_core::PublicIdType,
@@ -102,7 +181,7 @@ where
 pub fn parse_user_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_core::models::UserId, ApiError> {
     parse_id_param(value, field, public_id_codec)
 }
@@ -110,7 +189,7 @@ pub fn parse_user_id_param(
 pub fn parse_room_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     parse_id_param(value, field, public_id_codec)
 }
@@ -118,7 +197,7 @@ pub fn parse_room_id_param(
 pub fn parse_media_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_core::models::MediaId, ApiError> {
     parse_id_param(value, field, public_id_codec)
 }
@@ -126,14 +205,14 @@ pub fn parse_media_id_param(
 pub fn parse_playlist_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_core::models::PlaylistId, ApiError> {
     parse_id_param(value, field, public_id_codec)
 }
 
 pub fn proto_validated_id<T>(
     value: impl AsRef<str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<T, ApiError>
 where
     T: synctv_core::PublicIdType,
@@ -143,35 +222,35 @@ where
 
 pub fn proto_validated_user_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_core::models::UserId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_room_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_media_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_core::models::MediaId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_playlist_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_core::models::PlaylistId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_optional_id<T>(
     value: impl AsRef<str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<Option<T>, ApiError>
 where
     T: synctv_core::PublicIdType,
@@ -186,28 +265,28 @@ where
 
 pub fn proto_validated_optional_media_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::MediaId>, ApiError> {
     proto_validated_optional_id(value, public_id_codec)
 }
 
 pub fn proto_validated_optional_playlist_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::PlaylistId>, ApiError> {
     proto_validated_optional_id(value, public_id_codec)
 }
 
 pub fn proto_validated_optional_room_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::RoomId>, ApiError> {
     proto_validated_optional_id(value, public_id_codec)
 }
 
 pub fn proto_validated_media_ids(
     values: Vec<String>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<Vec<synctv_core::models::MediaId>, ApiError> {
     values
         .into_iter()
@@ -217,7 +296,7 @@ pub fn proto_validated_media_ids(
 
 pub fn proto_validated_playlist_ids(
     values: Vec<String>,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<Vec<synctv_core::models::PlaylistId>, ApiError> {
     values
         .into_iter()
@@ -228,7 +307,7 @@ pub fn proto_validated_playlist_ids(
 pub fn parse_optional_media_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::MediaId>, ApiError> {
     parse_optional_id_param(value, field, public_id_codec)
 }
@@ -236,7 +315,7 @@ pub fn parse_optional_media_id_param(
 pub fn parse_optional_playlist_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::PlaylistId>, ApiError> {
     parse_optional_id_param(value, field, public_id_codec)
 }
@@ -244,7 +323,7 @@ pub fn parse_optional_playlist_id_param(
 pub fn parse_optional_id_param<T>(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<Option<T>, ApiError>
 where
     T: synctv_core::PublicIdType,
@@ -766,85 +845,96 @@ fn classify_by_prefix(err: &str) -> Option<ErrorKind> {
 mod tests {
     use super::*;
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn require_invalid_proto<M>(request: &M) -> TestResult<String>
+    where
+        M: prost::Message + prost_reflect::ReflectMessage + Default,
+    {
+        match validate_proto_request(request) {
+            Ok(()) => Err(test_error("proto request should fail validation")),
+            Err(ApiError::InvalidInput(message)) => Ok(message),
+            Err(other) => Err(test_error(format!("expected invalid input, got {other:?}"))),
+        }
+    }
+
     #[test]
-    fn test_validate_proto_request_maps_protovalidate_error_to_invalid_input() {
+    fn test_validate_proto_request_maps_protovalidate_error_to_invalid_input() -> TestResult {
         let request = synctv_proto::client::StartOpaqueRegistrationRequest {
             username: "ab".to_string(),
             email: Some("not-an-email".to_string()),
             registration_request: Vec::new(),
         };
 
-        let error = validate_proto_request(&request).unwrap_err();
-
-        match error {
-            ApiError::InvalidInput(message) => {
-                assert!(message.contains("username"), "{message}");
-                assert!(message.contains("email"), "{message}");
-                assert!(message.contains("registration_request"), "{message}");
-            }
-            other => panic!("expected invalid input, got {other:?}"),
-        }
+        let message = require_invalid_proto(&request)?;
+        assert!(message.contains("username"), "{message}");
+        assert!(message.contains("email"), "{message}");
+        assert!(message.contains("registration_request"), "{message}");
+        Ok(())
     }
 
-    fn assert_invalid_proto_request<M>(request: &M, expected: &str)
+    fn assert_invalid_proto_request<M>(request: &M, expected: &str) -> TestResult
     where
         M: prost::Message + prost_reflect::ReflectMessage + Default,
     {
-        let error = validate_proto_request(request).unwrap_err();
-        match error {
-            ApiError::InvalidInput(message) => {
-                assert!(message.contains(expected), "{message}");
-            }
-            other => panic!("expected invalid input, got {other:?}"),
-        }
+        let message = require_invalid_proto(request)?;
+        assert!(message.contains(expected), "{message}");
+        Ok(())
     }
 
     #[test]
-    fn test_validate_proto_request_rejects_empty_admin_batch_ids() {
+    fn test_validate_proto_request_rejects_empty_admin_batch_ids() -> TestResult {
         assert_invalid_proto_request(
             &synctv_proto::admin::BatchBanUsersRequest::default(),
             "user_ids",
-        );
+        )?;
         assert_invalid_proto_request(
             &synctv_proto::admin::BatchDeleteUsersRequest::default(),
             "user_ids",
-        );
+        )?;
         assert_invalid_proto_request(
             &synctv_proto::admin::BatchBanRoomsRequest::default(),
             "room_ids",
-        );
+        )?;
         assert_invalid_proto_request(
             &synctv_proto::admin::BatchDeleteRoomsRequest::default(),
             "room_ids",
-        );
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn test_validate_proto_request_rejects_admin_batch_ban_reason_over_limit() {
+    fn test_validate_proto_request_rejects_admin_batch_ban_reason_over_limit() -> TestResult {
         assert_invalid_proto_request(
             &synctv_proto::admin::BatchBanUsersRequest {
                 user_ids: vec!["usr_abc123".to_string()],
                 reason: "x".repeat(501),
             },
             "reason",
-        );
+        )?;
         assert_invalid_proto_request(
             &synctv_proto::admin::BatchBanRoomsRequest {
                 room_ids: vec!["room_abc123".to_string()],
                 reason: "x".repeat(501),
             },
             "reason",
-        );
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn test_validate_proto_request_rejects_invalid_settings_group() {
+    fn test_validate_proto_request_rejects_invalid_settings_group() -> TestResult {
         assert_invalid_proto_request(
             &synctv_proto::admin::GetSettingsGroupRequest {
                 group: "bad/group".to_string(),
             },
             "group",
-        );
+        )?;
+        Ok(())
     }
 
     #[test]

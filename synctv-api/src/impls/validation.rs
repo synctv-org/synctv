@@ -206,28 +206,59 @@ pub fn validate_websocket_connect_request(
 mod tests {
     use super::*;
 
-    #[test]
-    fn room_name_rejects_html_markup() {
-        let error = validate_room_name("<b>watch party</b>").unwrap_err();
-        assert!(matches!(error, InputValidationError::SecurityRisk));
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn require_invalid<T>(
+        result: Result<T, InputValidationError>,
+        message: &'static str,
+    ) -> TestResult<InputValidationError> {
+        match result {
+            Ok(_) => Err(test_error(message)),
+            Err(error) => Ok(error),
+        }
+    }
+
+    fn validation_ok<T>(result: Result<T, InputValidationError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("{error:?}")))
     }
 
     #[test]
-    fn room_description_preserves_entity_encoded_text() {
-        let description =
-            validate_room_description("&lt;script&gt;alert(1)&lt;/script&gt;").unwrap();
+    fn room_name_rejects_html_markup() -> TestResult {
+        let error = require_invalid(
+            validate_room_name("<b>watch party</b>"),
+            "room name markup should fail validation",
+        )?;
+        assert!(matches!(error, InputValidationError::SecurityRisk));
+        Ok(())
+    }
+
+    #[test]
+    fn room_description_preserves_entity_encoded_text() -> TestResult {
+        let description = validation_ok(validate_room_description(
+            "&lt;script&gt;alert(1)&lt;/script&gt;",
+        ))?;
         assert_eq!(description, "&lt;script&gt;alert(1)&lt;/script&gt;");
+        Ok(())
     }
 
     #[test]
-    fn media_name_rejects_markup_like_angle_brackets() {
-        let error = validate_media_name("Episode < 10 > Preview").unwrap_err();
+    fn media_name_rejects_markup_like_angle_brackets() -> TestResult {
+        let error = require_invalid(
+            validate_media_name("Episode < 10 > Preview"),
+            "media name markup should fail validation",
+        )?;
         assert!(matches!(error, InputValidationError::SecurityRisk));
+        Ok(())
     }
 
     #[test]
-    fn username_strips_disallowed_control_characters() {
-        let username = validate_username("  alice\u{0007}  ").unwrap();
+    fn username_strips_disallowed_control_characters() -> TestResult {
+        let username = validation_ok(validate_username("  alice\u{0007}  "))?;
         assert_eq!(username, "alice");
+        Ok(())
     }
 }

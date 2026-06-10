@@ -164,6 +164,8 @@ mod tests {
         parse_datetime_to_utc, resolve_timezone_name_with, set_default_timezone_name,
     };
 
+    type TestResult<T = ()> = Result<T, String>;
+
     fn acquire_time_test_lock() -> MutexGuard<'static, ()> {
         static TIME_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         TIME_TEST_LOCK
@@ -177,45 +179,50 @@ mod tests {
     }
 
     impl TimeZoneGuard {
-        fn set(name: &str) -> Self {
+        fn set(name: &str) -> TestResult<Self> {
             let previous = default_timezone_name();
-            set_default_timezone_name(name).expect("timezone should be valid");
-            Self { previous }
+            set_default_timezone_name(name)
+                .map_err(|error| format!("timezone should be valid: {error}"))?;
+            Ok(Self { previous })
         }
     }
 
     impl Drop for TimeZoneGuard {
         fn drop(&mut self) {
-            let _ = set_default_timezone_name(&self.previous);
+            if let Err(error) = set_default_timezone_name(&self.previous) {
+                eprintln!("failed to restore timezone in test guard: {error}");
+            }
         }
     }
 
     #[test]
-    fn resolve_timezone_prefers_explicit_config() {
+    fn resolve_timezone_prefers_explicit_config() -> TestResult {
         let _lock = acquire_time_test_lock();
         let resolved = resolve_timezone_name_with(Some("Asia/Shanghai"), &|_| None)
-            .expect("configured timezone should resolve");
+            .map_err(|error| format!("configured timezone should resolve: {error}"))?;
         assert_eq!(resolved, "Asia/Shanghai");
+        Ok(())
     }
 
     #[test]
-    fn resolve_timezone_falls_back_to_tz_env() {
+    fn resolve_timezone_falls_back_to_tz_env() -> TestResult {
         let _lock = acquire_time_test_lock();
         let resolved = resolve_timezone_name_with(None, &|name| {
             (name == "TZ").then(|| "America/New_York".to_string())
         })
-        .expect("TZ env should resolve");
+        .map_err(|error| format!("TZ env should resolve: {error}"))?;
         assert_eq!(resolved, "America/New_York");
+        Ok(())
     }
 
     #[test]
-    fn format_and_parse_use_default_timezone() {
+    fn format_and_parse_use_default_timezone() -> TestResult {
         let _lock = acquire_time_test_lock();
-        let _guard = TimeZoneGuard::set("Asia/Shanghai");
+        let _guard = TimeZoneGuard::set("Asia/Shanghai")?;
         let timestamp = chrono::Utc
             .with_ymd_and_hms(2026, 4, 4, 8, 24, 31)
             .single()
-            .expect("timestamp should be valid");
+            .ok_or_else(|| "timestamp should be valid".to_string())?;
 
         assert_eq!(
             format_datetime_display(timestamp),
@@ -226,8 +233,10 @@ mod tests {
             "2026-04-04T16:24:31+08:00"
         );
         assert_eq!(
-            parse_datetime_to_utc("2026-04-04 16:24:31").expect("local datetime should parse"),
+            parse_datetime_to_utc("2026-04-04 16:24:31")
+                .map_err(|error| format!("local datetime should parse: {error}"))?,
             timestamp
         );
+        Ok(())
     }
 }

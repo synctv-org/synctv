@@ -23,7 +23,7 @@ use tracing::{error, info, warn};
 
 use synctv_api::impls::{AdminApiImpl, ClientApiImpl};
 use synctv_api::realtime_fanout::RealtimeFanoutService;
-use synctv_api::runtime::{RealtimeConnectionService, RealtimeEventService};
+use synctv_api::runtime::RealtimeEventService;
 use synctv_core::{
     cache::UserCache,
     config::absolute_display_path,
@@ -33,6 +33,7 @@ use synctv_core::{
 };
 use synctv_management::lifecycle::{ManagementLifecycleController, ShutdownMode};
 use synctv_management::server::{spawn_management_server, ManagementServerConfig};
+use synctv_realtime::sync::ConnectionRuntime;
 use synctv_realtime::sync::RealtimeEvent;
 
 use crate::bootstrap::cluster::ClusterNodeActivator;
@@ -42,8 +43,8 @@ use crate::shutdown::ShutdownCoordinator;
 ///
 /// Dropping the handle stops the `StreamHub` event loop and all dependent tasks.
 pub struct LivestreamState {
-    pub handle: synctv_livestream::livestream::LivestreamHandle,
-    pub infrastructure: Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
+    pub handle: synctv_livestream::LivestreamHandle,
+    pub infrastructure: Arc<synctv_livestream::LiveStreamingInfrastructure>,
 }
 
 #[async_trait]
@@ -56,53 +57,7 @@ trait LivestreamShutdown {
 #[async_trait]
 impl LivestreamShutdown for LivestreamState {
     async fn cleanup_local_publishers_for_server(&mut self, timeout: Duration) {
-        let node_id = self.infrastructure.local_node_id.clone();
-        if node_id.is_empty() {
-            self.infrastructure.user_stream_tracker.clear();
-            return;
-        }
-
-        if timeout.is_zero() {
-            warn!(
-                node_id = %node_id,
-                "Skipping local publisher cleanup before livestream shutdown because no shutdown budget remains"
-            );
-            self.infrastructure.user_stream_tracker.clear();
-            return;
-        }
-
-        let cleanup_timeout = timeout.min(Duration::from_secs(2));
-
-        match tokio::time::timeout(
-            cleanup_timeout,
-            self.infrastructure
-                .registry
-                .cleanup_all_publishers_for_node(&node_id),
-        )
-        .await
-        {
-            Ok(Ok(())) => {
-                info!(
-                    node_id = %node_id,
-                    "Cleaned up local publisher registrations before livestream shutdown"
-                );
-            }
-            Ok(Err(error)) => {
-                warn!(
-                    node_id = %node_id,
-                    error = %error,
-                    "Failed to cleanup local publisher registrations before livestream shutdown"
-                );
-            }
-            Err(_) => {
-                warn!(
-                    node_id = %node_id,
-                    "Timed out cleaning local publisher registrations before livestream shutdown"
-                );
-            }
-        }
-
-        self.infrastructure.user_stream_tracker.clear();
+        self.infrastructure.cleanup_local_publishers(timeout).await;
     }
 
     fn force_shutdown_for_server(&mut self) {
@@ -128,7 +83,7 @@ pub struct Services {
     pub rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService>,
     pub rate_limit_config: synctv_core::service::RateLimitConfig,
     pub content_filter: synctv_core::service::ContentFilter,
-    pub realtime_connection_service: Arc<dyn RealtimeConnectionService>,
+    pub realtime_connection_service: Arc<dyn ConnectionRuntime>,
     pub realtime_event_service: Arc<dyn RealtimeEventService>,
     pub providers_manager: Arc<synctv_core::service::ProvidersManager>,
     pub provider_instance_manager: Arc<synctv_core::service::RemoteProviderManager>,
@@ -146,8 +101,8 @@ pub struct Services {
     pub chat_service: Arc<synctv_core::service::ChatService>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub user_cache: Arc<UserCache>,
-    pub live_streaming_infrastructure:
-        Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
+    pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
+    pub live_streaming_infrastructure: Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     pub stun_server: Option<Arc<synctv_core::service::StunServer>>,
     pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     pub node_registry: Option<Arc<dyn synctv_cluster::discovery::ClusterNodeDirectory>>,
@@ -185,16 +140,10 @@ struct SharedProviderPlaybackRuntime {
 impl SharedProviderPlaybackRuntime {
     fn new(
         config: &Config,
-        redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+        provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
-            provider_stores:
-                synctv_core::provider::store::build_provider_store_resolver_from_profile(
-                    &synctv_core::SharedStateProfile::best_effort(
-                        redis_runtime,
-                        config.redis.key_prefix.clone(),
-                    ),
-                ),
+            provider_stores,
             signing_key: Arc::new(
                 synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
                     config.jwt.secret.as_bytes(),
@@ -233,12 +182,12 @@ impl ManagementProxySliceCacheRuntime {
 }
 
 #[async_trait]
-impl synctv_management::service::ManagementSliceCacheRuntime for ManagementProxySliceCacheRuntime {
-    fn stats(&self) -> synctv_management::service::ManagementSliceCacheStats {
+impl synctv_management::ManagementSliceCacheRuntime for ManagementProxySliceCacheRuntime {
+    fn stats(&self) -> synctv_proxy::slice_cache::SliceCacheStats {
         self.cache.stats()
     }
 
-    async fn purge_all(&self) -> synctv_management::service::ManagementSliceCachePurgeResult {
+    async fn purge_all(&self) -> synctv_proxy::slice_cache::SliceCachePurgeResult {
         self.cache.purge_all().await
     }
 
@@ -840,7 +789,7 @@ struct ClusterActivationFailureShutdown {
 
 fn spawn_admin_event_listener(
     event_service: Arc<dyn RealtimeEventService>,
-    infra: Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
+    infra: Arc<synctv_livestream::LiveStreamingInfrastructure>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -900,7 +849,7 @@ fn spawn_admin_event_listener(
 }
 
 async fn handle_admin_lifecycle_event(
-    infra: &Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
+    infra: &Arc<synctv_livestream::LiveStreamingInfrastructure>,
     event: RealtimeEvent,
     recent_event_ids: &mut HashSet<String>,
     recent_event_order: &mut VecDeque<String>,
@@ -1075,8 +1024,10 @@ impl SyncTvServer {
             .services
             .realtime_connection_service
             .spawn_cleanup_task(Duration::from_mins(1), cleanup_cancel.clone());
-        let shared_provider_runtime =
-            SharedProviderPlaybackRuntime::new(&self.config, self.services.redis_runtime.clone())?;
+        let shared_provider_runtime = SharedProviderPlaybackRuntime::new(
+            &self.config,
+            self.services.provider_stores.clone(),
+        )?;
         let (http_router, shared_http_app_state) = match self
             .build_shared_http_runtime(&shared_provider_runtime)
             .await
@@ -1114,6 +1065,7 @@ impl SyncTvServer {
                 shutdown_rx.clone(),
                 http_router,
                 shared_http_app_state.clone(),
+                &shared_provider_runtime,
             )
             .await
         {
@@ -1593,6 +1545,7 @@ impl SyncTvServer {
         config: &Config,
         shutdown_rx: watch::Receiver<bool>,
         shared_http_app_state: Arc<synctv_api::http::AppState>,
+        shared_provider_runtime: &SharedProviderPlaybackRuntime,
     ) -> anyhow::Result<axum::Router> {
         synctv_api::grpc::build_axum_router(synctv_api::grpc::GrpcServerConfig {
             config,
@@ -1626,6 +1579,8 @@ impl SyncTvServer {
             audit_service: self.services.audit_service.clone(),
             node_registry: self.services.node_registry.clone(),
             redis_runtime: self.services.redis_runtime.clone(),
+            proxy_signing_key: shared_provider_runtime.signing_key.clone(),
+            provider_stores: shared_provider_runtime.provider_stores.clone(),
             shared_http_app_state: Some(shared_http_app_state),
             shutdown_rx: Some(shutdown_rx),
             builtin_stun_url: self.builtin_stun_url(),
@@ -1677,8 +1632,8 @@ impl SyncTvServer {
                 rate_limiter: self.services.rate_limiter.clone(),
                 ws_ticket_service: self.services.ws_ticket_service.clone(),
                 redis_runtime: self.services.redis_runtime.clone(),
-                shared_provider_stores: Some(shared_provider_runtime.provider_stores.clone()),
-                shared_proxy_signing_key: Some(shared_provider_runtime.signing_key.clone()),
+                shared_provider_stores: shared_provider_runtime.provider_stores.clone(),
+                shared_proxy_signing_key: shared_provider_runtime.signing_key.clone(),
                 builtin_stun_url: self.builtin_stun_url(),
                 webrtc_status: self.current_webrtc_status(),
                 credential_encryption: self.services.credential_encryption.clone(),
@@ -1690,7 +1645,7 @@ impl SyncTvServer {
                     window_seconds: self.config.messaging_rate_limits.window_seconds,
                 },
                 heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
-                providers_manager: Some(self.services.providers_manager.clone()),
+                providers_manager: self.services.providers_manager.clone(),
             },
         )?;
 
@@ -1703,6 +1658,7 @@ impl SyncTvServer {
         shutdown_rx: watch::Receiver<bool>,
         http_router: axum::Router,
         shared_http_app_state: Arc<synctv_api::http::AppState>,
+        shared_provider_runtime: &SharedProviderPlaybackRuntime,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let api_address = self.config.api_address();
         let grpc_router = self
@@ -1710,6 +1666,7 @@ impl SyncTvServer {
                 &self.config,
                 shutdown_rx.clone(),
                 shared_http_app_state.clone(),
+                shared_provider_runtime,
             )
             .await?;
 
@@ -1985,9 +1942,13 @@ mod tests {
     };
     use std::time::Duration;
     use synctv_core::{
-        cache::UsernameCache,
+        cache::{KeyBuilder, UsernameCache},
+        config::PasswordComplexityConfig,
         repository::{ProviderInstanceRepository, UserProviderCredentialRepository},
-        service::{JwtService, ProvidersManager, RemoteProviderManager, RoomService, UserService},
+        service::{
+            user::{UserServiceDependencies, UserServiceRuntimeOptions},
+            JwtService, ProvidersManager, RemoteProviderManager, RoomService, UserService,
+        },
         Config,
     };
     use synctv_core_testing::{
@@ -1999,8 +1960,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     async fn complete_test_unpublish(
-        registry: &Arc<dyn synctv_livestream::relay::StreamRegistryTrait>,
-        tracker: &Arc<synctv_livestream::api::StreamTracker>,
+        registry: &Arc<dyn synctv_livestream::StreamRegistryTrait>,
+        tracker: &Arc<synctv_livestream::StreamTracker>,
         room_id: &str,
         media_id: &str,
     ) {
@@ -2016,13 +1977,17 @@ mod tests {
             JwtService::new("test-jwt-secret-key-for-testing-minimum-length").expect("jwt");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 64, 60);
 
-        UserService::new_for_tests(
+        UserService::new_with_brute_force_service_and_runtime(
             pool,
-            jwt_service,
-            username_cache,
-            create_test_token_blacklist_store_service(),
-            synctv_core::cache::KeyBuilder::new("test"),
-            create_test_brute_force_protection_service(),
+            UserServiceDependencies {
+                jwt_service,
+                username_cache,
+                token_blacklist: create_test_token_blacklist_store_service(),
+                key_builder: KeyBuilder::new("test"),
+                brute_force: create_test_brute_force_protection_service(),
+                password_complexity: PasswordComplexityConfig::default(),
+            },
+            UserServiceRuntimeOptions::test_defaults(),
         )
     }
 
@@ -2031,12 +1996,32 @@ mod tests {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let config = Arc::new(Config::default());
         let credential_repo = Arc::new(UserProviderCredentialRepository::new(pool.clone()));
-        let shared_runtime = SharedProviderPlaybackRuntime::new(&config, None)
-            .expect("test proxy signing key should derive");
+        let credential_encryption =
+            synctv_core::credential_encryption::CredentialEncryption::new(&[0x42; 32])
+                .expect("test credential encryption should build");
+        let shared_runtime = SharedProviderPlaybackRuntime::new(
+            &config,
+            Arc::new(synctv_core::provider::ProviderStoreRegistry::from_runtime(
+                None,
+                config.redis.key_prefix.clone(),
+            )),
+        )
+        .expect("test proxy signing key should derive");
         let user_service = Arc::new(test_user_service(&pool));
+        let room_service_options = synctv_core::service::room::RoomServiceOptions {
+            credential_encryption: Some(credential_encryption.clone()),
+            credential_repo: Some(credential_repo.clone()),
+            ..synctv_core::service::room::RoomServiceOptions::test_defaults_with_settings(
+                pool.clone(),
+            )
+        };
         let room_service = Arc::new(
-            RoomService::new_for_tests(pool.clone(), (*user_service).clone())
-                .expect("room service should build"),
+            RoomService::new_with_options(
+                pool.clone(),
+                (*user_service).clone(),
+                room_service_options,
+            )
+            .expect("room service should build"),
         );
         let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
             ProviderInstanceRepository::new(pool.clone()),
@@ -2097,12 +2082,12 @@ mod tests {
                     None,
                 )),
                 redis_runtime: None,
-                shared_provider_stores: Some(shared_runtime.provider_stores.clone()),
-                shared_proxy_signing_key: Some(shared_runtime.signing_key.clone()),
+                shared_provider_stores: shared_runtime.provider_stores.clone(),
+                shared_proxy_signing_key: shared_runtime.signing_key.clone(),
                 builtin_stun_url: None,
                 webrtc_status:
                     synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
-                credential_encryption: None,
+                credential_encryption: Some(credential_encryption),
                 proxy_slice_cache: Arc::new(
                     synctv_proxy::slice_cache::SliceCache::new(
                         synctv_proxy::slice_cache::SliceCacheConfig::default(),
@@ -2116,20 +2101,12 @@ mod tests {
                 .expect("proxy HTTP client should build for tests"),
                 messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
                 heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
-                providers_manager: Some(providers_manager),
+                providers_manager,
             })
             .expect("test HTTP app state should build");
         let management_apis =
             management_apis_from_http_state(&http_state).expect("shared management APIs");
 
-        assert!(
-            management_apis.client.signing_key.is_some(),
-            "management client API must carry proxy signing key for signed playback"
-        );
-        assert!(
-            management_apis.client.provider_stores.is_some(),
-            "management client API must carry provider stores for versioned playback mappings"
-        );
         assert!(Arc::ptr_eq(
             &management_apis.alist,
             &http_state.shared_api_runtime.alist_api
@@ -2144,22 +2121,14 @@ mod tests {
         ));
         assert!(
             Arc::ptr_eq(
-                management_apis
-                    .client
-                    .signing_key
-                    .as_ref()
-                    .expect("management client API should set signing key"),
+                &management_apis.client.signing_key,
                 &shared_runtime.signing_key
             ),
             "management client API must reuse the configured proxy signing key"
         );
         assert!(
             Arc::ptr_eq(
-                management_apis
-                    .client
-                    .provider_stores
-                    .as_ref()
-                    .expect("management client API should set provider stores"),
+                &management_apis.client.provider_stores,
                 &shared_runtime.provider_stores
             ),
             "shared HTTP state must reuse the shared provider store registry"
@@ -2168,8 +2137,9 @@ mod tests {
             Arc::ptr_eq(
                 management_apis
                     .client
-                    .credential_repo
-                    .as_ref()
+                    .room_service
+                    .media_service()
+                    .credential_repo()
                     .expect("management client API should keep credential repo"),
                 &credential_repo
             ),
@@ -2198,8 +2168,14 @@ mod tests {
     #[test]
     fn shared_provider_runtime_uses_exact_configured_key_prefix() {
         let config = Config::default();
-        let shared_runtime = SharedProviderPlaybackRuntime::new(&config, None)
-            .expect("test proxy signing key should derive");
+        let shared_runtime = SharedProviderPlaybackRuntime::new(
+            &config,
+            Arc::new(synctv_core::provider::ProviderStoreRegistry::from_runtime(
+                None,
+                config.redis.key_prefix.clone(),
+            )),
+        )
+        .expect("test proxy signing key should derive");
 
         assert_eq!(
             shared_runtime.provider_stores.key_prefix(),
@@ -2785,8 +2761,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_admin_event_listener_stops_on_cancel() {
-        use synctv_livestream::api::StreamTracker;
-        use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
+        use synctv_livestream::StreamTracker;
         use synctv_realtime::sync::{RealtimeConfig, RealtimeManager, RoomMessageHub};
         use tokio::sync::mpsc;
 
@@ -2807,28 +2782,18 @@ mod tests {
         .await
         .expect("realtime manager should be created");
 
-        let registry = synctv_livestream::relay::local_stream_registry();
+        let registry = synctv_livestream::local_stream_registry();
         let (event_sender, _event_receiver) = mpsc::channel(8);
-        let pull_manager = Arc::new(PullStreamManager::new(
-            registry.clone(),
-            event_sender.clone(),
-        ));
-        let external_publish_manager = Arc::new(
-            ExternalPublishManager::new(
-                registry.clone(),
-                "test-node".to_string(),
-                event_sender.clone(),
+        let infra = Arc::new(
+            synctv_livestream::LiveStreamingInfrastructure::new(
+                registry,
+                event_sender,
+                Arc::new(StreamTracker::new()),
+                String::new(),
                 synctv_common::ssrf::SsrfGuard::disabled(),
             )
-            .expect("failed to create ExternalPublishManager"),
+            .expect("livestream infrastructure should build"),
         );
-        let infra = Arc::new(synctv_livestream::api::LiveStreamingInfrastructure::new(
-            registry,
-            event_sender,
-            pull_manager,
-            external_publish_manager,
-            Arc::new(StreamTracker::new()),
-        ));
         let cancel = CancellationToken::new();
         let handle = spawn_admin_event_listener(Arc::new(realtime_manager), infra, cancel.clone());
 
@@ -2840,8 +2805,7 @@ mod tests {
     async fn test_admin_event_listener_kick_publisher_removes_registry_entry() {
         use chrono::Utc;
         use synctv_core::models::{MediaId, RoomId};
-        use synctv_livestream::api::StreamTracker;
-        use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
+        use synctv_livestream::StreamTracker;
         use synctv_realtime::sync::{
             RealtimeConfig, RealtimeEvent, RealtimeManager, RoomMessageHub,
         };
@@ -2868,7 +2832,7 @@ mod tests {
         let media_id = MediaId::expect_positive(112_002);
         let room_id_string = room_id.to_string();
         let media_id_string = media_id.to_string();
-        let registry = synctv_livestream::relay::local_stream_registry();
+        let registry = synctv_livestream::local_stream_registry();
         registry
             .try_register_publisher(
                 &room_id_string,
@@ -2881,26 +2845,16 @@ mod tests {
             .expect("publisher should register");
 
         let (event_sender, event_receiver) = mpsc::channel(8);
-        let pull_manager = Arc::new(PullStreamManager::new(
-            registry.clone(),
-            event_sender.clone(),
-        ));
-        let external_publish_manager = Arc::new(
-            ExternalPublishManager::new(
+        let infra = Arc::new(
+            synctv_livestream::LiveStreamingInfrastructure::new(
                 registry.clone(),
-                "test-node".to_string(),
-                event_sender.clone(),
+                event_sender,
+                Arc::new(StreamTracker::new()),
+                String::new(),
                 synctv_common::ssrf::SsrfGuard::disabled(),
             )
-            .expect("failed to create ExternalPublishManager"),
+            .expect("livestream infrastructure should build"),
         );
-        let infra = Arc::new(synctv_livestream::api::LiveStreamingInfrastructure::new(
-            registry.clone(),
-            event_sender,
-            pull_manager,
-            external_publish_manager,
-            Arc::new(StreamTracker::new()),
-        ));
         let cancel = CancellationToken::new();
         let realtime_manager = Arc::new(realtime_manager);
         let handle = spawn_admin_event_listener(realtime_manager.clone(), infra, cancel.clone());
@@ -2968,8 +2922,7 @@ mod tests {
     async fn test_admin_event_listener_kick_user_from_room_only_removes_room_local_publishers() {
         use chrono::Utc;
         use synctv_core::models::{MediaId, RoomId, UserId};
-        use synctv_livestream::api::StreamTracker;
-        use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
+        use synctv_livestream::StreamTracker;
         use synctv_realtime::sync::{
             RealtimeConfig, RealtimeEvent, RealtimeManager, RoomMessageHub,
         };
@@ -3002,7 +2955,7 @@ mod tests {
         let media_id_string = media_id.to_string();
         let other_media_id_string = other_media_id.to_string();
         let user_id_string = user_id.to_string();
-        let registry = synctv_livestream::relay::local_stream_registry();
+        let registry = synctv_livestream::local_stream_registry();
         registry
             .try_register_publisher(
                 &room_id_string,
@@ -3029,38 +2982,24 @@ mod tests {
             user_id_string.clone(),
             room_id_string.clone(),
             media_id_string.clone(),
-            &room_id_string,
-            &media_id_string,
         );
         tracker.insert(
             user_id_string.clone(),
             other_room_id_string.clone(),
             other_media_id_string.clone(),
-            &other_room_id_string,
-            &other_media_id_string,
         );
 
         let (event_sender, mut event_receiver) = mpsc::channel(8);
-        let pull_manager = Arc::new(PullStreamManager::new(
-            registry.clone(),
-            event_sender.clone(),
-        ));
-        let external_publish_manager = Arc::new(
-            ExternalPublishManager::new(
+        let infra = Arc::new(
+            synctv_livestream::LiveStreamingInfrastructure::new(
                 registry.clone(),
-                "test-node".to_string(),
-                event_sender.clone(),
+                event_sender,
+                tracker.clone(),
+                String::new(),
                 synctv_common::ssrf::SsrfGuard::disabled(),
             )
-            .expect("failed to create ExternalPublishManager"),
+            .expect("livestream infrastructure should build"),
         );
-        let infra = Arc::new(synctv_livestream::api::LiveStreamingInfrastructure::new(
-            registry.clone(),
-            event_sender,
-            pull_manager,
-            external_publish_manager,
-            tracker.clone(),
-        ));
         let cancel = CancellationToken::new();
         let realtime_manager = Arc::new(realtime_manager);
         let handle = spawn_admin_event_listener(realtime_manager.clone(), infra, cancel.clone());

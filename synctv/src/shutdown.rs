@@ -1017,9 +1017,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_realtime_manager_shutdown_hook_runs_manager_shutdown() {
-        use synctv_realtime::sync::{
-            realtime_manager::RealtimeConfig, RealtimeManager, RoomMessageHub,
-        };
+        use synctv_realtime::sync::{RealtimeConfig, RealtimeManager, RoomMessageHub};
 
         let manager = Arc::new(
             RealtimeManager::new(RealtimeConfig {

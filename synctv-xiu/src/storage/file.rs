@@ -61,8 +61,23 @@ impl FileStorage {
         self.bucket_app_path(bucket, app).join(stream)
     }
 
+    async fn remove_empty_dir_if_exists(dir: PathBuf) -> Result<()> {
+        match fs::remove_dir(&dir).await {
+            Ok(()) => Ok(()),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    ErrorKind::NotFound | ErrorKind::DirectoryNotEmpty | ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     async fn count_files_under(dir: &std::path::Path) -> Result<usize> {
-        let mut deleted = 0;
+        let mut count = 0;
         let mut stack = vec![dir.to_path_buf()];
 
         while let Some(current_dir) = stack.pop() {
@@ -85,21 +100,21 @@ impl FileStorage {
                 if file_type.is_dir() {
                     stack.push(entry.path());
                 } else if file_type.is_file() {
-                    deleted += 1;
+                    count += 1;
                 }
             }
         }
 
-        Ok(deleted)
+        Ok(count)
     }
 
     async fn remove_dir_all_counting_files(dir: &std::path::Path) -> Result<usize> {
-        if !fs::try_exists(dir).await.unwrap_or(false) {
+        if !fs::try_exists(dir).await? {
             return Ok(0);
         }
 
         let deleted = match Self::count_files_under(dir).await {
-            Ok(deleted) => deleted,
+            Ok(count) => count,
             Err(e) if e.kind() == ErrorKind::NotFound => 0,
             Err(e) => return Err(e),
         };
@@ -109,6 +124,104 @@ impl FileStorage {
             Err(e) if e.kind() == ErrorKind::NotFound => Ok(0),
             Err(e) => Err(e),
         }
+    }
+
+    async fn collect_stream_dirs(&self) -> Result<Vec<(String, String, PathBuf)>> {
+        let segments_root = self.segments_root_path();
+        if !fs::try_exists(&segments_root).await? {
+            return Ok(Vec::new());
+        }
+
+        let mut streams = Vec::new();
+        let mut bucket_dirs = fs::read_dir(&segments_root).await?;
+        while let Some(bucket_entry) = bucket_dirs.next_entry().await? {
+            let Ok(bucket_file_type) = bucket_entry.file_type().await else {
+                continue;
+            };
+            if !bucket_file_type.is_dir() {
+                continue;
+            }
+
+            let mut app_dirs = fs::read_dir(bucket_entry.path()).await?;
+            while let Some(app_entry) = app_dirs.next_entry().await? {
+                let Ok(app_file_type) = app_entry.file_type().await else {
+                    continue;
+                };
+                if !app_file_type.is_dir() {
+                    continue;
+                }
+
+                let Some(app_name) = app_entry.file_name().to_str().map(ToOwned::to_owned) else {
+                    continue;
+                };
+
+                let mut stream_dirs = fs::read_dir(app_entry.path()).await?;
+                while let Some(stream_entry) = stream_dirs.next_entry().await? {
+                    let Ok(stream_file_type) = stream_entry.file_type().await else {
+                        continue;
+                    };
+                    if !stream_file_type.is_dir() {
+                        continue;
+                    }
+
+                    let Some(stream_name) =
+                        stream_entry.file_name().to_str().map(ToOwned::to_owned)
+                    else {
+                        continue;
+                    };
+                    streams.push((app_name.clone(), stream_name, stream_entry.path()));
+                }
+            }
+        }
+
+        Ok(streams)
+    }
+
+    async fn collect_app_stream_dirs(&self, app: &str) -> Result<Vec<(String, PathBuf)>> {
+        let segments_root = self.segments_root_path();
+        if !fs::try_exists(&segments_root).await? {
+            return Ok(Vec::new());
+        }
+
+        let mut streams = Vec::new();
+        let mut bucket_dirs = fs::read_dir(&segments_root).await?;
+        while let Some(bucket_entry) = bucket_dirs.next_entry().await? {
+            let Ok(file_type) = bucket_entry.file_type().await else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+
+            let bucket_name = bucket_entry.file_name();
+            let Some(bucket_name) = bucket_name.to_str() else {
+                continue;
+            };
+
+            let app_path = self.bucket_app_path(bucket_name, app);
+            let mut stream_dirs = match fs::read_dir(app_path).await {
+                Ok(entries) => entries,
+                Err(err) if err.kind() == ErrorKind::NotFound => continue,
+                Err(err) => return Err(err),
+            };
+
+            while let Some(stream_entry) = stream_dirs.next_entry().await? {
+                let Ok(file_type) = stream_entry.file_type().await else {
+                    continue;
+                };
+                if !file_type.is_dir() {
+                    continue;
+                }
+
+                let Some(stream_name) = stream_entry.file_name().to_str().map(ToOwned::to_owned)
+                else {
+                    continue;
+                };
+                streams.push((stream_name, stream_entry.path()));
+            }
+        }
+
+        Ok(streams)
     }
 }
 
@@ -159,7 +272,7 @@ impl HlsStorage for FileStorage {
         validate_storage_key(app, stream, name)?;
         let file_path = self.get_path(app, stream, name)?;
 
-        if fs::try_exists(&file_path).await.unwrap_or(false) {
+        if fs::try_exists(&file_path).await? {
             fs::remove_file(&file_path).await?;
             tracing::trace!("Deleted: {:?} for {}/{}/{}", file_path, app, stream, name);
         }
@@ -179,7 +292,7 @@ impl HlsStorage for FileStorage {
         let mut deleted = 0;
 
         let segments_root = self.segments_root_path();
-        if fs::try_exists(&segments_root).await.unwrap_or(false) {
+        if fs::try_exists(&segments_root).await? {
             let mut bucket_dirs = fs::read_dir(&segments_root).await?;
             while let Some(bucket_entry) = bucket_dirs.next_entry().await? {
                 let Ok(file_type) = bucket_entry.file_type().await else {
@@ -194,12 +307,12 @@ impl HlsStorage for FileStorage {
                 };
                 let stream_dir = self.bucket_stream_path(bucket_name, app, stream);
                 deleted += Self::remove_dir_all_counting_files(&stream_dir).await?;
-                let _ = fs::remove_dir(self.bucket_app_path(bucket_name, app)).await;
-                let _ = fs::remove_dir(bucket_entry.path()).await;
+                Self::remove_empty_dir_if_exists(self.bucket_app_path(bucket_name, app)).await?;
+                Self::remove_empty_dir_if_exists(bucket_entry.path()).await?;
             }
         }
 
-        let _ = fs::remove_dir(segments_root).await;
+        Self::remove_empty_dir_if_exists(segments_root).await?;
 
         tracing::debug!(
             "delete_app_stream {}/{}: deleted {} files",
@@ -215,7 +328,7 @@ impl HlsStorage for FileStorage {
         let mut deleted = 0;
 
         let segments_root = self.segments_root_path();
-        if fs::try_exists(&segments_root).await.unwrap_or(false) {
+        if fs::try_exists(&segments_root).await? {
             let mut bucket_dirs = fs::read_dir(&segments_root).await?;
             while let Some(bucket_entry) = bucket_dirs.next_entry().await? {
                 let Ok(file_type) = bucket_entry.file_type().await else {
@@ -231,19 +344,88 @@ impl HlsStorage for FileStorage {
                 deleted +=
                     Self::remove_dir_all_counting_files(&self.bucket_app_path(bucket_name, app))
                         .await?;
-                let _ = fs::remove_dir(bucket_entry.path()).await;
+                Self::remove_empty_dir_if_exists(bucket_entry.path()).await?;
             }
         }
 
-        let _ = fs::remove_dir(segments_root).await;
+        Self::remove_empty_dir_if_exists(segments_root).await?;
 
         tracing::debug!("delete_app {}: deleted {} files", app, deleted);
         Ok(deleted)
     }
 
+    async fn list_streams(&self) -> Result<Vec<(String, String)>> {
+        let mut streams = self
+            .collect_stream_dirs()
+            .await?
+            .into_iter()
+            .map(|(app, stream, _)| (app, stream))
+            .collect::<Vec<_>>();
+        streams.sort();
+        streams.dedup();
+        Ok(streams)
+    }
+
+    async fn count_stream_segments(&self, app: &str, stream: &str) -> Result<usize> {
+        validate_component(app, "app")?;
+        validate_component(stream, "stream")?;
+        let mut total = 0;
+        for (stream_name, stream_dir) in self.collect_app_stream_dirs(app).await? {
+            if stream_name == stream {
+                total += Self::count_files_under(&stream_dir).await?;
+            }
+        }
+        Ok(total)
+    }
+
+    async fn delete_oldest_stream_segments(
+        &self,
+        app: &str,
+        stream: &str,
+        max_count: usize,
+    ) -> Result<usize> {
+        validate_component(app, "app")?;
+        validate_component(stream, "stream")?;
+
+        let mut segments = Vec::new();
+        for (stream_name, stream_dir) in self.collect_app_stream_dirs(app).await? {
+            if stream_name != stream {
+                continue;
+            }
+
+            let mut entries = fs::read_dir(&stream_dir).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let Ok(file_type) = entry.file_type().await else {
+                    continue;
+                };
+                if !file_type.is_file() {
+                    continue;
+                }
+                segments.push(entry.path());
+            }
+        }
+
+        if segments.len() <= max_count {
+            return Ok(0);
+        }
+
+        segments.sort();
+        let to_delete = segments.len() - max_count;
+        let mut deleted = 0;
+        for path in segments.into_iter().take(to_delete) {
+            match fs::remove_file(&path).await {
+                Ok(()) => deleted += 1,
+                Err(err) if err.kind() == ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
+        }
+
+        Ok(deleted)
+    }
+
     async fn cleanup(&self, older_than: Duration) -> Result<usize> {
         let segments_root = self.segments_root_path();
-        if !fs::try_exists(&segments_root).await.unwrap_or(false) {
+        if !fs::try_exists(&segments_root).await? {
             tracing::debug!("Cleanup segments root does not exist: {:?}", segments_root);
             return Ok(0);
         }
@@ -270,7 +452,7 @@ impl HlsStorage for FileStorage {
             }
         }
 
-        let _ = fs::remove_dir(segments_root).await;
+        Self::remove_empty_dir_if_exists(segments_root).await?;
 
         tracing::info!(
             "Cleanup completed: scanned {:?}, deleted {} files older than {:?}",
@@ -280,6 +462,11 @@ impl HlsStorage for FileStorage {
         );
 
         Ok(deleted)
+    }
+
+    async fn get_public_url(&self, app: &str, stream: &str, name: &str) -> Result<Option<String>> {
+        validate_storage_key(app, stream, name)?;
+        Ok(None)
     }
 }
 
@@ -555,6 +742,71 @@ mod tests {
         assert!(!storage.exists("app1", "stream1", &seg0).await.unwrap());
         assert!(!storage.exists("app1", "stream2", &seg1).await.unwrap());
         assert!(storage.exists("app2", "stream1", &seg2).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_file_storage_lists_counts_and_trims_stream_segments() {
+        let temp_dir = tempdir().unwrap();
+        let storage = FileStorage::new(temp_dir.path());
+        let bucket = current_bucket();
+        let seg0 = segment_name(&bucket, "seg0");
+        let seg1 = segment_name(&bucket, "seg1");
+        let seg2 = segment_name(&bucket, "seg2");
+        let other = segment_name(&bucket, "other");
+
+        storage
+            .write("app1", "stream1", &seg0, Bytes::from_static(b"d0"))
+            .await
+            .unwrap();
+        storage
+            .write("app1", "stream1", &seg1, Bytes::from_static(b"d1"))
+            .await
+            .unwrap();
+        storage
+            .write("app1", "stream1", &seg2, Bytes::from_static(b"d2"))
+            .await
+            .unwrap();
+        storage
+            .write("app1", "stream2", &other, Bytes::from_static(b"d3"))
+            .await
+            .unwrap();
+
+        let mut streams = storage.list_streams().await.unwrap();
+        streams.sort();
+        assert_eq!(
+            streams,
+            vec![
+                ("app1".to_string(), "stream1".to_string()),
+                ("app1".to_string(), "stream2".to_string())
+            ]
+        );
+        assert_eq!(
+            storage
+                .count_stream_segments("app1", "stream1")
+                .await
+                .unwrap(),
+            3
+        );
+
+        let deleted = storage
+            .delete_oldest_stream_segments("app1", "stream1", 1)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(
+            storage
+                .count_stream_segments("app1", "stream1")
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            storage
+                .count_stream_segments("app1", "stream2")
+                .await
+                .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]

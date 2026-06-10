@@ -1,9 +1,6 @@
 //! Monitored task spawning utility
 //!
-//! Wraps `tokio::spawn` to catch panics from fire-and-forget tasks and log them
-//! via `tracing::error!`, plus increment a Prometheus counter. Without this,
-//! panics inside `tokio::spawn` are silently swallowed when the `JoinHandle` is
-//! dropped.
+//! Wraps `tokio::spawn` to log task panics and increment a Prometheus counter.
 
 use std::future::Future;
 
@@ -14,8 +11,7 @@ use tokio::task::JoinHandle;
 ///
 /// Behaves like `tokio::spawn`, but wraps the future with panic detection.
 /// If the task panics, the panic is caught, logged with `tracing::error!`,
-/// and a Prometheus counter is incremented before re-panicking (so the
-/// `JoinHandle` still reports the panic if awaited).
+/// and a Prometheus counter is incremented before re-panicking.
 ///
 /// # Arguments
 /// * `name` - A static label for the task (used in logs and metrics).
@@ -43,7 +39,6 @@ where
                     .with_label_values(&[name])
                     .inc();
 
-                // Re-panic so the JoinHandle still reports the error if awaited
                 std::panic::resume_unwind(panic_payload);
             }
         }
@@ -68,35 +63,37 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn test_spawn_monitored_success() {
-        let result = spawn_monitored("test_success", async { 42 })
-            .await
-            .expect("monitored task should complete");
+    async fn test_spawn_monitored_success() -> Result<(), tokio::task::JoinError> {
+        let result = spawn_monitored("test_success", async { 42 }).await?;
         assert_eq!(result, 42);
+        Ok(())
     }
 
     #[tokio::test]
     async fn test_spawn_monitored_catches_panic() {
         let handle = spawn_monitored("test_panic", async {
-            panic!("intentional test panic");
+            std::panic::panic_any("intentional test panic");
         });
 
         let result = handle.await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().is_panic());
+        match result {
+            Err(error) => assert!(error.is_panic()),
+            Ok(()) => std::panic::panic_any("monitored task should report a panic"),
+        }
     }
 
     #[tokio::test]
-    async fn test_spawn_monitored_runs_to_completion() {
+    async fn test_spawn_monitored_runs_to_completion() -> Result<(), tokio::task::JoinError> {
         let flag = Arc::new(AtomicBool::new(false));
         let flag_clone = flag.clone();
 
         spawn_monitored("test_completion", async move {
             flag_clone.store(true, Ordering::SeqCst);
         })
-        .await
-        .expect("monitored task should complete");
+        .await?;
 
         assert!(flag.load(Ordering::SeqCst));
+        Ok(())
     }
 }

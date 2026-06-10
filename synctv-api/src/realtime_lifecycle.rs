@@ -4,12 +4,12 @@ use std::sync::Arc;
 use synctv_core::models::{MediaId, RoomId, UserId};
 use synctv_core::service::user::UserDeletionSummary;
 use synctv_core::service::RoomService;
-use synctv_livestream::api::LiveStreamingInfrastructure;
-use synctv_livestream::error::StreamError;
+use synctv_livestream::LiveStreamingInfrastructure;
+use synctv_livestream::StreamError;
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
 use crate::realtime_fanout::RealtimeFanoutService;
-use crate::runtime::RealtimeConnectionService;
+use synctv_realtime::sync::ConnectionRuntime;
 
 pub struct DeletedRoomAfterCommitFanout {
     pub room_id: RoomId,
@@ -50,7 +50,7 @@ pub trait RealtimeLifecycleService: Send + Sync {
 }
 
 pub struct DefaultRealtimeLifecycleService {
-    connection_service: Arc<dyn RealtimeConnectionService>,
+    connection_service: Arc<dyn ConnectionRuntime>,
     live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
 }
@@ -58,7 +58,7 @@ pub struct DefaultRealtimeLifecycleService {
 impl DefaultRealtimeLifecycleService {
     #[must_use]
     pub fn new(
-        connection_service: Arc<dyn RealtimeConnectionService>,
+        connection_service: Arc<dyn ConnectionRuntime>,
         live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
         realtime_fanout: Arc<dyn RealtimeFanoutService>,
     ) -> Self {
@@ -97,19 +97,16 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
         if let Some(infra) = &self.live_streaming_infrastructure {
             let room_id_key = room_id.to_string();
             let media_id_key = media_id.to_string();
-            match infra
-                .stream_owned_by_local_node(&room_id_key, &media_id_key)
-                .await
-            {
-                Ok(true) => self.kick_local_stream(room_id, media_id).await?,
-                Ok(false) => {
+            match infra.stream_is_remote(&room_id_key, &media_id_key).await {
+                Ok(true) => {
                     remote_owner = true;
                     tracing::debug!(
                         room_id = %room_id,
                         media_id = %media_id,
-                        "Stream is not owned by this node; publishing replica-wide kick without local unpublish"
+                        "Stream is owned by another node; publishing replica-wide kick without local unpublish"
                     );
                 }
+                Ok(false) => self.kick_local_stream(room_id, media_id).await?,
                 Err(error) => {
                     let stream_error = StreamError::StreamHubError(error.to_string());
                     tracing::warn!(
@@ -177,7 +174,7 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
         let room_id_key = room_id.to_string();
 
         if let Some(infra) = &self.live_streaming_infrastructure {
-            for media_id in infra.user_stream_tracker.get_room_streams(&room_id_key) {
+            for media_id in infra.local_room_streams(&room_id_key) {
                 match media_id.parse::<MediaId>() {
                     Ok(media_id) => {
                         media_ids.insert(media_id);
@@ -191,7 +188,7 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
                 }
             }
 
-            match infra.registry.list_streams_for_room(&room_id_key).await {
+            match infra.list_streams_for_room(&room_id_key).await {
                 Ok(remote_media_ids) => {
                     for media_id in remote_media_ids {
                         match media_id.parse::<MediaId>() {
@@ -247,7 +244,7 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
 
         if let Some(infra) = &self.live_streaming_infrastructure {
             let user_id_key = user_id.to_string();
-            let streams = infra.user_stream_tracker.get_user_streams(&user_id_key);
+            let streams = infra.local_user_streams(&user_id_key);
 
             for (room_id, media_id) in &streams {
                 let (Ok(room_id), Ok(media_id)) =
@@ -273,7 +270,7 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
             infra.kick_user_publishers(&user_id_key).await;
         }
 
-        let _ = self
+        if !self
             .realtime_fanout
             .try_publish(PublishRequest::new(RealtimeEvent::KickUser {
                 event_id: synctv_common::snanoid!(16),
@@ -281,7 +278,13 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
                 reason: reason.to_string(),
                 timestamp: chrono::Utc::now(),
             }))
-            .await;
+            .await
+        {
+            tracing::warn!(
+                user_id = %user_id,
+                "Failed to publish realtime kick event while disconnecting user"
+            );
+        }
     }
 
     async fn finalize_user_deletion(
@@ -342,7 +345,7 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
 
 #[must_use]
 pub fn default_realtime_lifecycle_service(
-    connection_service: Arc<dyn RealtimeConnectionService>,
+    connection_service: Arc<dyn ConnectionRuntime>,
     live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
 ) -> Arc<dyn RealtimeLifecycleService> {
@@ -357,16 +360,22 @@ pub fn default_realtime_lifecycle_service(
 mod tests {
     use super::default_realtime_lifecycle_service;
     use crate::realtime_fanout::disabled_realtime_fanout_service;
-    use crate::runtime::RealtimeConnectionService;
     use crate::test_support::channel_realtime_fanout_service;
     use std::sync::Arc;
     use synctv_core::models::{MediaId, RoomId, UserId};
-    use synctv_livestream::api::{LiveStreamingInfrastructure, StreamTracker};
-    use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
+    use synctv_livestream::{LiveStreamingInfrastructure, StreamTracker};
+    use synctv_realtime::sync::ConnectionRuntime;
     use synctv_realtime::sync::{ConnectionLimits, ConnectionManager, RealtimeEvent};
+
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        anyhow::anyhow!(message.into()).into()
+    }
+
     #[tokio::test]
-    async fn test_realtime_lifecycle_kick_stream_uses_realtime_fanout_service() {
-        let connection_service: Arc<dyn RealtimeConnectionService> =
+    async fn test_realtime_lifecycle_kick_stream_uses_realtime_fanout_service() -> TestResult {
+        let connection_service: Arc<dyn ConnectionRuntime> =
             Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         let (publish_tx, mut publish_rx) = tokio::sync::mpsc::channel(4);
         let service = default_realtime_lifecycle_service(
@@ -381,13 +390,12 @@ mod tests {
                 &MediaId::expect_positive(2001),
                 "test-reason",
             )
-            .await
-            .expect("kick stream should succeed without livestream infrastructure");
+            .await?;
 
         let published = publish_rx
             .recv()
             .await
-            .expect("kick helper should publish exactly one realtime event");
+            .ok_or_else(|| test_error("kick helper should publish exactly one realtime event"))?;
         assert!(matches!(
             published.event,
             RealtimeEvent::KickPublisher { ref room_id, ref media_id, ref reason, .. }
@@ -395,13 +403,13 @@ mod tests {
                     && media_id.as_i64() == 2001
                     && reason == "test-reason"
         ));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_realtime_lifecycle_disconnect_user_publishes_cluster_kick_event() {
-        let connection_service: Arc<dyn RealtimeConnectionService> =
+    async fn test_realtime_lifecycle_disconnect_user_publishes_cluster_kick_event() -> TestResult {
+        let connection_service: Arc<dyn ConnectionRuntime> =
             Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-        connection_service.start();
 
         let (publish_tx, mut publish_rx) = tokio::sync::mpsc::channel(4);
         let service = default_realtime_lifecycle_service(
@@ -416,7 +424,7 @@ mod tests {
         let published = publish_rx
             .recv()
             .await
-            .expect("disconnect_user should publish a kick event");
+            .ok_or_else(|| test_error("disconnect_user should publish a kick event"))?;
         match published.event {
             RealtimeEvent::KickUser {
                 user_id: published_user_id,
@@ -426,15 +434,20 @@ mod tests {
                 assert_eq!(published_user_id, user_id);
                 assert_eq!(reason, "user_deleted");
             }
-            other => panic!("expected KickUser event, got {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "expected KickUser event, got {other:?}"
+                )))
+            }
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_realtime_lifecycle_disconnect_user_from_room_only_cleans_local_room_publishers() {
-        let connection_service: Arc<dyn RealtimeConnectionService> =
+    async fn test_realtime_lifecycle_disconnect_user_from_room_only_cleans_local_room_publishers(
+    ) -> TestResult {
+        let connection_service: Arc<dyn ConnectionRuntime> =
             Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-        connection_service.start();
         let mut disconnect_rx = connection_service.subscribe_disconnect();
 
         let user_id = UserId::expect_positive(101);
@@ -446,22 +459,18 @@ mod tests {
 
         connection_service
             .register("conn-room-1".to_string(), user_id)
-            .await
-            .expect("room-1 connection should register");
+            .await?;
         connection_service
             .join_room("conn-room-1", room_one)
-            .await
-            .expect("room-1 connection should join");
+            .await?;
         connection_service
             .register("conn-room-2".to_string(), user_id)
-            .await
-            .expect("room-2 connection should register");
+            .await?;
         connection_service
             .join_room("conn-room-2", room_two)
-            .await
-            .expect("room-2 connection should join");
+            .await?;
 
-        let registry = synctv_livestream::relay::local_stream_registry();
+        let registry = synctv_livestream::local_stream_registry();
         registry
             .try_register_publisher(
                 &room_one_key,
@@ -470,8 +479,7 @@ mod tests {
                 &user_id_key,
                 "127.0.0.1:50051",
             )
-            .await
-            .expect("room-1 publisher should register");
+            .await?;
         registry
             .try_register_publisher(
                 &room_two_key,
@@ -480,46 +488,24 @@ mod tests {
                 &user_id_key,
                 "127.0.0.1:50051",
             )
-            .await
-            .expect("room-2 publisher should register");
+            .await?;
 
         let tracker = Arc::new(StreamTracker::new());
         tracker.insert(
             user_id_key.clone(),
             room_one_key.clone(),
             "media-1".to_string(),
-            &room_one_key,
-            "media-1",
         );
-        tracker.insert(
-            user_id_key,
-            room_two_key.clone(),
-            "media-2".to_string(),
-            &room_two_key,
-            "media-2",
-        );
+        tracker.insert(user_id_key, room_two_key.clone(), "media-2".to_string());
 
         let (event_sender, mut event_receiver) = tokio::sync::mpsc::channel(8);
-        let pull_manager = Arc::new(PullStreamManager::new(
-            registry.clone(),
-            event_sender.clone(),
-        ));
-        let external_publish_manager = Arc::new(
-            ExternalPublishManager::new(
-                registry.clone(),
-                "test-node".to_string(),
-                event_sender.clone(),
-                synctv_common::ssrf::SsrfGuard::disabled(),
-            )
-            .expect("external publish manager should build"),
-        );
         let infra = Arc::new(LiveStreamingInfrastructure::new(
             registry.clone(),
             event_sender,
-            pull_manager,
-            external_publish_manager,
             tracker.clone(),
-        ));
+            String::new(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?);
 
         let service = default_realtime_lifecycle_service(
             connection_service.clone(),
@@ -532,7 +518,7 @@ mod tests {
         let event = event_receiver
             .recv()
             .await
-            .expect("room-scoped disconnect should enqueue one unpublish");
+            .ok_or_else(|| test_error("room-scoped disconnect should enqueue one unpublish"))?;
         let event_debug = format!("{event:?}");
         assert!(
             event_debug.contains("UnPublish"),
@@ -553,7 +539,7 @@ mod tests {
         let disconnect_signal = disconnect_rx
             .recv()
             .await
-            .expect("room-scoped disconnect must emit a disconnect signal");
+            .map_err(|_| test_error("room-scoped disconnect must emit a disconnect signal"))?;
         assert!(matches!(
             disconnect_signal,
             synctv_realtime::sync::DisconnectSignal::UserFromRoom {
@@ -564,41 +550,40 @@ mod tests {
         assert!(
             registry
                 .get_publisher(&room_one_key, "media-1")
-                .await
-                .expect("room-1 publisher lookup should succeed")
+                .await?
                 .is_some(),
             "room-scoped disconnect must not remove publisher ownership before StreamHub processes unpublish"
         );
         assert!(
             registry
                 .get_publisher(&room_two_key, "media-2")
-                .await
-                .expect("room-2 publisher lookup should succeed")
+                .await?
                 .is_some(),
             "room-scoped disconnect must preserve publishers from other rooms"
         );
 
         registry
             .unregister_publisher(&room_one_key, "media-1")
-            .await
-            .expect("test unpublish completion should unregister room-1 publisher");
-        let _ = tracker.remove_stream(&room_one_key, "media-1");
+            .await?;
+        assert!(
+            tracker.remove_stream(&room_one_key, "media-1").is_some(),
+            "test fixture should remove the tracked room stream"
+        );
 
         assert!(
             registry
                 .get_publisher(&room_one_key, "media-1")
-                .await
-                .expect("room-1 publisher lookup should succeed")
+                .await?
                 .is_none(),
             "actual unpublish completion must remove the matching room publisher"
         );
         assert!(
             registry
                 .get_publisher(&room_two_key, "media-2")
-                .await
-                .expect("room-2 publisher lookup should succeed")
+                .await?
                 .is_some(),
             "actual unpublish completion must preserve publishers from other rooms"
         );
+        Ok(())
     }
 }

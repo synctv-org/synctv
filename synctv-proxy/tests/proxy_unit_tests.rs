@@ -3,10 +3,7 @@
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use synctv_proxy::{
-    apply_provider_headers, make_absolute, percent_encode, rewrite_m3u8,
-    rewrite_uri_attribute_with_count,
-};
+use synctv_proxy::{apply_provider_headers, percent_encode, rewrite_m3u8};
 
 // Helper: build a reqwest request and inspect the resulting headers
 
@@ -293,72 +290,6 @@ fn test_ssrf_acl_loopback_blocked() {
     );
 }
 
-// make_absolute (additional coverage)
-
-#[test]
-fn test_make_absolute_no_base_returns_raw() {
-    assert_eq!(make_absolute("seg1.ts", None), "seg1.ts");
-}
-
-#[test]
-fn test_make_absolute_root_relative() {
-    let base = url::Url::parse("https://cdn.example.com/path/master.m3u8").unwrap();
-    assert_eq!(
-        make_absolute("/other/seg1.ts", Some(&base)),
-        "https://cdn.example.com/other/seg1.ts"
-    );
-}
-
-// rewrite_uri_attribute_with_count
-
-#[test]
-fn test_rewrite_uri_single_uri() {
-    let base = url::Url::parse("https://cdn.example.com/hls/master.m3u8").unwrap();
-    let (result, count) = rewrite_uri_attribute_with_count(
-        "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"",
-        Some(&base),
-        "/proxy",
-    );
-    assert_eq!(count, 1);
-    assert!(result.contains("URI=\"/proxy?url="));
-    assert!(result.contains("cdn%2Eexample%2Ecom"));
-}
-
-#[test]
-fn test_rewrite_uri_multiple_uris() {
-    // A line with two URI= attributes (unusual but possible)
-    let base = url::Url::parse("https://cdn.example.com/hls/master.m3u8").unwrap();
-    let line =
-        "#EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"key1.bin\",KEYFORMAT=\"urn\",URI=\"key2.bin\"";
-    let (result, count) = rewrite_uri_attribute_with_count(line, Some(&base), "/proxy");
-    assert_eq!(count, 2, "Should rewrite both URI attributes");
-    // Both URIs should be proxied
-    let url_matches: Vec<_> = result.match_indices("/proxy?url=").collect();
-    assert_eq!(url_matches.len(), 2);
-}
-
-#[test]
-fn test_rewrite_uri_malformed_no_closing_quote() {
-    // URI=" without a closing " -- should not panic
-    let (result, count) =
-        rewrite_uri_attribute_with_count("#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin", None, "/proxy");
-    assert_eq!(
-        count, 0,
-        "Malformed URI (no closing quote) should not be rewritten"
-    );
-    // The malformed content should still be in the output
-    assert!(result.contains("URI=\""));
-    assert!(result.contains("key.bin"));
-}
-
-#[test]
-fn test_rewrite_uri_no_uri_attribute() {
-    // A tag line with no URI= at all
-    let (result, count) = rewrite_uri_attribute_with_count("#EXT-X-VERSION:3", None, "/proxy");
-    assert_eq!(count, 0);
-    assert_eq!(result, "#EXT-X-VERSION:3");
-}
-
 // percent_encode - unicode
 
 #[test]
@@ -641,40 +572,6 @@ fn test_ssrf_acl_cloud_metadata_blocked() {
     );
 }
 
-// make_absolute - additional edge cases
-
-#[test]
-fn test_make_absolute_protocol_relative() {
-    // Protocol-relative URLs should be returned as-is (they start with //)
-    let base = url::Url::parse("https://cdn.example.com/hls/master.m3u8").unwrap();
-    let result = make_absolute("//other.cdn.com/seg.ts", Some(&base));
-    // url::Url::join handles // as protocol-relative
-    assert!(
-        result.contains("other.cdn.com/seg.ts"),
-        "Protocol-relative URL should be resolved, got: {result}"
-    );
-}
-
-#[test]
-fn test_make_absolute_parent_directory() {
-    let base = url::Url::parse("https://cdn.example.com/hls/stream/master.m3u8").unwrap();
-    let result = make_absolute("../init.mp4", Some(&base));
-    assert_eq!(
-        result, "https://cdn.example.com/hls/init.mp4",
-        "Parent directory reference should be resolved"
-    );
-}
-
-#[test]
-fn test_make_absolute_deep_relative() {
-    let base = url::Url::parse("https://cdn.example.com/a/b/c/master.m3u8").unwrap();
-    let result = make_absolute("d/seg.ts", Some(&base));
-    assert_eq!(
-        result, "https://cdn.example.com/a/b/c/d/seg.ts",
-        "Deep relative path should be resolved correctly"
-    );
-}
-
 // M3U8 SSRF Security Tests
 
 /// Test that directory traversal attacks in M3U8 segment URLs are properly
@@ -863,31 +760,6 @@ fn test_m3u8_ssrf_ext_x_map_internal_uri() {
     );
 }
 
-/// Test `make_absolute` with various malicious inputs
-#[test]
-fn test_make_absolute_with_traversal() {
-    let base = url::Url::parse("https://cdn.example.com/hls/stream/master.m3u8").unwrap();
-
-    // Simple traversal
-    let result = make_absolute("../secret.ts", Some(&base));
-    assert_eq!(
-        result, "https://cdn.example.com/hls/secret.ts",
-        "Simple traversal should be normalized"
-    );
-
-    // Deep traversal
-    let result = make_absolute("../../../../etc/passwd", Some(&base));
-    // url::Url::join normalizes this to the host root
-    assert!(
-        result.starts_with("https://cdn.example.com/"),
-        "Deep traversal should stay on same host: {result}"
-    );
-    assert!(
-        !result.contains(".."),
-        "Result should not contain ..: {result}"
-    );
-}
-
 /// Test that protocol-relative URLs are handled correctly
 #[test]
 fn test_m3u8_ssrf_protocol_relative() {
@@ -905,21 +777,6 @@ fn test_m3u8_ssrf_protocol_relative() {
     assert!(
         rewritten.contains("attacker%2Ecom"),
         "Protocol-relative URL should be resolved, got: {rewritten}"
-    );
-}
-
-/// Test that `make_absolute` doesn't allow scheme injection
-#[test]
-fn test_make_absolute_scheme_injection() {
-    let base = url::Url::parse("https://cdn.example.com/hls/master.m3u8").unwrap();
-
-    // Try to inject file:// scheme
-    let result = make_absolute("file:///etc/passwd", Some(&base));
-    // url::Url::join treats this as a URL with scheme, returns as-is
-    // but rewrite_m3u8 then proxies it, and validate_proxy_url will block it
-    assert_eq!(
-        result, "file:///etc/passwd",
-        "Absolute URLs are returned as-is; validation happens elsewhere"
     );
 }
 

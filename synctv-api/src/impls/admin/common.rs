@@ -47,7 +47,7 @@ pub(in crate::impls::admin) fn live_streaming_unavailable_error() -> ApiError {
 
 pub(in crate::impls::admin) fn parse_batch_user_ids(
     user_ids: &[String],
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<Vec<UserId>, ApiError> {
     if user_ids.is_empty() {
         return Err(ApiError::InvalidInput(

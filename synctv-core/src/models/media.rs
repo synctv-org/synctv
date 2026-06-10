@@ -808,18 +808,41 @@ impl PlaybackUrlMetadata {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
+    fn some<T>(value: Option<T>, context: &str) -> T {
+        match value {
+            Some(value) => value,
+            None => std::panic::panic_any(context.to_string()),
+        }
+    }
+
     #[test]
     fn test_provider_type_parse_trimmed_case_insensitive_names() {
         assert_eq!(
-            " alist ".parse::<ProviderType>().unwrap(),
+            ok(
+                " alist ".parse::<ProviderType>(),
+                "alist provider type should parse"
+            ),
             ProviderType::Alist
         );
         assert_eq!(
-            " DIRECTURL ".parse::<ProviderType>().unwrap(),
+            ok(
+                " DIRECTURL ".parse::<ProviderType>(),
+                "direct-url provider type should parse"
+            ),
             ProviderType::DirectUrl
         );
         assert_eq!(
-            " live_proxy ".parse::<ProviderType>().unwrap(),
+            ok(
+                " live_proxy ".parse::<ProviderType>(),
+                "live-proxy provider type should parse"
+            ),
             ProviderType::LiveProxy
         );
     }
@@ -830,7 +853,7 @@ mod tests {
         let room_id = RoomId::expect_positive(60_002);
 
         for _ in 0..20 {
-            let result =
+            let result = some(
                 PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0)
                     .add_mode(
                         "alpha".to_string(),
@@ -844,8 +867,9 @@ mod tests {
                         "gamma".to_string(),
                         PlaybackInfo::single_url("http://c".to_string(), "C".to_string()),
                     )
-                    .build()
-                    .expect("build should succeed");
+                    .build(),
+                "playback result should build",
+            );
 
             assert_eq!(
                 result.default_mode, "alpha",
@@ -859,18 +883,20 @@ mod tests {
         let playlist_id = PlaylistId::expect_positive(60_003);
         let room_id = RoomId::expect_positive(60_004);
 
-        let result = PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0)
-            .add_mode(
-                "direct".to_string(),
-                PlaybackInfo::single_url("http://d".to_string(), "D".to_string()),
-            )
-            .add_mode(
-                "proxy".to_string(),
-                PlaybackInfo::single_url("http://p".to_string(), "P".to_string()),
-            )
-            .default_mode("proxy".to_string())
-            .build()
-            .expect("build should succeed");
+        let result = some(
+            PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0)
+                .add_mode(
+                    "direct".to_string(),
+                    PlaybackInfo::single_url("http://d".to_string(), "D".to_string()),
+                )
+                .add_mode(
+                    "proxy".to_string(),
+                    PlaybackInfo::single_url("http://p".to_string(), "P".to_string()),
+                )
+                .default_mode("proxy".to_string())
+                .build(),
+            "playback result should build",
+        );
 
         assert_eq!(result.default_mode, "proxy");
     }
@@ -910,19 +936,26 @@ mod tests {
             format: "vtt".to_string(),
         };
 
-        let json = serde_json::to_string(&subtitle_url).expect("should serialize");
+        let json = ok(
+            serde_json::to_string(&subtitle_url),
+            "subtitle URL should serialize",
+        );
         assert!(json.contains("\"format\":\"vtt\""));
 
         let json_with_format =
             r#"{"name":"Chinese","url":"https://example.com/cn.srt","format":"srt"}"#;
-        let deserialized: SubtitleUrl =
-            serde_json::from_str(json_with_format).expect("should deserialize");
+        let deserialized: SubtitleUrl = ok(
+            serde_json::from_str(json_with_format),
+            "subtitle URL should deserialize",
+        );
         assert_eq!(deserialized.name, "Chinese");
         assert_eq!(deserialized.format, "srt");
 
         let json_without_format = r#"{"name":"Japanese","url":"https://example.com/jp.ass"}"#;
-        let deserialized_default: SubtitleUrl =
-            serde_json::from_str(json_without_format).expect("should deserialize");
+        let deserialized_default: SubtitleUrl = ok(
+            serde_json::from_str(json_without_format),
+            "subtitle URL default format should deserialize",
+        );
         assert_eq!(deserialized_default.name, "Japanese");
         assert_eq!(deserialized_default.format, "");
 
@@ -932,7 +965,10 @@ mod tests {
             headers: std::collections::HashMap::new(),
             format: String::new(),
         };
-        let json = serde_json::to_string(&empty_format).expect("should serialize");
+        let json = ok(
+            serde_json::to_string(&empty_format),
+            "subtitle URL without format should serialize",
+        );
         assert!(!json.contains("\"format\""));
     }
 
@@ -945,27 +981,37 @@ mod tests {
             ))
             .format("hls".to_string())
             .build();
-        let json = serde_json::to_string(&playback_info).expect("should serialize");
+        let json = ok(
+            serde_json::to_string(&playback_info),
+            "playback info should serialize",
+        );
         assert!(json.contains("\"format\":\"hls\""));
 
         let json_with_format =
             r#"{"urls":[{"name":"720P","url":"https://example.com/video.mp4"}],"format":"mp4"}"#;
-        let deserialized: PlaybackInfo =
-            serde_json::from_str(json_with_format).expect("should deserialize");
+        let deserialized: PlaybackInfo = ok(
+            serde_json::from_str(json_with_format),
+            "playback info should deserialize",
+        );
         assert_eq!(deserialized.format, "mp4");
         assert_eq!(deserialized.urls.len(), 1);
 
         let json_without_format =
             r#"{"urls":[{"name":"480P","url":"https://example.com/video.webm"}]}"#;
-        let deserialized_default: PlaybackInfo =
-            serde_json::from_str(json_without_format).expect("should deserialize");
+        let deserialized_default: PlaybackInfo = ok(
+            serde_json::from_str(json_without_format),
+            "playback info default format should deserialize",
+        );
         assert_eq!(deserialized_default.format, "");
 
         let playback_info = PlaybackInfo::single_url(
             "https://example.com/video.mp4".to_string(),
             "Test".to_string(),
         );
-        let json = serde_json::to_string(&playback_info).expect("should serialize");
+        let json = ok(
+            serde_json::to_string(&playback_info),
+            "playback info without format should serialize",
+        );
         assert!(!json.contains("\"format\""));
     }
 }

@@ -160,7 +160,6 @@ mod tests {
         bit_writer.write_bit(1).unwrap();
         bit_writer.write_bit(1).unwrap();
 
-        println!("=={}=={}==", bit_writer.cur_bit_num, bit_writer.cur_byte);
         assert_eq!(bit_writer.cur_bit_num, 2);
         assert_eq!(bit_writer.cur_byte, 0xC0); //0x11000000
     }
@@ -179,9 +178,6 @@ mod tests {
         let byte = bit_writer.get_current_bytes();
 
         //0x11000000 0x11
-
-        println!("=={}=={}==", bit_writer.cur_bit_num, bit_writer.cur_byte);
-        println!("=={}==", byte.to_vec()[0]);
 
         assert_eq!(byte.to_vec()[0], 0xC0); //0x11000000
 

@@ -728,7 +728,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_realtime_event_serialization() {
+    fn test_realtime_event_serialization() -> serde_json::Result<()> {
         let event = RealtimeEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id: RoomId::expect_positive(10_000_140),
@@ -740,18 +740,17 @@ mod tests {
             display_color: None,
         };
 
-        // Serialize to JSON
-        let json = serde_json::to_string(&event).unwrap();
+        let json = serde_json::to_string(&event)?;
         assert!(json.contains("chat_message"));
         assert!(json.contains("Hello world!"));
 
-        // Deserialize back
-        let deserialized: RealtimeEvent = serde_json::from_str(&json).unwrap();
+        let deserialized: RealtimeEvent = serde_json::from_str(&json)?;
         assert_eq!(deserialized.event_type(), "chat_message");
+        Ok(())
     }
 
     #[test]
-    fn test_provider_credential_changed_is_admin_channel_event() {
+    fn test_provider_credential_changed_is_admin_channel_event() -> serde_json::Result<()> {
         let event = RealtimeEvent::ProviderCredentialChanged {
             event_id: synctv_common::snanoid!(16),
             user_id: UserId::expect_positive(42),
@@ -764,10 +763,11 @@ mod tests {
         assert!(event.room_id().is_none());
         assert_eq!(event.user_id().copied(), Some(UserId::expect_positive(42)));
 
-        let json = serde_json::to_string(&event).unwrap();
+        let json = serde_json::to_string(&event)?;
         assert!(json.contains("provider_credential_changed"));
-        let deserialized: RealtimeEvent = serde_json::from_str(&json).unwrap();
+        let deserialized: RealtimeEvent = serde_json::from_str(&json)?;
         assert_eq!(deserialized.event_type(), "provider_credential_changed");
+        Ok(())
     }
 
     #[test]
@@ -881,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn test_kick_publisher_serialization() {
+    fn test_kick_publisher_serialization() -> Result<(), Box<dyn std::error::Error>> {
         let event = RealtimeEvent::KickPublisher {
             event_id: synctv_common::snanoid!(16),
             room_id: RoomId::expect_positive(10_000_140),
@@ -890,15 +890,13 @@ mod tests {
             timestamp: Utc::now(),
         };
 
-        // Serialize to JSON
-        let json = serde_json::to_string(&event).unwrap();
+        let json = serde_json::to_string(&event)?;
         assert!(json.contains("kick_publisher"));
         assert!(json.contains("10000140"));
         assert!(json.contains("10000142"));
         assert!(json.contains("user_banned"));
 
-        // Deserialize back
-        let deserialized: RealtimeEvent = serde_json::from_str(&json).unwrap();
+        let deserialized: RealtimeEvent = serde_json::from_str(&json)?;
         assert_eq!(deserialized.event_type(), "kick_publisher");
         assert_eq!(
             deserialized.room_id().copied(),
@@ -906,19 +904,19 @@ mod tests {
         );
         assert!(deserialized.user_id().is_none());
 
-        if let RealtimeEvent::KickPublisher {
+        let RealtimeEvent::KickPublisher {
             room_id,
             media_id,
             reason,
             ..
         } = &deserialized
-        {
-            assert_eq!(*room_id, RoomId::expect_positive(10_000_140));
-            assert_eq!(*media_id, MediaId::expect_positive(10_000_142));
-            assert_eq!(reason, "user_banned");
-        } else {
-            panic!("Expected KickPublisher variant");
-        }
+        else {
+            return Err("expected KickPublisher variant".into());
+        };
+        assert_eq!(*room_id, RoomId::expect_positive(10_000_140));
+        assert_eq!(*media_id, MediaId::expect_positive(10_000_142));
+        assert_eq!(reason, "user_banned");
+        Ok(())
     }
 
     #[test]
@@ -940,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn test_kick_user_serialization() {
+    fn test_kick_user_serialization() -> serde_json::Result<()> {
         let event = RealtimeEvent::KickUser {
             event_id: synctv_common::snanoid!(16),
             user_id: UserId::expect_positive(10_000_145),
@@ -948,21 +946,22 @@ mod tests {
             timestamp: Utc::now(),
         };
 
-        let json = serde_json::to_string(&event).unwrap();
+        let json = serde_json::to_string(&event)?;
         assert!(json.contains("kick_user"));
         assert!(json.contains("10000145"));
 
-        let deserialized: RealtimeEvent = serde_json::from_str(&json).unwrap();
+        let deserialized: RealtimeEvent = serde_json::from_str(&json)?;
         assert_eq!(deserialized.event_type(), "kick_user");
         assert!(deserialized.room_id().is_none());
         assert_eq!(
             deserialized.user_id().copied(),
             Some(UserId::expect_positive(10_000_145))
         );
+        Ok(())
     }
 
     #[test]
-    fn test_cache_invalidate_serialization() {
+    fn test_cache_invalidate_serialization() -> Result<(), Box<dyn std::error::Error>> {
         let event = RealtimeEvent::CacheInvalidate {
             event_id: synctv_common::snanoid!(16),
             targets: vec![
@@ -980,20 +979,20 @@ mod tests {
             timestamp: Utc::now(),
         };
 
-        let json = serde_json::to_string(&event).unwrap();
+        let json = serde_json::to_string(&event)?;
         assert!(json.contains("cache_invalidate"));
         assert!(json.contains("10000001"));
         assert!(json.contains("10000002"));
 
-        let deserialized: RealtimeEvent = serde_json::from_str(&json).unwrap();
+        let deserialized: RealtimeEvent = serde_json::from_str(&json)?;
         assert_eq!(deserialized.event_type(), "cache_invalidate");
         assert!(deserialized.room_id().is_none());
         assert!(deserialized.user_id().is_none());
 
-        if let RealtimeEvent::CacheInvalidate { targets, .. } = &deserialized {
-            assert_eq!(targets.len(), 4);
-        } else {
-            panic!("Expected CacheInvalidate variant");
-        }
+        let RealtimeEvent::CacheInvalidate { targets, .. } = &deserialized else {
+            return Err("expected CacheInvalidate variant".into());
+        };
+        assert_eq!(targets.len(), 4);
+        Ok(())
     }
 }

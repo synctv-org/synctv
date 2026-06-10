@@ -59,6 +59,33 @@ pub struct PlaybackService {
     single_flight: SingleFlight<String, RoomPlaybackState, CloneableError>,
 }
 
+pub struct PlaybackServiceRuntime {
+    pub invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
+    pub l2_cache: Option<PlaybackStateCache>,
+    pub version_fence: Arc<dyn VersionFenceStore>,
+    pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+}
+
+impl PlaybackServiceRuntime {
+    #[must_use]
+    pub fn local_only() -> Self {
+        Self {
+            invalidation_service: None,
+            l2_cache: None,
+            version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
+            realtime_outbox: None,
+        }
+    }
+}
+
+struct PlaybackSwitchCommand {
+    room_id: RoomId,
+    actor_user_id: UserId,
+    target: SwitchPlaybackTarget,
+    bypass_room_permissions: bool,
+    outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+}
+
 impl std::fmt::Debug for PlaybackService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PlaybackService").finish()
@@ -73,10 +100,21 @@ impl PlaybackService {
     /// Maximum time to wait for the invalidation listener to stop.
     const INVALIDATION_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-    fn version_fence_or_default(
-        version_fence: Option<Arc<dyn VersionFenceStore>>,
-    ) -> Arc<dyn VersionFenceStore> {
-        version_fence.unwrap_or_else(|| Arc::new(crate::cache::NoopVersionFenceStore))
+    async fn insert_playback_outbox_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        state: &RoomPlaybackState,
+        outbox_event_factory: Option<&RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<()> {
+        if let Some(event) = outbox_event_factory
+            .map(|factory| factory(state))
+            .transpose()?
+        {
+            if let Some(outbox) = &self.realtime_outbox {
+                outbox.insert_with_executor(&event, &mut **tx).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Create a new playback service
@@ -92,32 +130,23 @@ impl PlaybackService {
             permission_service,
             media_service,
             user_service,
-            None,
-            None,
-            None,
-            None,
+            PlaybackServiceRuntime::local_only(),
         )
     }
 
     /// Create a playback service with optional cache runtime dependencies wired
     /// at construction time.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
     pub fn new_with_runtime(
         playback_repo: RoomPlaybackStateRepository,
         permission_service: PermissionService,
         media_service: MediaService,
         user_service: UserService,
-        invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
-        l2_cache: Option<PlaybackStateCache>,
-        version_fence: Option<Arc<dyn VersionFenceStore>>,
-        realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+        runtime: PlaybackServiceRuntime,
     ) -> Self {
-        let version_fence = Self::version_fence_or_default(version_fence);
-
         Self {
             playback_repo,
-            realtime_outbox,
+            realtime_outbox: runtime.realtime_outbox,
             permission_service,
             media_service,
             user_service,
@@ -126,9 +155,9 @@ impl PlaybackService {
                     .time_to_live(Duration::from_secs(Self::DEFAULT_CACHE_TTL_SECS))
                     .build(),
             ),
-            l2_cache: Arc::new(parking_lot::RwLock::new(l2_cache)),
-            invalidation_service,
-            consistency: ConsistencyCoordinator::new(version_fence),
+            l2_cache: Arc::new(parking_lot::RwLock::new(runtime.l2_cache)),
+            invalidation_service: runtime.invalidation_service,
+            consistency: ConsistencyCoordinator::new(runtime.version_fence),
             invalidation_runtime: Arc::new(PlaybackInvalidationRuntime::new()),
             single_flight: SingleFlight::new(),
         }
@@ -260,14 +289,8 @@ impl PlaybackService {
                     &mut tx,
                 )
                 .await?;
-            if let Some(outbox) = &self.realtime_outbox {
-                if let Some(event) = outbox_event_factory
-                    .map(|factory| factory(&updated_state))
-                    .transpose()?
-                {
-                    outbox.insert_with_executor(&event, &mut *tx).await?;
-                }
-            }
+            self.insert_playback_outbox_tx(&mut tx, &updated_state, outbox_event_factory)
+                .await?;
             Ok(updated_state)
         }
         .await;
@@ -295,23 +318,13 @@ impl PlaybackService {
             }
         };
 
-        if let Some(reservation) = &reservation {
-            self.finalize_committed_playback_write_best_effort(
-                &state.room_id,
-                Some(reservation),
-                updated_state.version,
-                "persist_playback_update",
-            )
-            .await;
-        } else {
-            self.finalize_committed_playback_write_best_effort(
-                &state.room_id,
-                None,
-                updated_state.version,
-                "persist_playback_update",
-            )
-            .await;
-        }
+        self.finalize_committed_playback_write_best_effort(
+            &state.room_id,
+            reservation.as_ref(),
+            updated_state.version,
+            "persist_playback_update",
+        )
+        .await;
         Ok(updated_state)
     }
 
@@ -456,15 +469,17 @@ impl PlaybackService {
         target: Vec<u8>,
         outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
-        self.switch_internal(
+        self.switch_internal(PlaybackSwitchCommand {
             room_id,
-            user_id,
-            media_id,
-            playlist_id,
-            target,
-            false,
+            actor_user_id: user_id,
+            target: SwitchPlaybackTarget {
+                media_id,
+                playlist_id,
+                target,
+            },
+            bypass_room_permissions: false,
             outbox_event_factory,
-        )
+        })
         .await
     }
 
@@ -492,15 +507,17 @@ impl PlaybackService {
         target: Vec<u8>,
         outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
-        self.switch_internal(
+        self.switch_internal(PlaybackSwitchCommand {
             room_id,
             actor_user_id,
-            media_id,
-            playlist_id,
-            target,
-            true,
+            target: SwitchPlaybackTarget {
+                media_id,
+                playlist_id,
+                target,
+            },
+            bypass_room_permissions: true,
             outbox_event_factory,
-        )
+        })
         .await
     }
 
@@ -746,8 +763,7 @@ impl PlaybackService {
                     .await?;
                 self.write_playback_cache(&saved_state).await;
 
-                // Broadcast to other replicas with retry
-                self.broadcast_invalidation_with_retry(room_id, &saved_state, "play_next")
+                self.broadcast_invalidation(room_id, &saved_state, "play_next")
                     .await;
 
                 tracing::info!(
@@ -901,12 +917,8 @@ impl PlaybackService {
                         .await?;
                     self.write_playback_cache(&updated_state).await;
 
-                    self.broadcast_invalidation_with_retry(
-                        &room_id,
-                        &updated_state,
-                        "update_state",
-                    )
-                    .await;
+                    self.broadcast_invalidation(&room_id, &updated_state, "update_state")
+                        .await;
 
                     Ok(updated_state)
                 }
@@ -957,7 +969,7 @@ impl PlaybackService {
         state: RoomPlaybackState,
     ) -> RoomPlaybackState {
         self.invalidate_playback_cache(&state.room_id).await;
-        self.broadcast_invalidation_with_retry(
+        self.broadcast_invalidation(
             &state.room_id,
             &state,
             "broadcast_playback_reset_after_force_delete",
@@ -1019,15 +1031,12 @@ impl PlaybackService {
                             &mut tx,
                         )
                         .await?;
-                    if let Some(outbox) = &self.realtime_outbox {
-                        if let Some(event) = outbox_event_factory
-                            .as_ref()
-                            .map(|factory| factory(&updated))
-                            .transpose()?
-                        {
-                            outbox.insert_with_executor(&event, &mut *tx).await?;
-                        }
-                    }
+                    self.insert_playback_outbox_tx(
+                        &mut tx,
+                        &updated,
+                        outbox_event_factory.as_ref(),
+                    )
+                    .await?;
                     reset_states.push(updated);
                 }
                 Ok(())
@@ -1063,12 +1072,8 @@ impl PlaybackService {
 
         for state in &states {
             self.write_playback_cache(state).await;
-            self.broadcast_invalidation_with_retry(
-                &state.room_id,
-                state,
-                "reset_playback_for_creator",
-            )
-            .await;
+            self.broadcast_invalidation(&state.room_id, state, "reset_playback_for_creator")
+                .await;
         }
 
         Ok(states)
@@ -1092,31 +1097,24 @@ impl PlaybackService {
         Ok(state.computed_position())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn switch_internal(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        media_id: Option<MediaId>,
-        playlist_id: Option<PlaylistId>,
-        target: Vec<u8>,
-        bypass_room_permissions: bool,
-        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
-    ) -> Result<RoomPlaybackState> {
+    async fn switch_internal(&self, command: PlaybackSwitchCommand) -> Result<RoomPlaybackState> {
+        let PlaybackSwitchCommand {
+            room_id,
+            actor_user_id,
+            target,
+            bypass_room_permissions,
+            outbox_event_factory,
+        } = command;
+
         if !bypass_room_permissions {
             self.permission_service
                 .check_permission(
                     &room_id,
-                    &user_id,
+                    &actor_user_id,
                     crate::models::RoomPermission::CHANGE_CURRENT_MEDIA,
                 )
                 .await?;
         }
-        let target = SwitchPlaybackTarget {
-            media_id,
-            playlist_id,
-            target,
-        };
         validate_switch_target(&target)?;
 
         if target.media_id.is_none() && target.playlist_id.is_none() {
@@ -1168,7 +1166,7 @@ impl PlaybackService {
 
             let resolved = self
                 .media_service
-                .resolve_dynamic_playlist_item(room_id, user_id, playlist_id, &target.target)
+                .resolve_dynamic_playlist_item(room_id, actor_user_id, playlist_id, &target.target)
                 .await?;
             if resolved.is_none() {
                 return Err(Error::NotFound(
@@ -1378,7 +1376,7 @@ impl PlaybackService {
                 .await?;
             self.write_playback_cache(&updated_state).await;
 
-            self.broadcast_invalidation_with_retry(&room_id, &updated_state, "update_state")
+            self.broadcast_invalidation(&room_id, &updated_state, "update_state")
                 .await;
 
             updated_state

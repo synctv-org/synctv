@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used)]
-
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -12,10 +10,14 @@ use synctv_core::{
         InMemoryTokenBlacklistStore, RoomService, UserService,
     },
 };
+use synctv_core_testing::ok;
 
 pub fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = ok(
+        JwtService::new(secret),
+        "test JWT service should initialize",
+    );
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -34,7 +36,10 @@ pub fn make_user_service(pool: &PgPool) -> UserService {
 pub fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
-    RoomService::new_for_tests(pool, user_service).expect("room service should build")
+    ok(
+        RoomService::new_for_tests(pool, user_service),
+        "room service should build",
+    )
 }
 
 pub fn make_user(username: &str) -> User {

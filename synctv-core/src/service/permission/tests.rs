@@ -8,6 +8,31 @@ use crate::models::{
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::atomic::Ordering};
 
+fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
+fn some<T>(value: Option<T>, context: &str) -> T {
+    match value {
+        Some(value) => value,
+        None => std::panic::panic_any(context.to_string()),
+    }
+}
+
+fn joined<T>(result: std::result::Result<T, tokio::task::JoinError>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
+fn runtime() -> tokio::runtime::Runtime {
+    ok(tokio::runtime::Runtime::new(), "Tokio runtime should build")
+}
+
 #[derive(Default)]
 struct RecordingVersionFenceStore {
     versions: parking_lot::Mutex<HashMap<CacheDomain, i64>>,
@@ -64,18 +89,20 @@ impl VersionFenceStore for RecordingVersionFenceStore {
 }
 
 fn make_service_with_runtime(runtime: PermissionServiceRuntime) -> PermissionService {
-    PermissionService::new_without_repositories_for_tests(PermissionServiceRuntime {
-        cache_size: 10,
-        cache_ttl_secs: 60,
-        member_permission_cache_key_prefix: "member_permission:".to_string(),
-        room_settings_cache_key_prefix: "room_settings:".to_string(),
-        ..runtime
-    })
-    .expect("permission service should build")
+    ok(
+        PermissionService::new_without_repositories_for_tests(PermissionServiceRuntime {
+            cache_size: 10,
+            cache_ttl_secs: 60,
+            member_permission_cache_key_prefix: "member_permission:".to_string(),
+            room_settings_cache_key_prefix: "room_settings:".to_string(),
+            ..runtime
+        }),
+        "permission service should build",
+    )
 }
 
 fn make_service() -> PermissionService {
-    make_service_with_runtime(PermissionServiceRuntime::default())
+    make_service_with_runtime(PermissionServiceRuntime::local_only())
 }
 
 fn make_service_async_with_runtime(runtime: PermissionServiceRuntime) -> PermissionService {
@@ -83,7 +110,7 @@ fn make_service_async_with_runtime(runtime: PermissionServiceRuntime) -> Permiss
 }
 
 fn make_service_async() -> PermissionService {
-    make_service_async_with_runtime(PermissionServiceRuntime::default())
+    make_service_async_with_runtime(PermissionServiceRuntime::local_only())
 }
 
 fn make_member(role: RoomRole) -> RoomMember {
@@ -103,11 +130,11 @@ fn test_member_permission_cache_key_generation() {
 }
 
 #[tokio::test]
-async fn standalone_permission_constructors_use_non_authoritative_fences_by_default() {
-    let service = make_service_async_with_runtime(PermissionServiceRuntime::default());
+async fn standalone_permission_runtime_uses_local_authoritative_fence() {
+    let service = make_service_async_with_runtime(PermissionServiceRuntime::local_only());
     assert!(
-        !service.consistency.is_authoritative(),
-        "default PermissionService runtime must remain non-authoritative"
+        service.consistency.is_authoritative(),
+        "standalone permission runtime should use a local authoritative fence"
     );
 }
 
@@ -126,26 +153,28 @@ fn test_member_permission_cache_key_different_for_different_users() {
 async fn test_removed_member_seed_uses_lifecycle_version_and_invalidation_does_not_advance() {
     let fence = Arc::new(RecordingVersionFenceStore::default());
     let service = make_service_async_with_runtime(PermissionServiceRuntime {
-        version_fence: Some(fence.clone()),
-        ..PermissionServiceRuntime::default()
+        version_fence: fence.clone(),
+        ..PermissionServiceRuntime::local_only()
     });
     let room_id = RoomId::expect_positive(1);
     let user_id = UserId::expect_positive(2);
     let domain = PermissionService::permission_domain(&room_id, &user_id);
 
-    service
-        .seed_permission_fence_to_member_version(&room_id, &user_id, 7)
-        .await
-        .expect("membership removal fence should seed to lifecycle version");
+    ok(
+        service
+            .seed_permission_fence_to_member_version(&room_id, &user_id, 7)
+            .await,
+        "membership removal fence should seed to lifecycle version",
+    );
     service
         .invalidate_removed_member_cache(&room_id, &user_id)
         .await;
 
     assert_eq!(
-        fence
-            .current_version(&domain)
-            .await
-            .expect("fence should be readable"),
+        ok(
+            fence.current_version(&domain).await,
+            "fence should be readable"
+        ),
         Some(7),
         "post-delete invalidation must not advance beyond the DB lifecycle version"
     );
@@ -155,8 +184,8 @@ async fn test_removed_member_seed_uses_lifecycle_version_and_invalidation_does_n
 async fn test_added_member_seed_does_not_advance_permission_fence() {
     let fence = Arc::new(RecordingVersionFenceStore::default());
     let service = make_service_async_with_runtime(PermissionServiceRuntime {
-        version_fence: Some(fence.clone()),
-        ..PermissionServiceRuntime::default()
+        version_fence: fence.clone(),
+        ..PermissionServiceRuntime::local_only()
     });
     let room_id = RoomId::expect_positive(1);
     let user_id = UserId::expect_positive(2);
@@ -165,10 +194,10 @@ async fn test_added_member_seed_does_not_advance_permission_fence() {
     service.seed_added_member_cache(&room_id, &user_id, 0).await;
 
     assert_eq!(
-        fence
-            .current_version(&domain)
-            .await
-            .expect("fence should be readable"),
+        ok(
+            fence.current_version(&domain).await,
+            "fence should be readable"
+        ),
         Some(0),
         "newly inserted version-0 members must not get an unsatisfiable version-1 fence"
     );
@@ -334,8 +363,10 @@ fn test_cache_degraded_flag_toggling() {
 
 #[test]
 fn test_flush_rate_limit_allows_after_interval() {
-    let last_flush =
-        parking_lot::Mutex::new(Instant::now().checked_sub(Duration::from_secs(20)).unwrap());
+    let last_flush = parking_lot::Mutex::new(some(
+        Instant::now().checked_sub(Duration::from_secs(20)),
+        "backdated instant should exist",
+    ));
     let elapsed = last_flush.lock().elapsed();
     assert!(elapsed >= Duration::from_secs(PermissionService::FLUSH_RATE_LIMIT_SECS));
 }
@@ -580,7 +611,7 @@ fn test_invalidation_service_configured_at_construction_propagates_to_clones() {
     ));
     let service = make_service_with_runtime(PermissionServiceRuntime {
         invalidation_service: Some(invalidation_service),
-        ..PermissionServiceRuntime::default()
+        ..PermissionServiceRuntime::local_only()
     });
     let cloned = service.clone();
 
@@ -638,7 +669,7 @@ fn make_service_with_invalidation() -> (
 
     let service = make_service_with_runtime(PermissionServiceRuntime {
         invalidation_service: Some(invalidation_service.clone()),
-        ..PermissionServiceRuntime::default()
+        ..PermissionServiceRuntime::local_only()
     });
 
     (service, invalidation_service)
@@ -649,7 +680,7 @@ fn permission_service_with_invalidation(
 ) -> PermissionService {
     make_service_with_runtime(PermissionServiceRuntime {
         invalidation_service: Some(invalidation_service),
-        ..PermissionServiceRuntime::default()
+        ..PermissionServiceRuntime::local_only()
     })
 }
 
@@ -662,7 +693,7 @@ async fn test_runtime_invalidation_does_not_start_tasks_until_explicit_start() {
         "permission service construction must not spawn background tasks"
     );
 
-    service.start().await.expect("start should succeed");
+    ok(service.start().await, "start should succeed");
 
     assert!(
         service.invalidation_tasks_started(),
@@ -682,13 +713,12 @@ async fn test_degraded_mode_auto_recovers_after_timeout_and_flushes_caches() {
     let (service, _invalidation_service) = make_service_with_invalidation();
 
     service.cache_degraded.store(true, Ordering::Release);
-    *service.degradation_started.lock() = Some(
-        Instant::now()
-            .checked_sub(Duration::from_secs(11))
-            .expect("backdating degradation start should succeed"),
-    );
+    *service.degradation_started.lock() = Some(some(
+        Instant::now().checked_sub(Duration::from_secs(11)),
+        "backdating degradation start should succeed",
+    ));
 
-    service.start().await.expect("start should succeed");
+    ok(service.start().await, "start should succeed");
 
     tokio::task::yield_now().await;
 
@@ -711,12 +741,14 @@ async fn test_degraded_mode_recovers_on_invalidation_message() {
     service.cache_degraded.store(true, Ordering::Release);
     *service.degradation_started.lock() = Some(Instant::now());
 
-    service.start().await.expect("start should succeed");
+    ok(service.start().await, "start should succeed");
 
-    invalidation_service
-        .broadcast_all(InvalidationMessage::All)
-        .await
-        .expect("local invalidation broadcast should succeed");
+    ok(
+        invalidation_service
+            .broadcast_all(InvalidationMessage::All)
+            .await,
+        "local invalidation broadcast should succeed",
+    );
     tokio::task::yield_now().await;
 
     assert!(
@@ -754,9 +786,10 @@ async fn test_shutdown_aborts_stuck_invalidation_tasks() {
     tokio::time::advance(PermissionService::INVALIDATION_TASK_SHUTDOWN_TIMEOUT).await;
     tokio::task::yield_now().await;
 
-    shutdown
-        .await
-        .expect("shutdown task should finish after aborting the stuck listener");
+    joined(
+        shutdown.await,
+        "shutdown task should finish after aborting the stuck listener",
+    );
 
     assert!(
         !service.invalidation_runtime.started.load(Ordering::Acquire),
@@ -777,21 +810,23 @@ async fn test_shutdown_aborts_stuck_invalidation_tasks() {
 async fn test_start_can_restart_after_shutdown() {
     let (service, invalidation_service) = make_service_with_invalidation();
 
-    service.start().await.expect("initial start should succeed");
+    ok(service.start().await, "initial start should succeed");
     service.shutdown().await;
 
     service.cache_degraded.store(true, Ordering::Release);
     *service.degradation_started.lock() = Some(Instant::now());
 
-    service
-        .start()
-        .await
-        .expect("restart after shutdown should succeed");
+    ok(
+        service.start().await,
+        "restart after shutdown should succeed",
+    );
 
-    invalidation_service
-        .broadcast_all(InvalidationMessage::All)
-        .await
-        .expect("local invalidation broadcast should succeed after restart");
+    ok(
+        invalidation_service
+            .broadcast_all(InvalidationMessage::All)
+            .await,
+        "local invalidation broadcast should succeed after restart",
+    );
     tokio::task::yield_now().await;
 
     assert!(
@@ -804,30 +839,32 @@ async fn test_start_can_restart_after_shutdown() {
 
 #[test]
 fn test_invalidate_cache_local_clear_works() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = runtime();
     rt.block_on(async {
         let (service, _invalidation_service) = make_service_with_invalidation();
         let room_id = RoomId::expect_positive(1);
         let user_id = UserId::expect_positive(1);
         let cache_key = MemberPermissionKey::new(room_id, user_id);
 
-        service
-            .member_permission_cache
-            .set_if_version_at_least(
-                &cache_key,
-                CachedMemberPermissionSource {
-                    room_id,
-                    user_id,
-                    role: RoomRole::Member,
-                    added_permissions: 0,
-                    removed_permissions: 0,
-                    admin_added_permissions: 0,
-                    admin_removed_permissions: 0,
-                    version: 1,
-                },
-            )
-            .await
-            .unwrap();
+        ok(
+            service
+                .member_permission_cache
+                .set_if_version_at_least(
+                    &cache_key,
+                    CachedMemberPermissionSource {
+                        room_id,
+                        user_id,
+                        role: RoomRole::Member,
+                        added_permissions: 0,
+                        removed_permissions: 0,
+                        admin_added_permissions: 0,
+                        admin_removed_permissions: 0,
+                        version: 1,
+                    },
+                )
+                .await,
+            "member permission cache fixture should write",
+        );
         assert!(service
             .member_permission_cache
             .get_l1(&cache_key)
@@ -846,7 +883,7 @@ fn test_invalidate_cache_local_clear_works() {
 
 #[test]
 fn test_invalidate_room_cache_local_clear_works() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = runtime();
     rt.block_on(async {
         let (service, invalidation_service) = make_service_with_invalidation();
         let mut receiver = invalidation_service.subscribe();
@@ -862,13 +899,13 @@ fn test_invalidate_room_cache_local_clear_works() {
                 assert_eq!(rid, "1");
             }
             Ok(Ok(other)) => {
-                panic!("Expected RoomPermission message, got {other:?}");
+                std::panic::panic_any(format!("Expected RoomPermission message, got {other:?}"));
             }
             Ok(Err(e)) => {
-                panic!("Receiver error: {e:?}");
+                std::panic::panic_any(format!("Receiver error: {e:?}"));
             }
             Err(timeout_error) => {
-                panic!("Timeout waiting for broadcast: {timeout_error:?}");
+                std::panic::panic_any(format!("Timeout waiting for broadcast: {timeout_error:?}"));
             }
         }
     });
@@ -876,30 +913,32 @@ fn test_invalidate_room_cache_local_clear_works() {
 
 #[test]
 fn test_clear_cache_local_clear_works() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = runtime();
     rt.block_on(async {
         let (service, _invalidation_service) = make_service_with_invalidation();
         let room_id = RoomId::expect_positive(1);
         let user_id = UserId::expect_positive(1);
         let cache_key = MemberPermissionKey::new(room_id, user_id);
 
-        service
-            .member_permission_cache
-            .set_if_version_at_least(
-                &cache_key,
-                CachedMemberPermissionSource {
-                    room_id,
-                    user_id,
-                    role: RoomRole::Member,
-                    added_permissions: 0,
-                    removed_permissions: 0,
-                    admin_added_permissions: 0,
-                    admin_removed_permissions: 0,
-                    version: 1,
-                },
-            )
-            .await
-            .unwrap();
+        ok(
+            service
+                .member_permission_cache
+                .set_if_version_at_least(
+                    &cache_key,
+                    CachedMemberPermissionSource {
+                        room_id,
+                        user_id,
+                        role: RoomRole::Member,
+                        added_permissions: 0,
+                        removed_permissions: 0,
+                        admin_added_permissions: 0,
+                        admin_removed_permissions: 0,
+                        version: 1,
+                    },
+                )
+                .await,
+            "member permission cache fixture should write",
+        );
         assert!(service
             .member_permission_cache
             .get_l1(&cache_key)
@@ -918,7 +957,7 @@ fn test_clear_cache_local_clear_works() {
 
 #[test]
 fn test_invalidate_cache_no_panic_without_invalidation_service() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = runtime();
     rt.block_on(async {
         let service = make_service_async();
         let room_id = RoomId::expect_positive(1);
@@ -931,7 +970,7 @@ fn test_invalidate_cache_no_panic_without_invalidation_service() {
 fn test_invalidate_cache_receives_broadcast_after_fix() {
     use crate::cache::{CacheInvalidationService, InvalidationMessage};
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = runtime();
     rt.block_on(async {
         // Create a CacheInvalidationService without Redis
         let invalidation_service = Arc::new(CacheInvalidationService::new(
@@ -948,16 +987,11 @@ fn test_invalidate_cache_receives_broadcast_after_fix() {
         let room_id = RoomId::expect_positive(1);
         let user_id = UserId::expect_positive(1);
 
-        // Invalidate the cache - this should broadcast via invalidation_service
         service.invalidate_cache(&room_id, &user_id).await;
 
-        // Try to receive the broadcast message
-        // invalidate_cache broadcasts both locally and to Redis. Since there's
-        // no Redis here, only local broadcast happens and should be received.
         let result =
             tokio::time::timeout(tokio::time::Duration::from_millis(100), receiver.recv()).await;
 
-        // After the fix, this should receive the message
         match result {
             Ok(Ok(InvalidationMessage::UserPermission {
                 room_id: rid,
@@ -965,20 +999,19 @@ fn test_invalidate_cache_receives_broadcast_after_fix() {
             })) => {
                 assert_eq!(rid, "1");
                 assert_eq!(uid, "1");
-                // Success! The broadcast was received.
             }
             Ok(Ok(other)) => {
-                panic!("Expected UserPermission message, got {other:?}");
+                std::panic::panic_any(format!("Expected UserPermission message, got {other:?}"));
             }
             Ok(Err(e)) => {
-                panic!("Receiver error: {e:?}");
+                std::panic::panic_any(format!("Receiver error: {e:?}"));
             }
             Err(timeout_error) => {
-                panic!(
+                std::panic::panic_any(format!(
                     "Timeout waiting for broadcast ({timeout_error:?}) - this indicates \
                      invalidate_cache is not broadcasting locally. It should use \
                      invalidate_and_broadcast_user_permission."
-                );
+                ));
             }
         }
     });
@@ -988,46 +1021,39 @@ fn test_invalidate_cache_receives_broadcast_after_fix() {
 fn test_invalidate_room_cache_receives_broadcast_after_fix() {
     use crate::cache::{CacheInvalidationService, InvalidationMessage};
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = runtime();
     rt.block_on(async {
-        // Create a CacheInvalidationService without Redis
         let invalidation_service = Arc::new(CacheInvalidationService::new(
-            // No Redis
             "test-node".to_string(),
             "test-stream".to_string(),
         ));
 
-        // Subscribe to receive invalidation messages
         let mut receiver = invalidation_service.subscribe();
 
         let service = permission_service_with_invalidation(invalidation_service.clone());
 
-        // Invalidate the room cache - this should broadcast via invalidation_service
         let room_id = RoomId::expect_positive(1);
         service.invalidate_room_cache(&room_id).await;
 
-        // Try to receive the broadcast message
         let result =
             tokio::time::timeout(tokio::time::Duration::from_millis(100), receiver.recv()).await;
 
-        // After the fix, this should receive the message
         match result {
             Ok(Ok(InvalidationMessage::RoomPermission { room_id: rid })) => {
                 assert_eq!(rid, "1");
-                // Success! The broadcast was received.
             }
             Ok(Ok(other)) => {
-                panic!("Expected RoomPermission message, got {other:?}");
+                std::panic::panic_any(format!("Expected RoomPermission message, got {other:?}"));
             }
             Ok(Err(e)) => {
-                panic!("Receiver error: {e:?}");
+                std::panic::panic_any(format!("Receiver error: {e:?}"));
             }
             Err(timeout_error) => {
-                panic!(
+                std::panic::panic_any(format!(
                     "Timeout waiting for broadcast ({timeout_error:?}) - this indicates \
                      invalidate_room_cache is not broadcasting locally. It should use \
                      invalidate_and_broadcast_room_permission."
-                );
+                ));
             }
         }
     });
@@ -1037,43 +1063,35 @@ fn test_invalidate_room_cache_receives_broadcast_after_fix() {
 fn test_clear_cache_receives_broadcast_after_fix() {
     use crate::cache::{CacheInvalidationService, InvalidationMessage};
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = runtime();
     rt.block_on(async {
-        // Create a CacheInvalidationService without Redis
         let invalidation_service = Arc::new(CacheInvalidationService::new(
-            // No Redis
             "test-node".to_string(),
             "test-stream".to_string(),
         ));
 
-        // Subscribe to receive invalidation messages
         let mut receiver = invalidation_service.subscribe();
 
         let service = permission_service_with_invalidation(invalidation_service.clone());
 
-        // Clear the cache - this should broadcast via invalidation_service
         service.clear_cache().await;
 
-        // Try to receive the broadcast message
         let result =
             tokio::time::timeout(tokio::time::Duration::from_millis(100), receiver.recv()).await;
 
-        // After the fix, this should receive the message
         match result {
-            Ok(Ok(InvalidationMessage::All)) => {
-                // Success! The broadcast was received.
-            }
+            Ok(Ok(InvalidationMessage::All)) => {}
             Ok(Ok(other)) => {
-                panic!("Expected All message, got {other:?}");
+                std::panic::panic_any(format!("Expected All message, got {other:?}"));
             }
             Ok(Err(e)) => {
-                panic!("Receiver error: {e:?}");
+                std::panic::panic_any(format!("Receiver error: {e:?}"));
             }
             Err(timeout_error) => {
-                panic!(
+                std::panic::panic_any(format!(
                     "Timeout waiting for broadcast ({timeout_error:?}) - this indicates \
                      clear_cache is not broadcasting locally. It should use broadcast_all."
-                );
+                ));
             }
         }
     });

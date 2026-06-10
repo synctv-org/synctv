@@ -30,17 +30,14 @@ impl UserService {
 
         let maybe_user = self.get_by_login_identifier(&normalized_identifier).await?;
         let Some(user) = maybe_user else {
-            let _ = self
-                .opaque_password_service
-                .verify_decoy_password(&password);
-            self.record_login_failure_for_bruteforce(
+            self.record_direct_password_failure(
                 &normalized_identifier,
                 false,
                 client_ip,
                 control,
-                "direct password",
+                Some(&password),
             )
-            .await;
+            .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
@@ -49,17 +46,14 @@ impl UserService {
             .get_opaque_credential(&user.id)
             .await?
         else {
-            let _ = self
-                .opaque_password_service
-                .verify_decoy_password(&password);
-            self.record_login_failure_for_bruteforce(
+            self.record_direct_password_failure(
                 &normalized_identifier,
                 true,
                 client_ip,
                 control,
-                "direct password",
+                Some(&password),
             )
-            .await;
+            .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
@@ -67,14 +61,14 @@ impl UserService {
             .opaque_password_service
             .verify_password(&opaque_credential.record, &password)?;
         if !verified {
-            self.record_login_failure_for_bruteforce(
+            self.record_direct_password_failure(
                 &normalized_identifier,
                 true,
                 client_ip,
                 control,
-                "direct password",
+                None,
             )
-            .await;
+            .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
@@ -96,6 +90,39 @@ impl UserService {
             control,
         )
         .await
+    }
+
+    async fn record_direct_password_failure(
+        &self,
+        brute_force_key: &str,
+        user_existed: bool,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+        decoy_password: Option<&str>,
+    ) -> Result<()> {
+        let decoy_result = decoy_password
+            .map(|password| self.opaque_password_service.verify_decoy_password(password))
+            .transpose()
+            .map(|_| ());
+
+        self.record_login_failure_for_bruteforce(
+            brute_force_key,
+            user_existed,
+            client_ip,
+            control,
+            "direct password",
+        )
+        .await?;
+
+        if let Err(error) = decoy_result {
+            tracing::error!(
+                error = %error,
+                "Decoy password verification failed during direct login"
+            );
+            return Err(error);
+        }
+
+        Ok(())
     }
 
     pub async fn start_opaque_login_with_control(
@@ -163,7 +190,7 @@ impl UserService {
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
         login_flow: &'static str,
-    ) {
+    ) -> Result<()> {
         let record_result = if user_existed {
             self.brute_force
                 .record_failure_with_control(brute_force_key, client_ip, control)
@@ -175,7 +202,9 @@ impl UserService {
         };
         if let Err(error) = record_result {
             tracing::warn!(error = %error, login_flow, "Failed to record login failure for brute-force tracking");
+            return Err(error);
         }
+        Ok(())
     }
 
     pub async fn finish_opaque_login_with_control(
@@ -201,7 +230,7 @@ impl UserService {
                 control,
                 "opaque",
             )
-            .await;
+            .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 

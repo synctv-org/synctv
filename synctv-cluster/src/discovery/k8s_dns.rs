@@ -183,9 +183,15 @@ impl K8sDnsDiscovery {
             .values()
             .filter(|node_id| !new_node_ids.contains(*node_id))
         {
-            let _ = registry
+            if !registry
                 .remove_discovered_local_node(node_id, NodeDiscoverySource::K8sDns)
-                .await;
+                .await
+            {
+                tracing::debug!(
+                    node_id,
+                    "stale K8s DNS discovered node was already absent from local registry"
+                );
+            }
         }
 
         *self.peer_node_ids.write().await = new_mapping;
@@ -242,7 +248,7 @@ impl K8sDnsDiscovery {
             Ok(new_peers) => {
                 let count = new_peers.len();
 
-                if let Some(ref registry) = self.node_registry {
+                if self.node_registry.is_some() {
                     let probe_results = join_all(new_peers.iter().map(|peer| async move {
                         let identity =
                             probe_node_identity(&peer.api_address, 3, &self.cluster_secret).await;
@@ -266,8 +272,6 @@ impl K8sDnsDiscovery {
                             );
                         }
                     }
-
-                    let _ = registry;
                     self.sync_verified_peers_to_registry(verified_peers).await;
                 }
 
@@ -347,6 +351,14 @@ mod tests {
     use crate::discovery::NodeRegistry;
     use std::sync::Arc;
 
+    fn make_registry() -> crate::Result<Arc<NodeRegistry>> {
+        Ok(Arc::new(NodeRegistry::new_local_only(
+            "self".to_string(),
+            30,
+            "k8s-dns-test:",
+        )?))
+    }
+
     #[test]
     fn test_k8s_dns_discovery_new() {
         let disc = K8sDnsDiscovery::new(
@@ -372,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_env_requires_pod_ip() {
+    fn test_from_env_requires_pod_ip() -> crate::Result<()> {
         let headless_prev = std::env::var("HEADLESS_SERVICE_NAME").ok();
         let namespace_prev = std::env::var("POD_NAMESPACE").ok();
         let pod_ip_prev = std::env::var("POD_IP").ok();
@@ -397,12 +409,15 @@ mod tests {
         }
 
         let Err(err) = result else {
-            panic!("missing POD_IP must fail closed");
+            return Err(crate::Error::Configuration(
+                "missing POD_IP must fail closed".to_string(),
+            ));
         };
         assert!(
             err.to_string().contains("POD_IP"),
             "configuration error should explicitly mention POD_IP: {err}"
         );
+        Ok(())
     }
 
     #[tokio::test]
@@ -417,7 +432,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_refresh_loop_stops_when_parent_shutdown_token_is_cancelled() {
+    async fn test_refresh_loop_stops_when_parent_shutdown_token_is_cancelled(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
             8080,
@@ -429,14 +445,13 @@ mod tests {
 
         shutdown_token.cancel();
 
-        tokio::time::timeout(Duration::from_secs(1), handle)
-            .await
-            .expect("refresh loop should stop promptly when parent shutdown token is cancelled")
-            .expect("refresh loop should exit cleanly");
+        tokio::time::timeout(Duration::from_secs(1), handle).await??;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_refresh_loop_waits_for_first_interval_before_refreshing() {
+    async fn test_refresh_loop_waits_for_first_interval_before_refreshing(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let disc = K8sDnsDiscovery::new("localhost".to_string(), 8080, "10.0.0.1".to_string());
         let shutdown_token = CancellationToken::new();
 
@@ -450,17 +465,14 @@ mod tests {
         );
 
         shutdown_token.cancel();
-        handle
-            .await
-            .expect("refresh loop should exit cleanly after cancellation");
+        handle.await?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_sync_verified_peers_uses_probed_node_id_in_registry_local_cache() {
-        let registry = Arc::new(
-            NodeRegistry::new_local_only("self".to_string(), 30, "k8s-dns-test:")
-                .expect("local-only registry"),
-        );
+    async fn test_sync_verified_peers_uses_probed_node_id_in_registry_local_cache(
+    ) -> crate::Result<()> {
+        let registry = make_registry()?;
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
             8080,
@@ -483,14 +495,12 @@ mod tests {
             registry.test_get_local("10.0.0.2").await.is_none(),
             "DNS IP must not be used as authoritative node_id"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_sync_verified_peers_removes_disappeared_dns_local_entry() {
-        let registry = Arc::new(
-            NodeRegistry::new_local_only("self".to_string(), 30, "k8s-dns-test:")
-                .expect("local-only registry"),
-        );
+    async fn test_sync_verified_peers_removes_disappeared_dns_local_entry() -> crate::Result<()> {
+        let registry = make_registry()?;
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
             8080,
@@ -510,14 +520,13 @@ mod tests {
             registry.test_get_local("peer-node-1").await.is_none(),
             "vanished DNS peers should be removed from transient local cache"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_sync_verified_peers_does_not_remove_real_node_entry_after_dns_disappears() {
-        let registry = Arc::new(
-            NodeRegistry::new_local_only("self".to_string(), 30, "k8s-dns-test:")
-                .expect("local-only registry"),
-        );
+    async fn test_sync_verified_peers_does_not_remove_real_node_entry_after_dns_disappears(
+    ) -> crate::Result<()> {
+        let registry = make_registry()?;
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
             8080,
@@ -542,14 +551,13 @@ mod tests {
             registry.test_get_local("peer-node-1").await.is_some(),
             "DNS disappearance must not evict a real node entry that replaced the transient DNS one"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_sync_verified_peers_refreshes_transient_entry_when_address_changes() {
-        let registry = Arc::new(
-            NodeRegistry::new_local_only("self".to_string(), 30, "k8s-dns-test:")
-                .expect("local-only registry"),
-        );
+    async fn test_sync_verified_peers_refreshes_transient_entry_when_address_changes(
+    ) -> crate::Result<()> {
+        let registry = make_registry()?;
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
             8080,
@@ -574,8 +582,11 @@ mod tests {
         let node = registry
             .test_get_local("peer-node-1")
             .await
-            .expect("transient DNS peer should still exist");
+            .ok_or_else(|| {
+                crate::Error::NotFound("transient DNS peer should still exist".to_string())
+            })?;
         assert_eq!(node.api_address, "10.0.0.9:8080");
         assert_eq!(node.epoch, 8);
+        Ok(())
     }
 }

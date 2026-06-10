@@ -73,6 +73,12 @@ mod tests {
     use synctv_core::models::RoomId;
     use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
     #[tokio::test]
     async fn test_room_cache_fanout_is_noop_when_realtime_fanout_is_local() {
         let service = default_room_cache_fanout_service(disabled_realtime_fanout_service());
@@ -81,14 +87,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_room_cache_fanout_publishes_room_target_invalidation() {
+    async fn test_room_cache_fanout_publishes_room_target_invalidation() -> TestResult {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let service = default_room_cache_fanout_service(channel_realtime_fanout_service(tx));
         let room_id = RoomId::expect_positive(109_002);
 
         service.publish_invalidation(&room_id);
 
-        let request = rx.recv().await.expect("publish request should be queued");
+        let request = rx
+            .recv()
+            .await
+            .ok_or_else(|| test_error("publish request should be queued"))?;
         match request.event {
             RealtimeEvent::CacheInvalidate {
                 targets, event_id, ..
@@ -98,16 +107,25 @@ mod tests {
                     CacheTarget::Room { room_id } => {
                         assert_eq!(room_id, &RoomId::expect_positive(109_002));
                     }
-                    other => panic!("expected CacheTarget::Room, got {other:?}"),
+                    other => {
+                        return Err(test_error(format!(
+                            "expected CacheTarget::Room, got {other:?}"
+                        )))
+                    }
                 }
                 assert!(!event_id.is_empty());
             }
-            other => panic!("expected CacheInvalidate, got {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "expected CacheInvalidate, got {other:?}"
+                )))
+            }
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_room_cache_fanout_publishes_all_target_invalidation() {
+    async fn test_room_cache_fanout_publishes_all_target_invalidation() -> TestResult {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let service = default_room_cache_fanout_service(channel_realtime_fanout_service(tx));
 
@@ -116,13 +134,21 @@ mod tests {
             "all-target cache invalidation should publish"
         );
 
-        let request = rx.recv().await.expect("publish request should be queued");
+        let request = rx
+            .recv()
+            .await
+            .ok_or_else(|| test_error("publish request should be queued"))?;
         match request.event {
             RealtimeEvent::CacheInvalidate { targets, .. } => {
                 assert_eq!(targets.len(), 1);
                 assert!(matches!(targets[0], CacheTarget::All));
             }
-            other => panic!("expected CacheInvalidate, got {other:?}"),
+            other => {
+                return Err(test_error(format!(
+                    "expected CacheInvalidate, got {other:?}"
+                )))
+            }
         }
+        Ok(())
     }
 }

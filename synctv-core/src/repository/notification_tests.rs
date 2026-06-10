@@ -1,6 +1,7 @@
 use super::*;
 use crate::models::notification::{MarkAllAsReadRequest, MarkAsReadRequest};
 use crate::models::pagination::PageParams;
+use crate::test_helpers::{TestOptionExt, TestResultExt};
 use synctv_core_testing::create_test_pool;
 
 /// Test CreateNotificationRequest struct creation with minimal fields
@@ -156,15 +157,21 @@ fn test_notification_type_variants() {
 #[test]
 fn test_notification_type_parsing() {
     assert_eq!(
-        "room_invitation".parse::<NotificationType>().unwrap(),
+        "room_invitation"
+            .parse::<NotificationType>()
+            .checked("operation should succeed"),
         NotificationType::RoomInvitation
     );
     assert_eq!(
-        "system_announcement".parse::<NotificationType>().unwrap(),
+        "system_announcement"
+            .parse::<NotificationType>()
+            .checked("operation should succeed"),
         NotificationType::SystemAnnouncement
     );
     assert_eq!(
-        "room_event".parse::<NotificationType>().unwrap(),
+        "room_event"
+            .parse::<NotificationType>()
+            .checked("operation should succeed"),
         NotificationType::RoomEvent
     );
 }
@@ -175,7 +182,7 @@ fn test_notification_type_invalid_parsing() {
     let result = "invalid_type".parse::<NotificationType>();
     assert!(result.is_err());
     assert!(result
-        .unwrap_err()
+        .failed("operation should fail")
         .to_string()
         .contains("Invalid notification type"));
 }
@@ -192,7 +199,10 @@ async fn test_create_notification() {
     // Create a user first (for foreign key constraint)
     let user_repo = crate::repository::user::UserRepository::new(pool.clone());
     let user = crate::test_helpers::UserFixture::new().build();
-    let created_user = user_repo.create(&user).await.unwrap();
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .checked("operation should succeed");
 
     // Create notification
     let req = CreateNotificationRequest {
@@ -203,7 +213,7 @@ async fn test_create_notification() {
         data: serde_json::json!({"key": "value"}),
     };
 
-    let notification = repo.create(&req).await.unwrap();
+    let notification = repo.create(&req).await.checked("operation should succeed");
 
     assert!(notification.id > 0);
     assert_eq!(notification.user_id, created_user.id);
@@ -226,7 +236,10 @@ async fn test_get_by_id() {
     // Create user and notification
     let user_repo = crate::repository::user::UserRepository::new(pool.clone());
     let user = crate::test_helpers::UserFixture::new().build();
-    let created_user = user_repo.create(&user).await.unwrap();
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .checked("operation should succeed");
 
     let req = CreateNotificationRequest {
         user_id: created_user.id,
@@ -235,12 +248,15 @@ async fn test_get_by_id() {
         content: "User joined room".to_string(),
         data: serde_json::json!({}),
     };
-    let created = repo.create(&req).await.unwrap();
+    let created = repo.create(&req).await.checked("operation should succeed");
 
     // Retrieve by ID
-    let found = repo.get_by_id(created.id).await.unwrap();
+    let found = repo
+        .get_by_id(created.id)
+        .await
+        .checked("operation should succeed");
     assert!(found.is_some());
-    let found = found.unwrap();
+    let found = found.checked("operation should succeed");
     assert_eq!(found.id, created.id);
     assert_eq!(found.title, "Room Event");
 }
@@ -253,7 +269,10 @@ async fn test_get_by_id_not_found() {
     let repo = NotificationRepository::new(pool.clone());
 
     let non_existent_id = i64::MAX;
-    let found = repo.get_by_id(non_existent_id).await.unwrap();
+    let found = repo
+        .get_by_id(non_existent_id)
+        .await
+        .checked("operation should succeed");
     assert!(found.is_none());
 }
 
@@ -267,7 +286,10 @@ async fn test_list_by_user_with_count() {
 
     // Create user
     let user = crate::test_helpers::UserFixture::new().build();
-    let created_user = user_repo.create(&user).await.unwrap();
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .checked("operation should succeed");
 
     // Create multiple notifications
     for i in 0..5 {
@@ -278,7 +300,7 @@ async fn test_list_by_user_with_count() {
             content: format!("Content {i}"),
             data: serde_json::json!({}),
         };
-        repo.create(&req).await.unwrap();
+        repo.create(&req).await.checked("operation should succeed");
     }
 
     // List with pagination
@@ -294,7 +316,7 @@ async fn test_list_by_user_with_count() {
     let (notifications, total) = repo
         .list_by_user_with_count(&created_user.id, &query)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     assert_eq!(notifications.len(), 3);
     assert_eq!(total, 5);
@@ -310,7 +332,10 @@ async fn test_list_by_user_with_count_filter_by_read() {
 
     // Create user
     let user = crate::test_helpers::UserFixture::new().build();
-    let created_user = user_repo.create(&user).await.unwrap();
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .checked("operation should succeed");
 
     // Create notification
     let req = CreateNotificationRequest {
@@ -320,12 +345,12 @@ async fn test_list_by_user_with_count_filter_by_read() {
         content: "Content".to_string(),
         data: serde_json::json!({}),
     };
-    let notification = repo.create(&req).await.unwrap();
+    let notification = repo.create(&req).await.checked("operation should succeed");
 
     // Mark as read
     repo.mark_as_read(&created_user.id, &[notification.id])
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     // List only unread
     let query = NotificationListQuery {
@@ -339,7 +364,7 @@ async fn test_list_by_user_with_count_filter_by_read() {
     let (unread, _) = repo
         .list_by_user_with_count(&created_user.id, &query)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert!(unread.is_empty());
 
     // List only read
@@ -354,7 +379,7 @@ async fn test_list_by_user_with_count_filter_by_read() {
     let (read, _) = repo
         .list_by_user_with_count(&created_user.id, &query)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(read.len(), 1);
 }
 
@@ -368,7 +393,10 @@ async fn test_list_by_user_with_count_filter_by_type() {
 
     // Create user
     let user = crate::test_helpers::UserFixture::new().build();
-    let created_user = user_repo.create(&user).await.unwrap();
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .checked("operation should succeed");
 
     // Create notifications of different types
     for nt in [
@@ -382,7 +410,7 @@ async fn test_list_by_user_with_count_filter_by_type() {
             content: "Content".to_string(),
             data: serde_json::json!({}),
         };
-        repo.create(&req).await.unwrap();
+        repo.create(&req).await.checked("operation should succeed");
     }
 
     // Filter by SystemAnnouncement
@@ -397,7 +425,7 @@ async fn test_list_by_user_with_count_filter_by_type() {
     let (notifications, _) = repo
         .list_by_user_with_count(&created_user.id, &query)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(notifications.len(), 1);
     assert_eq!(
         notifications[0].notification_type,
@@ -415,7 +443,10 @@ async fn test_mark_as_read() {
 
     // Create user
     let user = crate::test_helpers::UserFixture::new().build();
-    let created_user = user_repo.create(&user).await.unwrap();
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .checked("operation should succeed");
 
     // Create notifications
     let mut notification_ids = Vec::new();
@@ -427,7 +458,7 @@ async fn test_mark_as_read() {
             content: "Content".to_string(),
             data: serde_json::json!({}),
         };
-        let notification = repo.create(&req).await.unwrap();
+        let notification = repo.create(&req).await.checked("operation should succeed");
         notification_ids.push(notification.id);
     }
 
@@ -435,11 +466,14 @@ async fn test_mark_as_read() {
     let affected = repo
         .mark_as_read(&created_user.id, &notification_ids[..2])
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(affected, 2);
 
     // Verify unread count
-    let unread = repo.count_unread(&created_user.id).await.unwrap();
+    let unread = repo
+        .count_unread(&created_user.id)
+        .await
+        .checked("operation should succeed");
     assert_eq!(unread, 1);
 }
 
@@ -451,7 +485,10 @@ async fn test_mark_as_read_empty_list() {
     let repo = NotificationRepository::new(pool.clone());
     let user_id = UserId::new();
 
-    let affected = repo.mark_as_read(&user_id, &[]).await.unwrap();
+    let affected = repo
+        .mark_as_read(&user_id, &[])
+        .await
+        .checked("operation should succeed");
     assert_eq!(affected, 0);
 }
 
@@ -465,7 +502,10 @@ async fn test_mark_all_as_read() {
 
     // Create user
     let user = crate::test_helpers::UserFixture::new().build();
-    let created_user = user_repo.create(&user).await.unwrap();
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .checked("operation should succeed");
 
     // Create multiple notifications
     for i in 0..5 {
@@ -476,15 +516,21 @@ async fn test_mark_all_as_read() {
             content: "Content".to_string(),
             data: serde_json::json!({}),
         };
-        repo.create(&req).await.unwrap();
+        repo.create(&req).await.checked("operation should succeed");
     }
 
     // Mark all as read
-    let affected = repo.mark_all_as_read(&created_user.id, None).await.unwrap();
+    let affected = repo
+        .mark_all_as_read(&created_user.id, None)
+        .await
+        .checked("operation should succeed");
     assert_eq!(affected, 5);
 
     // Verify unread count is 0
-    let unread = repo.count_unread(&created_user.id).await.unwrap();
+    let unread = repo
+        .count_unread(&created_user.id)
+        .await
+        .checked("operation should succeed");
     assert_eq!(unread, 0);
 }
 
@@ -498,7 +544,10 @@ async fn test_mark_all_as_read_with_before() {
 
     // Create user
     let user = crate::test_helpers::UserFixture::new().build();
-    let created_user = user_repo.create(&user).await.unwrap();
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .checked("operation should succeed");
 
     // Create notification
     let req = CreateNotificationRequest {
@@ -508,14 +557,14 @@ async fn test_mark_all_as_read_with_before() {
         content: "Content".to_string(),
         data: serde_json::json!({}),
     };
-    repo.create(&req).await.unwrap();
+    repo.create(&req).await.checked("operation should succeed");
 
     // Mark all as read before a future time (should mark this one)
     let before = chrono::Utc::now() + chrono::Duration::days(1);
     let affected = repo
         .mark_all_as_read(&created_user.id, Some(before))
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(affected, 1);
 }
 
@@ -529,7 +578,10 @@ async fn test_delete_notification() {
 
     // Create user
     let user = crate::test_helpers::UserFixture::new().build();
-    let created_user = user_repo.create(&user).await.unwrap();
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .checked("operation should succeed");
 
     // Create notification
     let req = CreateNotificationRequest {
@@ -539,15 +591,18 @@ async fn test_delete_notification() {
         content: "Content".to_string(),
         data: serde_json::json!({}),
     };
-    let notification = repo.create(&req).await.unwrap();
+    let notification = repo.create(&req).await.checked("operation should succeed");
 
     // Delete notification
     repo.delete(&created_user.id, notification.id)
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     // Verify it's deleted
-    let found = repo.get_by_id(notification.id).await.unwrap();
+    let found = repo
+        .get_by_id(notification.id)
+        .await
+        .checked("operation should succeed");
     assert!(found.is_none());
 }
 
@@ -562,7 +617,10 @@ async fn test_delete_notification_not_found() {
 
     let result = repo.delete(&user_id, non_existent_id).await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), crate::Error::NotFound(_)));
+    assert!(matches!(
+        result.failed("operation should fail"),
+        crate::Error::NotFound(_)
+    ));
 }
 
 /// Test count_unread() returns correct count
@@ -575,7 +633,10 @@ async fn test_count_unread() {
 
     // Create user
     let user = crate::test_helpers::UserFixture::new().build();
-    let created_user = user_repo.create(&user).await.unwrap();
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .checked("operation should succeed");
 
     // Create notifications
     for i in 0..3 {
@@ -586,11 +647,14 @@ async fn test_count_unread() {
             content: "Content".to_string(),
             data: serde_json::json!({}),
         };
-        repo.create(&req).await.unwrap();
+        repo.create(&req).await.checked("operation should succeed");
     }
 
     // Count unread
-    let unread = repo.count_unread(&created_user.id).await.unwrap();
+    let unread = repo
+        .count_unread(&created_user.id)
+        .await
+        .checked("operation should succeed");
     assert_eq!(unread, 3);
 
     // Mark one as read
@@ -605,13 +669,16 @@ async fn test_count_unread() {
     let (notifications, _) = repo
         .list_by_user_with_count(&created_user.id, &query)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     repo.mark_as_read(&created_user.id, &[notifications[0].id])
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     // Verify count decreased
-    let unread = repo.count_unread(&created_user.id).await.unwrap();
+    let unread = repo
+        .count_unread(&created_user.id)
+        .await
+        .checked("operation should succeed");
     assert_eq!(unread, 2);
 }
 
@@ -625,7 +692,10 @@ async fn test_count_by_user_with_filters() {
 
     // Create user
     let user = crate::test_helpers::UserFixture::new().build();
-    let created_user = user_repo.create(&user).await.unwrap();
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .checked("operation should succeed");
 
     // Create notifications of different types
     for nt in [
@@ -640,7 +710,7 @@ async fn test_count_by_user_with_filters() {
             content: "Content".to_string(),
             data: serde_json::json!({}),
         };
-        repo.create(&req).await.unwrap();
+        repo.create(&req).await.checked("operation should succeed");
     }
 
     // Count by type
@@ -651,14 +721,14 @@ async fn test_count_by_user_with_filters() {
             Some(&NotificationType::SystemAnnouncement),
         )
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(count, 1);
 
     // Count all
     let count = repo
         .count_by_user(&created_user.id, None, None)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(count, 3);
 }
 
@@ -672,7 +742,10 @@ async fn test_delete_all_read() {
 
     // Create user
     let user = crate::test_helpers::UserFixture::new().build();
-    let created_user = user_repo.create(&user).await.unwrap();
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .checked("operation should succeed");
 
     // Create notifications
     let mut ids = Vec::new();
@@ -684,23 +757,26 @@ async fn test_delete_all_read() {
             content: "Content".to_string(),
             data: serde_json::json!({}),
         };
-        let notification = repo.create(&req).await.unwrap();
+        let notification = repo.create(&req).await.checked("operation should succeed");
         ids.push(notification.id);
     }
 
     // Mark first as read
     repo.mark_as_read(&created_user.id, &[ids[0]])
         .await
-        .unwrap();
+        .checked("operation should succeed");
 
     // Delete all read
-    let affected = repo.delete_all_read(&created_user.id).await.unwrap();
+    let affected = repo
+        .delete_all_read(&created_user.id)
+        .await
+        .checked("operation should succeed");
     assert_eq!(affected, 1);
 
     // Verify remaining count
     let count = repo
         .count_by_user(&created_user.id, None, None)
         .await
-        .unwrap();
+        .checked("operation should succeed");
     assert_eq!(count, 2);
 }

@@ -2,13 +2,12 @@
 //!
 //! Tests: list filter combinations, `get_by_id` 365-day visibility limit.
 //!
-#![allow(clippy::unwrap_used)]
 
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use synctv_core::models::{AuditAction, AuditTargetType, PageParams, UserId};
 use synctv_core::repository::{AuditLogQuery, AuditLogRepository};
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, ok, some};
 /// Insert an audit log directly via SQL and return the generated id.
 async fn insert_audit_log(
     pool: &PgPool,
@@ -19,22 +18,24 @@ async fn insert_audit_log(
     target_id: Option<&str>,
     created_at: chrono::DateTime<Utc>,
 ) -> i64 {
-    let row: (i64,) = sqlx::query_as(
-        r"
+    let row: (i64,) = ok(
+        sqlx::query_as(
+            r"
         INSERT INTO audit_logs (actor_id, actor_username, action, target_type, target_id, created_at)
         VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id
         ",
-    )
-    .bind(actor_id)
-    .bind(actor_username)
-    .bind(i16::from(action))
-    .bind(target_type.map(i16::from))
-    .bind(target_id)
-    .bind(created_at)
-    .fetch_one(pool)
-    .await
-    .expect("Failed to insert audit log");
+        )
+        .bind(actor_id)
+        .bind(actor_username)
+        .bind(i16::from(action))
+        .bind(target_type.map(i16::from))
+        .bind(target_id)
+        .bind(created_at)
+        .fetch_one(pool)
+        .await,
+        "audit log should be inserted",
+    );
     row.0
 }
 
@@ -76,7 +77,7 @@ async fn test_list_filter_by_actor_id() {
         from: Some(now - Duration::hours(1)),
         ..Default::default()
     };
-    let (rows, total) = repo.list(&query).await.unwrap();
+    let (rows, total) = ok(repo.list(&query).await, "audit logs should list by actor");
     assert_eq!(total, 1);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].actor_id, Some(actor_a));
@@ -98,7 +99,7 @@ async fn test_list_filter_by_action() {
         from: Some(now - Duration::hours(1)),
         ..Default::default()
     };
-    let (rows, total) = repo.list(&query).await.unwrap();
+    let (rows, total) = ok(repo.list(&query).await, "audit logs should list by action");
     assert_eq!(total, 2);
     assert_eq!(rows.len(), 2);
 }
@@ -147,7 +148,10 @@ async fn test_list_filter_by_target_type_and_target_id() {
         from: Some(now - Duration::hours(1)),
         ..Default::default()
     };
-    let (rows, total) = repo.list(&query).await.unwrap();
+    let (rows, total) = ok(
+        repo.list(&query).await,
+        "audit logs should list by target type and id",
+    );
     assert_eq!(total, 1);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].action, AuditAction::RoomDeleted);
@@ -189,7 +193,10 @@ async fn test_list_filter_by_time_range() {
         to: Some(yesterday + Duration::hours(1)),
         ..Default::default()
     };
-    let (rows, total) = repo.list(&query).await.unwrap();
+    let (rows, total) = ok(
+        repo.list(&query).await,
+        "audit logs should list by time range",
+    );
     assert_eq!(total, 1);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].action, AuditAction::UserCreated);
@@ -258,7 +265,10 @@ async fn test_list_all_filters_combined() {
         to: Some(now + Duration::hours(1)),
         page: PageParams::new(Some(1), Some(10)),
     };
-    let (rows, total) = repo.list(&query).await.unwrap();
+    let (rows, total) = ok(
+        repo.list(&query).await,
+        "audit logs should list by combined filters",
+    );
     assert_eq!(total, 1);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].actor_username.as_deref(), Some("admin"));
@@ -275,9 +285,15 @@ async fn test_get_by_id_within_365_days() {
 
     let id = insert_audit_log(&pool, None, None, AuditAction::UserLogin, None, None, now).await;
 
-    let row = repo.get_by_id(id).await.unwrap();
+    let row = ok(
+        repo.get_by_id(id).await,
+        "audit log should be fetched by id",
+    );
     assert!(row.is_some());
-    assert_eq!(row.unwrap().action, AuditAction::UserLogin);
+    assert_eq!(
+        some(row, "audit log should exist within visibility window").action,
+        AuditAction::UserLogin
+    );
 }
 
 #[tokio::test]
@@ -299,7 +315,10 @@ async fn test_get_by_id_older_than_365_days_returns_none() {
     .await;
 
     // The entry exists in the DB but get_by_id should not return it
-    let row = repo.get_by_id(id).await.unwrap();
+    let row = ok(
+        repo.get_by_id(id).await,
+        "old audit log lookup should succeed",
+    );
     assert!(
         row.is_none(),
         "get_by_id should not return entries older than 365 days"
@@ -312,6 +331,9 @@ async fn test_get_by_id_nonexistent() {
     let (_container, pool) = create_test_pool().await;
     let repo = AuditLogRepository::new(pool.clone());
 
-    let row = repo.get_by_id(999_999_999).await.unwrap();
+    let row = ok(
+        repo.get_by_id(999_999_999).await,
+        "missing audit log lookup should succeed",
+    );
     assert!(row.is_none());
 }

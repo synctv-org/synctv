@@ -1205,19 +1205,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_builder_rejects_standalone_mode() {
+    async fn test_builder_rejects_standalone_mode() -> crate::Result<()> {
         let config = Config::default();
-        let profile = SharedStateProfile::from_runtime(None, "synctv:", false);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "synctv:", false);
 
         #[cfg(feature = "k8s")]
-        let Err(error) = build_managed_leader_runtime(&config, "node-1", &profile).await
-        else {
-            panic!("standalone mode must use AlwaysLeader directly");
-        };
+        let result = build_managed_leader_runtime(&config, "node-1", &profile).await;
 
         #[cfg(not(feature = "k8s"))]
-        let Err(error) = build_managed_leader_runtime(&config, "node-1", &profile) else {
-            panic!("standalone mode must use AlwaysLeader directly");
+        let result = build_managed_leader_runtime(&config, "node-1", &profile);
+
+        let Err(error) = result else {
+            return Err(crate::Error::Configuration(
+                "standalone mode must use AlwaysLeader directly".to_string(),
+            ));
         };
 
         assert!(
@@ -1226,25 +1227,27 @@ mod tests {
                 .contains("Leader election runtime is cluster-only"),
             "unexpected error: {error}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_builder_rejects_redis_mode_with_sentinel() {
+    async fn test_builder_rejects_redis_mode_with_sentinel() -> crate::Result<()> {
         let mut config = Config::default();
         config.cluster.enabled = true;
         config.cluster.leader_election_mode = ClusterLeaderElectionMode::Redis;
         config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
-        let profile = SharedStateProfile::from_runtime(None, "synctv:", true);
+        let profile = SharedStateProfile::for_cluster_runtime(None, "synctv:", true);
 
         #[cfg(feature = "k8s")]
-        let Err(error) = build_managed_leader_runtime(&config, "node-1", &profile).await
-        else {
-            panic!("sentinel-backed redis leader election must fail closed");
-        };
+        let result = build_managed_leader_runtime(&config, "node-1", &profile).await;
 
         #[cfg(not(feature = "k8s"))]
-        let Err(error) = build_managed_leader_runtime(&config, "node-1", &profile) else {
-            panic!("sentinel-backed redis leader election must fail closed");
+        let result = build_managed_leader_runtime(&config, "node-1", &profile);
+
+        let Err(error) = result else {
+            return Err(crate::Error::Configuration(
+                "sentinel-backed redis leader election must fail closed".to_string(),
+            ));
         };
 
         assert!(
@@ -1253,6 +1256,7 @@ mod tests {
                 .contains("not supported with Redis Sentinel"),
             "unexpected error: {error}"
         );
+        Ok(())
     }
 
     #[tokio::test]
@@ -1276,21 +1280,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_builder_returns_managed_leader_runtime_trait_object() {
+    async fn test_builder_returns_managed_leader_runtime_trait_object() -> crate::Result<()> {
         #[derive(Clone)]
         struct FakeRedisRuntime;
 
         #[async_trait]
         impl RedisConnectionRuntime for FakeRedisRuntime {
             async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
-                panic!("snapshot should not be called in constructor-only test");
+                Err(redis::RedisError::from((
+                    redis::ErrorKind::Client,
+                    "snapshot should not be called in constructor-only test",
+                )))
             }
         }
 
         let mut config = Config::default();
         config.cluster.enabled = true;
         config.cluster.leader_election_mode = ClusterLeaderElectionMode::Redis;
-        let profile = SharedStateProfile::from_runtime(
+        let profile = SharedStateProfile::for_cluster_runtime(
             Some(Arc::new(FakeRedisRuntime) as Arc<dyn RedisConnectionRuntime>),
             "synctv:",
             true,
@@ -1298,14 +1305,11 @@ mod tests {
 
         #[cfg(feature = "k8s")]
         let leader_runtime: Arc<dyn ManagedLeaderRuntime> =
-            build_managed_leader_runtime(&config, "node-1", &profile)
-                .await
-                .expect("redis leader runtime should be built through the unified trait");
+            build_managed_leader_runtime(&config, "node-1", &profile).await?;
 
         #[cfg(not(feature = "k8s"))]
         let leader_runtime: Arc<dyn ManagedLeaderRuntime> =
-            build_managed_leader_runtime(&config, "node-1", &profile)
-                .expect("redis leader runtime should be built through the unified trait");
+            build_managed_leader_runtime(&config, "node-1", &profile)?;
 
         assert_eq!(leader_runtime.mode_label(), "redis");
         assert_eq!(
@@ -1313,6 +1317,7 @@ mod tests {
             None,
             "freshly constructed redis runtime should not claim leadership before start"
         );
+        Ok(())
     }
 
     #[test]

@@ -29,6 +29,11 @@ use synctv_cluster::discovery::{ClusterNodeDirectory, HeartbeatResult};
 use synctv_core::config::ClusterChannelConfig;
 use synctv_core::models::id::{RoomId, UserId};
 
+#[cfg(not(test))]
+const HEARTBEAT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const HEARTBEAT_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(200);
+
 /// Realtime configuration
 #[derive(Clone)]
 pub struct RealtimeConfig {
@@ -181,8 +186,6 @@ pub struct RealtimeManager {
     cancel_token: CancellationToken,
     /// Node registry + heartbeat handle (behind Mutex for async shutdown from &self)
     heartbeat_state: tokio::sync::Mutex<HeartbeatState>,
-    #[cfg(test)]
-    heartbeat_shutdown_timeout: Duration,
     /// Capacity for the critical event channel (for logging)
     critical_channel_capacity: usize,
     /// Capacity for the publish channel (for logging)
@@ -406,8 +409,6 @@ impl RealtimeManager {
                 handle: None,
                 api_address: String::new(),
             }),
-            #[cfg(test)]
-            heartbeat_shutdown_timeout: Duration::from_secs(10),
             connection_manager: runtime.connection_runtime,
             heartbeat_failure_count: Arc::new(AtomicU64::new(0)),
             epoch_mismatch_count: Arc::new(AtomicU64::new(0)),
@@ -516,77 +517,29 @@ impl RealtimeManager {
         is_critical: bool,
         allow_waiting_retry: bool,
     ) -> bool {
-        let mut redis_sent = 0;
-
         if is_critical {
             if let Some(tx) = &self.redis_critical_tx {
-                match tx.try_send(req) {
-                    Ok(()) => {
-                        redis_sent = 1;
-                    }
-                    Err(mpsc::error::TrySendError::Full(req)) => {
-                        if allow_waiting_retry {
-                            let tx = tx.clone();
-                            warn!(
-                                "Critical event publish channel full (capacity {}), spawning tracked retry task",
-                                self.critical_channel_capacity
-                            );
-                            self.critical_retry_tasks.spawn(async move {
-                                if let Err(e) = tx.send(req).await {
-                                    error!("Failed to send critical event after retry: {e}");
-                                }
-                            });
-                            redis_sent = 1;
-                        } else {
-                            warn!(
-                                "Critical event publish channel full (capacity {}), rejecting confirmed publish",
-                                self.critical_channel_capacity
-                            );
-                        }
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        error!("Critical event publish channel closed");
-                    }
-                }
+                self.enqueue_critical_publish_request(
+                    tx,
+                    req,
+                    self.critical_channel_capacity,
+                    "critical",
+                    allow_waiting_retry,
+                )
             } else if let Some(tx) = &self.redis_publish_tx {
-                match tx.try_send(req) {
-                    Ok(()) => {
-                        redis_sent = 1;
-                    }
-                    Err(mpsc::error::TrySendError::Full(req)) => {
-                        if allow_waiting_retry {
-                            let tx = tx.clone();
-                            warn!(
-                                "Dedicated critical publish channel unavailable; normal Redis publish channel is full (capacity {}), spawning tracked retry for critical event",
-                                self.publish_channel_capacity
-                            );
-                            self.critical_retry_tasks.spawn(async move {
-                                if let Err(e) = tx.send(req).await {
-                                    error!(
-                                        "Failed to send critical event through fallback Redis channel: {e}"
-                                    );
-                                }
-                            });
-                            redis_sent = 1;
-                        } else {
-                            warn!(
-                                "Dedicated critical publish channel unavailable; normal Redis publish channel is full (capacity {}), rejecting confirmed publish",
-                                self.publish_channel_capacity
-                            );
-                        }
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        error!(
-                            "Dedicated critical publish channel unavailable and fallback Redis publish channel is closed"
-                        );
-                    }
-                }
+                self.enqueue_critical_publish_request(
+                    tx,
+                    req,
+                    self.publish_channel_capacity,
+                    "fallback",
+                    allow_waiting_retry,
+                )
+            } else {
+                false
             }
         } else if let Some(tx) = &self.redis_publish_tx {
             match tx.try_send(req) {
-                Ok(()) => {
-                    redis_sent = 1;
-                }
+                Ok(()) => true,
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     synctv_core::metrics::cluster::REALTIME_EVENTS_DROPPED
                         .with_label_values(&["channel_full"])
@@ -595,14 +548,59 @@ impl RealtimeManager {
                         "Redis publish channel full (capacity {}), dropping event",
                         self.publish_channel_capacity
                     );
+                    false
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     error!("Redis publish channel closed, cannot queue event");
+                    false
                 }
             }
+        } else {
+            false
         }
+    }
 
-        redis_sent > 0
+    fn enqueue_critical_publish_request(
+        &self,
+        tx: &mpsc::Sender<PublishRequest>,
+        req: PublishRequest,
+        capacity: usize,
+        channel: &'static str,
+        allow_waiting_retry: bool,
+    ) -> bool {
+        match tx.try_send(req) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(req)) if allow_waiting_retry => {
+                let tx = tx.clone();
+                warn!(
+                    channel = %channel,
+                    capacity = capacity,
+                    "Critical realtime publish channel full, spawning tracked retry task"
+                );
+                self.critical_retry_tasks.spawn(async move {
+                    if let Err(error) = tx.send(req).await {
+                        error!(
+                            channel = %channel,
+                            error = %error,
+                            "Failed to send critical event after retry"
+                        );
+                    }
+                });
+                true
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!(
+                    channel = %channel,
+                    capacity = capacity,
+                    "Critical realtime publish channel full, rejecting confirmed publish"
+                );
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                error!(channel = %channel, "Critical realtime publish channel closed");
+                false
+            }
+        }
     }
 
     fn enqueue_redis_publish(&self, event: RealtimeEvent, is_critical: bool) -> bool {
@@ -972,10 +970,10 @@ impl RealtimeManager {
     /// This method:
     /// 1. Cancels the heartbeat loop
     /// 2. Unregisters this node from Redis (so peers stop routing traffic immediately)
-    /// 3. Shuts down Redis Pub/Sub (which drains pending publishes)
-    /// 4. Awaits the publisher task's completion (with a 10s timeout)
-    /// 5. Shuts down the deduplicator cleanup task
-    /// 6. Awaits background task completion
+    /// 3. Drains critical retry work and stops the critical forwarder
+    /// 4. Shuts down Redis Pub/Sub and local realtime runtimes
+    /// 5. Awaits the publisher task's completion
+    /// 6. Clears the deduplication cache
     pub async fn shutdown(&self) {
         if self.shutdown_started.swap(true, Ordering::AcqRel) {
             debug!("RealtimeManager shutdown already completed or in progress");
@@ -992,8 +990,7 @@ impl RealtimeManager {
             // Stop the heartbeat loop first to prevent it from re-registering
             // the node between unregister and shutdown completion (TOCTOU race).
             if let Some(handle) = state.handle.take() {
-                await_shutdown_handle("Heartbeat task", handle, self.heartbeat_shutdown_timeout())
-                    .await;
+                await_shutdown_handle("Heartbeat task", handle, HEARTBEAT_SHUTDOWN_TIMEOUT).await;
             }
             // Unregister only after heartbeat has stopped, ensuring the
             // registration won't be re-created by a concurrent heartbeat tick.
@@ -1042,7 +1039,7 @@ impl RealtimeManager {
             }
         }
 
-        // Shut down RoomMessageHub background tasks (Redis TTL refresh and stale cleanup)
+        // Shut down RoomMessageHub background tasks.
         self.message_hub.shutdown().await;
 
         // Await the publisher task so any in-flight events are fully flushed before
@@ -1237,17 +1234,6 @@ impl RealtimeManager {
     }
 
     #[cfg(test)]
-    const fn heartbeat_shutdown_timeout(&self) -> Duration {
-        self.heartbeat_shutdown_timeout
-    }
-
-    #[cfg(not(test))]
-    const fn heartbeat_shutdown_timeout(&self) -> Duration {
-        let _ = self;
-        Duration::from_secs(10)
-    }
-
-    #[cfg(test)]
     pub async fn test_set_heartbeat_handle(&self, handle: tokio::task::JoinHandle<()>) {
         let mut state = self.heartbeat_state.lock().await;
         state.handle = Some(handle);
@@ -1261,13 +1247,6 @@ impl RealtimeManager {
         let node_registry: Arc<dyn ClusterNodeDirectory> = node_registry;
         let mut state = self.heartbeat_state.lock().await;
         state.node_registry = Some(node_registry);
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub const fn test_with_heartbeat_shutdown_timeout(mut self, timeout: Duration) -> Self {
-        self.heartbeat_shutdown_timeout = timeout;
-        self
     }
 }
 

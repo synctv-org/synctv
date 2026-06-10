@@ -1,19 +1,20 @@
 //! SyncTV server library.
 //!
 //! This crate provides the main server implementation for SyncTV.
-//! It is primarily intended to be used as a binary, but exposes
-//! internal modules for testing purposes.
+//! It is primarily intended to be used as a binary.
 
 pub(crate) mod admin_client;
-pub mod app;
-pub mod bootstrap;
+mod app;
+mod bootstrap;
 pub mod cli;
-pub mod migrations;
-pub mod realtime_bridge;
-pub mod realtime_outbox_dispatcher;
-pub mod rtmp_auth;
-pub mod server;
-pub mod shutdown;
+mod migrations;
+mod realtime_bridge;
+mod realtime_outbox_dispatcher;
+mod rtmp_auth;
+mod server;
+mod shutdown;
+
+pub use app::{Application, ApplicationBuildOptions};
 
 pub(crate) fn install_panic_hook(include_backtrace: bool) {
     let default_hook = std::panic::take_hook();

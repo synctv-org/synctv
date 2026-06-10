@@ -7,13 +7,14 @@ use crate::impls::messaging::{
     GuestRealtimeIdentity, MessageSender, RealtimeJoinError, RealtimePrincipal,
     ResourceWatchSession, ResourceWatchSessionConfig,
 };
-use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
+use crate::runtime::RealtimeEventService;
 use synctv_core::models::{Room, RoomId};
 use synctv_core::service::{
     ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService as CoreRoomService,
     UserService as CoreUserService,
 };
 use synctv_proto::client::ServerMessage;
+use synctv_realtime::sync::ConnectionRuntime;
 
 use super::map_api_error;
 use crate::impls::{ApiError, EndpointRateLimitCategory};
@@ -88,7 +89,7 @@ pub struct ClientServiceConfig {
     pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     pub rate_limit_config: RateLimitConfig,
     pub content_filter: ContentFilter,
-    pub connection_service: Arc<dyn RealtimeConnectionService>,
+    pub connection_service: Arc<dyn ConnectionRuntime>,
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     pub config: Arc<synctv_core::Config>,
     pub client_api: Arc<crate::impls::ClientApiImpl>,
@@ -106,7 +107,7 @@ pub struct ClientServiceImpl {
     rate_limiter: Arc<dyn RequestRateLimiterService>,
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
-    connection_service: Arc<dyn RealtimeConnectionService>,
+    connection_service: Arc<dyn ConnectionRuntime>,
     email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     client_api: Arc<crate::impls::ClientApiImpl>,
     config: Arc<synctv_core::Config>,
@@ -379,10 +380,13 @@ impl ClientServiceImpl {
             connection_service: self.connection_service.clone(),
             public_id_codec: self.client_api.public_id_codec.clone(),
             sender: Arc::clone(&sender) as Arc<dyn MessageSender>,
-            playback_service: Some(self.client_api.clone()),
-            playlist_items_snapshot_service: Some(self.client_api.clone()),
-            room_members_snapshot_service: Some(self.client_api.clone()),
-            room_settings_snapshot_service: None,
+            playback_service: self.client_api.clone(),
+            playlist_items_snapshot_service: self.client_api.clone(),
+            room_members_snapshot_service: self.client_api.clone(),
+            room_settings_snapshot_service:
+                crate::impls::room_settings_snapshot::default_room_settings_snapshot_service(
+                    self.room_service.clone(),
+                ),
         });
 
         let prepared_session = session

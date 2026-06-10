@@ -49,8 +49,8 @@ use synctv_core::service::auth::{GuestTokenValidator, JwtValidator, TokenType};
 use synctv_core::service::{ChatService, ReviewService, RoomService, UserService};
 use synctv_core::RedisConnectionRuntime;
 
-// Re-export public items from convert module
-pub use convert::{
+// Re-export conversion helpers within the crate.
+pub(crate) use convert::{
     proto_role_filter_to_room_role, proto_role_to_assignable_room_role, proto_role_to_room_role,
     proto_role_to_user_role, room_role_to_proto,
 };
@@ -73,9 +73,8 @@ use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanou
 use crate::room_lifecycle_fanout::{
     default_room_lifecycle_fanout_service_with_realtime, RoomLifecycleFanoutService,
 };
-use crate::runtime::{
-    LocalNoopRealtimeEventService, RealtimeConnectionService, RealtimeEventService,
-};
+use crate::runtime::{LocalNoopRealtimeEventService, RealtimeEventService};
+use synctv_realtime::sync::ConnectionRuntime;
 
 /// Configuration for constructing a [`ClientApiImpl`].
 ///
@@ -84,17 +83,14 @@ pub struct ClientApiConfig {
     pub user_service: Arc<UserService>,
     pub room_service: Arc<RoomService>,
     pub chat_service: Option<Arc<ChatService>>,
-    pub connection_service: Arc<dyn RealtimeConnectionService>,
+    pub connection_service: Arc<dyn ConnectionRuntime>,
     pub config: Arc<synctv_core::Config>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
-    pub live_streaming_infrastructure:
-        Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
-    pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
+    pub live_streaming_infrastructure: Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
-    pub credential_encryption: Option<synctv_core::credential_encryption::CredentialEncryption>,
-    pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
-    pub public_id_codec: Arc<crate::PublicIdCodec>,
+    pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
+    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
 }
@@ -104,19 +100,20 @@ pub struct ClientApiRuntime {
     pub realtime_event_service: Arc<dyn RealtimeEventService>,
     pub chat_event_dispatcher: Arc<dyn ChatEventDispatcher>,
     pub redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
-    pub rate_limiter: Option<Arc<dyn synctv_core::service::RequestRateLimiterService>>,
     pub builtin_stun_url: Option<String>,
-    pub webrtc_status: Option<synctv_core::service::WebRtcRuntimeStatus>,
-    pub credential_repo: Option<Arc<synctv_core::repository::UserProviderCredentialRepository>>,
-    pub provider_access_service: Option<Arc<dyn synctv_core::provider::ProviderAccessService>>,
-    pub signing_key: Option<Arc<synctv_core::proxy_signature::ProxySigningKey>>,
-    pub request_executor: Option<Arc<RequestExecutor>>,
-    pub ws_ticket_service: Option<Arc<dyn synctv_core::service::WebSocketTicketService>>,
+    pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
+    pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
+    pub signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
+    pub request_executor: Arc<RequestExecutor>,
+    pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
 }
 
 impl ClientApiRuntime {
     #[must_use]
-    pub fn test_disabled() -> Self {
+    pub fn local_disabled(
+        request_executor: Arc<RequestExecutor>,
+        signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
+    ) -> Self {
         let realtime_event_service = Arc::new(LocalNoopRealtimeEventService::new());
         Self {
             realtime_fanout: crate::realtime_fanout::local_realtime_fanout_service(
@@ -125,14 +122,12 @@ impl ClientApiRuntime {
             chat_event_dispatcher: default_chat_event_dispatcher(realtime_event_service.clone()),
             realtime_event_service,
             redis_runtime: None,
-            rate_limiter: None,
             builtin_stun_url: None,
-            webrtc_status: None,
-            credential_repo: None,
-            provider_access_service: None,
-            signing_key: None,
-            request_executor: None,
-            ws_ticket_service: None,
+            webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
+            provider_access_service: crate::impls::disabled_provider_access_service(),
+            signing_key,
+            request_executor,
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
         }
     }
 }
@@ -188,13 +183,11 @@ pub struct ClientApiImpl {
     pub room_service: Arc<RoomService>,
     pub chat_service: Option<Arc<ChatService>>,
     pub review_service: Arc<ReviewService>,
-    pub connection_service: Arc<dyn RealtimeConnectionService>,
+    pub connection_service: Arc<dyn ConnectionRuntime>,
     pub config: Arc<synctv_core::Config>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
-    pub live_streaming_infrastructure:
-        Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
-    pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
+    pub live_streaming_infrastructure: Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
     pub room_settings_fanout: Arc<dyn RoomSettingsFanoutService>,
@@ -209,35 +202,29 @@ pub struct ClientApiImpl {
     pub chat_event_dispatcher: Arc<dyn ChatEventDispatcher>,
     /// Redis runtime abstraction derived from the shared connection when available.
     pub redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
-    /// Rate limiter for per-endpoint rate limiting (password checks, etc.)
-    pub rate_limiter: Option<Arc<dyn synctv_core::service::RequestRateLimiterService>>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478"), set only when the
     /// built-in STUN server started successfully with a valid external address.
     /// When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
     /// Structured WebRTC/STUN runtime state for diagnostics.
     pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
-    /// Credential encryption for provider credential resolution
-    pub credential_encryption: Option<synctv_core::credential_encryption::CredentialEncryption>,
-    /// Credential repository for resolving stored provider credentials
-    pub credential_repo: Option<Arc<synctv_core::repository::UserProviderCredentialRepository>>,
     /// Typed provider credential/session access cache
-    pub provider_access_service: Option<Arc<dyn synctv_core::provider::ProviderAccessService>>,
+    pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     /// Proxy signing key for generating HMAC-signed proxy URLs
-    pub signing_key: Option<Arc<synctv_core::proxy_signature::ProxySigningKey>>,
+    pub signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
     /// Per-provider stores for signed playback version mappings
-    pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
+    pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
     /// JWT validator for token validation (e.g. live streaming tokens)
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
     /// Shared sqids codec for API-facing resource identifiers.
-    pub public_id_codec: Arc<crate::PublicIdCodec>,
-    pub request_executor: Option<Arc<RequestExecutor>>,
+    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    pub request_executor: Arc<RequestExecutor>,
     /// Shared email API for email-token flows that are exposed by multiple transports.
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     /// Shared WebAuthn service for passkey flows that are exposed by multiple transports.
     pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
     /// Shared WebSocket ticket service for issuing short-lived room-bound tickets.
-    pub ws_ticket_service: Option<Arc<dyn synctv_core::service::WebSocketTicketService>>,
+    pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
 }
 
 impl ClientApiImpl {
@@ -529,7 +516,7 @@ impl ClientApiImpl {
             ApiError::Authentication(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string())
         })?;
         let authenticated = self
-            .request_executor()?
+            .request_executor()
             .security_check_claims(&claims)
             .await?;
         self.room_actor_for_user(&authenticated.user_id, public_room_id)
@@ -631,7 +618,6 @@ impl ClientApiImpl {
             publish_key_service: config.publish_key_service,
             jwt_service: config.jwt_service,
             live_streaming_infrastructure: config.live_streaming_infrastructure,
-            providers_manager: config.providers_manager,
             settings_registry: config.settings_registry,
             realtime_fanout,
             room_settings_fanout,
@@ -645,15 +631,8 @@ impl ClientApiImpl {
             realtime_event_service,
             chat_event_dispatcher,
             redis_runtime: runtime.redis_runtime,
-            rate_limiter: runtime.rate_limiter,
             builtin_stun_url: runtime.builtin_stun_url,
-            webrtc_status: runtime.webrtc_status.unwrap_or_else(|| {
-                synctv_core::service::WebRtcRuntimeStatus::disabled_by_config(
-                    synctv_core::service::WebRtcRuntimeMode::PeerToPeer,
-                )
-            }),
-            credential_encryption: config.credential_encryption,
-            credential_repo: runtime.credential_repo,
+            webrtc_status: runtime.webrtc_status,
             provider_access_service: runtime.provider_access_service,
             signing_key: runtime.signing_key,
             provider_stores: config.provider_stores,
@@ -684,10 +663,8 @@ impl ClientApiImpl {
         }
     }
 
-    fn request_executor(&self) -> Result<&Arc<RequestExecutor>, ApiError> {
-        self.request_executor.as_ref().ok_or_else(|| {
-            ApiError::ServiceUnavailable("Request executor is not configured".to_string())
-        })
+    fn request_executor(&self) -> &Arc<RequestExecutor> {
+        &self.request_executor
     }
 
     pub fn execute_public_endpoint<'a, T, E, F, Fut>(
@@ -702,12 +679,10 @@ impl ClientApiImpl {
         F: FnOnce() -> Fut + Send + 'a,
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
-        match self.request_executor() {
-            Ok(executor) => executor.execute_public(metadata, category, move || async move {
+        self.request_executor()
+            .execute_public(metadata, category, move || async move {
                 operation().await.map_err(Into::into)
-            }),
-            Err(err) => Box::pin(async move { Err(err) }),
-        }
+            })
     }
 
     pub fn execute_scoped_public_endpoint<'a, T, E, F, Fut>(
@@ -742,16 +717,13 @@ impl ClientApiImpl {
         F: FnOnce(RequestContext) -> Fut + Send + 'a,
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
-        match self.request_executor() {
-            Ok(executor) => executor.execute_public_with_context(
+        self.request_executor().execute_public_with_context(
                 metadata,
                 category,
                 move |request_context| async move {
                     operation(request_context).await.map_err(Into::into)
                 },
-            ),
-            Err(err) => Box::pin(async move { Err(err) }),
-        }
+            )
     }
 
     pub fn execute_public_endpoint_with_control<'a, T, E, F, Fut>(
@@ -766,16 +738,13 @@ impl ClientApiImpl {
         F: FnOnce(synctv_core::provider::ExecutionControl) -> Fut + Send + 'a,
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
-        match self.request_executor() {
-            Ok(executor) => executor.execute_public_with_control(
+        self.request_executor().execute_public_with_control(
                 metadata,
                 category,
                 move |request_control| async move {
                     operation(request_control).await.map_err(Into::into)
                 },
-            ),
-            Err(err) => Box::pin(async move { Err(err) }),
-        }
+            )
     }
 
     pub fn execute_scoped_public_endpoint_with_control<'a, T, E, F, Fut>(
@@ -810,18 +779,11 @@ impl ClientApiImpl {
         F: FnOnce(Option<synctv_core::service::AuthenticatedToken>) -> Fut + Send + 'a,
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
-        match self.request_executor() {
-            Ok(executor) => {
-                executor.execute_optional_user(
-                    metadata,
-                    category,
-                    move |authenticated| async move {
-                        operation(authenticated).await.map_err(Into::into)
-                    },
-                )
-            }
-            Err(err) => Box::pin(async move { Err(err) }),
-        }
+        self.request_executor().execute_optional_user(
+            metadata,
+            category,
+            move |authenticated| async move { operation(authenticated).await.map_err(Into::into) },
+        )
     }
 
     pub fn execute_optional_user_endpoint_with_context<'a, T, E, F, Fut>(
@@ -838,18 +800,15 @@ impl ClientApiImpl {
             + 'a,
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
-        match self.request_executor() {
-            Ok(executor) => executor.execute_optional_user_with_context(
-                metadata,
-                category,
-                move |request_context, authenticated| async move {
-                    operation(request_context, authenticated)
-                        .await
-                        .map_err(Into::into)
-                },
-            ),
-            Err(err) => Box::pin(async move { Err(err) }),
-        }
+        self.request_executor().execute_optional_user_with_context(
+            metadata,
+            category,
+            move |request_context, authenticated| async move {
+                operation(request_context, authenticated)
+                    .await
+                    .map_err(Into::into)
+            },
+        )
     }
 
     pub fn execute_optional_user_endpoint_with_control<'a, T, E, F, Fut>(
@@ -869,18 +828,15 @@ impl ClientApiImpl {
             + 'a,
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
-        match self.request_executor() {
-            Ok(executor) => executor.execute_optional_user_with_control(
-                metadata,
-                category,
-                move |request_control, authenticated| async move {
-                    operation(request_control, authenticated)
-                        .await
-                        .map_err(Into::into)
-                },
-            ),
-            Err(err) => Box::pin(async move { Err(err) }),
-        }
+        self.request_executor().execute_optional_user_with_control(
+            metadata,
+            category,
+            move |request_control, authenticated| async move {
+                operation(request_control, authenticated)
+                    .await
+                    .map_err(Into::into)
+            },
+        )
     }
 
     pub fn execute_user_endpoint<'a, T, E, F, Fut>(
@@ -895,14 +851,10 @@ impl ClientApiImpl {
         F: FnOnce(synctv_core::service::AuthenticatedToken) -> Fut + Send + 'a,
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
-        match self.request_executor() {
-            Ok(executor) => {
-                executor.execute_user(metadata, category, move |authenticated| async move {
-                    operation(authenticated).await.map_err(Into::into)
-                })
-            }
-            Err(err) => Box::pin(async move { Err(err) }),
-        }
+        self.request_executor()
+            .execute_user(metadata, category, move |authenticated| async move {
+                operation(authenticated).await.map_err(Into::into)
+            })
     }
 
     pub fn execute_scoped_user_endpoint<'a, T, E, F, Fut>(
@@ -937,18 +889,15 @@ impl ClientApiImpl {
         F: FnOnce(RequestContext, synctv_core::service::AuthenticatedToken) -> Fut + Send + 'a,
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
-        match self.request_executor() {
-            Ok(executor) => executor.execute_user_with_context(
-                metadata,
-                category,
-                move |request_context, authenticated| async move {
-                    operation(request_context, authenticated)
-                        .await
-                        .map_err(Into::into)
-                },
-            ),
-            Err(err) => Box::pin(async move { Err(err) }),
-        }
+        self.request_executor().execute_user_with_context(
+            metadata,
+            category,
+            move |request_context, authenticated| async move {
+                operation(request_context, authenticated)
+                    .await
+                    .map_err(Into::into)
+            },
+        )
     }
 
     pub fn execute_user_endpoint_with_control<'a, T, E, F, Fut>(
@@ -968,18 +917,15 @@ impl ClientApiImpl {
             + 'a,
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
-        match self.request_executor() {
-            Ok(executor) => executor.execute_user_with_control(
-                metadata,
-                category,
-                move |request_control, authenticated| async move {
-                    operation(request_control, authenticated)
-                        .await
-                        .map_err(Into::into)
-                },
-            ),
-            Err(err) => Box::pin(async move { Err(err) }),
-        }
+        self.request_executor().execute_user_with_control(
+            metadata,
+            category,
+            move |request_control, authenticated| async move {
+                operation(request_control, authenticated)
+                    .await
+                    .map_err(Into::into)
+            },
+        )
     }
 
     pub fn execute_scoped_user_endpoint_with_control<'a, T, E, F, Fut>(
@@ -1051,7 +997,7 @@ impl ClientApiImpl {
                         .await
                 }
                 Some(token) => {
-                    let executor = executor.request_executor()?;
+                    let executor = executor.request_executor();
                     executor
                         .execute_authenticated_token_with_control(
                             metadata,
@@ -1160,7 +1106,7 @@ impl ClientApiImpl {
                         .await
                 }
                 Some(token) => {
-                    let executor = executor.request_executor()?;
+                    let executor = executor.request_executor();
                     executor
                         .execute_authenticated_token_with_control(
                             metadata,

@@ -23,7 +23,7 @@ use crate::service::RemoteProviderManager;
 ///
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
 pub struct BilibiliProvider {
-    provider_instance_manager: Option<Arc<RemoteProviderManager>>,
+    provider_instance_manager: Arc<RemoteProviderManager>,
     client_manager: Arc<ProviderClientManager>,
 }
 
@@ -55,7 +55,7 @@ impl BilibiliProvider {
         provider_instance_manager: Arc<RemoteProviderManager>,
     ) -> Result<Self, ProviderError> {
         Ok(Self {
-            provider_instance_manager: Some(provider_instance_manager),
+            provider_instance_manager,
             client_manager: Arc::new(ProviderClientManager::new()?),
         })
     }
@@ -65,26 +65,17 @@ impl BilibiliProvider {
         provider_instance_manager: Arc<RemoteProviderManager>,
         client_manager: Arc<ProviderClientManager>,
     ) -> Self {
-        Self::with_optional_manager_and_client_manager(
-            Some(provider_instance_manager),
-            client_manager,
-        )
-    }
-
-    #[must_use]
-    pub fn with_optional_manager_and_client_manager(
-        provider_instance_manager: Option<Arc<RemoteProviderManager>>,
-        client_manager: Arc<ProviderClientManager>,
-    ) -> Self {
         Self {
             provider_instance_manager,
             client_manager,
         }
     }
 
+    #[cfg(test)]
     pub fn new_local_only() -> Result<Self, ProviderError> {
         Ok(Self {
-            provider_instance_manager: None,
+            provider_instance_manager:
+                crate::service::remote_provider_manager::empty_provider_instance_manager(),
             client_manager: Arc::new(ProviderClientManager::new()?),
         })
     }
@@ -94,10 +85,10 @@ impl BilibiliProvider {
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
     ) -> Result<BilibiliClientArc, ProviderError> {
-        match (instance_name, self.provider_instance_manager.as_ref()) {
-            (None, _) => Ok(self.client_manager.local_bilibili_client()),
-            (Some(_), Some(manager)) => {
-                manager
+        match instance_name {
+            None => Ok(self.client_manager.local_bilibili_client()),
+            Some(_) => {
+                self.provider_instance_manager
                     .resolve_client_required_with_context(
                         instance_name,
                         request_context,
@@ -106,10 +97,6 @@ impl BilibiliProvider {
                     )
                     .await
             }
-            (Some(_), None) => Err(ProviderError::Internal(
-                "provider instance manager is required for remote Bilibili playback resolution"
-                    .to_string(),
-            )),
         }
     }
 
@@ -417,7 +404,7 @@ impl BilibiliSourceConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BilibiliVideoIdentifier {
-    bvid: String,
+    bvid: Option<String>,
     aid: u64,
 }
 
@@ -453,17 +440,14 @@ impl BilibiliVideoIdentifier {
                 ));
             }
         }
-        Ok(Self {
-            bvid: bvid.unwrap_or_default(),
-            aid,
-        })
+        Ok(Self { bvid, aid })
     }
 
     fn cache_key_part(&self) -> String {
-        match (self.bvid.is_empty(), self.aid) {
-            (false, 0) => format!("bvid:{}", self.bvid),
-            (true, aid) => format!("aid:{aid}"),
-            (false, aid) => format!("bvid:{}:aid:{aid}", self.bvid),
+        match (self.bvid.as_deref(), self.aid) {
+            (Some(bvid), 0) => format!("bvid:{bvid}"),
+            (None, aid) => format!("aid:{aid}"),
+            (Some(bvid), aid) => format!("bvid:{bvid}:aid:{aid}"),
         }
     }
 }
@@ -471,7 +455,7 @@ impl BilibiliVideoIdentifier {
 fn resolve_bilibili_video_identifier(
     bvid: Option<&str>,
     aid: Option<u64>,
-) -> Result<(String, u64), ProviderError> {
+) -> Result<(Option<String>, u64), ProviderError> {
     let identifier = BilibiliVideoIdentifier::parse(bvid, aid)?;
     Ok((identifier.bvid, identifier.aid))
 }
@@ -531,48 +515,15 @@ async fn resolve_optional_bilibili_cookies(
     ctx: &ProviderContext<'_>,
     credential_owner_id: UserId,
 ) -> Result<(HashMap<String, String>, String), ProviderError> {
-    if let Some(access_service) = &ctx.provider_access_service {
-        let access = access_service
-            .bilibili_access(credential_owner_id, ctx.request_context())
-            .await?;
-        return Ok((access.cookies, access.credential_cache_partition));
-    }
-
-    let Some(repo) = ctx.credential_repo else {
-        return Ok((HashMap::new(), "anon".to_string()));
-    };
-
-    let server_id = bilibili_credential_server_id();
-    let credential = repo
-        .get_by_provider_and_server(credential_owner_id, BilibiliProvider::NAME, &server_id)
-        .await
-        .map_err(|e| {
-            ProviderError::Internal(format!("Failed to query bilibili credential: {e}"))
-        })?;
-
-    let Some(credential) = credential else {
-        return Ok((HashMap::new(), "anon".to_string()));
-    };
-    if credential.is_expired() {
-        return Ok((HashMap::new(), "anon".to_string()));
-    }
-
-    match credential.get_credential() {
-        Ok(crate::models::ProviderCredential::Bilibili { cookies }) => Ok((
-            cookies,
-            format!(
-                "auth:{credential_owner_id}:{server_id}:{}",
-                super::credential_resolver::credential_revision(
-                    credential.id,
-                    credential.updated_at
-                )
-            ),
-        )),
-        Ok(_) => Err(ProviderError::InvalidCredentialType),
-        Err(e) => Err(ProviderError::Internal(format!(
-            "Failed to parse bilibili credential: {e}"
-        ))),
-    }
+    let access_service = ctx.provider_access_service.as_ref().ok_or_else(|| {
+        ProviderError::Internal(
+            "provider_access_service not available in ProviderContext".to_string(),
+        )
+    })?;
+    let access = access_service
+        .bilibili_access(credential_owner_id, ctx.request_context())
+        .await?;
+    Ok((access.cookies, access.credential_cache_partition))
 }
 
 impl TryFrom<&Value> for BilibiliSourceConfig {
@@ -770,12 +721,7 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
         }
 
         // Try `{version}` segment targets generated by M3U8 playlist rewriting.
-        let (version, maybe_rest) = sub_path
-            .split_once('/')
-            .map_or((sub_path, None), |(version, rest)| (version, Some(rest)));
-        if version.is_empty() {
-            return Err(ProviderError::NotFound);
-        }
+        let version = super::proxy::proxy_version_segment(sub_path)?;
 
         if let Some(url) = super::proxy::signed_target_url(ctx) {
             let versioned =
@@ -794,9 +740,21 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
             return super::proxy::action_for_signed_target_url(ctx, version, url, headers);
         }
 
-        if let Some(rest) = maybe_rest {
+        let (_, rest) = super::proxy::split_versioned_proxy_path(sub_path)?;
+
+        {
             if rest == "stream" || rest.starts_with("stream/") {
-                let stream_path = rest.strip_prefix("stream/").unwrap_or("0");
+                let stream_path = if rest == "stream" {
+                    "0"
+                } else {
+                    let path = rest
+                        .strip_prefix("stream/")
+                        .ok_or(ProviderError::NotFound)?;
+                    if path.trim().is_empty() {
+                        return Err(ProviderError::NotFound);
+                    }
+                    path
+                };
                 let versioned =
                     super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
                 let (playback_info, index_str) =
@@ -819,9 +777,7 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
                             stream_path,
                         )
                     };
-                let Ok(index) = index_str.parse::<usize>() else {
-                    return Err(ProviderError::NotFound);
-                };
+                let index = super::proxy::parse_proxy_index(index_str)?;
                 let url = playback_info
                     .urls
                     .get(index)
@@ -848,9 +804,7 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
                             .playback_infos
                             .get(mode_name)
                             .ok_or(ProviderError::NotFound)?;
-                        let index: usize = index_str.parse().map_err(|_| {
-                            ProviderError::ApiError("Invalid subtitle index".into())
-                        })?;
+                        let index = super::proxy::parse_proxy_index(index_str)?;
                         playback_info.subtitles.get(index).map(|subtitle| {
                             (
                                 subtitle.url.clone(),
@@ -906,9 +860,7 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
                     .playback_infos
                     .get(mode_name)
                     .ok_or(ProviderError::NotFound)?;
-                let index = index_str
-                    .parse::<usize>()
-                    .map_err(|_| ProviderError::NotFound)?;
+                let index = super::proxy::parse_proxy_index(index_str)?;
                 let url = playback_info
                     .urls
                     .get(index)
@@ -940,9 +892,8 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
                     proxy_url_claims: ctx.verified_claims.cloned(),
                 });
             }
+            Err(ProviderError::NotFound)
         }
-
-        Err(ProviderError::NotFound)
     }
 }
 
@@ -1048,39 +999,11 @@ impl BilibiliProvider {
                             })?
                     };
 
-                    if let Some(access_service) = &services.provider_access_service {
-                        access_service
-                            .bilibili_access(credential_owner_id, ctx.request_context)
-                            .await?
-                            .cookies
-                    } else {
-                        let repo = &services.credential_repo;
-                        let server_id = bilibili_credential_server_id();
-                        let credential = repo
-                            .get_by_provider_and_server(credential_owner_id, Self::NAME, &server_id)
-                            .await
-                            .map_err(|e| {
-                                ProviderError::Internal(format!(
-                                    "Failed to query bilibili credential: {e}"
-                                ))
-                            })?;
-                        match credential {
-                            Some(credential) if !credential.is_expired() => {
-                                match credential.get_credential() {
-                                    Ok(crate::models::ProviderCredential::Bilibili { cookies }) => {
-                                        cookies
-                                    }
-                                    Ok(_) => return Err(ProviderError::InvalidCredentialType),
-                                    Err(e) => {
-                                        return Err(ProviderError::Internal(format!(
-                                            "Failed to parse bilibili credential: {e}"
-                                        )));
-                                    }
-                                }
-                            }
-                            _ => HashMap::new(),
-                        }
-                    }
+                    services
+                        .provider_access_service
+                        .bilibili_access(credential_owner_id, ctx.request_context)
+                        .await?
+                        .cookies
                 };
 
                 let danmu_resp = self
@@ -1132,11 +1055,12 @@ impl BilibiliProvider {
         match config {
             BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
                 let (bvid, aid) = resolve_bilibili_video_identifier(bvid.as_deref(), *aid)?;
+                let request_bvid = bvid.clone().unwrap_or_default();
                 let cid = *cid;
 
                 let request = synctv_media_providers::grpc::bilibili::GetDashVideoUrlReq {
                     aid,
-                    bvid: bvid.clone(),
+                    bvid: request_bvid.clone(),
                     cid,
                     cookies: sanitized_cookies.clone(),
                 };
@@ -1147,7 +1071,7 @@ impl BilibiliProvider {
 
                 let subtitle_request = synctv_media_providers::grpc::bilibili::GetSubtitlesReq {
                     aid,
-                    bvid: bvid.clone(),
+                    bvid: request_bvid.clone(),
                     cid,
                     cookies: sanitized_cookies.clone(),
                 };
@@ -1161,7 +1085,7 @@ impl BilibiliProvider {
                     }
                     Err(e) => {
                         tracing::warn!(
-                            bvid = %bvid, aid = %aid, cid = %cid, error = %e,
+                            bvid = %request_bvid, aid = %aid, cid = %cid, error = %e,
                             "Failed to fetch Bilibili subtitles for video, continuing without subtitles"
                         );
                     }
@@ -1379,16 +1303,45 @@ impl BilibiliProvider {
 mod tests {
     use super::*;
     use crate::models::UserId;
+    use crate::provider::access::{CachedProviderAccessService, ProviderCredentialReader};
     use crate::provider::{MediaProvider, ProviderClientManager, ProviderContext};
+    use crate::test_helpers::TestResultExt;
     use async_trait::async_trait;
     use std::sync::Arc;
     use synctv_media_providers::bilibili::{BilibiliError, BilibiliInterface};
     use synctv_media_providers::grpc::bilibili as proto;
+
+    struct EmptyProviderCredentialReader;
+
+    #[async_trait]
+    impl ProviderCredentialReader for EmptyProviderCredentialReader {
+        async fn get_by_provider_and_server(
+            &self,
+            _user_id: UserId,
+            _provider: &str,
+            _server_id: &str,
+        ) -> crate::Result<Option<crate::models::UserProviderCredential>> {
+            Ok(None)
+        }
+    }
+
+    fn test_bilibili_context() -> ProviderContext<'static> {
+        let access_service = CachedProviderAccessService::new(
+            Arc::new(EmptyProviderCredentialReader),
+            Arc::new(
+                crate::provider::AlistProvider::new_local_only().checked("provider should build"),
+            ),
+        );
+        ProviderContext::new("test")
+            .with_user_id(UserId::expect_positive(1))
+            .with_provider_access_service(Arc::new(access_service))
+    }
+
     fn validate_bilibili(config: &Value) -> Result<(), ProviderError> {
         tokio::runtime::Runtime::new()
-            .expect("runtime")
+            .checked("runtime")
             .block_on(async {
-                let provider = BilibiliProvider::new_local_only().expect("provider should build");
+                let provider = BilibiliProvider::new_local_only().checked("provider should build");
                 provider
                     .validate_source_config(
                         &ProviderContext::new("test"),
@@ -1400,8 +1353,8 @@ mod tests {
 
     #[test]
     fn video_identifier_requires_bvid_or_aid() {
-        let err = resolve_bilibili_video_identifier(None, None)
-            .expect_err("missing bvid and aid must fail");
+        let err =
+            resolve_bilibili_video_identifier(None, None).failed("missing bvid and aid must fail");
 
         assert!(matches!(
             err,
@@ -1412,8 +1365,8 @@ mod tests {
 
     #[test]
     fn video_identifier_rejects_zero_aid_without_bvid() {
-        let err = BilibiliVideoIdentifier::parse(None, Some(0))
-            .expect_err("zero aid without bvid must fail");
+        let err =
+            BilibiliVideoIdentifier::parse(None, Some(0)).failed("zero aid without bvid must fail");
 
         assert!(matches!(
             err,
@@ -1426,16 +1379,16 @@ mod tests {
     fn video_identifier_accepts_bvid_or_aid() {
         assert_eq!(
             BilibiliVideoIdentifier::parse(Some(" BV1xx411c7mD "), None)
-                .expect("bvid should identify video"),
+                .checked("bvid should identify video"),
             BilibiliVideoIdentifier {
-                bvid: "BV1xx411c7mD".to_string(),
+                bvid: Some("BV1xx411c7mD".to_string()),
                 aid: 0,
             }
         );
         assert_eq!(
-            BilibiliVideoIdentifier::parse(None, Some(42)).expect("aid should identify video"),
+            BilibiliVideoIdentifier::parse(None, Some(42)).checked("aid should identify video"),
             BilibiliVideoIdentifier {
-                bvid: String::new(),
+                bvid: None,
                 aid: 42,
             }
         );
@@ -1454,7 +1407,7 @@ mod tests {
     #[test]
     fn playback_urls_reject_empty_responses() {
         let err = non_empty_playback_urls(vec![String::new(), "   ".to_string()], "video DASH")
-            .expect_err("empty playback URLs must fail");
+            .failed("empty playback URLs must fail");
 
         assert!(matches!(
             err,
@@ -1470,7 +1423,7 @@ mod tests {
                 vec![String::new(), "https://upos.example/video.m4s".to_string()],
                 "video DASH",
             )
-            .expect("non-empty URL should be kept"),
+            .checked("non-empty URL should be kept"),
             vec!["https://upos.example/video.m4s".to_string()]
         );
     }
@@ -1479,7 +1432,7 @@ mod tests {
     struct TestBilibiliClientWithPgcDurlFallback;
 
     fn unconfigured_test_response() -> BilibiliError {
-        BilibiliError::NotImplemented("test bilibili method is not configured".to_string())
+        BilibiliError::InvalidConfig("test bilibili method is not configured".to_string())
     }
 
     #[async_trait]
@@ -1779,13 +1732,16 @@ mod tests {
 
     fn provider_with_test_bilibili_client(client: Arc<dyn BilibiliInterface>) -> BilibiliProvider {
         let default_clients = ProviderClientManager::new_for_tests()
-            .expect("default provider HTTP client should build");
+            .checked("default provider HTTP client should build");
         let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
             default_clients.local_alist_client(),
             client,
             default_clients.local_emby_client(),
         ));
-        BilibiliProvider::with_optional_manager_and_client_manager(None, client_manager)
+        BilibiliProvider::with_client_manager(
+            crate::service::remote_provider_manager::empty_provider_instance_manager(),
+            client_manager,
+        )
     }
 
     fn provider_with_default_test_bilibili_client() -> BilibiliProvider {
@@ -1800,7 +1756,7 @@ mod tests {
         );
         assert_eq!(
             headers.get("User-Agent"),
-            Some(&synctv_media_providers::error::PROVIDER_USER_AGENT.to_string()),
+            Some(&synctv_media_providers::PROVIDER_USER_AGENT.to_string()),
             "Bilibili direct playback must return the provider User-Agent"
         );
     }
@@ -1810,7 +1766,7 @@ mod tests {
         let provider = provider_with_default_test_bilibili_client();
         let result = provider
             .generate_playback(
-                &ProviderContext::new("test").with_user_id(UserId::expect_positive(1)),
+                &test_bilibili_context(),
                 &json!({
                     "type": "video",
                     "bvid": "BV1GJ411x7gL",
@@ -1818,7 +1774,7 @@ mod tests {
                 }),
             )
             .await
-            .expect("mock video playback should resolve");
+            .checked("mock video playback should resolve");
 
         let dash = &result.playback_infos["dash"];
         assert_bilibili_cdn_headers(&dash.headers, "https://www.bilibili.com");
@@ -1831,7 +1787,7 @@ mod tests {
         let provider = provider_with_default_test_bilibili_client();
         let result = provider
             .generate_playback(
-                &ProviderContext::new("test").with_user_id(UserId::expect_positive(1)),
+                &test_bilibili_context(),
                 &json!({
                     "type": "pgc",
                     "epid": 98765,
@@ -1839,7 +1795,7 @@ mod tests {
                 }),
             )
             .await
-            .expect("mock PGC playback should resolve");
+            .checked("mock PGC playback should resolve");
 
         let dash = &result.playback_infos["dash"];
         assert_bilibili_cdn_headers(&dash.headers, "https://www.bilibili.com");
@@ -1853,7 +1809,7 @@ mod tests {
             provider_with_test_bilibili_client(Arc::new(TestBilibiliClientWithPgcDurlFallback));
         let result = provider
             .generate_playback(
-                &ProviderContext::new("test").with_user_id(UserId::expect_positive(1)),
+                &test_bilibili_context(),
                 &json!({
                     "type": "pgc",
                     "epid": 98765,
@@ -1861,7 +1817,7 @@ mod tests {
                 }),
             )
             .await
-            .expect("PGC durl fallback playback should resolve");
+            .checked("PGC durl fallback playback should resolve");
 
         assert_eq!(result.default_mode, "mp4");
         let mp4 = &result.playback_infos["mp4"];
@@ -1880,14 +1836,14 @@ mod tests {
         let provider = provider_with_default_test_bilibili_client();
         let result = provider
             .generate_playback(
-                &ProviderContext::new("test").with_user_id(UserId::expect_positive(1)),
+                &test_bilibili_context(),
                 &json!({
                     "type": "live",
                     "room_id": 12345
                 }),
             )
             .await
-            .expect("mock live playback should resolve");
+            .checked("mock live playback should resolve");
 
         let playback = &result.playback_infos[&result.default_mode];
         assert_bilibili_cdn_headers(&playback.headers, "https://live.bilibili.com");
@@ -1926,7 +1882,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bilibili_shared_credential_dependency_uses_creator() {
-        let provider = BilibiliProvider::new_local_only().expect("provider should build");
+        let provider = BilibiliProvider::new_local_only().checked("provider should build");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_credential_owner_id(UserId::expect_positive(2));
@@ -1940,7 +1896,7 @@ mod tests {
                     "shared": true
                 }),
             )
-            .expect("Bilibili shared dependency extraction should succeed");
+            .checked("Bilibili shared dependency extraction should succeed");
 
         assert_eq!(
             dependencies,
@@ -1954,7 +1910,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bilibili_shared_credential_dependency_requires_explicit_creator() {
-        let provider = BilibiliProvider::new_local_only().expect("provider should build");
+        let provider = BilibiliProvider::new_local_only().checked("provider should build");
         let ctx = ProviderContext::new("test").with_user_id(UserId::expect_positive(1));
         let err = provider
             .credential_dependencies(
@@ -1966,7 +1922,7 @@ mod tests {
                     "shared": true
                 }),
             )
-            .expect_err("shared Bilibili media must not fall back to viewer credentials");
+            .failed("shared Bilibili media must not fall back to viewer credentials");
 
         assert!(
             err.to_string().contains("credential_owner_id"),
@@ -1976,7 +1932,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bilibili_non_shared_credential_dependency_uses_viewer() {
-        let provider = BilibiliProvider::new_local_only().expect("provider should build");
+        let provider = BilibiliProvider::new_local_only().checked("provider should build");
         let ctx = ProviderContext::new("test")
             .with_user_id(UserId::expect_positive(1))
             .with_credential_owner_id(UserId::expect_positive(2));
@@ -1989,7 +1945,7 @@ mod tests {
                     "cid": 12345
                 }),
             )
-            .expect("Bilibili non-shared dependency extraction should succeed");
+            .checked("Bilibili non-shared dependency extraction should succeed");
 
         assert_eq!(
             dependencies,
@@ -2003,7 +1959,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_prepare_bilibili_config_rejects_provider_instance_name() {
-        let provider = BilibiliProvider::new_local_only().expect("provider should build");
+        let provider = BilibiliProvider::new_local_only().checked("provider should build");
         let config = json!({
             "type": "video",
             "bvid": "BV1xx411c7mD",
@@ -2207,12 +2163,12 @@ mod tests {
             "bvid": "BV1GJ411x7gL",
             "cid": 12345
         }))
-        .expect("config should parse");
+        .checked("config should parse");
 
         let (anon_key, anon_ttl) =
-            playback_cache_entry(&config, "anon").expect("cache entry should build");
+            playback_cache_entry(&config, "anon").checked("cache entry should build");
         let (auth_key, auth_ttl) = playback_cache_entry(&config, "auth:user-alpha:global-bilibili")
-            .expect("cache entry should build");
+            .checked("cache entry should build");
 
         assert_eq!(anon_ttl, Duration::from_hours(2));
         assert_eq!(auth_ttl, Duration::from_hours(2));
@@ -2230,14 +2186,14 @@ mod tests {
             "bvid": "BV1GJ411x7gL",
             "cid": 12345
         }))
-        .expect("config should parse");
+        .checked("config should parse");
 
         let (first_key, first_ttl) =
             playback_cache_entry(&config, "auth:user-alpha:global-bilibili")
-                .expect("cache entry should build");
+                .checked("cache entry should build");
         let (second_key, second_ttl) =
             playback_cache_entry(&config, "auth:user-beta:global-bilibili")
-                .expect("cache entry should build");
+                .checked("cache entry should build");
 
         assert_eq!(first_ttl, Duration::from_hours(2));
         assert_eq!(second_ttl, Duration::from_hours(2));
@@ -2254,21 +2210,21 @@ mod tests {
             "epid": 98765,
             "cid": 12345
         }))
-        .expect("PGC config should parse");
+        .checked("PGC config should parse");
         let live = BilibiliSourceConfig::try_from(&json!({
             "type": "live",
             "room_id": 76
         }))
-        .expect("live config should parse");
+        .checked("live config should parse");
 
         let (pgc_old_key, pgc_ttl) = playback_cache_entry(&pgc, "auth:7:bilibili:42:1000")
-            .expect("cache entry should build");
+            .checked("cache entry should build");
         let (pgc_new_key, pgc_new_ttl) = playback_cache_entry(&pgc, "auth:7:bilibili:42:2000")
-            .expect("cache entry should build");
+            .checked("cache entry should build");
         let (live_old_key, live_ttl) = playback_cache_entry(&live, "auth:7:bilibili:42:1000")
-            .expect("cache entry should build");
+            .checked("cache entry should build");
         let (live_new_key, live_new_ttl) = playback_cache_entry(&live, "auth:7:bilibili:42:2000")
-            .expect("cache entry should build");
+            .checked("cache entry should build");
 
         assert_eq!(pgc_ttl, Duration::from_hours(2));
         assert_eq!(pgc_new_ttl, Duration::from_hours(2));

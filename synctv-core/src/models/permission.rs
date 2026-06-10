@@ -776,6 +776,13 @@ sqlx_i16_enum!(Role, "Invalid Role value", {
 mod tests {
     use super::*;
 
+    fn parse_role(input: &str) -> Role {
+        match Role::from_str(input) {
+            Ok(role) => role,
+            Err(error) => std::panic::panic_any(format!("role should parse: {error}")),
+        }
+    }
+
     #[test]
     fn test_permission_has() {
         let perms = RoomPermissionSet::new(RoomAdminPermissionBits::CHAT);
@@ -900,7 +907,7 @@ mod tests {
             (" member ", Role::Member, "member"),
             ("GUEST", Role::Guest, "guest"),
         ] {
-            assert_eq!(Role::from_str(input).unwrap(), role);
+            assert_eq!(parse_role(input), role);
             assert_eq!(role.to_string(), display);
         }
 

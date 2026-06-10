@@ -8,7 +8,7 @@ use crate::http::AppState;
 use synctv_proto::client::{GetPublicSettingsResponse, GetServerInfoResponse};
 
 /// Create public API router
-pub fn create_public_router() -> Router<AppState> {
+pub(crate) fn create_public_router() -> Router<AppState> {
     Router::new()
         .route("/api/public/settings", get(get_public_settings))
         .route("/api/public/server-info", get(get_server_info))

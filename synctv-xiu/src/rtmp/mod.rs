@@ -8,8 +8,7 @@ pub mod messages;
 pub mod netconnection;
 pub mod netstream;
 pub mod protocol_control_messages;
-#[allow(clippy::module_inception)]
-pub mod rtmp;
+pub mod server;
 pub mod session;
 pub mod user_control_messages;
 pub mod utils;

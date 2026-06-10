@@ -207,12 +207,23 @@ pub use user_preferences::{
 mod tests {
     use super::*;
 
+    fn parse_sort_field<T>(value: &str) -> T
+    where
+        T: std::str::FromStr,
+        T::Err: std::fmt::Display,
+    {
+        match value.parse::<T>() {
+            Ok(parsed) => parsed,
+            Err(error) => std::panic::panic_any(format!("sort field should parse: {error}")),
+        }
+    }
+
     macro_rules! assert_sort_field {
         ($ty:ty, $variant:expr, $display:literal, $sql:literal) => {
             assert_eq!($variant.as_str(), $display);
             assert_eq!($variant.to_string(), $display);
             assert_eq!($variant.as_sql(), $sql);
-            assert_eq!($display.parse::<$ty>().unwrap(), $variant);
+            assert_eq!(parse_sort_field::<$ty>($display), $variant);
         };
     }
 

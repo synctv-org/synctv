@@ -2,20 +2,54 @@ use super::*;
 
 const TEST_JWT_SECRET: &str = "test-secret-key-for-jwt-that-is-long-enough-1234567890";
 
+fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+    }
+}
+
 fn create_jwt_service() -> JwtService {
-    // Use a sufficiently long secret to pass entropy validation
-    JwtService::new(TEST_JWT_SECRET).unwrap()
+    ok(JwtService::new(TEST_JWT_SECRET), "JWT service should build")
 }
 
 fn sign_test_refresh_token(jwt: &JwtService, user_id: &UserId) -> String {
-    jwt.sign_refresh_token_with_session(
-        user_id,
-        0,
-        None,
-        "test-refresh-session",
-        &TokenCredentialBinding::Password { version: 0 },
+    ok(
+        jwt.sign_refresh_token_with_session(
+            user_id,
+            0,
+            None,
+            "test-refresh-session",
+            &TokenCredentialBinding::Password { version: 0 },
+        ),
+        "refresh token should sign",
     )
-    .unwrap()
+}
+
+fn sign_access_token(jwt: &JwtService, user_id: &UserId) -> String {
+    ok(
+        jwt.sign_access_token(user_id, 0),
+        "access token should sign",
+    )
+}
+
+fn sign_guest_token(jwt: &JwtService, room_id: &RoomId) -> String {
+    ok(jwt.sign_guest_token(room_id), "guest token should sign")
+}
+
+fn jwt_with_claims(secret: &str, issuer: Option<&str>, audience: Option<&str>) -> JwtService {
+    ok(
+        JwtService::with_durations_and_claims(
+            secret,
+            1,
+            30,
+            4,
+            60,
+            issuer.map(str::to_string),
+            audience.map(str::to_string),
+        ),
+        "JWT service with issuer settings should build",
+    )
 }
 
 #[test]
@@ -23,8 +57,11 @@ fn test_sign_and_verify_access_token() {
     let jwt = create_jwt_service();
     let user_id = UserId::new();
 
-    let token = jwt.sign_access_token(&user_id, 0).unwrap();
-    let claims = jwt.verify_access_token(&token).unwrap();
+    let token = sign_access_token(&jwt, &user_id);
+    let claims = ok(
+        jwt.verify_access_token(&token),
+        "access token should verify",
+    );
 
     assert_eq!(claims.sub, user_id.to_string());
     assert!(claims.is_access_token());
@@ -36,16 +73,20 @@ fn test_sign_and_verify_refresh_token() {
     let user_id = UserId::new();
     let session_id = synctv_common::snanoid!(32);
 
-    let token = jwt
-        .sign_refresh_token_with_session(
+    let token = ok(
+        jwt.sign_refresh_token_with_session(
             &user_id,
             0,
             None,
             &session_id,
             &TokenCredentialBinding::Password { version: 0 },
-        )
-        .unwrap();
-    let claims = jwt.verify_refresh_token(&token).unwrap();
+        ),
+        "refresh token should sign",
+    );
+    let claims = ok(
+        jwt.verify_refresh_token(&token),
+        "refresh token should verify",
+    );
 
     assert_eq!(claims.sub, user_id.to_string());
     assert!(claims.is_refresh_token());
@@ -74,27 +115,35 @@ fn test_token_pair_can_share_session_id() {
     let user_id = UserId::new();
     let session_id = synctv_common::snanoid!(32);
 
-    let access_token = jwt
-        .sign_access_token_with_auth_context_and_session(
+    let access_token = ok(
+        jwt.sign_access_token_with_auth_context_and_session(
             &user_id,
             0,
             None,
             Some(&session_id),
             &TokenCredentialBinding::Password { version: 0 },
-        )
-        .unwrap();
-    let refresh_token = jwt
-        .sign_refresh_token_with_session(
+        ),
+        "access token with session should sign",
+    );
+    let refresh_token = ok(
+        jwt.sign_refresh_token_with_session(
             &user_id,
             0,
             None,
             &session_id,
             &TokenCredentialBinding::Password { version: 0 },
-        )
-        .unwrap();
+        ),
+        "refresh token with session should sign",
+    );
 
-    let access_claims = jwt.verify_access_token(&access_token).unwrap();
-    let refresh_claims = jwt.verify_refresh_token(&refresh_token).unwrap();
+    let access_claims = ok(
+        jwt.verify_access_token(&access_token),
+        "access token should verify",
+    );
+    let refresh_claims = ok(
+        jwt.verify_refresh_token(&refresh_token),
+        "refresh token should verify",
+    );
 
     assert_eq!(access_claims.sid.as_deref(), Some(session_id.as_str()));
     assert_eq!(refresh_claims.sid.as_deref(), Some(session_id.as_str()));
@@ -105,7 +154,7 @@ fn test_verify_wrong_token_type() {
     let jwt = create_jwt_service();
     let user_id = UserId::new();
 
-    let access_token = jwt.sign_access_token(&user_id, 0).unwrap();
+    let access_token = sign_access_token(&jwt, &user_id);
     let result = jwt.verify_refresh_token(&access_token);
     assert!(result.is_err());
 
@@ -135,12 +184,14 @@ fn test_access_token_rejects_invalid_user_id_claim() {
         iss: None,
         aud: None,
     };
-    let token = encode(
-        &Header::new(Algorithm::HS256),
-        &claims,
-        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
-    )
-    .unwrap();
+    let token = ok(
+        encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+        ),
+        "manually encoded access token should sign",
+    );
 
     let result = jwt.verify_access_token(&token);
 
@@ -163,12 +214,14 @@ fn test_guest_token_rejects_invalid_room_id_claim() {
         iss: None,
         aud: None,
     };
-    let token = encode(
-        &Header::new(Algorithm::HS256),
-        &claims,
-        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
-    )
-    .unwrap();
+    let token = ok(
+        encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+        ),
+        "manually encoded guest token should sign",
+    );
 
     let result = jwt.verify_guest_token(&token);
 
@@ -187,7 +240,7 @@ fn test_tampered_token() {
     let jwt = create_jwt_service();
     let user_id = UserId::new();
 
-    let token = jwt.sign_access_token(&user_id, 0).unwrap();
+    let token = sign_access_token(&jwt, &user_id);
     let mut parts: Vec<&str> = token.split('.').collect();
     parts[1] = "tampered_payload";
     let tampered_token = parts.join(".");
@@ -207,10 +260,10 @@ fn test_sign_and_verify_guest_token() {
     let jwt = create_jwt_service();
     let room_id = RoomId::new();
 
-    let token = jwt.sign_guest_token(&room_id).unwrap();
-    let claims = jwt.verify_guest_token(&token).unwrap();
+    let token = sign_guest_token(&jwt, &room_id);
+    let claims = ok(jwt.verify_guest_token(&token), "guest token should verify");
 
-    assert_eq!(claims.room_id().unwrap(), room_id);
+    assert_eq!(ok(claims.room_id(), "guest room ID should parse"), room_id);
     assert!(claims.is_guest());
     assert_eq!(claims.typ, "guest");
     assert!(!claims.session_id().is_empty());
@@ -222,13 +275,18 @@ fn test_guest_token_contains_session_id() {
     let jwt = create_jwt_service();
     let room_id = RoomId::new();
 
-    let token1 = jwt.sign_guest_token(&room_id).unwrap();
-    let token2 = jwt.sign_guest_token(&room_id).unwrap();
+    let token1 = sign_guest_token(&jwt, &room_id);
+    let token2 = sign_guest_token(&jwt, &room_id);
 
-    let claims1 = jwt.verify_guest_token(&token1).unwrap();
-    let claims2 = jwt.verify_guest_token(&token2).unwrap();
+    let claims1 = ok(
+        jwt.verify_guest_token(&token1),
+        "first guest token should verify",
+    );
+    let claims2 = ok(
+        jwt.verify_guest_token(&token2),
+        "second guest token should verify",
+    );
 
-    // Each guest token should have a unique session ID
     assert_ne!(claims1.session_id(), claims2.session_id());
 }
 
@@ -237,11 +295,11 @@ fn test_is_guest_token() {
     let jwt = create_jwt_service();
     let room_id = RoomId::new();
 
-    let guest_token = jwt.sign_guest_token(&room_id).unwrap();
+    let guest_token = sign_guest_token(&jwt, &room_id);
     assert!(jwt.is_guest_token(&guest_token));
 
     let user_id = UserId::new();
-    let access_token = jwt.sign_access_token(&user_id, 0).unwrap();
+    let access_token = sign_access_token(&jwt, &user_id);
     assert!(!jwt.is_guest_token(&access_token));
 }
 
@@ -250,7 +308,7 @@ fn test_verify_regular_token_as_guest_fails() {
     let jwt = create_jwt_service();
     let user_id = UserId::new();
 
-    let access_token = jwt.sign_access_token(&user_id, 0).unwrap();
+    let access_token = sign_access_token(&jwt, &user_id);
     let result = jwt.verify_guest_token(&access_token);
     assert!(result.is_err());
 }
@@ -259,7 +317,7 @@ fn test_verify_regular_token_as_guest_fails() {
 fn test_access_token_rejected_as_refresh() {
     let jwt = create_jwt_service();
     let user_id = UserId::new();
-    let token = jwt.sign_access_token(&user_id, 0).unwrap();
+    let token = sign_access_token(&jwt, &user_id);
     let result = jwt.verify_refresh_token(&token);
     assert!(result.is_err());
 }
@@ -277,9 +335,9 @@ fn test_refresh_token_rejected_as_access() {
 fn test_claims_user_id_extraction() {
     let jwt = create_jwt_service();
     let user_id = UserId::new();
-    let token = jwt.sign_access_token(&user_id, 0).unwrap();
-    let claims = jwt.verify_token(&token).unwrap();
-    assert_eq!(claims.user_id().unwrap(), user_id);
+    let token = sign_access_token(&jwt, &user_id);
+    let claims = ok(jwt.verify_token(&token), "token should verify");
+    assert_eq!(ok(claims.user_id(), "user ID claim should parse"), user_id);
 }
 
 #[test]
@@ -374,7 +432,10 @@ fn test_claims_credential_binding_parses_password_binding() {
     claims.cbm = Some("password".to_string());
 
     assert!(matches!(
-        claims.credential_binding().unwrap(),
+        ok(
+            claims.credential_binding(),
+            "credential binding should parse"
+        ),
         TokenCredentialBinding::Password { version: 7 }
     ));
 }
@@ -409,17 +470,17 @@ fn test_claims_credential_binding_rejects_malformed_binding() {
 fn test_guest_claims_room_id_extraction() {
     let jwt = create_jwt_service();
     let room_id = RoomId::new();
-    let token = jwt.sign_guest_token(&room_id).unwrap();
-    let claims = jwt.verify_guest_token(&token).unwrap();
-    assert_eq!(claims.room_id().unwrap(), room_id);
+    let token = sign_guest_token(&jwt, &room_id);
+    let claims = ok(jwt.verify_guest_token(&token), "guest token should verify");
+    assert_eq!(ok(claims.room_id(), "guest room ID should parse"), room_id);
 }
 
 #[test]
 fn test_guest_claims_sub_format() {
     let jwt = create_jwt_service();
     let room_id = RoomId::new();
-    let token = jwt.sign_guest_token(&room_id).unwrap();
-    let claims = jwt.verify_guest_token(&token).unwrap();
+    let token = sign_guest_token(&jwt, &room_id);
+    let claims = ok(jwt.verify_guest_token(&token), "guest token should verify");
     assert!(claims.sub.starts_with("guest:"));
     assert!(claims.sub.contains(&room_id.to_string()));
 }
@@ -443,33 +504,40 @@ fn test_guest_claims_is_guest_false_for_non_guest_sub() {
 
 #[test]
 fn test_token_from_different_secret_is_rejected() {
-    let jwt1 = JwtService::new("secret-KEY-One-LONG-ENOUGH-1234567890!@#$").unwrap();
-    let jwt2 = JwtService::new("secret-KEY-Two-LONG-ENOUGH-0987654321!@#$").unwrap();
+    let jwt1 = ok(
+        JwtService::new("secret-KEY-One-LONG-ENOUGH-1234567890!@#$"),
+        "first JWT service should build",
+    );
+    let jwt2 = ok(
+        JwtService::new("secret-KEY-Two-LONG-ENOUGH-0987654321!@#$"),
+        "second JWT service should build",
+    );
     let user_id = UserId::new();
 
-    let token = jwt1.sign_access_token(&user_id, 0).unwrap();
+    let token = sign_access_token(&jwt1, &user_id);
     let result = jwt2.verify_token(&token);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_custom_token_durations() {
-    let jwt = JwtService::with_durations(
-        "custom-secret-KEY-Long-ENOUGH-1234567890!@#$%^&*()",
-        2,  // 2 hour access
-        7,  // 7 day refresh
-        1,  // 1 hour guest
-        30, // 30 second leeway
-    )
-    .unwrap();
+    let jwt = ok(
+        JwtService::with_durations(
+            "custom-secret-KEY-Long-ENOUGH-1234567890!@#$%^&*()",
+            2,
+            7,
+            1,
+            30,
+        ),
+        "JWT service with custom durations should build",
+    );
 
     let user_id = UserId::new();
-    let token = jwt.sign_access_token(&user_id, 0).unwrap();
-    let claims = jwt.verify_token(&token).unwrap();
+    let token = sign_access_token(&jwt, &user_id);
+    let claims = ok(jwt.verify_token(&token), "token should verify");
 
-    // Verify token has exp roughly 2 hours from iat
     let duration = claims.exp - claims.iat;
-    assert_eq!(duration, 7200); // 2 hours in seconds
+    assert_eq!(duration, 7200);
 }
 
 #[test]
@@ -477,24 +545,26 @@ fn test_refresh_token_duration() {
     let jwt = create_jwt_service();
     let user_id = UserId::new();
     let token = sign_test_refresh_token(&jwt, &user_id);
-    let claims = jwt.verify_token(&token).unwrap();
+    let claims = ok(jwt.verify_token(&token), "refresh token should verify");
     let duration = claims.exp - claims.iat;
-    assert_eq!(duration, 30 * 86400); // 30 days in seconds
+    assert_eq!(duration, 30 * 86400);
 }
 
 #[test]
 fn test_expired_token_is_rejected() {
     let secret = "expired-TOKEN-Test-SECRET-1234567890!@#$%^&*()";
-    let jwt = JwtService::with_durations(secret, 1, 1, 1, 0).unwrap();
+    let jwt = ok(
+        JwtService::with_durations(secret, 1, 1, 1, 0),
+        "JWT service with no leeway should build",
+    );
 
-    // Manually craft a token with exp in the past
     let past = Utc::now() - Duration::hours(2);
     let claims = Claims {
         sub: "expired_user".into(),
         typ: "access".into(),
         jti: "test-jti".into(),
         iat: (past - Duration::hours(3)).timestamp(),
-        exp: past.timestamp(), // expired 2 hours ago
+        exp: past.timestamp(),
         pv: 0,
         sid: None,
         amr: None,
@@ -506,12 +576,14 @@ fn test_expired_token_is_rejected() {
         iss: None,
         aud: None,
     };
-    let token = encode(
-        &Header::new(Algorithm::HS256),
-        &claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )
-    .unwrap();
+    let token = ok(
+        encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        ),
+        "expired token should encode",
+    );
 
     let result = jwt.verify_token(&token);
     assert!(result.is_err(), "Expired token should be rejected");
@@ -548,11 +620,11 @@ fn test_jti_is_unique_per_token() {
     let jwt = create_jwt_service();
     let user_id = UserId::new();
 
-    let token1 = jwt.sign_access_token(&user_id, 0).unwrap();
-    let token2 = jwt.sign_access_token(&user_id, 0).unwrap();
+    let token1 = sign_access_token(&jwt, &user_id);
+    let token2 = sign_access_token(&jwt, &user_id);
 
-    let claims1 = jwt.verify_token(&token1).unwrap();
-    let claims2 = jwt.verify_token(&token2).unwrap();
+    let claims1 = ok(jwt.verify_token(&token1), "first token should verify");
+    let claims2 = ok(jwt.verify_token(&token2), "second token should verify");
 
     assert_ne!(
         claims1.jti, claims2.jti,
@@ -568,22 +640,21 @@ fn test_token_iat_is_recent() {
     let user_id = UserId::new();
 
     let before = Utc::now().timestamp();
-    let token = jwt.sign_access_token(&user_id, 0).unwrap();
+    let token = sign_access_token(&jwt, &user_id);
     let after = Utc::now().timestamp();
 
-    let claims = jwt.verify_token(&token).unwrap();
+    let claims = ok(jwt.verify_token(&token), "token should verify");
     assert!(claims.iat >= before && claims.iat <= after);
 }
 
 #[test]
 fn test_guest_token_duration() {
-    // Default guest token duration is 4 hours
     let jwt = create_jwt_service();
     let room_id = RoomId::new();
-    let token = jwt.sign_guest_token(&room_id).unwrap();
-    let claims = jwt.verify_guest_token(&token).unwrap();
+    let token = sign_guest_token(&jwt, &room_id);
+    let claims = ok(jwt.verify_guest_token(&token), "guest token should verify");
     let duration = claims.exp - claims.iat;
-    assert_eq!(duration, 4 * 3600); // 4 hours in seconds
+    assert_eq!(duration, 4 * 3600);
 }
 
 #[test]
@@ -594,8 +665,8 @@ fn test_sign_and_verify_custom_token() {
         "custom_field": "custom_value",
     });
 
-    let token = jwt.sign_custom(&claims).unwrap();
-    let verified: serde_json::Value = jwt.verify_custom(&token).unwrap();
+    let token = ok(jwt.sign_custom(&claims), "custom token should sign");
+    let verified: serde_json::Value = ok(jwt.verify_custom(&token), "custom token should verify");
 
     assert_eq!(verified["sub"], "custom_subject");
     assert_eq!(verified["custom_field"], "custom_value");
@@ -606,31 +677,32 @@ fn test_sign_and_verify_custom_token() {
 
 #[test]
 fn test_custom_token_wrong_secret_rejected() {
-    let jwt1 = JwtService::new("custom-SECRET-One-LONG-ENOUGH-1234567890!@#$").unwrap();
-    let jwt2 = JwtService::new("custom-SECRET-Two-LONG-ENOUGH-0987654321!@#$").unwrap();
+    let jwt1 = ok(
+        JwtService::new("custom-SECRET-One-LONG-ENOUGH-1234567890!@#$"),
+        "first custom JWT service should build",
+    );
+    let jwt2 = ok(
+        JwtService::new("custom-SECRET-Two-LONG-ENOUGH-0987654321!@#$"),
+        "second custom JWT service should build",
+    );
 
     let claims = serde_json::json!({"sub": "test"});
-    let token = jwt1.sign_custom(&claims).unwrap();
+    let token = ok(jwt1.sign_custom(&claims), "custom token should sign");
     let result = jwt2.verify_custom(&token);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_token_with_issuer_and_audience() {
-    let jwt = JwtService::with_durations_and_claims(
+    let jwt = jwt_with_claims(
         "secret-with-issuer-aud-LONG-ENOUGH-1234567890!@#$%",
-        1,
-        30,
-        4,
-        60,
-        Some("synctv".to_string()),
-        Some("synctv-api".to_string()),
-    )
-    .unwrap();
+        Some("synctv"),
+        Some("synctv-api"),
+    );
 
     let user_id = UserId::new();
-    let token = jwt.sign_access_token(&user_id, 0).unwrap();
-    let claims = jwt.verify_token(&token).unwrap();
+    let token = sign_access_token(&jwt, &user_id);
+    let claims = ok(jwt.verify_token(&token), "token should verify");
 
     assert_eq!(claims.iss.as_deref(), Some("synctv"));
     assert_eq!(claims.aud.as_deref(), Some("synctv-api"));
@@ -638,42 +710,32 @@ fn test_token_with_issuer_and_audience() {
 
 #[test]
 fn test_token_without_issuer_accepted_when_no_issuer_expected() {
-    // Service without issuer validation
-    let jwt = JwtService::new("secret-no-issuer-validation-LONG-ENOUGH-1234567890").unwrap();
+    let jwt = ok(
+        JwtService::new("secret-no-issuer-validation-LONG-ENOUGH-1234567890"),
+        "JWT service without issuer validation should build",
+    );
     let user_id = UserId::new();
-    let token = jwt.sign_access_token(&user_id, 0).unwrap();
+    let token = sign_access_token(&jwt, &user_id);
     let result = jwt.verify_token(&token);
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_token_with_wrong_issuer_rejected() {
-    // Service that expects "synctv" as issuer
-    let jwt_expected = JwtService::with_durations_and_claims(
+    let jwt_expected = jwt_with_claims(
         "secret-issuer-check-LONG-ENOUGH-1234567890!@#$%",
-        1,
-        30,
-        4,
-        60,
-        Some("synctv".to_string()),
+        Some("synctv"),
         None,
-    )
-    .unwrap();
+    );
 
-    // Service that signs tokens with different issuer
-    let jwt_other = JwtService::with_durations_and_claims(
+    let jwt_other = jwt_with_claims(
         "secret-issuer-check-LONG-ENOUGH-1234567890!@#$%",
-        1,
-        30,
-        4,
-        60,
-        Some("other-service".to_string()),
+        Some("other-service"),
         None,
-    )
-    .unwrap();
+    );
 
     let user_id = UserId::new();
-    let token = jwt_other.sign_access_token(&user_id, 0).unwrap();
+    let token = sign_access_token(&jwt_other, &user_id);
     let result = jwt_expected.verify_token(&token);
 
     assert!(
@@ -684,32 +746,20 @@ fn test_token_with_wrong_issuer_rejected() {
 
 #[test]
 fn test_token_with_wrong_audience_rejected() {
-    // Service that expects "synctv-api" as audience
-    let jwt_expected = JwtService::with_durations_and_claims(
+    let jwt_expected = jwt_with_claims(
         "secret-aud-check-LONG-ENOUGH-1234567890!@#$%",
-        1,
-        30,
-        4,
-        60,
         None,
-        Some("synctv-api".to_string()),
-    )
-    .unwrap();
+        Some("synctv-api"),
+    );
 
-    // Service that signs tokens with different audience
-    let jwt_other = JwtService::with_durations_and_claims(
+    let jwt_other = jwt_with_claims(
         "secret-aud-check-LONG-ENOUGH-1234567890!@#$%",
-        1,
-        30,
-        4,
-        60,
         None,
-        Some("other-audience".to_string()),
-    )
-    .unwrap();
+        Some("other-audience"),
+    );
 
     let user_id = UserId::new();
-    let token = jwt_other.sign_access_token(&user_id, 0).unwrap();
+    let token = sign_access_token(&jwt_other, &user_id);
     let result = jwt_expected.verify_token(&token);
 
     assert!(
@@ -720,20 +770,15 @@ fn test_token_with_wrong_audience_rejected() {
 
 #[test]
 fn test_guest_token_with_issuer_and_audience() {
-    let jwt = JwtService::with_durations_and_claims(
+    let jwt = jwt_with_claims(
         "guest-issuer-aud-secret-LONG-ENOUGH-1234567890!@#$%",
-        1,
-        30,
-        4,
-        60,
-        Some("synctv".to_string()),
-        Some("synctv-guest".to_string()),
-    )
-    .unwrap();
+        Some("synctv"),
+        Some("synctv-guest"),
+    );
 
     let room_id = RoomId::new();
-    let token = jwt.sign_guest_token(&room_id).unwrap();
-    let claims = jwt.verify_guest_token(&token).unwrap();
+    let token = sign_guest_token(&jwt, &room_id);
+    let claims = ok(jwt.verify_guest_token(&token), "guest token should verify");
 
     assert_eq!(claims.iss.as_deref(), Some("synctv"));
     assert_eq!(claims.aud.as_deref(), Some("synctv-guest"));
@@ -741,9 +786,12 @@ fn test_guest_token_with_issuer_and_audience() {
 
 #[test]
 fn test_guest_token_without_issuer_accepted_when_no_issuer_expected() {
-    let jwt = JwtService::new("guest-no-issuer-secret-LONG-ENOUGH-1234567890!@#").unwrap();
+    let jwt = ok(
+        JwtService::new("guest-no-issuer-secret-LONG-ENOUGH-1234567890!@#"),
+        "guest JWT service without issuer validation should build",
+    );
     let room_id = RoomId::new();
-    let token = jwt.sign_guest_token(&room_id).unwrap();
+    let token = sign_guest_token(&jwt, &room_id);
     let result = jwt.verify_guest_token(&token);
     assert!(result.is_ok());
 }

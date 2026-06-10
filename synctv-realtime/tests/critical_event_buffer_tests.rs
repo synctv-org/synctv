@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used)]
 use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_core::models::RoomPermissionSet;
-use synctv_realtime::sync::events::RealtimeEvent;
+use synctv_realtime::sync::RealtimeEvent;
 
 fn event_id() -> String {
     synctv_common::snanoid!(16)

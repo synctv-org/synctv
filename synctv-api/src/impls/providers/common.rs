@@ -16,46 +16,66 @@ use crate::impls::admin::{validate_admin_auth, RequestContext, ValidatedAdmin};
 use crate::impls::{ApiError, EndpointRateLimitCategory, RequestExecutor, RequestMetadata};
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct ProviderBind {
-    pub id: String,
-    pub server_id: String,
-    pub host: String,
-    pub label_key: String,
-    pub label_value: String,
-    pub created_at: i64,
-    pub created_at_str: String,
-    pub provider_instance_name: String,
+pub(crate) struct ProviderBind {
+    pub(crate) id: String,
+    pub(crate) server_id: String,
+    pub(crate) host: String,
+    pub(crate) label_key: String,
+    pub(crate) label_value: String,
+    pub(crate) created_at: i64,
+    pub(crate) created_at_str: String,
+    pub(crate) provider_instance_name: String,
 }
 
 const PROVIDER_BINDS_UNAVAILABLE_MESSAGE: &str =
     "Provider bind information is temporarily unavailable";
 
+#[must_use]
+pub(crate) fn provider_instance_name_for_response(value: Option<String>) -> String {
+    value.unwrap_or_default()
+}
+
 fn i64_to_i32(value: i64, field: &'static str) -> Result<i32, ApiError> {
     i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
+}
+
+fn required_credential_string_field(
+    credential: &UserProviderCredential,
+    field: &str,
+) -> Result<String, ApiError> {
+    let value = credential
+        .credential_data
+        .get(field)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| {
+            ApiError::Internal(format!(
+                "Provider credential {} for {} is missing required field '{field}'",
+                credential.id, credential.provider
+            ))
+        })?
+        .trim();
+
+    if value.is_empty() {
+        return Err(ApiError::Internal(format!(
+            "Provider credential {} for {} has empty required field '{field}'",
+            credential.id, credential.provider
+        )));
+    }
+
+    Ok(value.to_string())
 }
 
 fn filter_provider_binds(
     credentials: Vec<UserProviderCredential>,
     user_field_key: &str,
-) -> Vec<ProviderBind> {
+) -> Result<Vec<ProviderBind>, ApiError> {
     credentials
         .into_iter()
         .map(|credential| {
-            let host = credential
-                .credential_data
-                .get("host")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
+            let host = required_credential_string_field(&credential, "host")?;
+            let label_value = required_credential_string_field(&credential, user_field_key)?;
 
-            let label_value = credential
-                .credential_data
-                .get(user_field_key)
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-
-            ProviderBind {
+            Ok(ProviderBind {
                 id: credential.id.to_string(),
                 server_id: credential.server_id,
                 host,
@@ -63,13 +83,15 @@ fn filter_provider_binds(
                 label_value,
                 created_at: credential.created_at.timestamp(),
                 created_at_str: synctv_common::time::format_datetime_rfc3339(credential.created_at),
-                provider_instance_name: credential.provider_instance_name.unwrap_or_default(),
-            }
+                provider_instance_name: provider_instance_name_for_response(
+                    credential.provider_instance_name,
+                ),
+            })
         })
         .collect()
 }
 
-pub async fn get_provider_credentials(
+pub(crate) async fn get_provider_credentials(
     repo: &Arc<UserProviderCredentialRepository>,
     user_id: &UserId,
     provider_name: &str,
@@ -98,7 +120,7 @@ pub async fn get_provider_credentials(
         .collect())
 }
 
-pub async fn get_provider_binds(
+pub(crate) async fn get_provider_binds(
     repo: &Arc<UserProviderCredentialRepository>,
     user_id: &UserId,
     provider_name: &str,
@@ -106,15 +128,10 @@ pub async fn get_provider_binds(
     instance_name: Option<&str>,
 ) -> Result<Vec<ProviderBind>, ApiError> {
     let credentials = get_provider_credentials(repo, user_id, provider_name, instance_name).await?;
-    Ok(filter_provider_binds(credentials, user_field_key))
+    filter_provider_binds(credentials, user_field_key)
 }
 
-#[must_use]
-pub fn extract_instance_name(name: &str) -> Option<String> {
-    normalize_provider_instance_name(Some(name)).map(str::to_owned)
-}
-
-pub fn provider_instance_name_from_value(value: &str) -> Result<Option<&str>, ApiError> {
+pub(crate) fn provider_instance_name_from_value(value: &str) -> Result<Option<&str>, ApiError> {
     let Some(instance_name) = normalize_provider_instance_name(Some(value)) else {
         return Ok(None);
     };
@@ -122,7 +139,7 @@ pub fn provider_instance_name_from_value(value: &str) -> Result<Option<&str>, Ap
     Ok(Some(instance_name))
 }
 
-pub fn provider_instance_name_from_optional_value(
+pub(crate) fn provider_instance_name_from_optional_value(
     value: Option<&str>,
 ) -> Result<Option<&str>, ApiError> {
     let Some(value) = value else {
@@ -141,7 +158,7 @@ pub(crate) fn provider_instance_name_for_provider(
     Ok(Some(instance_name))
 }
 
-pub fn provider_instance_name_from_query(
+pub(crate) fn provider_instance_name_from_query(
     query: &ProviderInstanceQuery,
 ) -> Result<Option<&str>, ApiError> {
     provider_instance_name_from_value(&query.instance_name)
@@ -171,33 +188,19 @@ pub(crate) fn resolve_bound_instance_name(
 #[derive(Clone)]
 pub struct ProviderCommonApiImpl {
     provider_instance_manager: Arc<RemoteProviderManager>,
-    providers_manager: Option<Arc<ProvidersManager>>,
+    providers_manager: Arc<ProvidersManager>,
     user_service: Arc<UserService>,
     audit_service: Arc<AuditService>,
-    request_executor: Option<Arc<RequestExecutor>>,
+    request_executor: Arc<RequestExecutor>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ProviderCommonApiRuntime {
-    pub providers_manager: Option<Arc<ProvidersManager>>,
-    pub request_executor: Option<Arc<RequestExecutor>>,
+    pub providers_manager: Arc<ProvidersManager>,
+    pub request_executor: Arc<RequestExecutor>,
 }
 
 impl ProviderCommonApiImpl {
-    #[must_use]
-    pub fn new(
-        provider_instance_manager: Arc<RemoteProviderManager>,
-        user_service: Arc<UserService>,
-        audit_service: Arc<AuditService>,
-    ) -> Self {
-        Self::new_with_runtime(
-            provider_instance_manager,
-            user_service,
-            audit_service,
-            ProviderCommonApiRuntime::default(),
-        )
-    }
-
     #[must_use]
     pub fn new_with_runtime(
         provider_instance_manager: Arc<RemoteProviderManager>,
@@ -214,10 +217,8 @@ impl ProviderCommonApiImpl {
         }
     }
 
-    fn request_executor(&self) -> Result<&Arc<RequestExecutor>, ApiError> {
-        self.request_executor.as_ref().ok_or_else(|| {
-            ApiError::ServiceUnavailable("Request executor is not configured".to_string())
-        })
+    fn request_executor(&self) -> &Arc<RequestExecutor> {
+        &self.request_executor
     }
 
     pub fn execute_admin_endpoint<'a, T, F, Fut>(
@@ -245,16 +246,10 @@ impl ProviderCommonApiImpl {
         F: FnOnce(synctv_core::service::AuthenticatedToken) -> Fut + Send + 'a,
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
-        use futures::FutureExt;
-
-        match self.request_executor() {
-            Ok(executor) => {
-                executor.execute_user(metadata, category, move |authenticated| async move {
-                    operation(authenticated).await.map_err(Into::into)
-                })
-            }
-            Err(err) => async move { Err(err) }.boxed(),
-        }
+        self.request_executor()
+            .execute_user(metadata, category, move |authenticated| async move {
+                operation(authenticated).await.map_err(Into::into)
+            })
     }
 
     pub fn execute_admin_endpoint_with_control<'a, T, F, Fut>(
@@ -267,29 +262,24 @@ impl ProviderCommonApiImpl {
         F: FnOnce(ExecutionControl, ValidatedAdmin) -> Fut + Send + 'a,
         Fut: std::future::Future<Output = Result<T, ApiError>> + Send + 'a,
     {
-        use futures::FutureExt;
-
         let user_service = Arc::clone(&self.user_service);
-        match self.request_executor() {
-            Ok(executor) => executor.execute_user_with_control(
-                metadata,
-                EndpointRateLimitCategory::Admin,
-                move |request_control, authenticated| async move {
-                    let validated = validate_admin_auth(
-                        user_service.as_ref(),
-                        authenticated.user_id,
-                        authenticated.claims.pv,
-                        authenticated.claims.iat,
-                    )
-                    .await?;
-                    if !validated.role.is_admin_or_above() {
-                        return Err(ApiError::Authorization("Admin role required".to_string()));
-                    }
-                    operation(request_control, validated).await
-                },
-            ),
-            Err(err) => async move { Err(err) }.boxed(),
-        }
+        self.request_executor().execute_user_with_control(
+            metadata,
+            EndpointRateLimitCategory::Admin,
+            move |request_control, authenticated| async move {
+                let validated = validate_admin_auth(
+                    user_service.as_ref(),
+                    authenticated.user_id,
+                    authenticated.claims.pv,
+                    authenticated.claims.iat,
+                )
+                .await?;
+                if !validated.role.is_admin_or_above() {
+                    return Err(ApiError::Authorization("Admin role required".to_string()));
+                }
+                operation(request_control, validated).await
+            },
+        )
     }
 
     pub fn execute_root_endpoint<'a, T, F, Fut>(
@@ -406,11 +396,14 @@ impl ProviderCommonApiImpl {
         let mut seen = std::collections::HashSet::new();
         let provider_type = req.provider_type.as_str();
 
-        if let Some(providers_manager) = &self.providers_manager {
-            if providers_manager.get_by_type(provider_type).await.is_some() {
-                backends.push(provider_type.to_string());
-                seen.insert(provider_type.to_string());
-            }
+        if self
+            .providers_manager
+            .get_by_type(provider_type)
+            .await
+            .is_some()
+        {
+            backends.push(provider_type.to_string());
+            seen.insert(provider_type.to_string());
         }
 
         let mut remote_backends = self
@@ -534,37 +527,29 @@ impl ProviderCommonApiImpl {
         control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::providers::common::UpdateProviderInstanceResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        let clear_comment = req.clear_comment.unwrap_or(false);
+        let clear_jwt_secret = req.clear_jwt_secret.unwrap_or(false);
+        let clear_custom_ca = req.clear_custom_ca.unwrap_or(false);
         if req.endpoint.is_none()
             && req.comment.is_none()
-            && !req.clear_comment.unwrap_or(false)
             && req.timeout_seconds.is_none()
             && req.tls.is_none()
             && req.insecure_tls.is_none()
             && req.providers.is_empty()
             && req.jwt_secret.is_none()
-            && !req.clear_jwt_secret.unwrap_or(false)
             && req.custom_ca.is_none()
-            && !req.clear_custom_ca.unwrap_or(false)
+            && !(clear_comment || clear_jwt_secret || clear_custom_ca)
         {
             return Err(ApiError::InvalidInput(
                 "provider update requires at least one changed field".to_string(),
             ));
         }
-        if req.comment.is_some() && req.clear_comment.unwrap_or(false) {
-            return Err(ApiError::InvalidInput(
-                "comment and clear_comment cannot both be set".to_string(),
-            ));
-        }
-        if req.jwt_secret.is_some() && req.clear_jwt_secret.unwrap_or(false) {
-            return Err(ApiError::InvalidInput(
-                "jwt_secret and clear_jwt_secret cannot both be set".to_string(),
-            ));
-        }
-        if req.custom_ca.is_some() && req.clear_custom_ca.unwrap_or(false) {
-            return Err(ApiError::InvalidInput(
-                "custom_ca and clear_custom_ca cannot both be set".to_string(),
-            ));
-        }
+        validate_provider_instance_clear_flags(
+            &req,
+            clear_comment,
+            clear_jwt_secret,
+            clear_custom_ca,
+        )?;
 
         let mut instance = self
             .provider_instance_manager
@@ -578,7 +563,7 @@ impl ProviderCommonApiImpl {
         if let Some(endpoint) = req.endpoint {
             instance.endpoint = endpoint;
         }
-        if req.clear_comment.unwrap_or(false) {
+        if clear_comment {
             instance.comment = None;
         } else if let Some(comment) = req.comment.as_deref() {
             instance.comment = trim_to_optional(comment);
@@ -595,12 +580,12 @@ impl ProviderCommonApiImpl {
         if let Some(insecure_tls) = req.insecure_tls {
             instance.insecure_tls = insecure_tls;
         }
-        if req.clear_jwt_secret.unwrap_or(false) {
+        if clear_jwt_secret {
             instance.jwt_secret = None;
         } else if let Some(jwt_secret) = req.jwt_secret.as_deref() {
             instance.jwt_secret = trim_to_optional(jwt_secret);
         }
-        if req.clear_custom_ca.unwrap_or(false) {
+        if clear_custom_ca {
             instance.custom_ca = None;
         } else if let Some(custom_ca) = req.custom_ca.as_deref() {
             instance.custom_ca = trim_to_optional(custom_ca);
@@ -857,12 +842,42 @@ fn trim_to_optional(raw: &str) -> Option<String> {
     }
 }
 
+fn validate_provider_instance_clear_flags(
+    req: &synctv_proto::providers::common::UpdateProviderInstanceRequest,
+    clear_comment: bool,
+    clear_jwt_secret: bool,
+    clear_custom_ca: bool,
+) -> Result<(), ApiError> {
+    if req.comment.is_some() && clear_comment {
+        return Err(ApiError::InvalidInput(
+            "comment and clear_comment cannot both be set".to_string(),
+        ));
+    }
+    if req.jwt_secret.is_some() && clear_jwt_secret {
+        return Err(ApiError::InvalidInput(
+            "jwt_secret and clear_jwt_secret cannot both be set".to_string(),
+        ));
+    }
+    if req.custom_ca.is_some() && clear_custom_ca {
+        return Err(ApiError::InvalidInput(
+            "custom_ca and clear_custom_ca cannot both be set".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn mask_url_credentials(endpoint: &str) -> String {
     match url::Url::parse(endpoint) {
         Ok(mut parsed) => {
-            if !parsed.username().is_empty() || parsed.password().is_some() {
-                let _ = parsed.set_username("");
-                let _ = parsed.set_password(None);
+            let has_credentials = !parsed.username().is_empty() || parsed.password().is_some();
+            if has_credentials
+                && (parsed.set_username("").is_err() || parsed.set_password(None).is_err())
+            {
+                tracing::warn!(
+                    endpoint,
+                    "failed to mask provider endpoint credentials for diagnostics"
+                );
+                return endpoint.to_string();
             }
             parsed.to_string()
         }
@@ -874,6 +889,7 @@ fn mask_url_credentials(endpoint: &str) -> String {
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};
+    use serde_json::json;
     use std::sync::Arc;
     use synctv_core::cache::{KeyBuilder, UsernameCache};
     use synctv_core::models::ProviderInstance;
@@ -883,19 +899,46 @@ mod tests {
     };
     use synctv_core_testing::create_test_pool;
 
-    #[test]
-    fn provider_instance_name_helpers_use_core_normalization() {
-        assert_eq!(
-            extract_instance_name("  emby-main  "),
-            Some("emby-main".to_string())
-        );
-        assert_eq!(extract_instance_name("   "), None);
+    type TestResult<T = ()> = anyhow::Result<T>;
 
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
+    fn api_ok<T>(result: Result<T, ApiError>) -> TestResult<T> {
+        result.map_err(|error| test_error(format!("{error:?}")))
+    }
+
+    fn core_ok<T>(result: synctv_core::Result<T>) -> TestResult<T> {
+        result.map_err(|error| test_error(error.to_string()))
+    }
+
+    fn provider_credential_with_data(
+        id: i64,
+        credential_data: serde_json::Value,
+    ) -> UserProviderCredential {
+        let now = Utc::now();
+
+        UserProviderCredential {
+            id,
+            user_id: UserId::expect_positive(42),
+            provider: "alist".to_string(),
+            server_id: "server-1".to_string(),
+            provider_instance_name: Some("alist-main".to_string()),
+            credential_data,
+            expires_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn provider_instance_name_helpers_use_core_normalization() -> TestResult {
         let query = ProviderInstanceQuery {
             instance_name: "  alist-main  ".to_string(),
         };
         assert_eq!(
-            provider_instance_name_from_query(&query).expect("query should validate"),
+            api_ok(provider_instance_name_from_query(&query))?,
             Some("alist-main")
         );
 
@@ -907,36 +950,89 @@ mod tests {
             Err(ApiError::InvalidInput(message))
                 if message.contains("provider instance name")
         ));
+        Ok(())
     }
 
-    fn test_user_service(pool: &sqlx::PgPool) -> UserService {
-        UserService::new_for_tests(
+    #[test]
+    fn filter_provider_binds_uses_required_credential_fields() -> TestResult {
+        let credential = provider_credential_with_data(
+            7,
+            json!({
+                "host": " https://alist.example ",
+                "username": " alice ",
+            }),
+        );
+
+        let binds = api_ok(filter_provider_binds(vec![credential], "username"))?;
+
+        assert_eq!(binds.len(), 1);
+        assert_eq!(binds[0].id, "7");
+        assert_eq!(binds[0].host, "https://alist.example");
+        assert_eq!(binds[0].label_key, "username");
+        assert_eq!(binds[0].label_value, "alice");
+        assert_eq!(binds[0].provider_instance_name, "alist-main");
+        Ok(())
+    }
+
+    #[test]
+    fn filter_provider_binds_rejects_missing_host() {
+        let credential = provider_credential_with_data(8, json!({ "username": "alice" }));
+
+        assert!(matches!(
+            filter_provider_binds(vec![credential], "username"),
+            Err(ApiError::Internal(message))
+                if message.contains("credential 8")
+                    && message.contains("alist")
+                    && message.contains("host")
+        ));
+    }
+
+    #[test]
+    fn filter_provider_binds_rejects_empty_label_value() {
+        let credential = provider_credential_with_data(
+            9,
+            json!({
+                "host": "https://alist.example",
+                "username": "   ",
+            }),
+        );
+
+        assert!(matches!(
+            filter_provider_binds(vec![credential], "username"),
+            Err(ApiError::Internal(message))
+                if message.contains("credential 9")
+                    && message.contains("alist")
+                    && message.contains("username")
+        ));
+    }
+
+    fn test_user_service(pool: &sqlx::PgPool) -> TestResult<UserService> {
+        Ok(UserService::new_for_tests(
             pool,
-            JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
-                .expect("test JWT service should build"),
+            core_ok(JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!"))?,
             UsernameCache::local_only("test:username:".to_string(), 100, 60),
             Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400)),
             KeyBuilder::new("test"),
             BruteForceProtection::in_memory("test".to_string()),
-        )
+        ))
     }
 
     fn make_provider_common_api(
         pool: sqlx::PgPool,
         provider_instance_manager: Arc<RemoteProviderManager>,
-        providers_manager: Option<Arc<ProvidersManager>>,
-    ) -> ProviderCommonApiImpl {
-        let user_service = Arc::new(test_user_service(&pool));
+        providers_manager: Arc<ProvidersManager>,
+    ) -> TestResult<ProviderCommonApiImpl> {
+        let user_service = Arc::new(test_user_service(&pool)?);
         let (audit_service, _flush_handle) = AuditService::new(pool);
-        ProviderCommonApiImpl::new_with_runtime(
+        Ok(ProviderCommonApiImpl::new_with_runtime(
             provider_instance_manager,
             user_service,
             Arc::new(audit_service),
             ProviderCommonApiRuntime {
                 providers_manager,
-                request_executor: None,
+                request_executor: Arc::new(crate::test_support::local_request_executor()),
             },
-        )
+        ))
     }
 
     #[test]
@@ -957,30 +1053,32 @@ mod tests {
     }
 
     #[test]
-    fn provider_instance_sort_mapping_defaults_only_unspecified_values() {
+    fn provider_instance_sort_mapping_defaults_only_unspecified_values() -> TestResult {
         assert_eq!(
-            provider_instance_sort_by_from_proto(
+            api_ok(provider_instance_sort_by_from_proto(
                 synctv_proto::providers::common::ProviderInstanceListSortBy::Unspecified as i32,
-            )
-            .expect("unspecified sort field should map to default"),
+            ))?,
             synctv_core::models::ProviderInstanceListSortBy::CreatedAt
         );
         assert_eq!(
-            provider_instance_sort_direction_from_proto(
+            api_ok(provider_instance_sort_direction_from_proto(
                 synctv_proto::providers::common::SortDirection::Unspecified as i32,
-            )
-            .expect("unspecified sort direction should map to default"),
+            ))?,
             CoreSortDirection::Desc
         );
+        Ok(())
     }
 
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
-    async fn list_provider_instances_uses_default_page_size_when_request_omits_it() {
+    async fn list_provider_instances_uses_default_page_size_when_request_omits_it() -> TestResult {
         let (_postgres, pool) = create_test_pool().await;
         let repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
         let provider_instance_manager = Arc::new(RemoteProviderManager::new(repo.clone()));
-        let api = make_provider_common_api(pool, provider_instance_manager, None);
+        let providers_manager = Arc::new(core_ok(ProvidersManager::new(
+            provider_instance_manager.clone(),
+        ))?);
+        let api = make_provider_common_api(pool, provider_instance_manager, providers_manager)?;
         let now = Utc::now();
 
         for index in 0..25 {
@@ -999,7 +1097,7 @@ mod tests {
                 updated_at: now + Duration::seconds(i64::from(index)),
             })
             .await
-            .expect("test provider instance should persist");
+            .map_err(|error| test_error(error.to_string()))?;
         }
 
         let response = api
@@ -1017,7 +1115,7 @@ mod tests {
                 },
             )
             .await
-            .expect("provider instances should list successfully");
+            .map_err(|error| test_error(format!("{error:?}")))?;
 
         assert_eq!(
             response.instances.len(),
@@ -1026,5 +1124,6 @@ mod tests {
         );
         assert_eq!(response.instances[0].name, "direct-url-00");
         assert_eq!(response.instances[19].name, "direct-url-19");
+        Ok(())
     }
 }

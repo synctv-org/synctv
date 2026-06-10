@@ -238,6 +238,7 @@ impl std::fmt::Debug for UsernameCache {
 mod tests {
     use super::*;
     use crate::cache::CacheInvalidationService;
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
 
     fn create_test_user_id(id: i64) -> UserId {
         UserId::expect_positive(id)
@@ -273,16 +274,34 @@ mod tests {
         let user_id = create_test_user_id(97_001);
 
         // Cache miss
-        assert!(cache.get(&user_id).await.unwrap().is_none());
+        assert!(cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
 
         // Set and get
-        cache.set(&user_id, "alice").await.unwrap();
-        let retrieved = cache.get(&user_id).await.unwrap().unwrap();
+        cache
+            .set(&user_id, "alice")
+            .await
+            .checked("operation should succeed");
+        let retrieved = cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
         assert_eq!(retrieved, "alice");
 
         // Invalidate
-        cache.invalidate(&user_id).await.unwrap();
-        assert!(cache.get(&user_id).await.unwrap().is_none());
+        cache
+            .invalidate(&user_id)
+            .await
+            .checked("operation should succeed");
+        assert!(cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[tokio::test]
@@ -294,11 +313,20 @@ mod tests {
         let user3 = create_test_user_id(97_004);
 
         // Set some entries
-        cache.set(&user1, "alice").await.unwrap();
-        cache.set(&user3, "charlie").await.unwrap();
+        cache
+            .set(&user1, "alice")
+            .await
+            .checked("operation should succeed");
+        cache
+            .set(&user3, "charlie")
+            .await
+            .checked("operation should succeed");
 
         // Batch lookup
-        let result = cache.get_batch(&[user1, user2, user3]).await.unwrap();
+        let result = cache
+            .get_batch(&[user1, user2, user3])
+            .await
+            .checked("operation should succeed");
 
         assert_eq!(result.len(), 2);
         assert_eq!(result.get(&user1), Some(&"alice".to_string()));
@@ -311,11 +339,22 @@ mod tests {
         let cache = test_username_cache(10, 0);
 
         let user_id = create_test_user_id(97_005);
-        cache.set(&user_id, "alice").await.unwrap();
-        assert!(cache.get(&user_id).await.unwrap().is_some());
+        cache
+            .set(&user_id, "alice")
+            .await
+            .checked("operation should succeed");
+        assert!(cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed")
+            .is_some());
 
         cache.clear_memory();
-        assert!(cache.get(&user_id).await.unwrap().is_none());
+        assert!(cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[tokio::test]
@@ -323,11 +362,25 @@ mod tests {
         let cache = test_username_cache(10, 0);
 
         let user_id = create_test_user_id(97_006);
-        cache.set(&user_id, "alice").await.unwrap();
-        assert!(cache.get(&user_id).await.unwrap().is_some());
+        cache
+            .set(&user_id, "alice")
+            .await
+            .checked("operation should succeed");
+        assert!(cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed")
+            .is_some());
 
-        cache.invalidate_by_id(&user_id.to_string()).await.unwrap();
-        assert!(cache.get(&user_id).await.unwrap().is_none());
+        cache
+            .invalidate_by_id(&user_id.to_string())
+            .await
+            .checked("operation should succeed");
+        assert!(cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     /// set() with an invalidation service configured must not self-invalidate
@@ -344,9 +397,15 @@ mod tests {
         let user_id = create_test_user_id(97_007);
 
         // set() should write the value and NOT self-invalidate
-        cache.set(&user_id, "alice").await.unwrap();
+        cache
+            .set(&user_id, "alice")
+            .await
+            .checked("operation should succeed");
 
-        let retrieved = cache.get(&user_id).await.unwrap();
+        let retrieved = cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed");
         assert_eq!(
             retrieved.as_deref(),
             Some("alice"),
@@ -372,11 +431,14 @@ mod tests {
         entries.insert(create_test_user_id(97_011), "diana".to_string());
         entries.insert(create_test_user_id(97_012), "eve".to_string());
 
-        cache.preload(entries.clone()).await.unwrap();
+        cache
+            .preload(entries.clone())
+            .await
+            .checked("operation should succeed");
 
         // All preloaded entries must be retrievable
         for (user_id, expected_name) in &entries {
-            let retrieved = cache.get(user_id).await.unwrap();
+            let retrieved = cache.get(user_id).await.checked("operation should succeed");
             assert_eq!(
                 retrieved.as_deref(),
                 Some(expected_name.as_str()),
@@ -386,7 +448,10 @@ mod tests {
 
         // Verify batch lookup also works
         let all_ids: Vec<UserId> = entries.keys().copied().collect();
-        let batch = cache.get_batch(&all_ids).await.unwrap();
+        let batch = cache
+            .get_batch(&all_ids)
+            .await
+            .checked("operation should succeed");
         assert_eq!(
             batch.len(),
             entries.len(),
@@ -410,7 +475,10 @@ mod tests {
         let user_id = create_test_user_id(97_013);
 
         // set() should NOT produce any invalidation message
-        cache.set(&user_id, "alice").await.unwrap();
+        cache
+            .set(&user_id, "alice")
+            .await
+            .checked("operation should succeed");
 
         // Give a short window for any message to arrive
         let result =

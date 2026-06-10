@@ -40,8 +40,10 @@ impl UserService {
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<AuthenticatedLogin> {
+        let brute_force_key =
+            Self::oauth2_login_brute_force_key(provider_instance_name, provider_user_id);
         self.brute_force
-            .check_allowed_with_control(provider_user_id, client_ip, control)
+            .check_allowed_with_control(&brute_force_key, client_ip, control)
             .await?;
 
         let user = self
@@ -53,10 +55,11 @@ impl UserService {
         if let Err(error) = Self::validate_user_access(&user) {
             if let Err(bf_err) = self
                 .brute_force
-                .record_failure_with_control(provider_user_id, client_ip, control)
+                .record_failure_with_control(&brute_force_key, client_ip, control)
                 .await
             {
                 tracing::warn!(error = %bf_err, "Failed to record OAuth2 login failure for brute-force tracking");
+                return Err(bf_err);
             }
             return Err(error);
         }
@@ -74,7 +77,7 @@ impl UserService {
             .issue_tokens_after_successful_authentication(
                 &user,
                 password_version,
-                provider_user_id,
+                &brute_force_key,
                 client_ip,
                 TokenIssueContext {
                     auth_context: Some(TokenAuthContext::OAuth2),
@@ -90,5 +93,29 @@ impl UserService {
             access_token,
             refresh_token,
         })
+    }
+
+    fn oauth2_login_brute_force_key(
+        provider_instance_name: &str,
+        provider_user_id: &str,
+    ) -> String {
+        format!("oauth2:{provider_instance_name}:{provider_user_id}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauth2_login_brute_force_key_scopes_provider_user_id_by_instance() {
+        assert_eq!(
+            UserService::oauth2_login_brute_force_key("github-main", "remote-user"),
+            "oauth2:github-main:remote-user"
+        );
+        assert_ne!(
+            UserService::oauth2_login_brute_force_key("github-main", "remote-user"),
+            UserService::oauth2_login_brute_force_key("github-alt", "remote-user")
+        );
     }
 }

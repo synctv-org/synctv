@@ -6,14 +6,13 @@
 // is encapsulated here.
 
 use crate::{
-    api::{LiveStreamingInfrastructure, StreamTracker},
+    api::{livestream::LiveStreamingInfrastructure, tracker::StreamTracker},
     error::StreamResult,
     livestream::{
         external_publish_manager::ExternalPublishManager, pull_manager::PullStreamManager,
         CleanupConfig, SegmentManager,
     },
-    protocols::hls::{CustomHlsRemuxer, StreamRegistry},
-    relay::{registry_trait::StreamRegistryTrait, PublisherManager},
+    relay::{publisher_manager::PublisherManager, registry_trait::StreamRegistryTrait},
 };
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,7 +20,7 @@ use std::sync::Arc;
 use synctv_common::ssrf::SsrfGuard;
 use synctv_core::config::{HlsOssConfig, HlsStorageBackend};
 use synctv_core::service::LeaderCheck;
-use synctv_xiu::hls::segment_manager::CleanupAuthority;
+use synctv_xiu::hls::{segment_manager::CleanupAuthority, CustomHlsRemuxer, StreamRegistry};
 use synctv_xiu::rtmp::auth::AuthCallback;
 use synctv_xiu::storage::{FileStorage, HlsStorage, MemoryStorage, OssConfig, OssStorage};
 use synctv_xiu::streamhub::StreamsHub;
@@ -31,12 +30,34 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 /// Maximum number of `StreamHub` automatic restart attempts before giving up.
-/// Used to size the stop-streams notification channel to prevent signal loss
-/// under rapid consecutive restarts.
 const HUB_MAX_RESTARTS: u32 = 10;
 const HUB_REREGISTER_TIMEOUT_SECS: u64 = 60;
 
 type ReregisterRequest = oneshot::Sender<()>;
+
+async fn abort_and_log_join(task_name: &'static str, handle: &mut JoinHandle<()>) {
+    handle.abort();
+    match handle.await {
+        Ok(()) => {}
+        Err(error) if error.is_cancelled() => {}
+        Err(error) => {
+            warn!(
+                task = task_name,
+                error = %error,
+                "livestream background task returned join error after abort"
+            );
+        }
+    }
+}
+
+fn notify_oneshot(sender: oneshot::Sender<()>, description: &'static str) {
+    if sender.send(()).is_err() {
+        tracing::debug!(
+            description,
+            "oneshot receiver dropped before livestream notification"
+        );
+    }
+}
 
 async fn request_publisher_reregistration(
     reregister_tx: &mpsc::Sender<ReregisterRequest>,
@@ -89,13 +110,6 @@ impl CleanupAuthority for LeaderCleanupAuthority {
     }
 }
 
-fn hls_cleanup_should_use_leader(backend: HlsStorageBackend) -> bool {
-    matches!(
-        backend,
-        HlsStorageBackend::SharedFile | HlsStorageBackend::Oss
-    )
-}
-
 struct HubCycleTasks {
     rtmp_cancel_token: CancellationToken,
     rtmp_handle: Option<JoinHandle<()>>,
@@ -126,12 +140,12 @@ impl HubCycleTasks {
     async fn shutdown(&mut self) {
         self.rtmp_cancel_token.cancel();
         if let Some(handle) = self.rtmp_handle.take() {
-            handle.abort();
-            let _ = handle.await;
+            let mut handle = handle;
+            abort_and_log_join("hub cycle RTMP server", &mut handle).await;
         }
         if let Some(handle) = self.forwarder_handle.take() {
-            handle.abort();
-            let _ = handle.await;
+            let mut handle = handle;
+            abort_and_log_join("hub cycle broadcast forwarder", &mut handle).await;
         }
     }
 }
@@ -257,7 +271,7 @@ fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStora
 /// `PublisherManager`) and exposes the shared infrastructure components.
 pub struct LivestreamHandle {
     pub infrastructure: Arc<LiveStreamingInfrastructure>,
-    pub pull_manager: Arc<PullStreamManager>,
+    pub(crate) pull_manager: Arc<PullStreamManager>,
     hub_handle: JoinHandle<()>,
     hub_cycle_tasks: Arc<tokio::sync::Mutex<HubCycleTasks>>,
     hls_remuxer_handle: JoinHandle<()>,
@@ -267,11 +281,6 @@ pub struct LivestreamHandle {
     reregister_task_handle: JoinHandle<()>,
     /// Cancellation token for the inner re-registration task.
     reregister_cancel_token: CancellationToken,
-    /// Listener for StreamHub restart stop-all notifications.
-    /// Must be owned by the handle so shutdown/drop can terminate it explicitly.
-    stop_streams_listener_handle: JoinHandle<()>,
-    pull_manager_cleanup: JoinHandle<()>,
-    external_publish_cleanup: JoinHandle<()>,
     hls_shutdown_token: CancellationToken,
     /// HLS segment cleanup task handle.
     /// Must be tracked to prevent task leaks when `LivestreamHandle` is dropped.
@@ -306,47 +315,11 @@ impl LivestreamHandle {
         self.infrastructure.user_stream_tracker.clear();
     }
 
-    fn spawn_local_publisher_cleanup(&self) {
-        let registry = Arc::clone(&self.infrastructure.registry);
-        let tracker = Arc::clone(&self.infrastructure.user_stream_tracker);
-        let node_id = self.infrastructure.local_node_id.clone();
-
-        tracker.clear();
-
-        if node_id.is_empty() {
-            return;
-        }
-
-        let node_id_for_task = node_id.clone();
-        if crate::util::try_spawn(async move {
-            if let Err(e) = registry
-                .cleanup_all_publishers_for_node(&node_id_for_task)
-                .await
-            {
-                warn!(
-                    node_id = %node_id_for_task,
-                    error = %e,
-                    "Failed to cleanup local publisher registrations during shutdown"
-                );
-            }
-        })
-        .is_none()
-        {
-            warn!(
-                node_id = %node_id,
-                "No Tokio runtime available for async local publisher cleanup during shutdown"
-            );
-        }
-    }
-
     /// Abort all spawned tasks in reverse startup order.
     ///
     /// This is a fast shutdown that immediately aborts all tasks.
     /// For graceful shutdown that waits for tasks to complete, use `shutdown_graceful`.
     pub fn shutdown(&self) {
-        self.external_publish_cleanup.abort();
-        self.pull_manager_cleanup.abort();
-        self.stop_streams_listener_handle.abort();
         // Cancel the inner re-registration task first
         self.reregister_cancel_token.cancel();
         self.reregister_task_handle.abort();
@@ -357,10 +330,14 @@ impl LivestreamHandle {
         self.hls_remuxer_handle.abort();
         self.hub_handle.abort();
         let hub_cycle_tasks = Arc::clone(&self.hub_cycle_tasks);
-        let _ = crate::util::try_spawn(async move {
+        if crate::util::try_spawn(async move {
             hub_cycle_tasks.lock().await.shutdown().await;
-        });
-        self.spawn_local_publisher_cleanup();
+        })
+        .is_none()
+        {
+            warn!("No Tokio runtime available for StreamHub cycle task shutdown");
+        }
+        self.infrastructure.user_stream_tracker.clear();
     }
 
     /// Shutdown all spawned tasks.
@@ -391,8 +368,6 @@ impl LivestreamHandle {
         self.cleanup_local_publishers_on_shutdown().await;
 
         // 1. Stop all managed stream pools to prevent zombie streams.
-        // This must happen before aborting cleanup tasks so in-flight stop operations
-        // can complete properly.
         info!("Stopping all managed pull streams...");
         self.pull_manager.stop_all().await;
         info!("All managed pull streams stopped");
@@ -404,22 +379,7 @@ impl LivestreamHandle {
             .await;
         info!("All managed external publish streams stopped");
 
-        // 2. Abort external publish cleanup (periodic timer, no graceful signal)
-        self.external_publish_cleanup.abort();
-        let _ = (&mut self.external_publish_cleanup).await;
-        info!("External publish cleanup stopped");
-
-        // 3. Abort pull manager cleanup (periodic timer, no graceful signal)
-        self.pull_manager_cleanup.abort();
-        let _ = (&mut self.pull_manager_cleanup).await;
-        info!("Pull manager cleanup stopped");
-
-        // 4. Stop the inner re-registration task gracefully via cancellation token
-        self.stop_streams_listener_handle.abort();
-        let _ = (&mut self.stop_streams_listener_handle).await;
-        info!("Stop-stream listener stopped");
-
-        // 5. Stop the inner re-registration task gracefully via cancellation token
+        // 2. Stop the inner re-registration task gracefully via cancellation token
         self.reregister_cancel_token.cancel();
         if timeout(timeout_duration, &mut self.reregister_task_handle)
             .await
@@ -432,12 +392,11 @@ impl LivestreamHandle {
             all_graceful = false;
         }
 
-        // 6. Abort publisher manager event loop (no graceful signal)
-        self.publisher_manager_handle.abort();
-        let _ = (&mut self.publisher_manager_handle).await;
+        // 3. Abort publisher manager event loop (no graceful signal)
+        abort_and_log_join("publisher manager", &mut self.publisher_manager_handle).await;
         info!("Publisher manager stopped");
 
-        // 7. Stop HLS tasks gracefully: first cancel the token, then await both
+        // 4. Stop HLS tasks gracefully: first cancel the token, then await both
         // the remuxer and the cleanup task.
         self.hls_shutdown_token.cancel();
         if timeout(timeout_duration, &mut self.hls_remuxer_handle)
@@ -467,8 +426,7 @@ impl LivestreamHandle {
         // The RTMP server is managed inside the hub loop and will be
         // shut down explicitly because aborting the hub task skips the loop's
         // per-cycle cleanup path.
-        self.hub_handle.abort();
-        let _ = (&mut self.hub_handle).await;
+        abort_and_log_join("StreamHub", &mut self.hub_handle).await;
         self.hub_cycle_tasks.lock().await.shutdown().await;
         info!("StreamHub stopped");
 
@@ -486,48 +444,29 @@ impl Drop for LivestreamHandle {
     /// Clean up all background tasks when the handle is dropped.
     ///
     /// This ensures that even if the caller forgets to call `shutdown()` or
-    /// `shutdown_graceful()`, all cancellation tokens are cancelled, tasks
-    /// are properly terminated, and all managed streams are stopped.
-    /// This prevents task leaks, memory leaks from HLS segments, and zombie streams.
+    /// `shutdown_graceful()`, cancellation tokens are cancelled and background
+    /// task handles are aborted.
     fn drop(&mut self) {
-        // Stop all managed streams first to prevent zombie streams.
-        // Since Drop can't be async, we spawn a task to call stop_all().
-        // The abort calls below will signal the cleanup tasks to exit,
-        // and the stop_all() calls will clean up the actual stream resources.
-        let pull_manager = Arc::clone(&self.pull_manager);
-        let external_publish_manager = Arc::clone(&self.infrastructure.external_publish_manager);
-        if crate::util::try_spawn(async move {
-            info!("LivestreamHandle drop: stopping all managed pull streams");
-            pull_manager.stop_all().await;
-            info!("LivestreamHandle drop: stopping all managed external publish streams");
-            external_publish_manager.stop_all().await;
-            info!("LivestreamHandle drop: all managed streams stopped");
-        })
-        .is_none()
-        {
-            warn!("LivestreamHandle drop: no Tokio runtime available, skipping async stop_all cleanup");
-        }
-
         // Cancel all cancellation tokens to signal tasks to exit
         self.reregister_cancel_token.cancel();
         self.hls_shutdown_token.cancel();
 
         // Abort all task handles to ensure they terminate immediately
         // (in case they don't respond to cancellation tokens)
-        self.stop_streams_listener_handle.abort();
         self.reregister_task_handle.abort();
         self.publisher_manager_handle.abort();
         self.hls_cleanup_handle.abort();
         self.hls_remuxer_handle.abort();
         self.hub_handle.abort();
         let hub_cycle_tasks = Arc::clone(&self.hub_cycle_tasks);
-        let _ = crate::util::try_spawn(async move {
+        if crate::util::try_spawn(async move {
             hub_cycle_tasks.lock().await.shutdown().await;
-        });
-        self.pull_manager_cleanup.abort();
-        self.external_publish_cleanup.abort();
-
-        self.spawn_local_publisher_cleanup();
+        })
+        .is_none()
+        {
+            warn!("LivestreamHandle drop: no Tokio runtime available for StreamHub cycle task shutdown");
+        }
+        self.infrastructure.user_stream_tracker.clear();
     }
 }
 
@@ -633,6 +572,29 @@ impl LivestreamServer {
             .with_max_flv_tag_size_bytes(self.config.max_flv_tag_size_bytes),
         );
 
+        // Create a shared gRPC connection pool for HlsProxy and PullStreamManager
+        // to avoid redundant HTTP/2 connections to the same publisher nodes.
+        let shared_grpc_pool = crate::grpc::GrpcConnectionPool::with_defaults();
+
+        let hls_proxy =
+            crate::grpc::HlsProxyClient::with_defaults(self.config.cluster_secret.clone())
+                .with_grpc_max_message_size(self.config.grpc_max_message_size_bytes)
+                .with_grpc_compression(self.config.grpc_compression_enabled)
+                .with_connection_pool(shared_grpc_pool.clone());
+
+        let pull_manager = Arc::new(
+            PullStreamManager::with_timeouts(
+                self.publisher_registry.clone(),
+                event_sender.clone(),
+                self.config.cleanup_check_interval_seconds,
+                self.config.stream_timeout_seconds,
+            )
+            .with_connection_pool(shared_grpc_pool)
+            .with_grpc_max_message_size(self.config.grpc_max_message_size_bytes)
+            .with_grpc_compression(self.config.grpc_compression_enabled)
+            .with_cluster_secret(self.config.cluster_secret.clone()),
+        );
+
         // Create a long-lived external broadcast channel that survives StreamHub restarts.
         // The StreamHub's internal broadcast channel is recreated on each restart, which
         // would leave existing receivers (PublisherManager, HLS remuxer) stale.
@@ -666,16 +628,6 @@ impl LivestreamServer {
         // - Lost re-registration signals
         // - Inconsistent is_restarting flag state
         let restart_mutex = Arc::new(Mutex::new(()));
-        // Channel to notify pull/external managers to stop all streams before StreamHub restart.
-        // This ensures zombie streams (still connected to the old hub) are cleaned up.
-        // The oneshot sender allows the restart loop to wait for stop_all() completion
-        // before proceeding with re-registration, preventing the race condition where
-        // active streams are stopped while re-registration is already happening.
-        // Capacity matches HUB_MAX_RESTARTS so rapid consecutive restarts never drop signals
-        // when the receiver is momentarily busy processing a previous stop_all().
-        let (stop_streams_tx, mut stop_streams_rx) =
-            mpsc::channel::<tokio::sync::oneshot::Sender<()>>(HUB_MAX_RESTARTS as usize);
-
         // Compute per-stream GOP cache memory limit from config (0 means use default).
         let per_stream_max_bytes: Option<usize> = if self.config.gop_cache_max_memory_mb > 0 {
             let max_bytes_mb =
@@ -709,6 +661,8 @@ impl LivestreamServer {
         let reregister_tx_for_hub = reregister_tx.clone();
         let is_restarting_for_hub = Arc::clone(&is_restarting_flag);
         let restart_mutex_for_hub = Arc::clone(&restart_mutex);
+        let pull_manager_for_hub = Arc::clone(&pull_manager);
+        let external_publish_manager_for_hub = Arc::clone(&external_publish_manager);
         // Pre-bound listener for first cycle (enables early port conflict detection)
         let rtmp_listener = self.rtmp_listener;
         let hub_cycle_tasks = Arc::new(tokio::sync::Mutex::new(HubCycleTasks::new()));
@@ -720,8 +674,6 @@ impl LivestreamServer {
             const MAX_BACKOFF_SECS: u64 = 30;
 
             let mut restart_count: u32 = 0;
-            // Track successful cycles to reset restart_count after stable operation
-            let mut successful_cycles: u32 = 0;
             // Pre-bound listener for first cycle only (enables early port conflict detection)
             let mut first_cycle_listener = rtmp_listener;
 
@@ -736,7 +688,11 @@ impl LivestreamServer {
                         match internal_rx.recv().await {
                             Ok(event) => {
                                 // Best-effort forward; if no external receivers, that's fine
-                                let _ = ext_tx.send(event);
+                                if ext_tx.send(event).is_err() {
+                                    tracing::debug!(
+                                        "internal-to-external broadcast forwarder has no receivers"
+                                    );
+                                }
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                                 warn!(
@@ -769,7 +725,7 @@ impl LivestreamServer {
                         synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_VIEWERS.dec();
                     })),
                 };
-                let mut rtmp_server = synctv_xiu::rtmp::rtmp::RtmpServer::new(
+                let mut rtmp_server = synctv_xiu::rtmp::server::RtmpServer::new(
                     rtmp_address.clone(),
                     rtmp_event_sender.clone(),
                     rtmp_gop_cache_size,
@@ -808,22 +764,7 @@ impl LivestreamServer {
                 synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_PUBLISHERS.set(0);
                 synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_VIEWERS.set(0);
 
-                // Track successful cycles for restart_count reset
-                // If this was a clean exit (channel_closed), it counts as stable operation
-                // and allows the restart count to decay, preventing transient failures
-                // from permanently exhausting HUB_MAX_RESTARTS.
-                let was_clean_exit = run_result.is_ok();
-                if was_clean_exit {
-                    successful_cycles += 1;
-                    // Decrement restart_count on successful exit (floor at 0)
-                    // This allows the hub to recover from transient failure bursts
-                    if restart_count > 0 {
-                        restart_count = restart_count.saturating_sub(1);
-                    }
-                } else {
-                    // Only increment restart_count on actual failures (panics)
-                    restart_count += 1;
-                }
+                restart_count += 1;
 
                 // Record restart metrics with exit reason
                 let reason = match &run_result {
@@ -837,7 +778,6 @@ impl LivestreamServer {
                 warn!(
                     restart_count,
                     max_restarts = HUB_MAX_RESTARTS,
-                    successful_cycles,
                     reason,
                     "StreamHub event loop exited unexpectedly, cleaning up local state before restart..."
                 );
@@ -858,51 +798,11 @@ impl LivestreamServer {
                 // Also checked by the application RTMP auth callback to reject new publications.
                 is_restarting_for_hub.store(true, Ordering::Release);
 
-                // Stop all managed pull/external-publish streams BEFORE restart.
-                // These streams hold channels to the old StreamHub instance and would
-                // become zombies (still running but unable to deliver frames) if not
-                // cleaned up. The receiver task calls stop_all() on both managers.
-                // Two-phase cleanup: create a oneshot channel to receive confirmation
-                // when stop_all() completes. This ensures we wait for streams to fully
-                // stop before proceeding with Redis cleanup and re-registration.
-                let (stop_done_tx, stop_done_rx) = tokio::sync::oneshot::channel::<()>();
-                match stop_streams_tx.try_send(stop_done_tx) {
-                    Ok(()) => {
-                        // Wait for stop_all() to complete with a timeout.
-                        // Use a bounded wait long enough for streams to disconnect from
-                        // remote servers or flush pending data.
-                        match tokio::time::timeout(std::time::Duration::from_secs(5), stop_done_rx)
-                            .await
-                        {
-                            Ok(Ok(())) => {
-                                info!("StreamHub restart: stop_all() completed, proceeding with cleanup");
-                            }
-                            Ok(Err(_)) => {
-                                warn!("StreamHub restart: stop_done sender dropped, proceeding anyway");
-                            }
-                            Err(_) => {
-                                warn!("StreamHub restart: stop_all() timed out after 5000ms, proceeding anyway");
-                            }
-                        }
-                    }
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        warn!("StreamHub restart: stop_streams channel full, previous stop still pending");
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        warn!(
-                            "StreamHub restart: stop_streams channel closed, receiver task exited"
-                        );
-                    }
-                }
-
-                // Brief delay to allow in-progress unregistrations to complete.
-                // This reduces the race window where cleanup_all_publishers_for_node
-                // might conflict with concurrent unregister_publisher calls from
-                // streams that are still disconnecting after the stop_all() signal.
-                // The 500ms delay is a reasonable tradeoff: long enough for most
-                // async unregistration operations to complete, but short enough
-                // to not significantly delay the restart recovery.
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                info!("StreamHub restart: stopping all managed pull streams...");
+                pull_manager_for_hub.stop_all().await;
+                info!("StreamHub restart: stopping all managed external publish streams...");
+                external_publish_manager_for_hub.stop_all().await;
+                info!("StreamHub restart: all managed streams stopped");
 
                 // Clean up all local publisher registrations from Redis
                 // This ensures stale state doesn't persist after restart
@@ -936,15 +836,9 @@ impl LivestreamServer {
                     break;
                 }
 
-                // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s, ...
-                // When restart_count is 0 (all previous exits were clean), use minimal backoff.
-                let backoff_secs = if restart_count == 0 {
-                    INITIAL_BACKOFF_SECS
-                } else {
-                    INITIAL_BACKOFF_SECS
-                        .saturating_mul(1u64 << (restart_count - 1).min(16))
-                        .min(MAX_BACKOFF_SECS)
-                };
+                let backoff_secs = INITIAL_BACKOFF_SECS
+                    .saturating_mul(1u64 << (restart_count - 1).min(16))
+                    .min(MAX_BACKOFF_SECS);
                 info!(
                     "Waiting {} seconds before restarting StreamHub...",
                     backoff_secs
@@ -956,7 +850,10 @@ impl LivestreamServer {
         });
 
         let mut segment_manager = SegmentManager::new(hls_storage, CleanupConfig::default());
-        if hls_cleanup_should_use_leader(self.config.hls_storage_backend) {
+        if matches!(
+            self.config.hls_storage_backend,
+            HlsStorageBackend::SharedFile | HlsStorageBackend::Oss
+        ) {
             info!(
                 hls_storage_backend = ?self.config.hls_storage_backend,
                 "HLS shared storage cleanup will run only on the cluster leader"
@@ -990,14 +887,14 @@ impl LivestreamServer {
         // Create activity callback for the HLS remuxer to record publisher data activity.
         // This prevents the silent publisher detection from incorrectly timing out active publishers.
         let activity_pm = Arc::clone(&publisher_manager);
-        let activity_callback: crate::protocols::hls::PublisherActivityCallback =
+        let activity_callback: synctv_xiu::hls::PublisherActivityCallback =
             Arc::new(move |room_id: &str, media_id: &str| {
                 activity_pm.record_publisher_activity(room_id, media_id);
             });
 
         // Create active publishers source for post-lag reconciliation in the HLS remuxer.
         let reconcile_pm = Arc::clone(&publisher_manager);
-        let active_publishers_source: crate::protocols::hls::ActivePublishersSource =
+        let active_publishers_source: synctv_xiu::hls::ActivePublishersSource =
             Arc::new(move || reconcile_pm.active_publisher_streams());
 
         // Start the HLS remuxer
@@ -1042,61 +939,6 @@ impl LivestreamServer {
 
         info!("HLS remuxer started (in-process, no standalone HTTP server)");
 
-        // 5a. Create a shared gRPC connection pool for HlsProxy and PullStreamManager
-        //     to avoid redundant HTTP/2 connections to the same publisher nodes.
-        let shared_grpc_pool = crate::grpc::GrpcConnectionPool::with_defaults();
-
-        // 5b. Create HLS proxy client with the shared pool
-        let hls_proxy =
-            crate::grpc::HlsProxyClient::with_defaults(self.config.cluster_secret.clone())
-                .with_grpc_max_message_size(self.config.grpc_max_message_size_bytes)
-                .with_grpc_compression(self.config.grpc_compression_enabled)
-                .with_connection_pool(shared_grpc_pool.clone());
-
-        // 5c. Create PullStreamManager with the same shared pool
-        let pull_manager = Arc::new(
-            PullStreamManager::with_timeouts(
-                self.publisher_registry.clone(),
-                event_sender.clone(),
-                self.config.cleanup_check_interval_seconds,
-                self.config.stream_timeout_seconds,
-            )
-            .with_connection_pool(shared_grpc_pool)
-            .with_grpc_max_message_size(self.config.grpc_max_message_size_bytes)
-            .with_grpc_compression(self.config.grpc_compression_enabled)
-            .with_cluster_secret(self.config.cluster_secret.clone())
-            .with_hls_proxy(hls_proxy.clone()),
-        );
-        // Start periodic cleanup of stale creation locks to prevent memory leaks
-        let pull_manager_cleanup = pull_manager.start_cleanup_task();
-
-        // Start periodic cleanup of stale creation locks to prevent memory leaks
-        let external_publish_cleanup = external_publish_manager.start_cleanup_task();
-
-        // 6b. Spawn listener that stops all managed streams on StreamHub restart.
-        // This ensures zombie streams (connected to the old hub) are cleaned up
-        // before the new hub starts accepting events.
-        // Two-phase cleanup protocol:
-        // 1. Receive stop request with oneshot sender
-        // 2. Call stop_all() on both managers
-        // 3. Send confirmation via oneshot sender
-        // This allows the restart loop to wait for completion before re-registration.
-        let stop_streams_listener_handle = {
-            let pm = Arc::clone(&pull_manager);
-            let epm = Arc::clone(&external_publish_manager);
-            tokio::spawn(async move {
-                while let Some(stop_done_tx) = stop_streams_rx.recv().await {
-                    info!("StreamHub restart: stopping all managed pull streams...");
-                    pm.stop_all().await;
-                    info!("StreamHub restart: stopping all managed external publish streams...");
-                    epm.stop_all().await;
-                    info!("StreamHub restart: all managed streams stopped");
-                    // Signal completion to the restart loop
-                    let _ = stop_done_tx.send(());
-                }
-            })
-        };
-
         // Create cancellation token for the re-registration task.
         // This allows graceful shutdown to prevent task leaks.
         let reregister_cancel_token = CancellationToken::new();
@@ -1122,7 +964,7 @@ impl LivestreamServer {
                                 break;
                             };
                             pm_for_reregister.reregister_all_publishers().await;
-                            let _ = done_tx.send(());
+                            notify_oneshot(done_tx, "publisher re-registration completion");
                         }
                     }
                 }
@@ -1140,16 +982,16 @@ impl LivestreamServer {
         // 8. Wire HLS proxy client (created in step 5a) into infrastructure
         // 9. Create LiveStreamingInfrastructure with HLS components wired in
         let infrastructure = Arc::new(
-            LiveStreamingInfrastructure::new(
+            LiveStreamingInfrastructure::from_parts(
                 self.publisher_registry,
                 event_sender,
                 pull_manager.clone(),
                 external_publish_manager,
                 self.user_stream_tracker,
+                local_node_id,
             )
             .with_segment_manager(segment_manager)
             .with_hls_stream_registry(stream_registry)
-            .with_local_node_id(local_node_id)
             .with_hls_storage_backend(self.config.hls_storage_backend)
             .with_hls_proxy(hls_proxy),
         );
@@ -1168,9 +1010,6 @@ impl LivestreamServer {
             publisher_manager_handle,
             reregister_task_handle,
             reregister_cancel_token,
-            stop_streams_listener_handle,
-            pull_manager_cleanup,
-            external_publish_cleanup,
             hls_shutdown_token,
             hls_cleanup_handle,
         })
@@ -1186,7 +1025,12 @@ mod tests {
     use tempfile::tempdir;
     use tokio::time::{timeout, Duration};
 
-    /// Helper to create a minimal `LivestreamConfig` for testing
+    type TestResult = anyhow::Result<()>;
+
+    fn test_error(message: impl Into<String>) -> anyhow::Error {
+        anyhow::anyhow!(message.into())
+    }
+
     fn test_config() -> LivestreamConfig {
         LivestreamConfig {
             rtmp_address: "127.0.0.1:0".to_string(),
@@ -1209,25 +1053,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_hls_cleanup_leader_gate_only_for_shared_backends() {
-        assert!(!hls_cleanup_should_use_leader(HlsStorageBackend::Memory));
-        assert!(!hls_cleanup_should_use_leader(HlsStorageBackend::File));
-        assert!(hls_cleanup_should_use_leader(HlsStorageBackend::SharedFile));
-        assert!(hls_cleanup_should_use_leader(HlsStorageBackend::Oss));
+    async fn bind_local_listener() -> anyhow::Result<(tokio::net::TcpListener, std::net::SocketAddr)>
+    {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let local_addr = listener.local_addr()?;
+        Ok((listener, local_addr))
+    }
+
+    fn config_for_rtmp_addr(local_addr: std::net::SocketAddr) -> LivestreamConfig {
+        let mut config = test_config();
+        config.rtmp_address = local_addr.to_string();
+        config
     }
 
     #[tokio::test]
-    async fn test_build_hls_storage_uses_memory_when_shared_storage_disabled() {
-        let dir = tempdir().expect("tempdir should be created");
+    async fn test_build_hls_storage_uses_memory_when_shared_storage_disabled() -> TestResult {
+        let dir = tempdir()?;
         let mut config = test_config();
         config.hls_storage_path = dir.path().display().to_string();
 
-        let storage = build_hls_storage(&config).expect("storage should be built");
+        let storage = build_hls_storage(&config)?;
         storage
             .write("room1", "media1", "seg1", Bytes::from_static(b"segment"))
-            .await
-            .expect("segment write should succeed");
+            .await?;
 
         assert!(
             !dir.path()
@@ -1237,10 +1085,11 @@ mod tests {
                 .exists(),
             "memory storage should not create files on disk"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_reregister_request_clears_restart_flag_after_ack() {
+    async fn test_reregister_request_clears_restart_flag_after_ack() -> TestResult {
         let is_restarting = AtomicBool::new(true);
         let (tx, mut rx) = mpsc::channel::<ReregisterRequest>(1);
 
@@ -1252,20 +1101,21 @@ mod tests {
         tokio::pin!(request);
 
         let done_tx = tokio::select! {
-            done_tx = rx.recv() => done_tx.expect("request should be queued"),
-            () = &mut request => panic!("re-registration request completed before ack"),
+            done_tx = rx.recv() => done_tx.ok_or_else(|| test_error("request should be queued"))?,
+            () = &mut request => return Err(test_error("re-registration request completed before ack")),
         };
         assert!(
             is_restarting.load(Ordering::Acquire),
             "restart flag must remain set until re-registration is acknowledged"
         );
-        let _ = done_tx.send(());
+        notify_oneshot(done_tx, "test re-registration acknowledgement");
 
         (&mut request).await;
         assert!(
             !is_restarting.load(Ordering::Acquire),
             "restart flag must be cleared after acknowledged re-registration"
         );
+        Ok(())
     }
 
     #[tokio::test]
@@ -1284,12 +1134,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reregister_request_clears_restart_flag_when_channel_full() {
+    async fn test_reregister_request_clears_restart_flag_when_channel_full() -> TestResult {
         let is_restarting = AtomicBool::new(true);
         let (tx, _rx) = mpsc::channel::<ReregisterRequest>(1);
         let (queued_tx, _queued_rx) = oneshot::channel::<()>();
         tx.try_send(queued_tx)
-            .expect("test precondition: channel should accept first request");
+            .map_err(|_| test_error("test precondition: channel should accept first request"))?;
 
         request_publisher_reregistration(&tx, &is_restarting, std::time::Duration::from_millis(10))
             .await;
@@ -1298,24 +1148,24 @@ mod tests {
             !is_restarting.load(Ordering::Acquire),
             "restart flag must not stay set forever when re-registration queue is saturated"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_build_hls_storage_uses_shared_file_backend() {
-        let dir = tempdir().expect("tempdir should be created");
+    async fn test_build_hls_storage_uses_shared_file_backend() -> TestResult {
+        let dir = tempdir()?;
         let mut config = test_config();
         config.distributed_enabled = true;
         config.cluster_secret = Some("cluster-secret".to_string());
         config.hls_storage_backend = HlsStorageBackend::SharedFile;
         config.hls_storage_path = dir.path().display().to_string();
 
-        let storage = build_hls_storage(&config).expect("storage should be built");
+        let storage = build_hls_storage(&config)?;
         let bucket = chrono::Utc::now().timestamp() / 60;
         let segment = format!("{bucket}_seg1");
         storage
             .write("room1", "media1", &segment, Bytes::from_static(b"segment"))
-            .await
-            .expect("segment write should succeed");
+            .await?;
 
         assert!(
             dir.path()
@@ -1327,20 +1177,20 @@ mod tests {
                 .exists(),
             "shared storage should persist HLS segments on disk"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_cluster_secret_alone_does_not_enable_cluster_hls_semantics() {
-        let dir = tempdir().expect("tempdir should be created");
+    async fn test_cluster_secret_alone_does_not_enable_cluster_hls_semantics() -> TestResult {
+        let dir = tempdir()?;
         let mut config = test_config();
         config.cluster_secret = Some("cluster-secret".to_string());
         config.hls_storage_path = dir.path().display().to_string();
 
-        let storage = build_hls_storage(&config).expect("storage should be built");
+        let storage = build_hls_storage(&config)?;
         storage
             .write("room1", "media1", "seg1", Bytes::from_static(b"segment"))
-            .await
-            .expect("segment write should succeed");
+            .await?;
 
         assert!(
             !dir.path()
@@ -1350,80 +1200,56 @@ mod tests {
                 .exists(),
             "cluster_secret without distributed_enabled must remain standalone memory storage"
         );
+        Ok(())
     }
 
-    /// Helper to create a `StreamTracker` for testing
     fn test_tracker() -> Arc<StreamTracker> {
         Arc::new(StreamTracker::new())
     }
 
-    /// Test that the re-registration task is properly cleaned up on shutdown.
-    ///
-    /// This test verifies that when `LivestreamHandle::shutdown()` is called,
-    /// both the publisher manager task AND the re-registration task terminate,
-    /// preventing task leaks.
-    ///
     #[tokio::test]
-    async fn test_reregister_task_cleanup_on_shutdown() {
-        // Create a mock registry
+    async fn test_reregister_task_cleanup_on_shutdown() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
 
         let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
-        // Start the server
-        let handle = server.start().expect("Failed to start server");
+        let handle = server.start()?;
 
-        // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Shutdown the handle
         handle.shutdown();
 
-        // Give tasks time to abort
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // The publisher_manager_handle should be aborted
         assert!(
             handle.publisher_manager_handle.is_finished(),
             "publisher_manager_handle should be finished after shutdown"
         );
 
-        // The reregister_task_handle should also be finished (no leak)
         assert!(
             handle.reregister_task_handle.is_finished(),
             "reregister_task_handle should be finished after shutdown - task leak detected!"
         );
-        assert!(
-            handle.stop_streams_listener_handle.is_finished(),
-            "stop_streams_listener_handle should be finished after shutdown"
-        );
+        Ok(())
     }
 
-    /// Test that the re-registration task stops when cancelled via `CancellationToken`.
-    ///
-    /// This test verifies graceful shutdown properly cancels both tasks.
     #[tokio::test]
-    async fn test_reregister_task_respects_cancellation() {
+    async fn test_reregister_task_respects_cancellation() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
 
         let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
-        // Start the server
-        let mut handle = server.start().expect("Failed to start server");
+        let mut handle = server.start()?;
 
-        // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Use graceful shutdown with a short timeout
         let result = timeout(Duration::from_secs(2), handle.shutdown_graceful(1)).await;
 
-        // Shutdown should complete within timeout
         assert!(
             result.is_ok(),
             "shutdown_graceful should complete within timeout"
         );
 
-        // All tasks should be finished
         assert!(
             handle.publisher_manager_handle.is_finished(),
             "publisher_manager_handle should be finished after graceful shutdown"
@@ -1433,19 +1259,17 @@ mod tests {
             handle.reregister_task_handle.is_finished(),
             "reregister_task_handle should be finished after graceful shutdown"
         );
-        assert!(
-            handle.stop_streams_listener_handle.is_finished(),
-            "stop_streams_listener_handle should be finished after graceful shutdown"
-        );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_shutdown_graceful_cleans_local_publishers_from_registry_and_tracker() {
+    async fn test_shutdown_graceful_cleans_local_publishers_from_registry_and_tracker() -> TestResult
+    {
         let registry = Arc::new(TestStreamRegistry::new());
         let tracker = test_tracker();
 
         let server = LivestreamServer::new(test_config(), registry.clone(), tracker.clone());
-        let mut handle = server.start().expect("Failed to start server");
+        let mut handle = server.start()?;
 
         registry
             .try_register_publisher(
@@ -1455,60 +1279,49 @@ mod tests {
                 "user-shutdown",
                 "127.0.0.1:50051",
             )
-            .await
-            .expect("publisher should register in mock registry");
+            .await?;
         tracker.insert(
             "user-shutdown".to_string(),
             "room-shutdown".to_string(),
             "media-shutdown".to_string(),
-            "live",
-            "stream-token",
         );
 
-        let result = timeout(Duration::from_secs(2), handle.shutdown_graceful(1))
-            .await
-            .expect("shutdown_graceful should complete");
+        let result = timeout(Duration::from_secs(2), handle.shutdown_graceful(1)).await?;
         assert!(result, "shutdown_graceful should complete cleanly");
 
         assert!(
             !registry
                 .is_stream_active("room-shutdown", "media-shutdown")
-                .await
-                .expect("registry query should succeed"),
+                .await?,
             "shutdown must remove local publisher registrations from the registry"
         );
         assert!(
-            tracker.is_empty(),
+            tracker.get_user_streams("user-shutdown").is_empty()
+                && tracker.get_room_streams("room-shutdown").is_empty()
+                && tracker
+                    .get_stream_user("room-shutdown", "media-shutdown")
+                    .is_none(),
             "shutdown must clear local publisher tracking entries"
         );
+        Ok(())
     }
 
-    /// Test that the re-registration task terminates properly without background leaks.
-    ///
-    /// This test verifies that after shutdown, the re-registration task is truly
-    /// terminated and won't respond to any more notifications.
     #[tokio::test]
-    async fn test_reregister_task_no_background_leak() {
+    async fn test_reregister_task_no_background_leak() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
 
         let server = LivestreamServer::new(test_config(), registry.clone(), test_tracker());
 
-        // Start the server
-        let handle = server.start().expect("Failed to start server");
+        let handle = server.start()?;
 
-        // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Get initial count
         let count_before = registry.register_call_count();
 
-        // Shutdown the handle
         handle.shutdown();
 
-        // Give tasks time to abort
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Both tasks should be finished
         assert!(
             handle.publisher_manager_handle.is_finished(),
             "publisher_manager_handle should be finished after shutdown"
@@ -1517,12 +1330,6 @@ mod tests {
             handle.reregister_task_handle.is_finished(),
             "reregister_task_handle should be finished after shutdown"
         );
-        assert!(
-            handle.stop_streams_listener_handle.is_finished(),
-            "stop_streams_listener_handle should be finished after shutdown"
-        );
-
-        // Verify no new register calls happen after shutdown
         tokio::time::sleep(Duration::from_millis(100)).await;
         let count_after = registry.register_call_count();
 
@@ -1530,31 +1337,22 @@ mod tests {
             count_before, count_after,
             "No new register calls should happen after shutdown"
         );
+        Ok(())
     }
 
-    /// Test that dropping `LivestreamHandle` without calling `shutdown()` still cleans up tasks.
-    ///
-    /// This test verifies that the Drop implementation for `LivestreamHandle` cancels
-    /// all cancellation tokens, preventing task leaks when the handle is dropped.
-    ///
     #[tokio::test]
-    async fn test_drop_cleans_up_tasks() {
+    async fn test_drop_cleans_up_tasks() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
 
         let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
-        // Start the server
-        let handle = server.start().expect("Failed to start server");
+        let handle = server.start()?;
 
-        // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Get references to check if tasks are finished after drop
-        // We need to check these BEFORE dropping because the handle owns them
         let publisher_finished = handle.publisher_manager_handle.is_finished();
         let reregister_finished = handle.reregister_task_handle.is_finished();
 
-        // Tasks should NOT be finished yet (they're running)
         assert!(
             !publisher_finished,
             "publisher_manager_handle should be running before drop"
@@ -1563,145 +1361,77 @@ mod tests {
             !reregister_finished,
             "reregister_task_handle should be running before drop"
         );
-        let stop_streams_listener_abort_handle = handle.stop_streams_listener_handle.abort_handle();
-        assert!(
-            !stop_streams_listener_abort_handle.is_finished(),
-            "stop_streams_listener_handle should be running before drop"
-        );
-
-        // Drop the handle WITHOUT calling shutdown
         drop(handle);
-
-        // Give tasks time to abort due to Drop
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        assert!(
-            stop_streams_listener_abort_handle.is_finished(),
-            "stop_streams_listener_handle should be aborted when handle is dropped"
-        );
-
-        // After drop, all background tasks should have been cancelled.
-        // We can't check is_finished() on the JoinHandles because they've been dropped,
-        // but we've verified the Drop implementation cancels the tokens.
-        // The cancellation tokens (hls_shutdown_token, reregister_cancel_token) are
-        // cancelled in the Drop impl, which signals the tasks to exit.
+        Ok(())
     }
 
-    /// Test that HLS cleanup task is cancelled when `LivestreamHandle` is dropped.
-    ///
-    /// This test verifies that the segment cleanup task (started in `start()`) is
-    /// properly terminated when the handle is dropped, preventing memory leaks.
     #[tokio::test]
-    async fn test_hls_cleanup_task_terminated_on_drop() {
+    async fn test_hls_cleanup_task_terminated_on_drop() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
 
         let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
-        // Start the server - this starts the HLS segment cleanup task
-        let handle = server.start().expect("Failed to start server");
+        let handle = server.start()?;
 
-        // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Verify hls_shutdown_token is not cancelled yet
         assert!(
             !handle.hls_shutdown_token.is_cancelled(),
             "hls_shutdown_token should not be cancelled before drop"
         );
 
-        // Drop the handle
         drop(handle);
-
-        // The hls_shutdown_token should have been cancelled in Drop,
-        // which signals the HLS cleanup task to exit.
-        // Note: We can't check the token after drop because it's owned by the handle,
-        // but the Drop implementation calls cancel() on it.
+        Ok(())
     }
 
     #[test]
-    fn test_livestream_handle_drop_without_runtime_does_not_panic() {
+    fn test_livestream_handle_drop_without_runtime_does_not_panic() -> TestResult {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            let runtime = tokio::runtime::Runtime::new().map_err(|err| err.to_string())?;
             let handle = runtime.block_on(async {
                 let registry = Arc::new(TestStreamRegistry::new());
                 let server = LivestreamServer::new(test_config(), registry, test_tracker());
-                server.start().expect("Failed to start server")
+                server.start().map_err(|err| err.to_string())
             });
 
             drop(runtime);
-            drop(handle);
+            drop(handle?);
+            Ok::<(), String>(())
         }));
 
         assert!(
-            result.is_ok(),
+            result
+                .map_err(|_| test_error("drop should not panic"))?
+                .is_ok(),
             "LivestreamHandle::drop must not panic when runtime is already gone"
         );
+        Ok(())
     }
 
-    // Tests verify that RTMP port conflicts are detected early through pre-binding.
-
-    /// Test that pre-binding a port and passing it to LivestreamServer works correctly.
-    ///
-    /// This verifies that the `with_rtmp_listener` method properly accepts a pre-bound
-    /// listener and the server starts successfully using that listener.
     #[tokio::test]
-    async fn test_rtmp_pre_binding_works() {
+    async fn test_rtmp_pre_binding_works() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
 
-        // Pre-bind to port 0 (let OS assign a free port)
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("Failed to pre-bind RTMP port");
-
-        // Get the actual port assigned by the OS
-        let local_addr = listener.local_addr().expect("Failed to get local addr");
-
-        // Create config that matches the pre-bound address
-        let config = LivestreamConfig {
-            rtmp_address: local_addr.to_string(),
-            gop_cache_size: 1024 * 1024,
-            node_id: "test-node".to_string(),
-            cleanup_check_interval_seconds: 1,
-            stream_timeout_seconds: 5,
-            distributed_enabled: false,
-            cluster_secret: None,
-            grpc_max_message_size_bytes: 16 * 1024 * 1024,
-            grpc_compression_enabled: true,
-            gop_cache_max_memory_mb: 0,
-            max_flv_tag_size_bytes: 10 * 1024 * 1024,
-            api_address: "127.0.0.1:0".to_string(),
-            hls_memory_max_mb: 0,
-            hls_storage_backend: HlsStorageBackend::Memory,
-            hls_storage_path: String::new(),
-            hls_oss: HlsOssConfig::default(),
-            ssrf_guard: SsrfGuard::strict_policy(),
-        };
+        let (listener, local_addr) = bind_local_listener().await?;
+        let config = config_for_rtmp_addr(local_addr);
 
         let server =
             LivestreamServer::new(config, registry, test_tracker()).with_rtmp_listener(listener);
 
-        // Start should succeed because we already have the port
-        let handle = server
-            .start()
-            .expect("Failed to start server with pre-bound listener");
+        let handle = server.start()?;
 
-        // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Clean up
         handle.shutdown();
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_start_failure_on_hls_storage_validation_does_not_spawn_rtmp() {
+    async fn test_start_failure_on_hls_storage_validation_does_not_spawn_rtmp() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("Failed to pre-bind RTMP port");
-        let local_addr = listener.local_addr().expect("Failed to get local addr");
+        let (listener, local_addr) = bind_local_listener().await?;
 
-        let mut config = test_config();
-        config.rtmp_address = local_addr.to_string();
+        let mut config = config_for_rtmp_addr(local_addr);
         config.hls_storage_backend = HlsStorageBackend::SharedFile;
         config.hls_storage_path = String::new();
 
@@ -1710,7 +1440,9 @@ mod tests {
         let err = match server.start() {
             Ok(handle) => {
                 handle.shutdown();
-                panic!("empty shared_file path should fail before spawning RTMP");
+                return Err(test_error(
+                    "empty shared_file path should fail before spawning RTMP",
+                ));
             }
             Err(err) => err,
         };
@@ -1724,18 +1456,15 @@ mod tests {
             rebound.is_ok(),
             "failed start must not leave an RTMP task bound to the prebound port: {rebound:?}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_start_failure_on_empty_node_id_does_not_spawn_rtmp() {
+    async fn test_start_failure_on_empty_node_id_does_not_spawn_rtmp() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("Failed to pre-bind RTMP port");
-        let local_addr = listener.local_addr().expect("Failed to get local addr");
+        let (listener, local_addr) = bind_local_listener().await?;
 
-        let mut config = test_config();
-        config.rtmp_address = local_addr.to_string();
+        let mut config = config_for_rtmp_addr(local_addr);
         config.node_id = String::new();
 
         let server =
@@ -1743,7 +1472,7 @@ mod tests {
         let err = match server.start() {
             Ok(handle) => {
                 handle.shutdown();
-                panic!("empty node_id should fail before spawning RTMP");
+                return Err(test_error("empty node_id should fail before spawning RTMP"));
             }
             Err(err) => err,
         };
@@ -1757,43 +1486,20 @@ mod tests {
             rebound.is_ok(),
             "failed start must not leave an RTMP task bound to the prebound port: {rebound:?}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_shutdown_releases_rtmp_port_for_rebind() {
+    async fn test_shutdown_releases_rtmp_port_for_rebind() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("Failed to pre-bind RTMP port");
-        let local_addr = listener.local_addr().expect("Failed to get local addr");
-
-        let config = LivestreamConfig {
-            rtmp_address: local_addr.to_string(),
-            gop_cache_size: 1024 * 1024,
-            node_id: "test-node".to_string(),
-            cleanup_check_interval_seconds: 1,
-            stream_timeout_seconds: 5,
-            distributed_enabled: false,
-            cluster_secret: None,
-            grpc_max_message_size_bytes: 16 * 1024 * 1024,
-            grpc_compression_enabled: true,
-            gop_cache_max_memory_mb: 0,
-            max_flv_tag_size_bytes: 10 * 1024 * 1024,
-            api_address: "127.0.0.1:0".to_string(),
-            hls_memory_max_mb: 0,
-            hls_storage_backend: HlsStorageBackend::Memory,
-            hls_storage_path: String::new(),
-            hls_oss: HlsOssConfig::default(),
-            ssrf_guard: SsrfGuard::strict_policy(),
-        };
+        let (listener, local_addr) = bind_local_listener().await?;
+        let config = config_for_rtmp_addr(local_addr);
 
         let server =
             LivestreamServer::new(config, registry, test_tracker()).with_rtmp_listener(listener);
 
-        let handle = server
-            .start()
-            .expect("Failed to start server with pre-bound listener");
+        let handle = server.start()?;
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -1805,49 +1511,24 @@ mod tests {
             rebound.is_ok(),
             "shutdown must release the RTMP listener so the port can be rebound: {rebound:?}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_shutdown_graceful_releases_rtmp_port_for_rebind() {
+    async fn test_shutdown_graceful_releases_rtmp_port_for_rebind() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("Failed to pre-bind RTMP port");
-        let local_addr = listener.local_addr().expect("Failed to get local addr");
-
-        let config = LivestreamConfig {
-            rtmp_address: local_addr.to_string(),
-            gop_cache_size: 1024 * 1024,
-            node_id: "test-node".to_string(),
-            cleanup_check_interval_seconds: 1,
-            stream_timeout_seconds: 5,
-            distributed_enabled: false,
-            cluster_secret: None,
-            grpc_max_message_size_bytes: 16 * 1024 * 1024,
-            grpc_compression_enabled: true,
-            gop_cache_max_memory_mb: 0,
-            max_flv_tag_size_bytes: 10 * 1024 * 1024,
-            api_address: "127.0.0.1:0".to_string(),
-            hls_memory_max_mb: 0,
-            hls_storage_backend: HlsStorageBackend::Memory,
-            hls_storage_path: String::new(),
-            hls_oss: HlsOssConfig::default(),
-            ssrf_guard: SsrfGuard::strict_policy(),
-        };
+        let (listener, local_addr) = bind_local_listener().await?;
+        let config = config_for_rtmp_addr(local_addr);
 
         let server =
             LivestreamServer::new(config, registry, test_tracker()).with_rtmp_listener(listener);
 
-        let mut handle = server
-            .start()
-            .expect("Failed to start server with pre-bound listener");
+        let mut handle = server.start()?;
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let result = timeout(Duration::from_secs(2), handle.shutdown_graceful(1))
-            .await
-            .expect("shutdown_graceful should complete");
+        let result = timeout(Duration::from_secs(2), handle.shutdown_graceful(1)).await?;
         assert!(result, "shutdown_graceful should complete cleanly");
 
         let rebound = tokio::net::TcpListener::bind(local_addr).await;
@@ -1855,22 +1536,13 @@ mod tests {
             rebound.is_ok(),
             "shutdown_graceful must release the RTMP listener so the port can be rebound: {rebound:?}"
         );
+        Ok(())
     }
 
-    /// Test that port conflicts are detected when trying to bind an already-used port.
-    ///
-    /// This verifies the core purpose of pre-binding: detecting port conflicts early
-    /// before deep initialization.
     #[tokio::test]
-    async fn test_port_conflict_detected_early() {
-        // Bind to a specific port first
-        let listener1 = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("Failed to bind first listener");
+    async fn test_port_conflict_detected_early() -> TestResult {
+        let (_listener1, bound_addr) = bind_local_listener().await?;
 
-        let bound_addr = listener1.local_addr().expect("Failed to get local addr");
-
-        // Try to bind to the same port - this should fail
         let result = tokio::net::TcpListener::bind(bound_addr).await;
 
         assert!(
@@ -1878,33 +1550,31 @@ mod tests {
             "Binding to an already-in-use port should fail"
         );
 
-        // The error should be an address-in-use error
-        let err = result.unwrap_err();
+        let err = match result {
+            Ok(listener) => {
+                drop(listener);
+                return Err(test_error("binding to an already-in-use port should fail"));
+            }
+            Err(err) => err,
+        };
         assert!(
             err.kind() == std::io::ErrorKind::AddrInUse,
             "Error should be AddrInUse, got: {err:?}"
         );
+        Ok(())
     }
 
-    /// Test that LivestreamServer can bind its own listener when one is not pre-supplied.
-    ///
-    /// This verifies the supported construction path where the server owns listener binding.
     #[tokio::test]
-    async fn test_livestream_server_without_prebound_listener() {
+    async fn test_livestream_server_without_prebound_listener() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
 
-        // Use port 0 to let OS assign a free port
         let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
-        // Start without pre-binding should still work
-        let handle = server
-            .start()
-            .expect("Server should start without pre-bound listener");
+        let handle = server.start()?;
 
-        // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Clean up
         handle.shutdown();
+        Ok(())
     }
 }

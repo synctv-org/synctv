@@ -42,7 +42,7 @@ fn bench_ttl_refresh_large_scale(c: &mut Criterion) {
             };
             let manager = build_connection_manager(
                 limits,
-                &SharedStateProfile::from_runtime(
+                &SharedStateProfile::for_cluster_runtime(
                     Some(synctv_core::direct_runtime(conn.clone())),
                     "ttl_large:",
                     true,

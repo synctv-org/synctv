@@ -3,16 +3,16 @@
 //! Tests token creation, usage (mark as used), expiry checking, and cleanup.
 //! Requires real `PostgreSQL` via testcontainers.
 //!
-#![allow(clippy::unwrap_used)]
 
 use chrono::{Duration, Utc};
 use std::sync::Arc;
 use synctv_core::{
     models::{EmailTokenType, User, UserId, UserRole, UserStatus},
     repository::{EmailTokenRepository, UserRepository},
-    service::{email_token::EmailTokenService, EmailConfig, EmailConfigProvider, EmailService},
+    service::{EmailConfig, EmailConfigProvider, EmailService, EmailTokenService},
 };
 use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{TestOptionExt, TestResultExt};
 /// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -49,7 +49,10 @@ async fn test_create_and_get_token() {
     let user_repo = UserRepository::new(pool.clone());
     let token_repo = EmailTokenRepository::new(pool.clone());
 
-    let user = user_repo.create(&make_user("token_user_1")).await.unwrap();
+    let user = user_repo
+        .create(&make_user("token_user_1"))
+        .await
+        .checked("test operation should succeed");
 
     let token_str = synctv_common::snanoid!(32);
     let expires_at = Utc::now() + Duration::hours(24);
@@ -57,7 +60,7 @@ async fn test_create_and_get_token() {
     let created = token_repo
         .create(&token_str, &user.id, EmailTokenType::EmailBind, expires_at)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_ne!(
         created.token, token_str,
@@ -68,9 +71,12 @@ async fn test_create_and_get_token() {
     assert!(created.used_at.is_none());
 
     // Get the token
-    let fetched = token_repo.get(&token_str).await.unwrap();
+    let fetched = token_repo
+        .get(&token_str)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched.is_some());
-    let fetched = fetched.unwrap();
+    let fetched = fetched.checked("test operation should succeed");
     assert_ne!(
         fetched.token, token_str,
         "repository lookup should hash the raw token before querying"
@@ -85,7 +91,10 @@ async fn test_mark_token_as_used() {
     let user_repo = UserRepository::new(pool.clone());
     let token_repo = EmailTokenRepository::new(pool.clone());
 
-    let user = user_repo.create(&make_user("token_user_2")).await.unwrap();
+    let user = user_repo
+        .create(&make_user("token_user_2"))
+        .await
+        .checked("test operation should succeed");
 
     let token_str = synctv_common::snanoid!(32);
     let expires_at = Utc::now() + Duration::hours(24);
@@ -93,14 +102,21 @@ async fn test_mark_token_as_used() {
     token_repo
         .create(&token_str, &user.id, EmailTokenType::EmailBind, expires_at)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Mark as used
-    let used = token_repo.mark_as_used(&token_str).await.unwrap();
+    let used = token_repo
+        .mark_as_used(&token_str)
+        .await
+        .checked("test operation should succeed");
     assert!(used.used_at.is_some(), "Token should have used_at set");
 
     // Verify it's marked as used when fetched
-    let fetched = token_repo.get(&token_str).await.unwrap().unwrap();
+    let fetched = token_repo
+        .get(&token_str)
+        .await
+        .checked("test operation should succeed")
+        .checked("test operation should succeed");
     assert!(fetched.used_at.is_some());
 }
 
@@ -111,7 +127,10 @@ async fn test_validate_and_consume_valid_token() {
     let user_repo = UserRepository::new(pool.clone());
     let token_repo = EmailTokenRepository::new(pool.clone());
 
-    let user = user_repo.create(&make_user("token_user_3")).await.unwrap();
+    let user = user_repo
+        .create(&make_user("token_user_3"))
+        .await
+        .checked("test operation should succeed");
 
     let token_str = synctv_common::snanoid!(32);
     let expires_at = Utc::now() + Duration::hours(24);
@@ -124,21 +143,24 @@ async fn test_validate_and_consume_valid_token() {
             expires_at,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Validate and consume
     let consumed = token_repo
         .validate_and_consume(&token_str, EmailTokenType::PasswordReset)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(consumed.is_some(), "Valid token should be consumed");
-    assert!(consumed.unwrap().used_at.is_some());
+    assert!(consumed
+        .checked("test operation should succeed")
+        .used_at
+        .is_some());
 
     // Consuming again should return None (already used)
     let consumed_again = token_repo
         .validate_and_consume(&token_str, EmailTokenType::PasswordReset)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(
         consumed_again.is_none(),
         "Already-used token should not be consumable"
@@ -152,7 +174,10 @@ async fn test_validate_wrong_type_fails() {
     let user_repo = UserRepository::new(pool.clone());
     let token_repo = EmailTokenRepository::new(pool.clone());
 
-    let user = user_repo.create(&make_user("token_user_4")).await.unwrap();
+    let user = user_repo
+        .create(&make_user("token_user_4"))
+        .await
+        .checked("test operation should succeed");
 
     let token_str = synctv_common::snanoid!(32);
     let expires_at = Utc::now() + Duration::hours(24);
@@ -160,13 +185,13 @@ async fn test_validate_wrong_type_fails() {
     token_repo
         .create(&token_str, &user.id, EmailTokenType::EmailBind, expires_at)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Try to consume as PasswordReset - wrong type
     let result = token_repo
         .validate_and_consume(&token_str, EmailTokenType::PasswordReset)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(
         result.is_none(),
         "Token with wrong type should not be consumed"
@@ -176,7 +201,7 @@ async fn test_validate_wrong_type_fails() {
     let result = token_repo
         .validate_and_consume(&token_str, EmailTokenType::EmailBind)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(result.is_some());
 }
 
@@ -187,7 +212,10 @@ async fn test_expired_token_not_consumable() {
     let user_repo = UserRepository::new(pool.clone());
     let token_repo = EmailTokenRepository::new(pool.clone());
 
-    let user = user_repo.create(&make_user("token_user_5")).await.unwrap();
+    let user = user_repo
+        .create(&make_user("token_user_5"))
+        .await
+        .checked("test operation should succeed");
 
     let token_str = synctv_common::snanoid!(32);
     // Set expiry in the past
@@ -196,13 +224,13 @@ async fn test_expired_token_not_consumable() {
     token_repo
         .create(&token_str, &user.id, EmailTokenType::EmailBind, expires_at)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Should not be consumable (expired)
     let result = token_repo
         .validate_and_consume(&token_str, EmailTokenType::EmailBind)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert!(result.is_none(), "Expired token should not be consumable");
 }
 
@@ -218,19 +246,19 @@ async fn test_cleanup_expired_tokens() {
         let user = user_repo
             .create(&make_user(&format!("token_user_6_{i}")))
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         let token_str = synctv_common::snanoid!(32);
         let expires_at = Utc::now() - Duration::hours(i + 1);
         token_repo
             .create(&token_str, &user.id, EmailTokenType::EmailBind, expires_at)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
     }
 
     let valid_user = user_repo
         .create(&make_user("token_user_6_valid"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let valid_token = synctv_common::snanoid!(32);
     let valid_expires = Utc::now() + Duration::hours(24);
@@ -242,14 +270,20 @@ async fn test_cleanup_expired_tokens() {
             valid_expires,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Cleanup expired
-    let cleaned = token_repo.cleanup_expired().await.unwrap();
+    let cleaned = token_repo
+        .cleanup_expired()
+        .await
+        .checked("test operation should succeed");
     assert_eq!(cleaned, 3, "Should clean up 3 expired tokens");
 
     // Valid token should still exist
-    let fetched = token_repo.get(&valid_token).await.unwrap();
+    let fetched = token_repo
+        .get(&valid_token)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched.is_some(), "Valid token should survive cleanup");
 }
 
@@ -260,7 +294,10 @@ async fn test_delete_user_tokens() {
     let user_repo = UserRepository::new(pool.clone());
     let token_repo = EmailTokenRepository::new(pool.clone());
 
-    let user = user_repo.create(&make_user("token_user_7")).await.unwrap();
+    let user = user_repo
+        .create(&make_user("token_user_7"))
+        .await
+        .checked("test operation should succeed");
     let expires_at = Utc::now() + Duration::hours(24);
 
     let used_verification_token = synctv_common::snanoid!(32);
@@ -272,11 +309,11 @@ async fn test_delete_user_tokens() {
             expires_at,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     token_repo
         .mark_as_used(&used_verification_token)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let active_verification_token = synctv_common::snanoid!(32);
     token_repo
@@ -287,7 +324,7 @@ async fn test_delete_user_tokens() {
             expires_at,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let password_reset_token = synctv_common::snanoid!(32);
     token_repo
@@ -298,20 +335,20 @@ async fn test_delete_user_tokens() {
             expires_at,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Delete current unused email bind tokens for the user.
     let deleted = token_repo
         .delete_user_tokens(&user.id, EmailTokenType::EmailBind)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     assert_eq!(deleted, 1);
 
     assert!(
         token_repo
             .get(&active_verification_token)
             .await
-            .unwrap()
+            .checked("test operation should succeed")
             .is_none(),
         "delete_user_tokens should remove the active unused token",
     );
@@ -319,7 +356,7 @@ async fn test_delete_user_tokens() {
         token_repo
             .get(&used_verification_token)
             .await
-            .unwrap()
+            .checked("test operation should succeed")
             .is_some(),
         "delete_user_tokens should not remove already-used historical tokens",
     );
@@ -327,7 +364,7 @@ async fn test_delete_user_tokens() {
         token_repo
             .get(&password_reset_token)
             .await
-            .unwrap()
+            .checked("test operation should succeed")
             .is_some(),
         "delete_user_tokens should not remove other token types",
     );
@@ -339,7 +376,10 @@ async fn test_get_nonexistent_token() {
     let (_container, pool) = create_test_pool().await;
     let token_repo = EmailTokenRepository::new(pool.clone());
 
-    let result = token_repo.get("nonexistent_token_value").await.unwrap();
+    let result = token_repo
+        .get("nonexistent_token_value")
+        .await
+        .checked("test operation should succeed");
     assert!(result.is_none());
 }
 
@@ -353,7 +393,7 @@ async fn test_create_allows_multiple_unused_tokens_for_same_user_and_type() {
     let user = user_repo
         .create(&make_user("token_unique_invariant"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let expires_at = Utc::now() + Duration::hours(24);
 
     token_repo
@@ -364,7 +404,7 @@ async fn test_create_allows_multiple_unused_tokens_for_same_user_and_type() {
             expires_at,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let second = token_repo
         .create(
@@ -374,7 +414,7 @@ async fn test_create_allows_multiple_unused_tokens_for_same_user_and_type() {
             expires_at,
         )
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert_eq!(second.user_id, user.id);
     assert_eq!(second.token_type, i16::from(EmailTokenType::EmailBind));
@@ -386,7 +426,7 @@ async fn test_create_allows_multiple_unused_tokens_for_same_user_and_type() {
     .bind(i16::from(EmailTokenType::EmailBind))
     .fetch_one(&pool)
     .await
-    .unwrap();
+    .checked("test operation should succeed");
     assert_eq!(
         remaining, 2,
         "repository create should allow multiple unused tokens for the same user and type",
@@ -403,7 +443,7 @@ async fn test_failed_verification_email_send_does_not_leave_valid_token() {
     let user = user_repo
         .create(&make_user("token_send_failure"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let email = "token_send_failure@test.com".to_string();
     let email_service = EmailService::new(Arc::new(StaticEmailConfigProvider(Some(EmailConfig {
         smtp_host: "127.0.0.1".to_string(),
@@ -414,7 +454,7 @@ async fn test_failed_verification_email_send_does_not_leave_valid_token() {
         from_name: "SyncTV".to_string(),
         use_tls: false,
     }))))
-    .unwrap();
+    .checked("test operation should succeed");
 
     let result = email_service
         .send_email_bind_email(&email, &token_service, &user.id)
@@ -428,7 +468,7 @@ async fn test_failed_verification_email_send_does_not_leave_valid_token() {
     .bind(i16::from(EmailTokenType::EmailBind))
     .fetch_one(user_repo.pool())
     .await
-    .unwrap();
+    .checked("test operation should succeed");
     assert_eq!(
         remaining, 0,
         "failed email delivery must not leave an unused email bind token behind"
@@ -445,21 +485,21 @@ async fn test_invalidating_old_token_does_not_remove_newer_replacement() {
     let user = user_repo
         .create(&make_user("token_specific_invalidation"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let first_token = token_service
         .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
     let second_token = token_service
         .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     token_service
         .invalidate_specific_token(&first_token, &user.id, EmailTokenType::EmailBind)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     assert!(
         token_service
@@ -488,13 +528,13 @@ async fn test_generate_token_invalidates_previous_tokens_same_type() {
     let user = user_repo
         .create(&make_user("token_invalidation_1"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Generate first token
     let first_token = token_service
         .generate_token(&user.id, EmailTokenType::PasswordReset)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // First token should be valid
     let result = token_service
@@ -509,7 +549,7 @@ async fn test_generate_token_invalidates_previous_tokens_same_type() {
     let second_token = token_service
         .generate_token(&user.id, EmailTokenType::PasswordReset)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Second token should be valid
     let result = token_service
@@ -538,19 +578,19 @@ async fn test_different_token_types_are_independent() {
     let user = user_repo
         .create(&make_user("token_invalidation_2"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Generate email bind token
     let email_token = token_service
         .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Generate password reset token
     let reset_token = token_service
         .generate_token(&user.id, EmailTokenType::PasswordReset)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Both should be valid (different types)
     let result = token_service
@@ -575,25 +615,25 @@ async fn test_password_reset_regeneration_preserves_email_token() {
     let user = user_repo
         .create(&make_user("token_invalidation_3"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Generate email bind token
     let email_token = token_service
         .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Generate first password reset token
     let reset1 = token_service
         .generate_token(&user.id, EmailTokenType::PasswordReset)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Generate second password reset token (should invalidate first reset, but not email)
     let reset2 = token_service
         .generate_token(&user.id, EmailTokenType::PasswordReset)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Second reset token should be valid
     let result = token_service
@@ -628,7 +668,7 @@ async fn test_multiple_token_generations_only_last_valid() {
     let user = user_repo
         .create(&make_user("token_invalidation_4"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let mut tokens = Vec::new();
 
@@ -637,12 +677,12 @@ async fn test_multiple_token_generations_only_last_valid() {
         let token = token_service
             .generate_token(&user.id, EmailTokenType::PasswordReset)
             .await
-            .unwrap();
+            .checked("test operation should succeed");
         tokens.push(token);
     }
 
     // Only the last token should be valid
-    let last_token = tokens.last().unwrap();
+    let last_token = tokens.last().checked("test operation should succeed");
     let result = token_service
         .validate_token(last_token, EmailTokenType::PasswordReset)
         .await;
@@ -668,32 +708,50 @@ async fn test_two_users_independent_tokens() {
     let token_repo = EmailTokenRepository::new(pool.clone());
     let token_service = EmailTokenService::new(pool.clone());
 
-    let user1 = user_repo.create(&make_user("token_user_a")).await.unwrap();
-    let user2 = user_repo.create(&make_user("token_user_b")).await.unwrap();
+    let user1 = user_repo
+        .create(&make_user("token_user_a"))
+        .await
+        .checked("test operation should succeed");
+    let user2 = user_repo
+        .create(&make_user("token_user_b"))
+        .await
+        .checked("test operation should succeed");
 
     // Generate tokens for both users
     let token1 = token_service
         .generate_token(&user1.id, EmailTokenType::PasswordReset)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let token2 = token_service
         .generate_token(&user2.id, EmailTokenType::PasswordReset)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Both should exist and be unused (check via repo, not consuming validate)
-    let fetched1 = token_repo.get(&token1).await.unwrap();
+    let fetched1 = token_repo
+        .get(&token1)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched1.is_some(), "User 1 token should exist");
     assert!(
-        fetched1.unwrap().used_at.is_none(),
+        fetched1
+            .checked("test operation should succeed")
+            .used_at
+            .is_none(),
         "User 1 token should be unused"
     );
 
-    let fetched2 = token_repo.get(&token2).await.unwrap();
+    let fetched2 = token_repo
+        .get(&token2)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched2.is_some(), "User 2 token should exist");
     assert!(
-        fetched2.unwrap().used_at.is_none(),
+        fetched2
+            .checked("test operation should succeed")
+            .used_at
+            .is_none(),
         "User 2 token should be unused"
     );
 
@@ -701,21 +759,33 @@ async fn test_two_users_independent_tokens() {
     let token1_new = token_service
         .generate_token(&user1.id, EmailTokenType::PasswordReset)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // user1's old token should be deleted
-    let fetched1_old = token_repo.get(&token1).await.unwrap();
+    let fetched1_old = token_repo
+        .get(&token1)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched1_old.is_none(), "User 1 old token should be deleted");
 
     // user1's new token should exist
-    let fetched1_new = token_repo.get(&token1_new).await.unwrap();
+    let fetched1_new = token_repo
+        .get(&token1_new)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched1_new.is_some(), "User 1 new token should exist");
 
     // user2's token should still exist and be unused
-    let fetched2_again = token_repo.get(&token2).await.unwrap();
+    let fetched2_again = token_repo
+        .get(&token2)
+        .await
+        .checked("test operation should succeed");
     assert!(fetched2_again.is_some(), "User 2 token should still exist");
     assert!(
-        fetched2_again.unwrap().used_at.is_none(),
+        fetched2_again
+            .checked("test operation should succeed")
+            .used_at
+            .is_none(),
         "User 2 token should still be unused"
     );
 }
@@ -731,13 +801,13 @@ async fn test_manual_token_invalidation() {
     let user = user_repo
         .create(&make_user("token_manual_invalidation"))
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Generate token
     let token = token_service
         .generate_token(&user.id, EmailTokenType::EmailBind)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     let result = token_service
         .validate_token(&token, EmailTokenType::EmailBind)
@@ -748,7 +818,7 @@ async fn test_manual_token_invalidation() {
     token_service
         .invalidate_user_tokens(&user.id, EmailTokenType::EmailBind)
         .await
-        .unwrap();
+        .checked("test operation should succeed");
 
     // Should now be invalid
     let result = token_service

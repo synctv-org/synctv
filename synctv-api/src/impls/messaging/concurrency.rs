@@ -5,7 +5,7 @@ use tokio::sync::Semaphore;
 ///
 /// This provides backpressure when the system is under heavy load.
 /// When exceeded, new messages receive a `ResourceExhausted` error.
-pub const DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING: usize = 1000;
+const DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING: usize = 1000;
 
 /// Configuration for message processing concurrency.
 #[derive(Clone, Debug)]
@@ -13,8 +13,6 @@ pub struct MessageConcurrencyConfig {
     /// Semaphore for limiting concurrent message processing.
     /// This is shared across all connections for the same `AppState`.
     semaphore: Arc<Semaphore>,
-    /// The maximum number of concurrent message processing operations.
-    max_concurrent: usize,
 }
 
 impl MessageConcurrencyConfig {
@@ -23,7 +21,6 @@ impl MessageConcurrencyConfig {
     pub fn new(max_concurrent: usize) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
-            max_concurrent,
         }
     }
 
@@ -36,15 +33,10 @@ impl MessageConcurrencyConfig {
         Arc::clone(&self.semaphore)
     }
 
-    /// Get the maximum concurrent limit.
-    #[must_use]
-    pub const fn max_concurrent(&self) -> usize {
-        self.max_concurrent
-    }
-
     /// Get the number of available permits.
     ///
     /// This is useful for monitoring and health checks.
+    #[cfg(test)]
     #[must_use]
     pub fn available_permits(&self) -> usize {
         self.semaphore.available_permits()

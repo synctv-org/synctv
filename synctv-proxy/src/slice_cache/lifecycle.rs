@@ -28,11 +28,14 @@ use super::backend::CacheBackend;
 use super::backend::SliceCacheBackend;
 use super::config::SliceCacheConfig;
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss
-)]
+const U32_RANGE_AS_F64: f64 = 4_294_967_296.0;
+
+fn u64_to_f64(value: u64) -> f64 {
+    let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
+    let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+    f64::from(high).mul_add(U32_RANGE_AS_F64, f64::from(low))
+}
+
 fn watermark_bytes(max_cache_size: u64, ratio: f64) -> u64 {
     if !ratio.is_finite() {
         return max_cache_size;
@@ -46,7 +49,20 @@ fn watermark_bytes(max_cache_size: u64, ratio: f64) -> u64 {
         return max_cache_size;
     }
 
-    (max_cache_size as f64 * clamped).floor() as u64
+    let target = u64_to_f64(max_cache_size) * clamped;
+    let mut low = 0;
+    let mut high = max_cache_size;
+
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if u64_to_f64(mid) <= target {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    low
 }
 
 /// Background cache lifecycle manager.

@@ -1,66 +1,77 @@
 use super::*;
 
+type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+fn missing(message: &'static str) -> Box<dyn std::error::Error + Send + Sync> {
+    anyhow::anyhow!(message).into()
+}
+
 #[test]
-fn test_client_creation() {
-    let client = EmbyClient::new("https://emby.example.com").unwrap();
+fn test_client_creation() -> TestResult {
+    let client = EmbyClient::new("https://emby.example.com")?;
     assert_eq!(client.host(), "https://emby.example.com");
     assert!(!client.has_credentials());
 
     let client_with_creds =
-        EmbyClient::with_credentials("https://emby.example.com", "test_token", "user123").unwrap();
+        EmbyClient::with_credentials("https://emby.example.com", "test_token", "user123")?;
     assert!(client_with_creds.has_credentials());
+    Ok(())
 }
 
 #[test]
-fn test_detection_candidates_do_not_use_hostname_heuristics() {
-    let emby_client = EmbyClient::new("https://emby.example.com").unwrap();
+fn test_detection_candidates_do_not_use_hostname_heuristics() -> TestResult {
+    let emby_client = EmbyClient::new("https://emby.example.com")?;
     assert_eq!(
-        emby_client.detection_candidates().unwrap(),
+        emby_client.detection_candidates()?,
         vec![String::new(), "/emby".to_string(), "/jellyfin".to_string()]
     );
 
-    let jellyfin_client = EmbyClient::new("https://jellyfin.example.com").unwrap();
+    let jellyfin_client = EmbyClient::new("https://jellyfin.example.com")?;
     assert_eq!(
-        jellyfin_client.detection_candidates().unwrap(),
+        jellyfin_client.detection_candidates()?,
         vec![String::new(), "/emby".to_string(), "/jellyfin".to_string()]
     );
+    Ok(())
 }
 
 #[test]
-fn test_client_host() {
-    let client = EmbyClient::new("https://emby.myserver.com:8096").unwrap();
+fn test_client_host() -> TestResult {
+    let client = EmbyClient::new("https://emby.myserver.com:8096")?;
     assert_eq!(client.host(), "https://emby.myserver.com:8096");
+    Ok(())
 }
 
 #[test]
-fn test_client_credentials() {
-    let client =
-        EmbyClient::with_credentials("https://emby.example.com", "token123", "user456").unwrap();
+fn test_client_credentials() -> TestResult {
+    let client = EmbyClient::with_credentials("https://emby.example.com", "token123", "user456")?;
     assert!(client.has_credentials());
+    Ok(())
 }
 
 #[test]
-fn test_set_credentials() {
-    let mut client = EmbyClient::new("https://emby.example.com").unwrap();
+fn test_set_credentials() -> TestResult {
+    let mut client = EmbyClient::new("https://emby.example.com")?;
     assert!(!client.has_credentials());
     client.set_credentials("token", "user");
     assert!(client.has_credentials());
+    Ok(())
 }
 
 #[test]
-fn test_auth_response_deserialize() {
+fn test_auth_response_deserialize() -> TestResult {
     let json = r#"{
         "AccessToken": "abc123xyz",
         "User": {"Id": "user1", "Name": "Admin"}
     }"#;
-    let resp: crate::emby::types::AuthResponse = serde_json::from_str(json).unwrap();
+    let resp: crate::emby::types::AuthResponse = serde_json::from_str(json)?;
     assert_eq!(resp.access_token, "abc123xyz");
     assert_eq!(resp.user.id, "user1");
     assert_eq!(resp.user.name, "Admin");
+    Ok(())
 }
 
 #[test]
-fn test_items_response_deserialize() {
+fn test_items_response_deserialize() -> TestResult {
     let json = r#"{
         "Items": [
             {
@@ -78,16 +89,17 @@ fn test_items_response_deserialize() {
         ],
         "TotalRecordCount": 2
     }"#;
-    let resp: crate::emby::types::ItemsResponse = serde_json::from_str(json).unwrap();
+    let resp: crate::emby::types::ItemsResponse = serde_json::from_str(json)?;
     assert_eq!(resp.total_record_count, 2);
     assert_eq!(resp.items.len(), 2);
     assert_eq!(resp.items[0].name, "Movie 1");
     assert!(!resp.items[0].is_folder);
     assert!(resp.items[1].is_folder);
+    Ok(())
 }
 
 #[test]
-fn test_item_with_media_sources() {
+fn test_item_with_media_sources() -> TestResult {
     let json = r#"{
         "Id": "video1",
         "Name": "Test Video",
@@ -110,16 +122,17 @@ fn test_item_with_media_sources() {
         ],
         "RunTimeTicks": 72000000000
     }"#;
-    let item: crate::emby::types::Item = serde_json::from_str(json).unwrap();
+    let item: crate::emby::types::Item = serde_json::from_str(json)?;
     assert_eq!(item.media_sources.len(), 1);
     assert_eq!(item.media_sources[0].container, "mkv");
     assert_eq!(item.media_sources[0].media_streams.len(), 2);
     assert!(item.media_sources[0].supports_direct_play);
     assert_eq!(item.run_time_ticks, Some(72_000_000_000));
+    Ok(())
 }
 
 #[test]
-fn test_user_info_deserialize() {
+fn test_user_info_deserialize() -> TestResult {
     let json = r#"{
         "Id": "user1",
         "Name": "TestUser",
@@ -131,41 +144,50 @@ fn test_user_info_deserialize() {
             "EnableAllFolders": true
         }
     }"#;
-    let user: crate::emby::types::UserInfo = serde_json::from_str(json).unwrap();
+    let user: crate::emby::types::UserInfo = serde_json::from_str(json)?;
     assert_eq!(user.id, "user1");
-    assert!(user.policy.as_ref().unwrap().is_administrator);
-    assert!(!user.policy.as_ref().unwrap().is_disabled);
+    let policy = user
+        .policy
+        .as_ref()
+        .ok_or_else(|| missing("user policy should deserialize"))?;
+    assert!(policy.is_administrator);
+    assert!(!policy.is_disabled);
+    Ok(())
 }
 
 #[test]
-fn test_user_info_no_policy() {
+fn test_user_info_no_policy() -> TestResult {
     let json = r#"{"Id": "user1", "Name": "TestUser", "ServerId": "server1"}"#;
-    let user: crate::emby::types::UserInfo = serde_json::from_str(json).unwrap();
+    let user: crate::emby::types::UserInfo = serde_json::from_str(json)?;
     assert!(user.policy.is_none());
+    Ok(())
 }
 
 #[test]
-fn test_playback_info_response_deserialize() {
+fn test_playback_info_response_deserialize() -> TestResult {
     let json = r#"{
         "PlaySessionId": "session123",
         "MediaSources": [
             {"Id": "src1", "Container": "mp4", "Protocol": "Http", "SupportsDirectPlay": true, "SupportsTranscoding": false}
         ]
     }"#;
-    let resp: crate::emby::types::PlaybackInfoResponse = serde_json::from_str(json).unwrap();
+    let resp: crate::emby::types::PlaybackInfoResponse = serde_json::from_str(json)?;
     assert_eq!(resp.play_session_id, "session123");
     assert_eq!(resp.media_sources.len(), 1);
+    Ok(())
 }
 
 #[test]
-fn test_default_device_profile() {
+fn test_default_device_profile() -> TestResult {
     let profile = crate::emby::types::default_device_profile();
     assert!(profile.get("DirectPlayProfiles").is_some());
     assert!(profile.get("TranscodingProfiles").is_some());
     assert!(profile.get("SubtitleProfiles").is_some());
-    // Check it has common video codecs
-    let direct_play = profile["DirectPlayProfiles"].as_array().unwrap();
+    let direct_play = profile["DirectPlayProfiles"]
+        .as_array()
+        .ok_or_else(|| missing("DirectPlayProfiles should be an array"))?;
     assert!(!direct_play.is_empty());
+    Ok(())
 }
 
 #[test]
@@ -283,50 +305,47 @@ fn test_validate_item_id_rejects_null_bytes() {
 }
 
 #[test]
-fn test_detection_candidates_preserve_host_path_first() {
-    // When host includes a deployment path, preserve it exactly.
-    let client = EmbyClient::new("https://media.example.com/jellyfin").unwrap();
+fn test_detection_candidates_preserve_host_path_first() -> TestResult {
+    let client = EmbyClient::new("https://media.example.com/jellyfin")?;
     assert_eq!(
-        client.detection_candidates().unwrap(),
+        client.detection_candidates()?,
         vec!["/jellyfin".to_string(), String::new(), "/emby".to_string()]
     );
+    Ok(())
 }
 
 #[test]
-fn test_api_prefix_hostname_does_not_affect_candidates() {
-    let client = EmbyClient::new("https://jellyfin.home.local:8096").unwrap();
+fn test_api_prefix_hostname_does_not_affect_candidates() -> TestResult {
+    let client = EmbyClient::new("https://jellyfin.home.local:8096")?;
     assert_eq!(
-        client.detection_candidates().unwrap(),
+        client.detection_candidates()?,
         vec![String::new(), "/emby".to_string(), "/jellyfin".to_string()]
     );
+    Ok(())
 }
 
 #[test]
-fn test_endpoint_url_uses_root_for_emby_and_jellyfin_root_deployments() {
-    let emby_client = EmbyClient::new("https://emby.example.com").unwrap();
+fn test_endpoint_url_uses_root_for_emby_and_jellyfin_root_deployments() -> TestResult {
+    let emby_client = EmbyClient::new("https://emby.example.com")?;
     assert_eq!(
-        emby_client
-            .endpoint_url_with_prefix("System/Info", "")
-            .unwrap(),
+        emby_client.endpoint_url_with_prefix("System/Info", "")?,
         "https://emby.example.com/System/Info"
     );
 
-    let jellyfin_client = EmbyClient::new("https://jellyfin.example.com").unwrap();
+    let jellyfin_client = EmbyClient::new("https://jellyfin.example.com")?;
     assert_eq!(
-        jellyfin_client
-            .endpoint_url_with_prefix("System/Info", "")
-            .unwrap(),
+        jellyfin_client.endpoint_url_with_prefix("System/Info", "")?,
         "https://jellyfin.example.com/System/Info"
     );
+    Ok(())
 }
 
 #[test]
-fn test_endpoint_url_uses_host_path_prefix() {
-    let client = EmbyClient::new("https://media.example.com/custom-prefix").unwrap();
+fn test_endpoint_url_uses_host_path_prefix() -> TestResult {
+    let client = EmbyClient::new("https://media.example.com/custom-prefix")?;
     assert_eq!(
-        client
-            .endpoint_url_with_prefix("System/Info", "/custom-prefix")
-            .unwrap(),
+        client.endpoint_url_with_prefix("System/Info", "/custom-prefix")?,
         "https://media.example.com/custom-prefix/System/Info"
     );
+    Ok(())
 }

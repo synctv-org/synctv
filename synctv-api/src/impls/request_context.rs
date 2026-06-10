@@ -946,10 +946,12 @@ mod tests {
     use super::*;
     use synctv_core::RateLimitScopeRule;
 
+    type TestResult<T = ()> = anyhow::Result<T>;
+
     #[test]
-    fn request_context_preserves_budget_metadata() {
+    fn request_context_preserves_budget_metadata() -> TestResult {
         let metadata = RequestMetadata::new(TransportProtocol::Http)
-            .with_client_ip(Some("127.0.0.1".parse().expect("ip")))
+            .with_client_ip(Some("127.0.0.1".parse()?))
             .with_timeout(Some(Duration::from_secs(5)));
 
         let context = RequestContext::from_metadata(metadata.clone());
@@ -960,6 +962,7 @@ mod tests {
         assert_eq!(context.timeout_budget(), Some(Duration::from_secs(5)));
         assert!(context.deadline().is_some());
         assert!(context.remaining_timeout().is_some());
+        Ok(())
     }
 
     #[test]

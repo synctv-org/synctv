@@ -11,10 +11,9 @@
 //! manages individual Gop instances.
 //!
 //! Implementation detail:
-//! When `save_frame_data` is called with `is_key_frame=true`:
-//! 1. It first pushes a new empty GOP to the deque
-//! 2. Then adds the frame to this new GOP
-//!    This means the first keyframe creates 2 GOPs (initial + new), not 1.
+//! When `save_frame_data` is called with `is_key_frame=true`, the initial
+//! empty GOP is reused for the first keyframe. Later keyframes freeze the
+//! current GOP and start the next one.
 
 #![allow(clippy::unwrap_used)]
 use bytes::Bytes;
@@ -140,34 +139,29 @@ fn test_gops_clone() {
 // GOP Eviction Tests
 
 /// Test that oldest GOP is evicted when count limit is reached
-/// Note: Implementation creates a new GOP BEFORE adding keyframe,
-/// so after first keyframe there are 2 GOPs (initial empty + new with frame)
 #[test]
 fn test_gops_eviction_on_count_limit() {
     let mut gops = Gops::new(3, None);
 
-    // Add first keyframe - creates new GOP, now we have 2 GOPs
     gops.save_frame_data(make_keyframe(0, 1000), true);
-    assert_eq!(
-        gops.gop_count(),
-        2,
-        "First keyframe creates 2 GOPs (initial + new)"
-    );
+    assert_eq!(gops.gop_count(), 1, "First keyframe reuses initial GOP");
 
-    // Add second keyframe - creates another GOP, now we have 3 GOPs
     gops.save_frame_data(make_keyframe(1000, 1000), true);
-    assert_eq!(gops.gop_count(), 3, "Second keyframe creates 3 GOPs");
+    assert_eq!(gops.gop_count(), 2, "Second keyframe creates second GOP");
 
-    // Add third keyframe - would create 4th but limit is 3, so eviction happens
     gops.save_frame_data(make_keyframe(2000, 1000), true);
+    assert_eq!(gops.gop_count(), 3, "Third keyframe creates third GOP");
+
+    // Add fourth keyframe - would create a fourth but limit is 3, so eviction happens
+    gops.save_frame_data(make_keyframe(3000, 1000), true);
     assert_eq!(
         gops.gop_count(),
         3,
         "Should still have 3 GOPs after eviction"
     );
 
-    // Add fourth keyframe - more eviction
-    gops.save_frame_data(make_keyframe(3000, 1000), true);
+    // Add fifth keyframe - more eviction
+    gops.save_frame_data(make_keyframe(4000, 1000), true);
     assert_eq!(
         gops.gop_count(),
         3,
@@ -224,12 +218,9 @@ fn test_gops_many_gops_eviction() {
         gops.save_frame_data(make_inter_frame(i * 1000 + 100, 100), false);
     }
 
-    // Should never exceed max GOP count (accounting for implementation detail)
-    // Max GOPs = 5, but implementation creates new GOP before adding keyframe
-    // so we can have at most (size + 1) GOPs temporarily
     assert!(
-        gops.gop_count() <= 6,
-        "GOP count {} should be <= size+1",
+        gops.gop_count() <= 5,
+        "GOP count {} should be <= size",
         gops.gop_count()
     );
 }
@@ -266,14 +257,12 @@ fn test_gops_get_gops_returns_frozen() {
     // Get GOPs (should freeze the active one)
     let gops_ref = gops.get_gops();
 
-    // After first keyframe, we have 2 GOPs (initial empty + new with frames)
-    assert_eq!(gops_ref.len(), 2);
+    assert_eq!(gops_ref.len(), 1);
 }
 
 // Frame Saving Tests
 
 /// Test saving keyframe creates new GOP
-/// Implementation detail: keyframe pushes new GOP first, then adds frame
 #[test]
 fn test_gops_keyframe_creates_new_gop() {
     let mut gops = Gops::new(5, None);
@@ -281,13 +270,11 @@ fn test_gops_keyframe_creates_new_gop() {
     // Initial GOP is created
     assert_eq!(gops.gop_count(), 1);
 
-    // First keyframe creates a new GOP and adds frame there
     gops.save_frame_data(make_keyframe(0, 100), true);
-    assert_eq!(gops.gop_count(), 2, "First keyframe creates 2 GOPs");
+    assert_eq!(gops.gop_count(), 1, "First keyframe reuses initial GOP");
 
-    // Second keyframe creates another new GOP
     gops.save_frame_data(make_keyframe(1000, 100), true);
-    assert_eq!(gops.gop_count(), 3, "Second keyframe creates 3 GOPs");
+    assert_eq!(gops.gop_count(), 2, "Second keyframe creates second GOP");
 }
 
 /// Test saving inter frames adds to current GOP (no new GOP creation)
@@ -295,16 +282,14 @@ fn test_gops_keyframe_creates_new_gop() {
 fn test_gops_inter_frames_add_to_current_gop() {
     let mut gops = Gops::new(5, None);
 
-    // First add a keyframe (creates 2 GOPs)
     gops.save_frame_data(make_keyframe(0, 100), true);
-    assert_eq!(gops.gop_count(), 2, "After keyframe");
+    assert_eq!(gops.gop_count(), 1, "After keyframe");
 
     // Inter frames should not create new GOPs
     gops.save_frame_data(make_inter_frame(100, 100), false);
     gops.save_frame_data(make_inter_frame(200, 100), false);
 
-    // Should still have 2 GOPs (no new keyframes)
-    assert_eq!(gops.gop_count(), 2, "After inter frames");
+    assert_eq!(gops.gop_count(), 1, "After inter frames");
 }
 
 /// Test interleaved audio and video frames
@@ -320,8 +305,7 @@ fn test_gops_mixed_audio_video_frames() {
     gops.save_frame_data(make_inter_frame(200, 500), false);
     gops.save_frame_data(make_audio_frame(200, 100), false);
 
-    // Should have 2 GOPs (after first keyframe)
-    assert_eq!(gops.gop_count(), 2);
+    assert_eq!(gops.gop_count(), 1);
     // Total memory: 1000 + 100 + 500 + 100 + 500 + 100 = 2300
     assert_eq!(gops.current_total_bytes(), 2300);
 }
@@ -354,21 +338,20 @@ fn test_gops_memory_accounting() {
 fn test_gops_memory_decreases_on_eviction() {
     let mut gops = Gops::new(3, Some(10000)); // 3 GOP max, 10KB limit
 
-    // First GOP (after keyframe, we have 2 GOPs)
     gops.save_frame_data(make_keyframe(0, 2000), true);
     gops.save_frame_data(make_inter_frame(100, 1000), false);
 
     assert_eq!(gops.current_total_bytes(), 3000);
 
-    // Second keyframe creates 3rd GOP
+    // Second keyframe creates second GOP
     gops.save_frame_data(make_keyframe(1000, 3000), true);
     gops.save_frame_data(make_inter_frame(1100, 1000), false);
 
-    // Third keyframe triggers eviction (would create 4th but limit is 3)
+    // Third keyframe creates third GOP
     gops.save_frame_data(make_keyframe(2000, 1000), true);
 
     // Should not exceed max GOP count
-    assert!(gops.gop_count() <= 4); // Allow for implementation detail
+    assert!(gops.gop_count() <= 3);
 }
 
 /// Test empty frames have zero memory
@@ -458,10 +441,9 @@ fn test_gops_rapid_creation() {
         gops.save_frame_data(make_keyframe(i * 1000, 100), true);
     }
 
-    // Should never exceed max significantly (implementation may allow size+1)
     assert!(
-        gops.gop_count() <= 11,
-        "GOP count {} should be <= 11",
+        gops.gop_count() <= 10,
+        "GOP count {} should be <= 10",
         gops.gop_count()
     );
 }

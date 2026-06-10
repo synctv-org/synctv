@@ -337,6 +337,43 @@ mod tests {
     use super::*;
     use crate::streamhub::errors::{StreamHubError, StreamHubErrorValue};
 
+    fn assert_rtmp_identifier(
+        identifier: StreamIdentifier,
+        expected_app: &str,
+        expected_stream: &str,
+    ) {
+        let StreamIdentifier::Rtmp {
+            app_name,
+            stream_name,
+        } = identifier;
+        assert_eq!(app_name, expected_app);
+        assert_eq!(stream_name, expected_stream);
+    }
+
+    fn assert_unsubscribe_event(event: StreamHubEvent, expected_app: &str, expected_stream: &str) {
+        let StreamHubEvent::UnSubscribe { identifier, .. } = event else {
+            panic!("expected unsubscribe event, got {event:?}");
+        };
+        assert_rtmp_identifier(identifier, expected_app, expected_stream);
+    }
+
+    fn subscribe_result_sender(
+        event: StreamHubEvent,
+    ) -> tokio::sync::oneshot::Sender<
+        Result<
+            (
+                crate::streamhub::define::DataReceiver,
+                Option<crate::streamhub::define::StatisticDataSender>,
+            ),
+            StreamHubError,
+        >,
+    > {
+        let StreamHubEvent::Subscribe { result_sender, .. } = event else {
+            panic!("expected subscribe event, got {event:?}");
+        };
+        result_sender
+    }
+
     #[test]
     fn test_http_flv_session_creation() {
         let (event_sender, _) = tokio::sync::mpsc::channel(64);
@@ -376,12 +413,11 @@ mod tests {
         assert_eq!(session.total_dropped_frames, 0);
     }
 
-    /// Test that flush_response_data drops frames when channel is full
-    /// without blocking the publisher, and tracks the drop count.
+    /// Test that flush_response_data drops frames when channel is full and tracks the drop count.
     #[test]
     fn test_flush_drops_frames_when_channel_full() {
         let (event_sender, _) = tokio::sync::mpsc::channel(64);
-        // Create a channel with capacity 1 so it fills immediately
+        // Create a channel with capacity 1 so the first pending response fills it.
         let (response_tx, _response_rx) = mpsc::channel(1);
 
         let mut session = HttpFlvSession::new(
@@ -396,17 +432,11 @@ mod tests {
             .muxer
             .write_flv_header(true, true)
             .expect("header write");
-        // First flush should succeed (channel has capacity 1)
-        assert!(session.flush_response_data().is_ok());
+        session
+            .flush_response_data()
+            .expect("first response flush should fill the channel");
         assert_eq!(session.consecutive_dropped_frames, 0);
 
-        // Fill the channel again
-        session
-            .muxer
-            .write_flv_header(true, true)
-            .expect("header write");
-        // Second flush should succeed (receiver still alive, first message consumed capacity)
-        // Actually the first message is still in the channel, so this should drop
         session
             .muxer
             .write_flv_header(true, true)
@@ -432,14 +462,14 @@ mod tests {
             response_tx,
         );
 
-        // Fill the channel first
         session
             .muxer
             .write_flv_header(true, true)
             .expect("header write");
-        session.flush_response_data().ok();
+        session
+            .flush_response_data()
+            .expect("initial response flush should fill the channel");
 
-        // Now simulate MAX_CONSECUTIVE_DROPPED_FRAMES drops
         for i in 0..MAX_CONSECUTIVE_DROPPED_FRAMES {
             session
                 .muxer
@@ -485,24 +515,28 @@ mod tests {
             response_tx,
         );
 
-        // Fill the channel
         session
             .muxer
             .write_flv_header(true, true)
             .expect("header write");
-        session.flush_response_data().ok();
+        session
+            .flush_response_data()
+            .expect("first response flush should fill one channel slot");
         session
             .muxer
             .write_flv_header(true, true)
             .expect("header write");
-        session.flush_response_data().ok();
+        session
+            .flush_response_data()
+            .expect("second response flush should fill one channel slot");
 
-        // Next send should drop (channel full)
         session
             .muxer
             .write_flv_header(true, true)
             .expect("header write");
-        session.flush_response_data().ok();
+        session
+            .flush_response_data()
+            .expect("full response channel should drop one frame below disconnect threshold");
         assert_eq!(session.consecutive_dropped_frames, 1);
 
         // Drain the channel
@@ -621,9 +655,7 @@ mod tests {
             .expect("subscribe event should be emitted")
             .expect("event channel should stay open");
 
-        let StreamHubEvent::Subscribe { result_sender, .. } = subscribe else {
-            panic!("expected subscribe event");
-        };
+        let result_sender = subscribe_result_sender(subscribe);
 
         let (frame_tx, frame_rx) = mpsc::channel(256);
         result_sender
@@ -664,19 +696,7 @@ mod tests {
             .expect("unsubscribe event should be emitted")
             .expect("event channel should stay open");
 
-        match unsubscribe {
-            StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {
-                StreamIdentifier::Rtmp {
-                    app_name,
-                    stream_name,
-                } => {
-                    assert_eq!(app_name, "live");
-                    assert_eq!(stream_name, "room/stream");
-                }
-                other => panic!("unexpected stream identifier: {other:?}"),
-            },
-            _ => panic!("expected unsubscribe event"),
-        }
+        assert_unsubscribe_event(unsubscribe, "live", "room/stream");
     }
 
     #[tokio::test]
@@ -728,19 +748,7 @@ mod tests {
             "unsubscribe should succeed after capacity frees"
         );
 
-        match unsubscribe {
-            StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {
-                StreamIdentifier::Rtmp {
-                    app_name,
-                    stream_name,
-                } => {
-                    assert_eq!(app_name, "live");
-                    assert_eq!(stream_name, "room/stream");
-                }
-                other => panic!("unexpected stream identifier: {other:?}"),
-            },
-            other => panic!("expected unsubscribe event, got {other:?}"),
-        }
+        assert_unsubscribe_event(unsubscribe, "live", "room/stream");
     }
 
     #[tokio::test]
@@ -766,7 +774,7 @@ mod tests {
             .expect("error should preserve streamhub context");
         assert!(matches!(
             streamhub_err.value,
-            StreamHubErrorValue::SendError
+            StreamHubErrorValue::EventChannelClosed
         ));
     }
 
@@ -805,18 +813,6 @@ mod tests {
             .recv()
             .await
             .expect("timed-out subscribe should emit rollback unsubscribe");
-        match rollback {
-            StreamHubEvent::UnSubscribe { identifier, .. } => match identifier {
-                StreamIdentifier::Rtmp {
-                    app_name,
-                    stream_name,
-                } => {
-                    assert_eq!(app_name, "live");
-                    assert_eq!(stream_name, "room/stream");
-                }
-                other => panic!("unexpected stream identifier: {other:?}"),
-            },
-            other => panic!("expected rollback unsubscribe event, got {other:?}"),
-        }
+        assert_unsubscribe_event(rollback, "live", "room/stream");
     }
 }

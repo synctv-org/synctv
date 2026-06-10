@@ -83,14 +83,11 @@ struct BatchUserResolution {
     failures: Vec<admin_proto::BatchResultItem>,
 }
 
-pub type ManagementSliceCacheStats = synctv_proxy::slice_cache::SliceCacheStats;
-pub type ManagementSliceCachePurgeResult = synctv_proxy::slice_cache::SliceCachePurgeResult;
-
 #[tonic::async_trait]
 pub trait ManagementSliceCacheRuntime: Send + Sync {
-    fn stats(&self) -> ManagementSliceCacheStats;
+    fn stats(&self) -> synctv_proxy::slice_cache::SliceCacheStats;
 
-    async fn purge_all(&self) -> ManagementSliceCachePurgeResult;
+    async fn purge_all(&self) -> synctv_proxy::slice_cache::SliceCachePurgeResult;
 
     async fn evict_expired_entries(&self) -> u64;
 }
@@ -666,7 +663,7 @@ impl ManagementServiceImpl {
     }
 
     fn proxy_slice_cache_stats_to_management(
-        stats: synctv_proxy::grpc::proto::SliceCacheStatsResponse,
+        stats: synctv_proxy::grpc::SliceCacheStatsResponse,
     ) -> SliceCacheStatsResponse {
         SliceCacheStatsResponse {
             config: stats.config.map(|config| SliceCacheConfigInfo {
@@ -743,7 +740,7 @@ impl ManagementServiceImpl {
         &self,
         node: &synctv_cluster::discovery::NodeInfo,
     ) -> Result<SliceCacheStatsResponse, Status> {
-        let mut request = Request::new(synctv_proxy::grpc::proto::GetSliceCacheStatsRequest {});
+        let mut request = Request::new(synctv_proxy::grpc::GetSliceCacheStatsRequest {});
         self.attach_cluster_secret(&mut request)?;
         let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
         client
@@ -831,7 +828,7 @@ impl ManagementServiceImpl {
     }
 
     fn proxy_purge_to_management(
-        response: synctv_proxy::grpc::proto::PurgeSliceCacheResponse,
+        response: synctv_proxy::grpc::PurgeSliceCacheResponse,
     ) -> PurgeSliceCacheNodeResult {
         PurgeSliceCacheNodeResult {
             node_id: response.node_id,
@@ -848,7 +845,7 @@ impl ManagementServiceImpl {
         &self,
         node: &synctv_cluster::discovery::NodeInfo,
     ) -> Result<PurgeSliceCacheNodeResult, Status> {
-        let mut request = Request::new(synctv_proxy::grpc::proto::PurgeSliceCacheRequest {});
+        let mut request = Request::new(synctv_proxy::grpc::PurgeSliceCacheRequest {});
         self.attach_cluster_secret(&mut request)?;
         let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
         client
@@ -943,7 +940,7 @@ impl ManagementServiceImpl {
     }
 
     fn proxy_evict_expired_to_management(
-        response: synctv_proxy::grpc::proto::EvictExpiredSliceCacheResponse,
+        response: synctv_proxy::grpc::EvictExpiredSliceCacheResponse,
     ) -> EvictExpiredSliceCacheNodeResult {
         EvictExpiredSliceCacheNodeResult {
             node_id: response.node_id,
@@ -959,7 +956,7 @@ impl ManagementServiceImpl {
         &self,
         node: &synctv_cluster::discovery::NodeInfo,
     ) -> Result<EvictExpiredSliceCacheNodeResult, Status> {
-        let mut request = Request::new(synctv_proxy::grpc::proto::EvictExpiredSliceCacheRequest {});
+        let mut request = Request::new(synctv_proxy::grpc::EvictExpiredSliceCacheRequest {});
         self.attach_cluster_secret(&mut request)?;
         let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
         client
@@ -1976,16 +1973,26 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
+        let new_password = match (req.clear, req.new_password) {
+            (true, None) => String::new(),
+            (true, Some(_)) => {
+                return Err(Status::invalid_argument(
+                    "new_password must be omitted when clear is true",
+                ));
+            }
+            (false, Some(password)) => password,
+            (false, None) => {
+                return Err(Status::invalid_argument(
+                    "new_password is required when clear is false",
+                ));
+            }
+        };
         let response = self
             .admin_api
             .update_room_password(
                 admin_proto::UpdateRoomPasswordRequest {
                     room_id: req.room_id,
-                    new_password: if req.clear {
-                        String::new()
-                    } else {
-                        req.new_password.unwrap_or_default()
-                    },
+                    new_password,
                 },
                 &validated.user_id,
                 &ctx,
@@ -2409,13 +2416,16 @@ impl ManagementService for ManagementServiceImpl {
     ) -> Result<Response<client_proto::UpdatePlaylistResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
+        let name = req
+            .name
+            .ok_or_else(|| Status::invalid_argument("name is required"))?;
         let response = self
             .admin_api
             .update_playlist(
                 &req.room_id,
                 client_proto::UpdatePlaylistRequest {
                     playlist_id: req.playlist_id,
-                    name: req.name.unwrap_or_default(),
+                    name,
                     description: String::new(),
                 },
                 &validated.user_id,
@@ -2784,7 +2794,12 @@ impl ManagementService for ManagementServiceImpl {
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.alist_api
-                .login(&actor_user_id, provider_request, instance_name.as_deref())
+                .login_with_context(
+                    &actor_user_id,
+                    provider_request,
+                    instance_name.as_deref(),
+                    None,
+                )
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -2802,7 +2817,12 @@ impl ManagementService for ManagementServiceImpl {
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.alist_api
-                .list(&actor_user_id, provider_request, instance_name.as_deref())
+                .list_with_context(
+                    &actor_user_id,
+                    provider_request,
+                    instance_name.as_deref(),
+                    None,
+                )
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -2820,7 +2840,12 @@ impl ManagementService for ManagementServiceImpl {
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.alist_api
-                .search(&actor_user_id, provider_request, instance_name.as_deref())
+                .search_with_context(
+                    &actor_user_id,
+                    provider_request,
+                    instance_name.as_deref(),
+                    None,
+                )
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -2838,7 +2863,12 @@ impl ManagementService for ManagementServiceImpl {
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.alist_api
-                .get_me(&actor_user_id, provider_request, instance_name.as_deref())
+                .get_me_with_context(
+                    &actor_user_id,
+                    provider_request,
+                    instance_name.as_deref(),
+                    None,
+                )
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -2891,7 +2921,12 @@ impl ManagementService for ManagementServiceImpl {
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.emby_api
-                .login(&actor_user_id, provider_request, instance_name.as_deref())
+                .login_with_context(
+                    &actor_user_id,
+                    provider_request,
+                    instance_name.as_deref(),
+                    None,
+                )
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -2909,7 +2944,12 @@ impl ManagementService for ManagementServiceImpl {
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.emby_api
-                .list(&actor_user_id, provider_request, instance_name.as_deref())
+                .list_with_context(
+                    &actor_user_id,
+                    provider_request,
+                    instance_name.as_deref(),
+                    None,
+                )
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -2927,7 +2967,12 @@ impl ManagementService for ManagementServiceImpl {
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.emby_api
-                .get_me(&actor_user_id, provider_request, instance_name.as_deref())
+                .get_me_with_context(
+                    &actor_user_id,
+                    provider_request,
+                    instance_name.as_deref(),
+                    None,
+                )
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -2978,7 +3023,12 @@ impl ManagementService for ManagementServiceImpl {
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.bilibili_api
-                .parse(&actor_user_id, provider_request, instance_name.as_deref())
+                .parse_with_context(
+                    &actor_user_id,
+                    provider_request,
+                    instance_name.as_deref(),
+                    None,
+                )
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -2996,7 +3046,7 @@ impl ManagementService for ManagementServiceImpl {
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.bilibili_api
-                .login_qr(provider_request, instance_name.as_deref())
+                .login_qr_with_context(provider_request, instance_name.as_deref(), None)
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -3014,7 +3064,12 @@ impl ManagementService for ManagementServiceImpl {
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.bilibili_api
-                .check_qr(&actor_user_id, provider_request, instance_name.as_deref())
+                .check_qr_with_context(
+                    &actor_user_id,
+                    provider_request,
+                    instance_name.as_deref(),
+                    None,
+                )
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -3032,7 +3087,7 @@ impl ManagementService for ManagementServiceImpl {
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.bilibili_api
-                .start_sms_login(provider_request, instance_name.as_deref())
+                .start_sms_login_with_context(provider_request, instance_name.as_deref(), None)
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -3047,8 +3102,11 @@ impl ManagementService for ManagementServiceImpl {
         let (_actor_user_id, provider_request) = self
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
-        let response =
-            Self::map_into_api_result(self.bilibili_api.send_sms(provider_request, None).await)?;
+        let response = Self::map_into_api_result(
+            self.bilibili_api
+                .send_sms_with_context(provider_request, None, None)
+                .await,
+        )?;
         Ok(Self::proto_response(response))
     }
 
@@ -3063,7 +3121,7 @@ impl ManagementService for ManagementServiceImpl {
             .await?;
         let response = Self::map_into_api_result(
             self.bilibili_api
-                .login_sms(&actor_user_id, provider_request, None)
+                .login_sms_with_context(&actor_user_id, provider_request, None, None)
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -3081,7 +3139,12 @@ impl ManagementService for ManagementServiceImpl {
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
         let response = Self::map_into_api_result(
             self.bilibili_api
-                .get_user_info(&actor_user_id, provider_request, instance_name.as_deref())
+                .get_user_info_with_context(
+                    &actor_user_id,
+                    provider_request,
+                    instance_name.as_deref(),
+                    None,
+                )
                 .await,
         )?;
         Ok(Self::proto_response(response))
@@ -3523,170 +3586,4 @@ fn stop_server_stream_event(event: &LifecycleEvent) -> (StopServerEvent, bool) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{parse_shutdown_mode, stop_server_event_stream, ManagementServiceImpl};
-    use crate::lifecycle::{LifecycleStage, ManagementLifecycleController, ShutdownMode};
-    use crate::proto::{
-        EvictExpiredSliceCacheNodeResult, PurgeSliceCacheNodeResult,
-        ShutdownMode as ProtoShutdownMode, SliceCacheNodeFailure, SliceCacheStatsResponse,
-    };
-    use futures::TryStreamExt;
-    use tonic::Code;
-
-    #[test]
-    fn map_api_error_preserves_service_unavailable() {
-        let status = super::map_api_error(&synctv_api::impls::ApiError::ServiceUnavailable(
-            "live streaming backend unavailable".to_string(),
-        ));
-
-        assert_eq!(status.code(), tonic::Code::Unavailable);
-        assert_eq!(status.message(), "live streaming backend unavailable");
-    }
-
-    #[test]
-    fn map_api_error_hides_internal_details() {
-        let status = super::map_api_error(&synctv_api::impls::ApiError::Internal(
-            "redis://user:secret@localhost:6379 failure".to_string(),
-        ));
-
-        assert_eq!(status.code(), tonic::Code::Internal);
-        assert_eq!(status.message(), "Internal error");
-        assert!(!status.message().contains("secret"));
-    }
-
-    #[test]
-    fn slice_cache_target_validation_rejects_conflicting_node_selection() {
-        let error = ManagementServiceImpl::validate_slice_cache_target("node-a", true)
-            .expect_err("node_id and all_nodes must be mutually exclusive");
-
-        assert_eq!(error.code(), Code::InvalidArgument);
-        assert_eq!(
-            error.message(),
-            "node_id and all_nodes are mutually exclusive"
-        );
-    }
-
-    #[test]
-    fn slice_cache_target_validation_trims_node_id() {
-        let target = ManagementServiceImpl::validate_slice_cache_target("  node-a  ", false)
-            .expect("valid target should parse");
-
-        assert_eq!(target.as_deref(), Some("node-a"));
-    }
-
-    #[test]
-    fn purge_slice_cache_response_aggregates_nodes_and_failures() {
-        let response = ManagementServiceImpl::purge_response_from_nodes(
-            vec![
-                PurgeSliceCacheNodeResult {
-                    node_id: "node-a".to_string(),
-                    success: true,
-                    removed_entries: 2,
-                    freed_bytes: 128,
-                    stats: Some(SliceCacheStatsResponse::default()),
-                },
-                PurgeSliceCacheNodeResult {
-                    node_id: "node-b".to_string(),
-                    success: true,
-                    removed_entries: 3,
-                    freed_bytes: 256,
-                    stats: Some(SliceCacheStatsResponse::default()),
-                },
-            ],
-            vec![SliceCacheNodeFailure {
-                node_id: "node-c".to_string(),
-                error: "timeout".to_string(),
-            }],
-        );
-
-        assert!(!response.success);
-        assert_eq!(response.removed_entries, 5);
-        assert_eq!(response.freed_bytes, 384);
-        assert!(response.stats.is_none());
-        assert_eq!(response.nodes.len(), 2);
-        assert_eq!(response.failures.len(), 1);
-    }
-
-    #[test]
-    fn evict_expired_slice_cache_response_aggregates_nodes_and_failures() {
-        let response = ManagementServiceImpl::evict_expired_response_from_nodes(
-            vec![
-                EvictExpiredSliceCacheNodeResult {
-                    node_id: "node-a".to_string(),
-                    success: true,
-                    removed_expired_entries: 4,
-                    stats: Some(SliceCacheStatsResponse::default()),
-                },
-                EvictExpiredSliceCacheNodeResult {
-                    node_id: "node-b".to_string(),
-                    success: false,
-                    removed_expired_entries: 1,
-                    stats: Some(SliceCacheStatsResponse::default()),
-                },
-            ],
-            Vec::new(),
-        );
-
-        assert!(!response.success);
-        assert_eq!(response.removed_expired_entries, 5);
-        assert!(response.stats.is_none());
-        assert_eq!(response.nodes.len(), 2);
-        assert!(response.failures.is_empty());
-    }
-
-    #[test]
-    fn parse_shutdown_mode_accepts_defined_values() {
-        assert_eq!(
-            parse_shutdown_mode(ProtoShutdownMode::Unspecified as i32).expect("mode should parse"),
-            ShutdownMode::Graceful
-        );
-        assert_eq!(
-            parse_shutdown_mode(ProtoShutdownMode::Graceful as i32).expect("mode should parse"),
-            ShutdownMode::Graceful
-        );
-        assert_eq!(
-            parse_shutdown_mode(ProtoShutdownMode::Force as i32).expect("mode should parse"),
-            ShutdownMode::Force
-        );
-    }
-
-    #[test]
-    fn parse_shutdown_mode_rejects_unknown_value() {
-        let status = parse_shutdown_mode(99).expect_err("unknown mode should fail");
-
-        assert_eq!(status.code(), Code::InvalidArgument);
-        assert_eq!(status.message(), "invalid shutdown mode: 99");
-    }
-
-    #[tokio::test]
-    async fn stop_server_stream_ends_at_finalizing_without_duplicate_shutdown_requested() {
-        let controller = ManagementLifecycleController::new();
-        let subscription = controller.subscribe();
-        let requested_event = controller.request_shutdown(ShutdownMode::Graceful);
-        controller.publish_finalizing();
-        controller.publish_completed();
-
-        let events = stop_server_event_stream(
-            subscription.snapshot,
-            requested_event,
-            subscription.receiver,
-        )
-        .try_collect::<Vec<_>>()
-        .await
-        .expect("stop server stream should not fail");
-
-        let stages = events.iter().map(|event| event.stage).collect::<Vec<_>>();
-        assert_eq!(
-            stages,
-            vec![
-                LifecycleStage::Ready.as_proto(),
-                LifecycleStage::ShutdownRequested.as_proto(),
-                LifecycleStage::Finalizing.as_proto(),
-            ]
-        );
-        assert!(
-            events.last().is_some_and(|event| event.terminal),
-            "finalizing must terminate the stop stream before server shutdown waits on the RPC"
-        );
-    }
-}
+mod tests;

@@ -39,6 +39,21 @@ fn sensitive_method_from_proto(value: i32) -> Result<AuthFactorMethod, ApiError>
     }
 }
 
+fn masked_email_for_sensitive_challenge(
+    available_methods: &[AuthFactorMethod],
+    masked_email: Option<String>,
+) -> Result<String, ApiError> {
+    if available_methods.contains(&AuthFactorMethod::Email) {
+        return masked_email.ok_or_else(|| {
+            ApiError::Internal(
+                "Sensitive verification email method is available without a masked email"
+                    .to_string(),
+            )
+        });
+    }
+    Ok(String::new())
+}
+
 pub(crate) fn token_auth_context_from_claims(
     claims: &synctv_core::service::Claims,
 ) -> Option<TokenAuthContext> {
@@ -52,6 +67,8 @@ pub(crate) fn token_auth_context_from_claims(
 fn sensitive_challenge_to_proto(
     challenge: SensitiveVerificationChallenge,
 ) -> Result<synctv_proto::client::SensitiveOperationVerificationChallenge, ApiError> {
+    let masked_email =
+        masked_email_for_sensitive_challenge(&challenge.available_methods, challenge.masked_email)?;
     Ok(
         synctv_proto::client::SensitiveOperationVerificationChallenge {
             session_id: challenge.session_id,
@@ -70,7 +87,7 @@ fn sensitive_challenge_to_proto(
                 .into_iter()
                 .map(sensitive_method_to_proto)
                 .collect(),
-            masked_email: challenge.masked_email.unwrap_or_default(),
+            masked_email,
             expires_at: challenge.expires_at,
             required_count: i32::try_from(challenge.required_count).map_err(|_| {
                 ApiError::Internal("required MFA count exceeds i32::MAX".to_string())
@@ -332,13 +349,11 @@ impl ClientApiImpl {
             .load_stored_file_reference(user.avatar_file_reference_id)
             .await?
         {
-            let url = self
-                .stored_file_reference_url(
-                    &file,
-                    &synctv_core::service::user_avatar_upload_policy(),
-                )?
-                .unwrap_or_default();
-            let file = stored_file_reference_to_video_cover(&file, Some(url.as_str()))?;
+            let url = self.stored_file_reference_url(
+                &file,
+                &synctv_core::service::user_avatar_upload_policy(),
+            )?;
+            let file = stored_file_reference_to_video_cover(&file, url.as_deref())?;
             proto.avatar = Some(synctv_proto::client::UserAvatar {
                 id: file.id,
                 storage_backend: file.storage_backend,
@@ -976,5 +991,28 @@ impl ClientApiImpl {
         Ok(synctv_proto::client::FinishOpaquePasswordUpdateResponse {
             user: Some(self.user_to_proto_with_avatar(&user).await?),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::masked_email_for_sensitive_challenge;
+    use crate::impls::ApiError;
+    use synctv_core::service::AuthFactorMethod;
+
+    #[test]
+    fn masked_email_for_sensitive_challenge_requires_email_when_method_available() {
+        let err = masked_email_for_sensitive_challenge(&[AuthFactorMethod::Email], None)
+            .expect_err("email verification method without masked email should fail");
+
+        assert!(matches!(err, ApiError::Internal(message) if message.contains("masked email")));
+    }
+
+    #[test]
+    fn masked_email_for_sensitive_challenge_allows_empty_when_email_method_absent() {
+        let masked = masked_email_for_sensitive_challenge(&[AuthFactorMethod::Password], None)
+            .expect("password-only sensitive challenge should not require masked email");
+
+        assert_eq!(masked, "");
     }
 }

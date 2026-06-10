@@ -2,16 +2,17 @@
 //!
 //! Tests: upsert conflict handling, transaction executor path,
 //!        `delete_all_for_user_with_executor`.
-//!
-#![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
-    models::{OAuth2Provider, OAuth2UserInfo, User, UserId, UserRole, UserStatus},
+    models::{
+        OAuth2Provider, OAuth2UserInfo, User, UserId, UserOAuthProviderMapping, UserRole,
+        UserStatus,
+    },
     repository::{UserOAuthProviderRepository, UserRepository},
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, err, ok, some};
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -34,7 +35,10 @@ fn make_user(username: &str) -> User {
 
 async fn create_user(pool: &PgPool, username: &str) -> User {
     let user_repo = UserRepository::new(pool.clone());
-    user_repo.create(&make_user(username)).await.unwrap()
+    ok(
+        user_repo.create(&make_user(username)).await,
+        "OAuth test user should be created",
+    )
 }
 
 fn oauth_user_info(
@@ -54,6 +58,21 @@ fn oauth_user_info(
         email: email.map(str::to_string),
         avatar: avatar.map(str::to_string),
     }
+}
+
+async fn find_mapping(
+    repo: &UserOAuthProviderRepository,
+    provider_instance_name: &str,
+    provider_user_id: &str,
+) -> UserOAuthProviderMapping {
+    some(
+        ok(
+            repo.find_by_provider_instance(provider_instance_name, provider_user_id)
+                .await,
+            "OAuth provider mapping should be fetched",
+        ),
+        "OAuth provider mapping should exist",
+    )
 }
 
 // ─── upsert conflict handling ────────────────────────────────────────
@@ -80,36 +99,36 @@ async fn test_upsert_different_user_id_rejects_rebinding_and_preserves_mapping()
     );
 
     // Initial upsert for user_a
-    oauth_repo
-        .upsert(
-            &user_a.id,
-            &provider,
-            provider_instance_name,
-            provider_user_id,
-            &user_info,
-        )
-        .await
-        .unwrap();
+    ok(
+        oauth_repo
+            .upsert(
+                &user_a.id,
+                &provider,
+                provider_instance_name,
+                provider_user_id,
+                &user_info,
+            )
+            .await,
+        "OAuth identity should be linked",
+    );
 
-    let mapping = oauth_repo
-        .find_by_provider_instance(provider_instance_name, provider_user_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let mapping = find_mapping(&oauth_repo, provider_instance_name, provider_user_id).await;
     assert_eq!(mapping.user_id, user_a.id);
 
     // Upsert again with user_b must be rejected: external identities are stable
     // and must never be silently reassigned to another local user.
-    let err = oauth_repo
-        .upsert(
-            &user_b.id,
-            &provider,
-            provider_instance_name,
-            provider_user_id,
-            &user_info,
-        )
-        .await
-        .expect_err("OAuth identity rebinding must be rejected");
+    let err = err(
+        oauth_repo
+            .upsert(
+                &user_b.id,
+                &provider,
+                provider_instance_name,
+                provider_user_id,
+                &user_info,
+            )
+            .await,
+        "OAuth identity rebinding should be rejected",
+    );
 
     assert!(
         matches!(
@@ -120,22 +139,24 @@ async fn test_upsert_different_user_id_rejects_rebinding_and_preserves_mapping()
         "Unexpected error: {err}"
     );
 
-    let mapping = oauth_repo
-        .find_by_provider_instance(provider_instance_name, provider_user_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let mapping = find_mapping(&oauth_repo, provider_instance_name, provider_user_id).await;
     assert_eq!(
         mapping.user_id, user_a.id,
         "Original OAuth identity binding must be preserved"
     );
 
     // user_a must still own the mapping
-    let user_a_mappings = oauth_repo.find_by_user(&user_a.id).await.unwrap();
+    let user_a_mappings = ok(
+        oauth_repo.find_by_user(&user_a.id).await,
+        "user A OAuth mappings should be fetched",
+    );
     assert_eq!(user_a_mappings.len(), 1);
 
     // user_b must not gain the mapping
-    let user_b_mappings = oauth_repo.find_by_user(&user_b.id).await.unwrap();
+    let user_b_mappings = ok(
+        oauth_repo.find_by_user(&user_b.id).await,
+        "user B OAuth mappings should be fetched",
+    );
     assert!(
         user_b_mappings.is_empty(),
         "user_b should not receive another user's OAuth mapping"
@@ -162,16 +183,18 @@ async fn test_upsert_same_user_id_updates_profile_fields_without_rebinding() {
         None,
     );
 
-    oauth_repo
-        .upsert(
-            &user.id,
-            &provider,
-            provider_instance_name,
-            provider_user_id,
-            &initial_info,
-        )
-        .await
-        .unwrap();
+    ok(
+        oauth_repo
+            .upsert(
+                &user.id,
+                &provider,
+                provider_instance_name,
+                provider_user_id,
+                &initial_info,
+            )
+            .await,
+        "initial OAuth identity should be linked",
+    );
 
     let mut updated_info = oauth_user_info(
         provider.clone(),
@@ -183,22 +206,20 @@ async fn test_upsert_same_user_id_updates_profile_fields_without_rebinding() {
     );
     updated_info.provider_issuer = Some("https://github.com".to_string());
 
-    oauth_repo
-        .upsert(
-            &user.id,
-            &provider,
-            provider_instance_name,
-            provider_user_id,
-            &updated_info,
-        )
-        .await
-        .unwrap();
+    ok(
+        oauth_repo
+            .upsert(
+                &user.id,
+                &provider,
+                provider_instance_name,
+                provider_user_id,
+                &updated_info,
+            )
+            .await,
+        "OAuth identity profile fields should update",
+    );
 
-    let mapping = oauth_repo
-        .find_by_provider_instance(provider_instance_name, provider_user_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let mapping = find_mapping(&oauth_repo, provider_instance_name, provider_user_id).await;
     assert_eq!(mapping.user_id, user.id);
     assert_eq!(mapping.username, "newname");
     assert_eq!(mapping.email.as_deref(), Some("new@example.com"));
@@ -232,30 +253,34 @@ async fn test_upsert_with_executor_rejects_rebinding_inside_transaction() {
         None,
     );
 
-    oauth_repo
-        .upsert(
-            &user_a.id,
-            &provider,
-            provider_instance_name,
-            provider_user_id,
-            &user_info,
-        )
-        .await
-        .unwrap();
+    ok(
+        oauth_repo
+            .upsert(
+                &user_a.id,
+                &provider,
+                provider_instance_name,
+                provider_user_id,
+                &user_info,
+            )
+            .await,
+        "OAuth identity should be linked before transaction conflict",
+    );
 
-    let mut tx = pool.begin().await.unwrap();
-    let err = oauth_repo
-        .upsert_with_executor(
-            &user_b.id,
-            &provider,
-            provider_instance_name,
-            provider_user_id,
-            &user_info,
-            &mut *tx,
-        )
-        .await
-        .expect_err("Rebinding in transaction must be rejected");
-    tx.rollback().await.unwrap();
+    let mut tx = ok(pool.begin().await, "transaction should begin");
+    let err = err(
+        oauth_repo
+            .upsert_with_executor(
+                &user_b.id,
+                &provider,
+                provider_instance_name,
+                provider_user_id,
+                &user_info,
+                &mut *tx,
+            )
+            .await,
+        "rebinding in transaction should be rejected",
+    );
+    ok(tx.rollback().await, "transaction should roll back");
 
     assert!(
         matches!(
@@ -266,11 +291,7 @@ async fn test_upsert_with_executor_rejects_rebinding_inside_transaction() {
         "Unexpected error: {err}"
     );
 
-    let mapping = oauth_repo
-        .find_by_provider_instance(provider_instance_name, provider_user_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let mapping = find_mapping(&oauth_repo, provider_instance_name, provider_user_id).await;
     assert_eq!(mapping.user_id, user_a.id);
 }
 
@@ -294,27 +315,28 @@ async fn test_upsert_with_executor_in_transaction() {
     );
 
     // Use within a transaction
-    let mut tx = pool.begin().await.unwrap();
-    oauth_repo
-        .upsert_with_executor(
-            &user.id,
-            &provider,
-            provider_instance_name,
-            provider_user_id,
-            &user_info,
-            &mut *tx,
-        )
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let mut tx = ok(pool.begin().await, "transaction should begin");
+    ok(
+        oauth_repo
+            .upsert_with_executor(
+                &user.id,
+                &provider,
+                provider_instance_name,
+                provider_user_id,
+                &user_info,
+                &mut *tx,
+            )
+            .await,
+        "OAuth identity should be linked in transaction",
+    );
+    ok(tx.commit().await, "transaction should commit");
 
     // Verify it was persisted
-    let user_mappings = oauth_repo.find_by_user(&user.id).await.unwrap();
-    let mapping = oauth_repo
-        .find_by_provider_instance(provider_instance_name, provider_user_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let user_mappings = ok(
+        oauth_repo.find_by_user(&user.id).await,
+        "user OAuth mappings should be fetched",
+    );
+    let mapping = find_mapping(&oauth_repo, provider_instance_name, provider_user_id).await;
     assert_eq!(user_mappings.len(), 1);
     assert_eq!(mapping.user_id, user.id);
     assert_eq!(mapping.email.as_deref(), Some("tx@google.com"));
@@ -339,27 +361,37 @@ async fn test_find_by_provider_with_executor_in_transaction() {
         None,
     );
 
-    oauth_repo
-        .upsert(
-            &user.id,
-            &provider,
-            provider_instance_name,
-            provider_user_id,
-            &user_info,
-        )
-        .await
-        .unwrap();
+    ok(
+        oauth_repo
+            .upsert(
+                &user.id,
+                &provider,
+                provider_instance_name,
+                provider_user_id,
+                &user_info,
+            )
+            .await,
+        "OAuth identity should be linked",
+    );
 
     // Find within transaction
-    let mut tx = pool.begin().await.unwrap();
-    let mapping = oauth_repo
-        .find_by_provider_instance_with_executor(provider_instance_name, provider_user_id, &mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let mut tx = ok(pool.begin().await, "transaction should begin");
+    let mapping = ok(
+        oauth_repo
+            .find_by_provider_instance_with_executor(
+                provider_instance_name,
+                provider_user_id,
+                &mut *tx,
+            )
+            .await,
+        "OAuth provider mapping should be fetched in transaction",
+    );
+    ok(tx.commit().await, "transaction should commit");
 
-    assert!(mapping.is_some());
-    assert_eq!(mapping.unwrap().user_id, user.id);
+    assert_eq!(
+        some(mapping, "OAuth provider mapping should exist").user_id,
+        user.id
+    );
 }
 
 // ─── delete_all_for_user_with_executor ───────────────────────────────
@@ -381,16 +413,18 @@ async fn test_delete_all_for_user_with_executor() {
         email: None,
         avatar: None,
     };
-    oauth_repo
-        .upsert(
-            &user.id,
-            &OAuth2Provider::GitHub,
-            "github-main",
-            "gh_del_001",
-            &info_gh,
-        )
-        .await
-        .unwrap();
+    ok(
+        oauth_repo
+            .upsert(
+                &user.id,
+                &OAuth2Provider::GitHub,
+                "github-main",
+                "gh_del_001",
+                &info_gh,
+            )
+            .await,
+        "GitHub OAuth identity should be linked",
+    );
 
     let info_google = OAuth2UserInfo {
         provider: OAuth2Provider::Google,
@@ -401,33 +435,43 @@ async fn test_delete_all_for_user_with_executor() {
         email: None,
         avatar: None,
     };
-    oauth_repo
-        .upsert(
-            &user.id,
-            &OAuth2Provider::Google,
-            "google-main",
-            "google_del_001",
-            &info_google,
-        )
-        .await
-        .unwrap();
+    ok(
+        oauth_repo
+            .upsert(
+                &user.id,
+                &OAuth2Provider::Google,
+                "google-main",
+                "google_del_001",
+                &info_google,
+            )
+            .await,
+        "Google OAuth identity should be linked",
+    );
 
     // Verify 2 mappings exist
-    let mappings = oauth_repo.find_by_user(&user.id).await.unwrap();
+    let mappings = ok(
+        oauth_repo.find_by_user(&user.id).await,
+        "OAuth mappings should be fetched before delete",
+    );
     assert_eq!(mappings.len(), 2);
 
     // Delete all within a transaction
-    let mut tx = pool.begin().await.unwrap();
-    let deleted = oauth_repo
-        .delete_all_for_user_with_executor(&user.id, &mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let mut tx = ok(pool.begin().await, "transaction should begin");
+    let deleted = ok(
+        oauth_repo
+            .delete_all_for_user_with_executor(&user.id, &mut *tx)
+            .await,
+        "OAuth mappings should be deleted in transaction",
+    );
+    ok(tx.commit().await, "transaction should commit");
 
     assert_eq!(deleted, 2);
 
     // Verify all gone
-    let mappings = oauth_repo.find_by_user(&user.id).await.unwrap();
+    let mappings = ok(
+        oauth_repo.find_by_user(&user.id).await,
+        "OAuth mappings should be fetched after delete",
+    );
     assert!(mappings.is_empty());
 }
 
@@ -439,12 +483,14 @@ async fn test_delete_all_for_user_with_executor_no_mappings() {
 
     let user = create_user(&pool, "oauth_del_empty_user").await;
 
-    let mut tx = pool.begin().await.unwrap();
-    let deleted = oauth_repo
-        .delete_all_for_user_with_executor(&user.id, &mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let mut tx = ok(pool.begin().await, "transaction should begin");
+    let deleted = ok(
+        oauth_repo
+            .delete_all_for_user_with_executor(&user.id, &mut *tx)
+            .await,
+        "empty OAuth mapping delete should execute in transaction",
+    );
+    ok(tx.commit().await, "transaction should commit");
 
     assert_eq!(deleted, 0);
 }

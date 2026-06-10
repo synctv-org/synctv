@@ -517,13 +517,14 @@ impl std::fmt::Debug for ProvidersManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{TestOptionExt, TestResultExt};
 
     fn test_instance_manager() -> Arc<RemoteProviderManager> {
         crate::service::remote_provider_manager::empty_provider_instance_manager()
     }
 
     fn test_manager() -> ProvidersManager {
-        ProvidersManager::new(test_instance_manager()).expect("providers manager should build")
+        ProvidersManager::new(test_instance_manager()).checked("providers manager should build")
     }
 
     #[tokio::test]
@@ -648,7 +649,7 @@ mod tests {
                 .create_provider("alist", "test_alist_invalid", &config)
                 .await
             else {
-                panic!("invalid provider timeout config should fail fast");
+                std::panic::panic_any("invalid provider timeout config should fail fast");
             };
             assert!(
                 error.to_string().contains(expected_message),
@@ -665,7 +666,7 @@ mod tests {
         .connect_timeout(std::time::Duration::from_secs(4))
         .request_timeout(std::time::Duration::from_secs(12))
         .build()
-        .unwrap();
+        .checked("provider HTTP client should build");
 
         let manager =
             ProvidersManager::new_with_provider_http_client(test_instance_manager(), client);
@@ -684,7 +685,7 @@ mod tests {
         .connect_timeout(std::time::Duration::from_secs(4))
         .request_timeout(std::time::Duration::from_secs(12))
         .build()
-        .unwrap();
+        .checked("provider HTTP client should build");
 
         let manager = ProvidersManager::new_with_provider_http_client(instance_manager, client);
         let expected_marker = manager.default_client_manager_marker();
@@ -697,7 +698,7 @@ mod tests {
                     &serde_json::json!({}),
                 )
                 .await
-                .unwrap();
+                .checked("default provider should be created");
 
             assert_eq!(
                 provider.test_client_manager_marker(),
@@ -716,7 +717,7 @@ mod tests {
         .connect_timeout(std::time::Duration::from_secs(4))
         .request_timeout(std::time::Duration::from_secs(12))
         .build()
-        .unwrap();
+        .checked("provider HTTP client should build");
 
         let manager = ProvidersManager::new_with_provider_http_client(instance_manager, client);
         let default_marker = manager.default_client_manager_marker();
@@ -731,11 +732,11 @@ mod tests {
                 }),
             )
             .await
-            .unwrap();
+            .checked("provider with timeout override should be created");
 
         let actual_marker = provider
             .test_client_manager_marker()
-            .expect("test provider should expose its client manager marker");
+            .checked("test provider should expose its client manager marker");
         assert_ne!(
             actual_marker, default_marker,
             "per-instance timeout overrides should build a dedicated client manager"
@@ -770,11 +771,14 @@ mod tests {
         manager
             .create_provider("alist", "my_alist_instance", &config)
             .await
-            .unwrap();
+            .checked("provider should be created");
 
         let provider = manager.get("my_alist_instance").await;
         assert!(provider.is_some());
-        assert_eq!(provider.unwrap().name(), "alist");
+        assert_eq!(
+            provider.checked("provider should be stored").name(),
+            "alist"
+        );
 
         let not_found = manager.get("nonexistent").await;
         assert!(not_found.is_none());
@@ -788,11 +792,14 @@ mod tests {
         manager
             .create_provider("alist", "alist", &config)
             .await
-            .unwrap();
+            .checked("provider should be created");
 
         let provider = manager.get_by_type("alist").await;
         assert!(provider.is_some());
-        assert_eq!(provider.unwrap().name(), "alist");
+        assert_eq!(
+            provider.checked("provider should be stored").name(),
+            "alist"
+        );
 
         let not_found = manager.get_by_type("unknown").await;
         assert!(not_found.is_none());
@@ -807,7 +814,10 @@ mod tests {
             "proxy registry should not contain providers before default instances are built"
         );
 
-        manager.create_builtin_defaults().await.unwrap();
+        manager
+            .create_builtin_defaults()
+            .await
+            .checked("built-in default providers should be created");
         let registry = manager.proxy_registry();
 
         for provider_type in [
@@ -832,10 +842,16 @@ mod tests {
         manager
             .create_provider("alist", "alist", &serde_json::json!({}))
             .await
-            .unwrap();
+            .checked("default provider should be created");
 
-        let implicit_default = manager.resolve_provider("alist", None).await.unwrap();
-        let empty_default = manager.resolve_provider("alist", Some("  ")).await.unwrap();
+        let implicit_default = manager
+            .resolve_provider("alist", None)
+            .await
+            .checked("implicit default provider should resolve");
+        let empty_default = manager
+            .resolve_provider("alist", Some("  "))
+            .await
+            .checked("empty default provider should resolve");
 
         assert_eq!(implicit_default.name(), "alist");
         assert_eq!(empty_default.name(), "alist");
@@ -852,19 +868,19 @@ mod tests {
         manager
             .create_provider("alist", "alist_alt", &serde_json::json!({}))
             .await
-            .unwrap();
+            .checked("explicit provider should be created");
 
         let provider = manager
             .resolve_provider("alist", Some(" alist_alt "))
             .await
-            .unwrap();
+            .checked("explicit provider should resolve");
         assert_eq!(provider.name(), "alist");
 
         let error = match manager.resolve_provider("emby", Some("alist_alt")).await {
-            Ok(provider) => panic!(
+            Ok(provider) => std::panic::panic_any(format!(
                 "explicit local instance must match the requested provider type, got provider '{}'",
                 provider.name()
-            ),
+            )),
             Err(error) => error,
         };
         assert!(
@@ -881,19 +897,22 @@ mod tests {
         let provider1 = manager
             .create_provider("alist", "alist_singleton", &config1)
             .await
-            .unwrap();
+            .checked("first provider should be created");
         assert_eq!(provider1.name(), "alist");
 
         let config2 = serde_json::json!({"request_timeout_seconds": 30});
         let provider2 = manager
             .create_provider("alist", "alist_singleton", &config2)
             .await
-            .unwrap();
+            .checked("second provider should be created");
         assert_eq!(provider2.name(), "alist");
 
         assert!(!Arc::ptr_eq(&provider1, &provider2));
 
-        let stored = manager.get("alist_singleton").await.unwrap();
+        let stored = manager
+            .get("alist_singleton")
+            .await
+            .checked("provider singleton should be stored");
         assert!(Arc::ptr_eq(&provider2, &stored));
     }
 
@@ -907,15 +926,15 @@ mod tests {
         manager
             .create_provider("alist", "alist1", &serde_json::json!({}))
             .await
-            .unwrap();
+            .checked("alist provider should be created");
         manager
             .create_provider("bilibili", "bilibili1", &serde_json::json!({}))
             .await
-            .unwrap();
+            .checked("bilibili provider should be created");
         manager
             .create_provider("emby", "emby1", &serde_json::json!({}))
             .await
-            .unwrap();
+            .checked("emby provider should be created");
 
         let list = manager.list().await;
         assert_eq!(list.len(), 3);
@@ -933,7 +952,7 @@ mod tests {
         manager
             .create_provider("alist", "alist_remove", &serde_json::json!({}))
             .await
-            .unwrap();
+            .checked("provider should be created");
 
         assert!(manager.get("alist_remove").await.is_some());
 
@@ -960,7 +979,7 @@ mod tests {
             Err(crate::Error::NotFound(msg)) => {
                 assert!(msg.contains("Unknown provider type"));
             }
-            _ => panic!("Expected NotFound error"),
+            _ => std::panic::panic_any("Expected NotFound error"),
         }
     }
 
@@ -968,7 +987,7 @@ mod tests {
     async fn test_concurrent_provider_creation() {
         let instance_manager = test_instance_manager();
         let manager = Arc::new(
-            ProvidersManager::new(instance_manager).expect("providers manager should build"),
+            ProvidersManager::new(instance_manager).checked("providers manager should build"),
         );
 
         let mut handles = vec![];
@@ -984,8 +1003,7 @@ mod tests {
 
         let results: Vec<_> = futures::future::join_all(handles).await;
         for result in results {
-            assert!(result.is_ok());
-            assert!(result.unwrap().is_ok());
+            assert!(result.checked("provider creation task should join").is_ok());
         }
 
         for i in 0..5 {
@@ -998,7 +1016,7 @@ mod tests {
     async fn test_instance_manager_reference() {
         let instance_manager = test_instance_manager();
         let manager = ProvidersManager::new(instance_manager.clone())
-            .expect("providers manager should build");
+            .checked("providers manager should build");
 
         let retrieved = manager.instance_manager();
         assert!(Arc::ptr_eq(&instance_manager, retrieved));

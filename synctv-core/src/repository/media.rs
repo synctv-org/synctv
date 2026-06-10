@@ -527,10 +527,9 @@ impl MediaRepository {
     /// };
     /// let mut updated = media.clone();
     /// updated.name = "new_name".to_string();
-    /// match repo.update_with_version(&updated, media.version).await? {
-    ///     Some(result) => println!("Updated to version {}", result.version),
-    ///     None => println!("Conflict! Someone else modified this media."),
-    /// }
+    /// let Some(result) = repo.update_with_version(&updated, media.version).await? else {
+    ///     return Ok(());
+    /// };
     /// ```
     pub async fn update_with_version(
         &self,

@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-
 use sha2::{Digest, Sha256};
 
-fn hash_resource(url: &str, provider_headers: &HashMap<String, String>) -> Sha256 {
+use crate::ProviderHeaders;
+
+fn hash_resource(url: &str, provider_headers: &ProviderHeaders) -> Sha256 {
     let mut hasher = Sha256::new();
     hasher.update(url.as_bytes());
     hasher.update(b"\0");
@@ -21,7 +21,7 @@ fn hash_resource(url: &str, provider_headers: &HashMap<String, String>) -> Sha25
 
 pub(super) fn slice_cache_key(
     url: &str,
-    provider_headers: &HashMap<String, String>,
+    provider_headers: &ProviderHeaders,
     slice_index: u64,
 ) -> String {
     let mut hasher = hash_resource(url, provider_headers);
@@ -30,7 +30,7 @@ pub(super) fn slice_cache_key(
     hex::encode(hasher.finalize())
 }
 
-pub(super) fn resource_meta_key(url: &str, provider_headers: &HashMap<String, String>) -> String {
+pub(super) fn resource_meta_key(url: &str, provider_headers: &ProviderHeaders) -> String {
     let mut hasher = hash_resource(url, provider_headers);
     hasher.update(b"\0meta");
     hex::encode(hasher.finalize())

@@ -478,11 +478,22 @@ pub struct UserListQuery {
 mod tests {
     use super::*;
 
+    fn parse<T>(value: &str, context: &str) -> T
+    where
+        T: std::str::FromStr,
+        T::Err: std::fmt::Display,
+    {
+        match value.parse::<T>() {
+            Ok(parsed) => parsed,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn test_signup_method_display_and_parse_roundtrip() {
         assert_eq!(SignupMethod::AdminCreated.to_string(), "admin_created");
         assert_eq!(
-            "OAUTH2".parse::<SignupMethod>().unwrap(),
+            parse::<SignupMethod>("OAUTH2", "oauth2 should parse"),
             SignupMethod::OAuth2
         );
         assert_eq!(
@@ -490,7 +501,7 @@ mod tests {
             Some(SignupMethod::AdminCreated)
         );
         assert_eq!(
-            "webauthn".parse::<SignupMethod>().unwrap(),
+            parse::<SignupMethod>("webauthn", "webauthn should parse"),
             SignupMethod::WebAuthn
         );
         assert_eq!(SignupMethod::WebAuthn.to_string(), "webauthn");
@@ -501,14 +512,20 @@ mod tests {
 
     #[test]
     fn test_user_role_and_status_parse_trimmed_case_insensitive_names() {
-        assert_eq!(" admin ".parse::<UserRole>().unwrap(), UserRole::Admin);
-        assert_eq!(" ROOT ".parse::<UserRole>().unwrap(), UserRole::Root);
         assert_eq!(
-            " banned ".parse::<UserStatus>().unwrap(),
+            parse::<UserRole>(" admin ", "admin role should parse"),
+            UserRole::Admin
+        );
+        assert_eq!(
+            parse::<UserRole>(" ROOT ", "root role should parse"),
+            UserRole::Root
+        );
+        assert_eq!(
+            parse::<UserStatus>(" banned ", "banned status should parse"),
             UserStatus::Banned
         );
         assert_eq!(
-            " ACTIVE ".parse::<UserStatus>().unwrap(),
+            parse::<UserStatus>(" ACTIVE ", "active status should parse"),
             UserStatus::Active
         );
     }

@@ -172,9 +172,12 @@ impl CacheManager {
                                 .inc();
                             last_lag_flush = now;
                         } else {
+                            let remaining = LAG_FLUSH_MIN_INTERVAL
+                                .checked_sub(elapsed)
+                                .unwrap_or_default();
                             warn!(
                                 lagged_messages = n,
-                                skip_flush_secs = LAG_FLUSH_MIN_INTERVAL.checked_sub(elapsed).unwrap_or_default().as_secs(),
+                                skip_flush_secs = remaining.as_secs(),
                                 "CacheManager invalidation listener lagged, skipping flush (rate-limited)"
                             );
                         }
@@ -208,6 +211,7 @@ impl std::fmt::Debug for CacheManager {
 mod tests {
     use super::*;
     use crate::cache::{CacheInvalidationRuntime, CacheInvalidationService};
+    use crate::test_helpers::TestResultExt;
 
     fn make_caches() -> (Arc<UserCache>, Arc<RoomCache>) {
         let l2 = crate::cache::local_l2_cache_backend();
@@ -256,8 +260,15 @@ mod tests {
             crate::models::UserStatus::Active,
             chrono::Utc::now(),
         );
-        user_cache.set(&user_id, cached_user).await.unwrap();
-        assert!(user_cache.get(&user_id).await.unwrap().is_some());
+        user_cache
+            .set(&user_id, cached_user)
+            .await
+            .checked("operation should succeed");
+        assert!(user_cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed")
+            .is_some());
 
         // Broadcast invalidation (all nodes including local)
         service
@@ -265,13 +276,17 @@ mod tests {
                 user_id: "94001".to_string(),
             })
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         // Give the spawned task time to process
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // L1 entry should be gone
-        assert!(user_cache.get(&user_id).await.unwrap().is_none());
+        assert!(user_cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[tokio::test]
@@ -294,8 +309,15 @@ mod tests {
             true,
             chrono::Utc::now(),
         );
-        room_cache.set(&room_id, cached_room).await.unwrap();
-        assert!(room_cache.get(&room_id).await.unwrap().is_some());
+        room_cache
+            .set(&room_id, cached_room)
+            .await
+            .checked("operation should succeed");
+        assert!(room_cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .is_some());
 
         // Broadcast invalidation (all nodes including local)
         service
@@ -303,13 +325,17 @@ mod tests {
                 room_id: room_id.to_string(),
             })
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         // Give the spawned task time to process
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // L1 entry should be gone
-        assert!(room_cache.get(&room_id).await.unwrap().is_none());
+        assert!(room_cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 
     #[tokio::test]
@@ -332,7 +358,10 @@ mod tests {
             crate::models::UserStatus::Active,
             chrono::Utc::now(),
         );
-        user_cache.set(&user_id, cached_user).await.unwrap();
+        user_cache
+            .set(&user_id, cached_user)
+            .await
+            .checked("operation should succeed");
 
         let room_id = crate::models::RoomId::expect_positive(1);
         let cached_room = crate::cache::room_cache::CachedRoom::new(
@@ -342,18 +371,29 @@ mod tests {
             true,
             chrono::Utc::now(),
         );
-        room_cache.set(&room_id, cached_room).await.unwrap();
+        room_cache
+            .set(&room_id, cached_room)
+            .await
+            .checked("operation should succeed");
 
         // Broadcast All invalidation
         service
             .broadcast_all(InvalidationMessage::All)
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Both L1 entries should be gone
-        assert!(user_cache.get(&user_id).await.unwrap().is_none());
-        assert!(room_cache.get(&room_id).await.unwrap().is_none());
+        assert!(user_cache
+            .get(&user_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
+        assert!(room_cache
+            .get(&room_id)
+            .await
+            .checked("operation should succeed")
+            .is_none());
     }
 }

@@ -17,7 +17,7 @@
 //!         None,
 //!         &std::collections::HashMap::from([(
 //!             "User-Agent".to_string(),
-//!             synctv_media_providers::error::PROVIDER_USER_AGENT.to_string(),
+//!             synctv_media_providers::PROVIDER_USER_AGENT.to_string(),
 //!         )]),
 //!     )
 //!     .await?;
@@ -26,9 +26,9 @@
 //! ```
 
 mod client;
-pub mod error;
-pub mod service;
-pub mod types;
+mod error;
+mod service;
+mod types;
 
 pub use client::AlistClient;
 pub use error::AlistError;

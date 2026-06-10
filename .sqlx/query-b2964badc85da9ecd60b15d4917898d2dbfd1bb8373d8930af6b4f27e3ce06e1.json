@@ -6,17 +6,25 @@
       {
         "ordinal": 0,
         "name": "closed_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "closed_at"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "is_banned",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": "Expression"
       },
       {
         "ordinal": 2,
         "name": "is_target_in_kick_cooldown",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {

@@ -107,14 +107,16 @@ pub async fn resolve_credential_record_for_owner(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_helpers::some;
+
     use chrono::{TimeZone, Utc};
 
     #[test]
     fn credential_revision_includes_row_id_and_microsecond_timestamp() {
-        let updated_at = Utc
-            .timestamp_opt(1_700_000_000, 123_456_000)
-            .single()
-            .expect("valid timestamp");
+        let updated_at = some(
+            Utc.timestamp_opt(1_700_000_000, 123_456_000).single(),
+            "valid timestamp",
+        );
 
         assert_eq!(
             super::credential_revision(42, updated_at),

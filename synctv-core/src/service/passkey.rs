@@ -66,15 +66,14 @@ pub fn local_passkey_session_store() -> Arc<dyn PasskeySessionStore> {
     Arc::new(InMemoryPasskeySessionStore::new())
 }
 
-#[must_use]
-pub fn shared_passkey_session_store(
+fn shared_passkey_session_store(
     runtime: Arc<dyn RedisConnectionRuntime>,
     key_prefix: impl Into<String>,
 ) -> Arc<dyn PasskeySessionStore> {
     Arc::new(RedisPasskeySessionStore::from_runtime(runtime, key_prefix))
 }
 
-pub fn passkey_session_store_from_shared_state_profile(
+pub(crate) fn passkey_session_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn PasskeySessionStore>> {
     match profile.state_mode() {
@@ -164,13 +163,13 @@ impl PasskeySessionStore for InMemoryPasskeySessionStore {
     }
 }
 
-pub struct RedisPasskeySessionStore {
+struct RedisPasskeySessionStore {
     store: RedisJsonSessionStore,
 }
 
 impl RedisPasskeySessionStore {
     #[must_use]
-    pub fn from_runtime(
+    fn from_runtime(
         runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: impl Into<String>,
     ) -> Self {
@@ -706,7 +705,7 @@ impl PasskeyService {
                     client_ip,
                     control,
                 )
-                .await;
+                .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
         let credentials = self.repository.list_by_user(&user.id).await?;
@@ -718,7 +717,7 @@ impl PasskeyService {
                     client_ip,
                     control,
                 )
-                .await;
+                .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
@@ -827,7 +826,7 @@ impl PasskeyService {
                     client_ip,
                     control,
                 )
-                .await;
+                .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
@@ -842,7 +841,7 @@ impl PasskeyService {
                     client_ip,
                     control,
                 )
-                .await;
+                .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
@@ -859,7 +858,7 @@ impl PasskeyService {
                     client_ip,
                     control,
                 )
-                .await;
+                .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
         let changed = Self::apply_authentication_result(&mut stored, &auth_result)?;
@@ -893,7 +892,7 @@ impl PasskeyService {
     ) -> Result<crate::service::AuthenticatedLogin> {
         let Ok(credential) = serde_json::from_slice::<PublicKeyCredential>(credential_json) else {
             self.record_discoverable_login_failure(client_ip, control)
-                .await;
+                .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
@@ -902,13 +901,13 @@ impl PasskeyService {
             .identify_discoverable_authentication(&credential)
         else {
             self.record_discoverable_login_failure(client_ip, control)
-                .await;
+                .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
         let Some(mut stored) = self.repository.get_by_credential_id(credential_id).await? else {
             self.record_discoverable_login_failure(client_ip, control)
-                .await;
+                .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
@@ -919,7 +918,7 @@ impl PasskeyService {
             &[discoverable_key],
         ) else {
             self.record_discoverable_login_failure(client_ip, control)
-                .await;
+                .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
@@ -953,14 +952,16 @@ impl PasskeyService {
         &self,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_common::ExecutionControl>,
-    ) {
+    ) -> Result<()> {
         if let Err(error) = self
             .user_service
             .record_passkey_discoverable_login_failure_with_control(client_ip, control)
             .await
         {
             tracing::warn!(error = %error, "Failed to record passkey login failure for brute-force tracking");
+            return Err(error);
         }
+        Ok(())
     }
 
     pub async fn finish_user_verification(
@@ -1067,15 +1068,29 @@ impl PasskeyService {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     fn sample_registration_session() -> PasskeySession {
-        let origin = Url::parse("https://app.example.com").expect("valid origin");
-        let webauthn = WebauthnBuilder::new("app.example.com", &origin)
-            .expect("valid WebAuthn builder")
-            .build()
-            .expect("valid WebAuthn config");
-        let (_challenge, state) = webauthn
-            .start_passkey_registration(uuid::Uuid::new_v4(), "alice_123", "alice_123", None)
-            .expect("registration should start");
+        let origin = ok(Url::parse("https://app.example.com"), "valid origin");
+        let builder = ok(
+            WebauthnBuilder::new("app.example.com", &origin),
+            "valid WebAuthn builder",
+        );
+        let webauthn = ok(builder.build(), "valid WebAuthn config");
+        let (_challenge, state) = ok(
+            webauthn.start_passkey_registration(
+                uuid::Uuid::new_v4(),
+                "alice_123",
+                "alice_123",
+                None,
+            ),
+            "registration should start",
+        );
 
         PasskeySession::Registration {
             user_id: UserId::expect_positive(123_i64),
@@ -1089,25 +1104,19 @@ mod tests {
         let store = local_passkey_session_store();
         let session = sample_registration_session();
 
-        store
-            .store("session-1", &session, Duration::from_mins(1))
-            .await
-            .expect("store session");
+        ok(
+            store
+                .store("session-1", &session, Duration::from_mins(1))
+                .await,
+            "store session",
+        );
 
         assert!(
-            store
-                .consume("session-1")
-                .await
-                .expect("consume session")
-                .is_some(),
+            ok(store.consume("session-1").await, "consume session").is_some(),
             "first consume should return the stored session"
         );
         assert!(
-            store
-                .consume("session-1")
-                .await
-                .expect("consume session again")
-                .is_none(),
+            ok(store.consume("session-1").await, "consume session again").is_none(),
             "second consume must not replay a WebAuthn challenge"
         );
     }
@@ -1117,18 +1126,20 @@ mod tests {
         let store = local_passkey_session_store();
         let session = sample_registration_session();
 
-        store
-            .store("session-ttl", &session, Duration::from_millis(10))
-            .await
-            .expect("store session");
+        ok(
+            store
+                .store("session-ttl", &session, Duration::from_millis(10))
+                .await,
+            "store session",
+        );
         tokio::time::sleep(Duration::from_millis(30)).await;
 
         assert!(
-            store
-                .consume("session-ttl")
-                .await
-                .expect("consume expired session")
-                .is_none(),
+            ok(
+                store.consume("session-ttl").await,
+                "consume expired session"
+            )
+            .is_none(),
             "expired WebAuthn challenge state must not be accepted"
         );
     }
@@ -1142,7 +1153,10 @@ mod tests {
         assert!(!encoded.contains('/'));
         assert!(!encoded.contains('='));
         assert_eq!(
-            PasskeyService::decode_credential_id(&encoded).expect("decode credential id"),
+            ok(
+                PasskeyService::decode_credential_id(&encoded),
+                "decode credential id",
+            ),
             credential_id
         );
     }

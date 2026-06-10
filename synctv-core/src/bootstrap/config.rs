@@ -23,7 +23,7 @@ pub fn load_dotenv(verbose: bool) -> Result<()> {
     match dotenvy::dotenv() {
         Ok(path) => {
             if verbose {
-                eprintln!("Loaded environment from {}", absolute_display_path(&path));
+                tracing::info!(path = %absolute_display_path(&path), "Loaded environment file");
             }
             Ok(())
         }
@@ -75,7 +75,7 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
     let config = if let Some(path) = discovered_config_path {
         let display_path = absolute_display_path(std::path::Path::new(&path));
         if options.verbose {
-            eprintln!("Loading config from {display_path}");
+            tracing::info!(path = %display_path, "Loading config file");
         }
         match Config::load_with_env_map_and_data_dir_override(
             Some(&path),
@@ -84,7 +84,7 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
         ) {
             Ok(cfg) => {
                 if options.verbose {
-                    eprintln!("Successfully loaded {display_path}");
+                    tracing::info!(path = %display_path, "Config file loaded");
                 }
                 cfg
             }
@@ -114,7 +114,7 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
         ));
     } else {
         if options.verbose {
-            eprintln!("No config file found, using environment variables");
+            tracing::info!("No config file found, using environment variables");
         }
         Config::load_with_env_map_and_data_dir_override(None, &env, options.data_dir.as_deref())?
     };
@@ -130,7 +130,7 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
         // Validate configuration (fail fast on misconfigurations)
         if let Err(errors) = config.validate() {
             for error in &errors {
-                eprintln!("Config validation error: {error}");
+                tracing::error!(%error, "Config validation error");
             }
             return Err(anyhow::anyhow!(
                 "Configuration validation failed with {} error(s): {}",
@@ -140,11 +140,10 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
         }
 
         if options.verbose {
-            eprintln!("Configuration loaded and validated successfully");
-            eprintln!("API address: {}", config.api_address());
+            tracing::info!(api_address = %config.api_address(), "Configuration loaded and validated");
         }
     } else if options.verbose {
-        eprintln!("Configuration loaded successfully");
+        tracing::info!("Configuration loaded");
     }
 
     Ok(config)
@@ -153,6 +152,7 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
 #[cfg(test)]
 mod tests {
     use super::{load_config, load_config_with_options, LoadConfigOptions};
+    use crate::test_helpers::TestResultExt;
     use crate::time::{default_timezone_name, set_default_timezone_name};
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::tempdir;
@@ -207,15 +207,15 @@ mod tests {
 
     impl CurrentDirGuard {
         fn change_to(path: &std::path::Path) -> Self {
-            let previous = std::env::current_dir().expect("current dir should be readable");
-            std::env::set_current_dir(path).expect("current dir should be settable");
+            let previous = std::env::current_dir().checked("current dir should be readable");
+            std::env::set_current_dir(path).checked("current dir should be settable");
             Self { previous }
         }
     }
 
     impl Drop for CurrentDirGuard {
         fn drop(&mut self) {
-            std::env::set_current_dir(&self.previous).expect("current dir should be restored");
+            std::env::set_current_dir(&self.previous).checked("current dir should be restored");
         }
     }
 
@@ -233,7 +233,7 @@ mod tests {
 
     impl Drop for TimeZoneGuard {
         fn drop(&mut self) {
-            let _ = set_default_timezone_name(&self.previous);
+            set_default_timezone_name(&self.previous).checked("timezone should be restored");
         }
     }
 
@@ -253,13 +253,13 @@ mod tests {
     #[test]
     fn test_load_config_fails_for_invalid_auto_discovered_file() {
         let _lock = acquire_process_config_test_lock();
-        let dir = tempdir().expect("temp dir should be created");
+        let dir = tempdir().checked("temp dir should be created");
         let config_path = dir.path().join("synctv.yaml");
-        std::fs::write(&config_path, "not: [valid").expect("invalid config should be written");
+        std::fs::write(&config_path, "not: [valid").checked("invalid config should be written");
         let _cwd = CurrentDirGuard::change_to(dir.path());
         let _env = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
 
-        let err = load_config().expect_err("invalid auto-discovered config must fail closed");
+        let err = load_config().failed("invalid auto-discovered config must fail closed");
 
         assert!(
             err.to_string().contains("auto-discovered config file"),
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn test_load_config_prefers_first_supported_default_extension_in_order() {
         let _lock = acquire_process_config_test_lock();
-        let dir = tempdir().expect("temp dir should be created");
+        let dir = tempdir().checked("temp dir should be created");
         let _cwd = CurrentDirGuard::change_to(dir.path());
         let _env = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
         let _management_auth = management_auth_token_guard();
@@ -279,14 +279,14 @@ mod tests {
             dir.path().join("synctv.yml"),
             "server:\n  port: 58082\njwt:\n  secret: \"12345678901234567890123456789012\"\nsecurity:\n  opaque_server_setup_secret: \"opaque-server-setup-secret-123456789012\"\n",
         )
-        .expect("yml config should be written");
+        .checked("yml config should be written");
         std::fs::write(
             dir.path().join("synctv.json"),
             "{\"server\":{\"port\":58083},\"jwt\":{\"secret\":\"12345678901234567890123456789012\"},\"security\":{\"opaque_server_setup_secret\":\"opaque-server-setup-secret-123456789012\"}}",
         )
-        .expect("json config should be written");
+        .checked("json config should be written");
 
-        let config = load_config().expect("first discovered config should load");
+        let config = load_config().checked("first discovered config should load");
 
         assert_eq!(
             config.server.port, 58082,
@@ -297,15 +297,15 @@ mod tests {
     #[test]
     fn test_load_config_fails_for_invalid_explicit_file() {
         let _lock = acquire_process_config_test_lock();
-        let dir = tempdir().expect("temp dir should be created");
+        let dir = tempdir().checked("temp dir should be created");
         let config_path = dir.path().join("explicit-synctv.yaml");
-        std::fs::write(&config_path, "not: [valid").expect("invalid config should be written");
+        std::fs::write(&config_path, "not: [valid").checked("invalid config should be written");
         let _env = EnvVarGuard::set(
             "SYNCTV_CONFIG_PATH",
             config_path.to_string_lossy().to_string(),
         );
 
-        let err = load_config().expect_err("invalid explicit config must fail closed");
+        let err = load_config().failed("invalid explicit config must fail closed");
 
         assert!(
             err.to_string()
@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn test_load_config_accepts_valid_explicit_file_when_synctv_config_path_is_set() {
         let _lock = acquire_process_config_test_lock();
-        let dir = tempdir().expect("temp dir should be created");
+        let dir = tempdir().checked("temp dir should be created");
         let _cwd = CurrentDirGuard::change_to(dir.path());
         let _management_auth = management_auth_token_guard();
         let _secret_env = clear_secret_env_overrides();
@@ -331,13 +331,13 @@ security:
   opaque_server_setup_secret: "opaque-server-setup-secret-123456789012"
 "#,
         )
-        .expect("valid config should be written");
+        .checked("valid config should be written");
         let _env = EnvVarGuard::set(
             "SYNCTV_CONFIG_PATH",
             config_path.to_string_lossy().to_string(),
         );
 
-        let config = load_config().expect("valid explicit config path should load successfully");
+        let config = load_config().checked("valid explicit config path should load successfully");
 
         assert_eq!(config.jwt.secret, "12345678901234567890123456789012");
     }
@@ -345,7 +345,7 @@ security:
     #[test]
     fn test_load_config_reads_dotenv_before_resolving_config() {
         let _lock = acquire_process_config_test_lock();
-        let dir = tempdir().expect("temp dir should be created");
+        let dir = tempdir().checked("temp dir should be created");
         let _cwd = CurrentDirGuard::change_to(dir.path());
         let _config_path = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
         let _management_auth = management_auth_token_guard();
@@ -356,9 +356,9 @@ security:
             dir.path().join(".env"),
             "SYNCTV_JWT_SECRET=12345678901234567890123456789012\nSYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=opaque-server-setup-secret-123456789012\nSYNCTV_SERVER_PORT=50061\n",
         )
-        .expect(".env should be written");
+        .checked(".env should be written");
 
-        let config = load_config().expect(".env-backed config should load successfully");
+        let config = load_config().checked(".env-backed config should load successfully");
 
         assert_eq!(config.jwt.secret, "12345678901234567890123456789012");
         assert_eq!(config.server.port, 50061);
@@ -367,7 +367,7 @@ security:
     #[test]
     fn test_load_config_with_options_accepts_explicit_cli_config_path() {
         let _lock = acquire_process_config_test_lock();
-        let dir = tempdir().expect("temp dir should be created");
+        let dir = tempdir().checked("temp dir should be created");
         let _management_auth = management_auth_token_guard();
         let config_path = dir.path().join("cli-synctv.yaml");
         std::fs::write(
@@ -381,7 +381,7 @@ server:
   port: 58080
 "#,
         )
-        .expect("valid config should be written");
+        .checked("valid config should be written");
 
         let config = load_config_with_options(&LoadConfigOptions {
             config_path: Some(config_path.to_string_lossy().to_string()),
@@ -390,7 +390,7 @@ server:
             validate: true,
             verbose: false,
         })
-        .expect("explicit CLI config path should load successfully");
+        .checked("explicit CLI config path should load successfully");
 
         assert_eq!(config.server.port, 58080);
     }
@@ -398,7 +398,7 @@ server:
     #[test]
     fn test_load_config_with_options_can_skip_validation() {
         let _lock = acquire_process_config_test_lock();
-        let dir = tempdir().expect("temp dir should be created");
+        let dir = tempdir().checked("temp dir should be created");
         let _secret_env = clear_secret_env_overrides();
         let config_path = dir.path().join("invalid-but-loadable.yaml");
         std::fs::write(
@@ -408,7 +408,7 @@ jwt:
   secret: ""
 "#,
         )
-        .expect("config should be written");
+        .checked("config should be written");
 
         let config = load_config_with_options(&LoadConfigOptions {
             config_path: Some(config_path.to_string_lossy().to_string()),
@@ -417,7 +417,7 @@ jwt:
             validate: false,
             verbose: false,
         })
-        .expect("loading without validation should succeed");
+        .checked("loading without validation should succeed");
 
         assert!(config.jwt.secret.is_empty());
     }
@@ -425,7 +425,7 @@ jwt:
     #[test]
     fn test_load_config_with_options_rejects_file_and_env_unknowns() {
         let _lock = acquire_process_config_test_lock();
-        let dir = tempdir().expect("temp dir should be created");
+        let dir = tempdir().checked("temp dir should be created");
         let _secret_env = clear_secret_env_overrides();
         let _unknown_env = EnvVarGuard::set("SYNCTV_UNKNOWN_SETTING", "1");
         let config_path = dir.path().join("unknown.yaml");
@@ -439,7 +439,7 @@ metrics:
   obsolete_token: "ignored"
 "#,
         )
-        .expect("config should be written");
+        .checked("config should be written");
 
         let err = load_config_with_options(&LoadConfigOptions {
             config_path: Some(config_path.to_string_lossy().to_string()),
@@ -448,7 +448,7 @@ metrics:
             validate: false,
             verbose: false,
         })
-        .expect_err("default config loading should reject unsupported inputs");
+        .failed("default config loading should reject unsupported inputs");
         let message = err.to_string();
 
         assert!(message.contains("metrics.obsolete_token"));
@@ -458,7 +458,7 @@ metrics:
     #[test]
     fn test_load_config_with_options_honors_synctv_config_path_when_cli_path_absent() {
         let _lock = acquire_process_config_test_lock();
-        let dir = tempdir().expect("temp dir should be created");
+        let dir = tempdir().checked("temp dir should be created");
         let config_path = dir.path().join("env-synctv.yaml");
         std::fs::write(
             &config_path,
@@ -468,7 +468,7 @@ management:
   port: 58081
 "#,
         )
-        .expect("config should be written");
+        .checked("config should be written");
         let _env = EnvVarGuard::set(
             "SYNCTV_CONFIG_PATH",
             config_path.to_string_lossy().to_string(),
@@ -481,7 +481,7 @@ management:
             validate: false,
             verbose: false,
         })
-        .expect("SYNCTV_CONFIG_PATH should be honored when CLI path is absent");
+        .checked("SYNCTV_CONFIG_PATH should be honored when CLI path is absent");
 
         assert_eq!(config.management.port, 58081);
     }
@@ -490,7 +490,7 @@ management:
     fn test_load_config_with_options_initializes_default_timezone() {
         let _lock = acquire_process_config_test_lock();
         let _timezone = TimeZoneGuard::capture();
-        let dir = tempdir().expect("temp dir should be created");
+        let dir = tempdir().checked("temp dir should be created");
         let config_path = dir.path().join("timezone-synctv.yaml");
         std::fs::write(
             &config_path,
@@ -501,7 +501,7 @@ jwt:
   secret: "12345678901234567890123456789012"
 "#,
         )
-        .expect("config should be written");
+        .checked("config should be written");
 
         let config = load_config_with_options(&LoadConfigOptions {
             config_path: Some(config_path.to_string_lossy().to_string()),
@@ -510,7 +510,7 @@ jwt:
             validate: false,
             verbose: false,
         })
-        .expect("timezone config should load");
+        .checked("timezone config should load");
 
         assert_eq!(config.time.timezone, "Asia/Shanghai");
         assert_eq!(default_timezone_name(), "Asia/Shanghai");
@@ -520,7 +520,7 @@ jwt:
     #[test]
     fn test_load_config_with_options_resolves_default_management_socket_from_cli_data_dir() {
         let _lock = acquire_process_config_test_lock();
-        let dir = tempdir().expect("temp dir should be created");
+        let dir = tempdir().checked("temp dir should be created");
         let data_dir = dir.path().join("state");
 
         let config = load_config_with_options(&LoadConfigOptions {
@@ -530,7 +530,7 @@ jwt:
             validate: false,
             verbose: false,
         })
-        .expect("cli data_dir should be applied to default runtime paths");
+        .checked("cli data_dir should be applied to default runtime paths");
 
         assert_eq!(std::path::Path::new(&config.data_dir), data_dir.as_path());
         assert_eq!(
@@ -543,7 +543,7 @@ jwt:
     #[test]
     fn test_load_config_with_options_cli_data_dir_overrides_env_data_dir() {
         let _lock = acquire_process_config_test_lock();
-        let dir = tempdir().expect("temp dir should be created");
+        let dir = tempdir().checked("temp dir should be created");
         let cli_data_dir = dir.path().join("cli-state");
         let _env = EnvVarGuard::set(
             "SYNCTV_DATA_DIR",
@@ -557,7 +557,7 @@ jwt:
             validate: false,
             verbose: false,
         })
-        .expect("cli data_dir should override SYNCTV_DATA_DIR");
+        .checked("cli data_dir should override SYNCTV_DATA_DIR");
 
         assert_eq!(
             std::path::Path::new(&config.data_dir),

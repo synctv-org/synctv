@@ -4,7 +4,7 @@ use {
         errors::{PackError, PackErrorValue},
         ChunkBasicHeader, ChunkHeader, ChunkInfo, ChunkMessageHeader, ExtendTimestampType,
     },
-    crate::bytesio::{bytes_writer::AsyncBytesWriter, bytesio::TNetIO},
+    crate::bytesio::{bytes_writer::AsyncBytesWriter, net_io::TNetIO},
     byteorder::{BigEndian, LittleEndian},
     std::{num::NonZeroUsize, sync::Arc, time::Duration},
     tokio::sync::Mutex,
@@ -16,7 +16,7 @@ const WRITE_FLUSH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Maximum number of chunk stream headers to cache in the packetizer.
 /// Matches the unpacketizer's `MAX_CACHED_CHUNK_HEADERS` for consistency.
-const MAX_CACHED_CHUNK_HEADERS: usize = 256;
+const MAX_CACHED_CHUNK_HEADERS: NonZeroUsize = NonZeroUsize::MIN.saturating_add(255);
 
 #[derive(Eq, PartialEq, Debug)]
 pub enum PackResult {
@@ -37,9 +37,7 @@ pub struct ChunkPacketizer {
 impl ChunkPacketizer {
     pub fn new(io: Arc<Mutex<Box<dyn TNetIO + Send + Sync>>>) -> Self {
         Self {
-            csid_2_chunk_header: lru::LruCache::new(
-                NonZeroUsize::new(MAX_CACHED_CHUNK_HEADERS).expect("non-zero constant"),
-            ),
+            csid_2_chunk_header: lru::LruCache::new(MAX_CACHED_CHUNK_HEADERS),
             writer: AsyncBytesWriter::new(io),
             max_chunk_size: CHUNK_SIZE as usize,
             extended_timestamp: None,
@@ -148,8 +146,7 @@ impl ChunkPacketizer {
                 }
             }
             _ => {
-                //should not be here
-                (None, 0)
+                return Err(PackErrorValue::InvalidChunkHeaderFormat(basic_header.format).into());
             }
         };
 

@@ -5,7 +5,7 @@ use {
     },
     crate::bytesio::{
         bytes_reader::BytesReader, bytes_writer::AsyncBytesWriter, bytes_writer::BytesWriter,
-        bytesio::TNetIO,
+        net_io::TNetIO,
     },
     byteorder::BigEndian,
     bytes::BytesMut,
@@ -14,12 +14,11 @@ use {
 };
 
 fn rtmp_version_u8() -> u8 {
-    u8::try_from(define::RTMP_VERSION).expect("RTMP version constant should fit into u8")
+    define::RTMP_VERSION
 }
 
 fn handshake_random_len_u32() -> u32 {
-    u32::try_from(define::RTMP_HANDSHAKE_SIZE - 8)
-        .expect("RTMP handshake random payload length should fit into u32")
+    define::RTMP_HANDSHAKE_RANDOM_SIZE_U32
 }
 
 pub struct SimpleHandshakeServer {
@@ -83,7 +82,7 @@ impl SimpleHandshakeServer {
                 }
 
                 ServerHandshakeState::Finish => {
-                    tracing::info!("simple handshake successfully..");
+                    tracing::info!("simple handshake completed");
                     break;
                 }
             }
@@ -138,7 +137,7 @@ impl ComplexHandshakeServer {
                 }
 
                 ServerHandshakeState::Finish => {
-                    tracing::info!("complex handshake successfully..");
+                    tracing::info!("complex handshake completed");
                     break;
                 }
             }
@@ -200,10 +199,9 @@ impl THandshakeServer for ComplexHandshakeServer {
     fn read_c1(&mut self) -> Result<(), HandshakeError> {
         let c1_bytes = self.reader.read_bytes(define::RTMP_HANDSHAKE_SIZE)?;
 
-        /*read the timestamp*/
+        // C1 starts with the client timestamp used later in S2.
         self.c1_timestamp = BytesReader::new(c1_bytes.clone()).read_u32::<BigEndian>()?;
 
-        /*read the digest and save*/
         let mut key = BytesMut::new();
         key.extend_from_slice(define::RTMP_CLIENT_KEY_FIRST_HALF.as_bytes());
 
@@ -226,50 +224,44 @@ impl THandshakeServer for ComplexHandshakeServer {
     }
 
     fn write_s1(&mut self) -> Result<(), HandshakeError> {
-        /*write the s1 data*/
         let mut writer = BytesWriter::new();
 
         writer.write_u32::<BigEndian>(utils::timestamp_ms())?;
         writer.write(&define::RTMP_SERVER_VERSION)?;
         writer.write_random_bytes(handshake_random_len_u32())?;
 
-        /*generate the digest*/
         let mut key = BytesMut::new();
         key.extend_from_slice(define::RTMP_SERVER_KEY_FIRST_HALF.as_bytes());
 
         let mut digest_processor = DigestProcessor::new(writer.extract_current_bytes(), key);
         let content = digest_processor.generate_and_fill_digest()?;
 
-        /*write*/
         self.writer.write(&content[..])?;
         Ok(())
     }
 
     fn write_s2(&mut self) -> Result<(), HandshakeError> {
-        /*write the s2 data*/
         let mut writer = BytesWriter::new();
 
         writer.write_u32::<BigEndian>(utils::timestamp_ms())?;
         writer.write_u32::<BigEndian>(self.c1_timestamp)?;
         writer.write_random_bytes(handshake_random_len_u32())?;
 
-        /*generate the key for s2*/
         let mut key = BytesMut::new();
         key.extend_from_slice(&define::RTMP_SERVER_KEY);
 
-        let mut digest_processor = DigestProcessor::new(BytesMut::new(), key);
+        let digest_processor = DigestProcessor::new(BytesMut::new(), key);
         let tmp_key = digest_processor.make_digest(&Vec::from(&self.c1_digest[..]))?;
 
-        /*generate the digest for s2 data*/
+        // S2 digest covers the first 1504 bytes and is appended as the final 32 bytes.
         let mut data: BytesMut = BytesMut::new();
         data.extend_from_slice(&writer.get_current_bytes()[..1504]);
 
-        let mut digest_processor_2 = DigestProcessor::new(BytesMut::new(), tmp_key);
-        let digtest = digest_processor_2.make_digest(&Vec::from(&data[..]))?;
+        let digest_processor_2 = DigestProcessor::new(BytesMut::new(), tmp_key);
+        let digest = digest_processor_2.make_digest(&Vec::from(&data[..]))?;
 
-        let content = [data, digtest].concat();
+        let content = [data, digest].concat();
 
-        /*write*/
         self.writer.write(&content[..])?;
 
         Ok(())
@@ -334,17 +326,12 @@ impl HandshakeServer {
     pub async fn handshake(&mut self) -> Result<(), HandshakeError> {
         if self.is_complex {
             let result = self.complex_handshaker.handshake().await;
-            match result {
-                Ok(()) => {
-                    //println!("Complex handshake is successfully!!")
-                }
-                Err(err) => {
-                    tracing::warn!("complex handshake failed.. err:{err}");
-                    self.is_complex = false;
-                    let data = self.saved_data.clone();
-                    self.extend_data(&data[..])?;
-                    self.simple_handshaker.handshake().await?;
-                }
+            if let Err(err) = result {
+                tracing::warn!("complex handshake failed, falling back to simple handshake: {err}");
+                self.is_complex = false;
+                let data = self.saved_data.clone();
+                self.extend_data(&data[..])?;
+                self.simple_handshaker.handshake().await?;
             }
         } else {
             self.simple_handshaker.handshake().await?;
@@ -357,8 +344,8 @@ impl HandshakeServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytesio::bytesio::{NetType, TNetIO};
     use crate::bytesio::bytesio_errors::BytesIOError;
+    use crate::bytesio::net_io::{NetType, TNetIO};
     use async_trait::async_trait;
     use bytes::{Bytes, BytesMut};
     use std::sync::Arc;
@@ -406,15 +393,17 @@ mod tests {
     fn build_c0c1() -> Vec<u8> {
         let mut data = Vec::with_capacity(1 + define::RTMP_HANDSHAKE_SIZE);
         // C0: RTMP version byte
-        data.push(u8::try_from(define::RTMP_VERSION).expect("REASON"));
+        data.push(define::RTMP_VERSION);
         // C1: 4 bytes timestamp + 4 bytes zeros + 1528 bytes random
         let timestamp: u32 = 12345;
         data.extend_from_slice(&timestamp.to_be_bytes());
         data.extend_from_slice(&[0u8; 4]); // version zeros
                                            // Fill remaining 1528 bytes with pattern
-        for i in 0..(define::RTMP_HANDSHAKE_SIZE - 8) {
-            data.push(u8::try_from(i % 256).expect("REASON"));
-        }
+        data.extend(
+            (0u8..=u8::MAX)
+                .cycle()
+                .take(define::RTMP_HANDSHAKE_SIZE - 8),
+        );
         data
     }
 
@@ -471,9 +460,7 @@ mod tests {
         let io = make_io();
         let mut server = SimpleHandshakeServer::new(io);
         // Only provide C0 (1 byte), no C1 data
-        server
-            .extend_data(&[u8::try_from(define::RTMP_VERSION).expect("REASON")])
-            .unwrap();
+        server.extend_data(&[define::RTMP_VERSION]).unwrap();
         server.read_c0().unwrap();
         // C1 requires 1536 bytes but none available
         let result = server.read_c1();
@@ -488,10 +475,7 @@ mod tests {
         assert!(result.is_ok());
         // Should have written 1 byte (RTMP version)
         assert_eq!(server.writer.bytes_writer.bytes.len(), 1);
-        assert_eq!(
-            server.writer.bytes_writer.bytes[0],
-            u8::try_from(define::RTMP_VERSION).expect("RTMP version must fit in u8")
-        );
+        assert_eq!(server.writer.bytes_writer.bytes[0], define::RTMP_VERSION);
     }
 
     #[test]
@@ -575,9 +559,7 @@ mod tests {
     fn test_complex_handshake_read_c0() {
         let io = make_io();
         let mut server = ComplexHandshakeServer::new(io);
-        server
-            .extend_data(&[u8::try_from(define::RTMP_VERSION).expect("REASON")])
-            .unwrap();
+        server.extend_data(&[define::RTMP_VERSION]).unwrap();
         assert!(server.read_c0().is_ok());
     }
 

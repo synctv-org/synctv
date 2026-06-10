@@ -6,47 +6,101 @@
       {
         "ordinal": 0,
         "name": "user_id: UserId",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_preferences",
+            "name": "user_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "two_factor_enabled",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "user_preferences",
+            "name": "two_factor_enabled"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "notify_room_invitation_in_app",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "user_preferences",
+            "name": "notify_room_invitation_in_app"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "notify_room_event_in_app",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "user_preferences",
+            "name": "notify_room_event_in_app"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "notify_system_announcement_in_app",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "user_preferences",
+            "name": "notify_system_announcement_in_app"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "notify_room_invitation_email",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "user_preferences",
+            "name": "notify_room_invitation_email"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "notify_room_event_email",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "user_preferences",
+            "name": "notify_room_event_email"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "notify_system_announcement_email",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "user_preferences",
+            "name": "notify_system_announcement_email"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "settings",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "user_preferences",
+            "name": "settings"
+          }
+        }
       }
     ],
     "parameters": {

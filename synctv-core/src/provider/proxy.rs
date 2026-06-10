@@ -91,7 +91,7 @@ pub struct ProxyServices {
     pub room_service: Arc<RoomService>,
     pub credential_encryption: Option<CredentialEncryption>,
     pub credential_repo: Arc<UserProviderCredentialRepository>,
-    pub provider_access_service: Option<Arc<dyn ProviderAccessService>>,
+    pub provider_access_service: Arc<dyn ProviderAccessService>,
     pub signing_key: Arc<ProxySigningKey>,
     pub public_id_codec: Arc<PublicIdCodec>,
 }
@@ -189,13 +189,7 @@ impl ProxyRequestContext<'_> {
 pub fn selected_range_header(
     ctx: &ProxyRequestContext<'_>,
 ) -> Result<Option<String>, ProviderError> {
-    selected_range_header_from_headers(ctx.request_headers)
-}
-
-pub fn selected_range_header_from_headers(
-    headers: &HeaderMap,
-) -> Result<Option<String>, ProviderError> {
-    headers
+    ctx.request_headers
         .get(http::header::RANGE)
         .map(|value| {
             value.to_str().map(ToString::to_string).map_err(|_| {
@@ -244,6 +238,31 @@ pub fn target_url_is_m3u8(url: &str) -> bool {
 #[must_use]
 pub fn m3u8_segment_proxy_base(ctx: &ProxyRequestContext<'_>, version: &str) -> String {
     format!("{}/{version}", ctx.proxy_base)
+}
+
+pub(crate) fn proxy_version_segment(sub_path: &str) -> Result<&str, ProviderError> {
+    let version = sub_path
+        .split_once('/')
+        .map_or(sub_path, |(version, _)| version);
+    if version.trim().is_empty() {
+        return Err(ProviderError::NotFound);
+    }
+    Ok(version)
+}
+
+pub(crate) fn split_versioned_proxy_path(sub_path: &str) -> Result<(&str, &str), ProviderError> {
+    let (version, rest) = sub_path.split_once('/').ok_or(ProviderError::NotFound)?;
+    if version.trim().is_empty() || rest.trim().is_empty() {
+        return Err(ProviderError::NotFound);
+    }
+    Ok((version, rest))
+}
+
+pub(crate) fn parse_proxy_index(value: &str) -> Result<usize, ProviderError> {
+    if value.trim().is_empty() {
+        return Err(ProviderError::NotFound);
+    }
+    value.parse::<usize>().map_err(|_| ProviderError::NotFound)
 }
 
 pub(crate) fn action_for_signed_target_url(
@@ -386,16 +405,35 @@ mod tests {
     use super::*;
     use crate::provider::{store::InMemoryProviderStore, ExecutionControl};
     use crate::provider::{store::VersionedPlayback, PlaybackResult};
+    use crate::test_helpers::TestResultExt;
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
+
+    fn test_proxy_context(headers: &HeaderMap) -> ProxyRequestContext<'_> {
+        ProxyRequestContext {
+            sub_path: "",
+            query_string: None,
+            store: None,
+            proxy_base: "",
+            services: None,
+            public_id_codec: None,
+            verified_claims: None,
+            request_context: None,
+            request_headers: headers,
+        }
+    }
 
     #[test]
     fn test_selected_range_header_returns_valid_ascii_header() {
         let mut headers = HeaderMap::new();
-        headers.insert(http::header::RANGE, "bytes=0-1023".parse().unwrap());
+        headers.insert(
+            http::header::RANGE,
+            "bytes=0-1023".parse().checked("operation should succeed"),
+        );
 
         assert_eq!(
-            selected_range_header_from_headers(&headers).expect("range header should parse"),
+            selected_range_header(&test_proxy_context(&headers))
+                .checked("range header should parse"),
             Some("bytes=0-1023".to_string())
         );
     }
@@ -405,21 +443,73 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             http::header::RANGE,
-            http::HeaderValue::from_bytes(&[0xff]).expect("raw header should build"),
+            http::HeaderValue::from_bytes(&[0xff]).checked("raw header should build"),
         );
 
         assert!(matches!(
-            selected_range_header_from_headers(&headers),
+            selected_range_header(&test_proxy_context(&headers)),
             Err(ProviderError::InvalidConfig(message))
                 if message.contains("Invalid Range header")
         ));
+    }
+
+    #[test]
+    fn test_split_versioned_proxy_path_requires_version_and_action() {
+        for sub_path in ["", "v1", "/stream", "v1/", " /stream", "v1/ "] {
+            assert!(matches!(
+                split_versioned_proxy_path(sub_path),
+                Err(ProviderError::NotFound)
+            ));
+        }
+
+        assert_eq!(
+            split_versioned_proxy_path("v1/stream/0").checked("operation should succeed"),
+            ("v1", "stream/0")
+        );
+    }
+
+    #[test]
+    fn test_proxy_version_segment_allows_version_only_paths() {
+        for sub_path in ["", "/segment"] {
+            assert!(matches!(
+                proxy_version_segment(sub_path),
+                Err(ProviderError::NotFound)
+            ));
+        }
+
+        assert_eq!(
+            proxy_version_segment("v1").checked("operation should succeed"),
+            "v1"
+        );
+        assert_eq!(
+            proxy_version_segment("v1/stream/0").checked("operation should succeed"),
+            "v1"
+        );
+    }
+
+    #[test]
+    fn test_parse_proxy_index_rejects_empty_and_invalid_values() {
+        for value in ["", " ", "abc", "-1"] {
+            assert!(matches!(
+                parse_proxy_index(value),
+                Err(ProviderError::NotFound)
+            ));
+        }
+
+        assert_eq!(
+            parse_proxy_index("42").checked("operation should succeed"),
+            42
+        );
     }
 
     #[tokio::test]
     async fn test_lookup_versioned_no_store() {
         let result = lookup_versioned(None, "v1", None).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ProviderError::ApiError(_)));
+        assert!(matches!(
+            result.failed("operation should fail"),
+            ProviderError::ApiError(_)
+        ));
     }
 
     #[tokio::test]
@@ -427,7 +517,10 @@ mod tests {
         let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(100));
         let result = lookup_versioned(Some(&store), "nonexistent", None).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ProviderError::NotFound));
+        assert!(matches!(
+            result.failed("operation should fail"),
+            ProviderError::NotFound
+        ));
     }
 
     #[tokio::test]
@@ -445,10 +538,13 @@ mod tests {
         store
             .set("v:v1", &vp, Duration::from_mins(1))
             .await
-            .unwrap();
+            .checked("operation should succeed");
         let result = lookup_versioned(Some(&store), "v1", None).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ProviderError::NotFound));
+        assert!(matches!(
+            result.failed("operation should fail"),
+            ProviderError::NotFound
+        ));
     }
 
     #[tokio::test]
@@ -466,10 +562,10 @@ mod tests {
         store
             .set("v:v1", &vp, Duration::from_mins(1))
             .await
-            .unwrap();
+            .checked("operation should succeed");
         let result = lookup_versioned(Some(&store), "v1", None).await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().version, "v1");
+        assert_eq!(result.checked("operation should succeed").version, "v1");
     }
 
     #[test]
@@ -477,15 +573,18 @@ mod tests {
         let codec = PublicIdCodec::plain();
 
         assert_eq!(
-            parse_proxy_room_id(&codec, "room_42", "proxy metadata").unwrap(),
+            parse_proxy_room_id(&codec, "room_42", "proxy metadata")
+                .checked("operation should succeed"),
             RoomId::expect_positive(42)
         );
         assert_eq!(
-            parse_proxy_media_id(&codec, "med_99", "proxy metadata").unwrap(),
+            parse_proxy_media_id(&codec, "med_99", "proxy metadata")
+                .checked("operation should succeed"),
             MediaId::expect_positive(99)
         );
         assert_eq!(
-            parse_proxy_user_id(&codec, "usr_7", "proxy metadata").unwrap(),
+            parse_proxy_user_id(&codec, "usr_7", "proxy metadata")
+                .checked("operation should succeed"),
             UserId::expect_positive(7)
         );
         assert!(parse_proxy_room_id(&codec, "42", "proxy metadata").is_err());
@@ -508,7 +607,7 @@ mod tests {
         store
             .set("v:v1", &vp, Duration::from_mins(1))
             .await
-            .unwrap();
+            .checked("operation should succeed");
 
         let cancellation = CancellationToken::new();
         cancellation.cancel();

@@ -244,10 +244,6 @@ pub(super) fn i64_to_i32_api(value: i64, field: &'static str) -> Result<i32, Api
     i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
 }
 
-pub(super) fn usize_to_u32_api(value: usize, field: &'static str) -> Result<u32, ApiError> {
-    u32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds u32::MAX")))
-}
-
 pub(super) fn chat_status_to_proto(
     status: synctv_core::models::ChatMessageStatus,
 ) -> synctv_proto::client::ChatMessageStatus {
@@ -644,7 +640,7 @@ pub(super) fn build_my_room_list_query(
 
 pub(super) fn build_transfer_room_ownership_request(
     req: synctv_proto::client::TransferRoomOwnershipRequest,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<UserId, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     crate::impls::proto_validated_user_id(req.new_owner_user_id, public_id_codec)
@@ -652,7 +648,7 @@ pub(super) fn build_transfer_room_ownership_request(
 
 pub(super) fn build_check_room_request(
     req: synctv_proto::client::CheckRoomRequest,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     crate::impls::proto_validated_room_id(req.room_id, public_id_codec)
@@ -660,14 +656,10 @@ pub(super) fn build_check_room_request(
 
 pub(crate) fn build_create_websocket_ticket_request(
     req: &synctv_proto::client::CreateWebSocketTicketRequest,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     crate::impls::validate_proto_request(req)?;
     crate::impls::proto_validated_room_id(req.room_id.clone(), public_id_codec)
-}
-
-pub(super) fn websocket_ticket_service_unavailable_error() -> ApiError {
-    ApiError::ServiceUnavailable("WebSocket ticket service is not available.".to_string())
 }
 
 pub(super) type ChatHistoryCursor = (chrono::DateTime<chrono::Utc>, i64);
@@ -697,7 +689,7 @@ pub(super) fn build_get_chat_history_request(
 
 pub(super) fn build_list_chat_reaction_users_request(
     req: &synctv_proto::client::ListChatReactionUsersRequest,
-    public_id_codec: &crate::PublicIdCodec,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<(i32, Option<ChatReactionUsersCursor>), ApiError> {
     crate::impls::validate_proto_request(req)?;
 

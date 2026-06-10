@@ -1,12 +1,12 @@
 //! Provider API implementations.
 
-pub mod alist;
-pub mod bilibili;
-pub mod common;
-pub mod emby;
-pub mod playback;
-pub mod proxy;
-pub mod rtmp;
+pub(crate) mod alist;
+pub(crate) mod bilibili;
+pub(crate) mod common;
+pub(crate) mod emby;
+pub(crate) mod playback;
+pub(crate) mod proxy;
+pub(crate) mod rtmp;
 
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ pub use alist::{AlistApiImpl, ProviderApiRuntime};
 pub use bilibili::BilibiliApiImpl;
 pub(crate) use common::{
     get_provider_binds, get_provider_credentials, provider_instance_name_for_provider,
-    resolve_bound_instance_name,
+    provider_instance_name_for_response, resolve_bound_instance_name,
 };
 pub use common::{ProviderCommonApiImpl, ProviderCommonApiRuntime};
 pub use emby::EmbyApiImpl;

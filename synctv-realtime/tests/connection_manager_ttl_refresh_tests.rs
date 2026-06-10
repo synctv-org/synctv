@@ -44,7 +44,7 @@ fn distributed_manager(
 ) -> ConnectionManager {
     build_connection_manager(
         limits,
-        &SharedStateProfile::from_runtime(
+        &SharedStateProfile::for_cluster_runtime(
             Some(synctv_core::direct_runtime(conn)),
             key_prefix,
             true,
@@ -317,21 +317,14 @@ async fn test_shutdown_during_active_operations() {
     );
 }
 
-/// Test that the disconnect retry task is also cancelled on shutdown.
-///
-/// `ConnectionManager` spawns two tasks with Redis:
-/// 1. TTL refresh task
-/// 2. Disconnect retry task
-///
-/// Both should be cancelled by `shutdown()`.
+/// Shutdown should complete after disconnect signals have been published.
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_shutdown_cancels_disconnect_retry_task() {
+async fn test_shutdown_completes_after_disconnect_signal() {
     let (_container, conn, prefix) = setup_redis().await;
 
     let manager = distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
 
-    // Register and then force disconnect signal
     let user_id = uid("disconnect_user");
     manager
         .register("disconnect_conn".to_string(), user_id)
@@ -340,14 +333,9 @@ async fn test_shutdown_cancels_disconnect_retry_task() {
 
     manager.disconnect_user(&user_id);
 
-    // Give disconnect retry task time to start processing
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Call shutdown
     manager.shutdown().await;
-
-    // Should complete without hanging
-    // (If disconnect retry task wasn't cancelled, this could hang)
 }
 
 /// Test that reconciliation also clears stale zero-count counters.

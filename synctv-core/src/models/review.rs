@@ -98,6 +98,13 @@ sqlx_i16_enum!(ReviewStatus, "Invalid ReviewStatus value", {
 mod tests {
     use super::ReviewStatus;
 
+    fn status_from_proto(value: synctv_proto::common::ReviewStatus) -> ReviewStatus {
+        match ReviewStatus::try_from(value) {
+            Ok(status) => status,
+            Err(error) => std::panic::panic_any(format!("review status should convert: {error}")),
+        }
+    }
+
     #[test]
     fn review_status_proto_conversions_reject_unspecified_input() {
         assert_eq!(
@@ -105,7 +112,7 @@ mod tests {
             synctv_proto::common::ReviewStatus::Pending as i32
         );
         assert_eq!(
-            ReviewStatus::try_from(synctv_proto::common::ReviewStatus::Approved).unwrap(),
+            status_from_proto(synctv_proto::common::ReviewStatus::Approved),
             ReviewStatus::Approved
         );
         assert!(ReviewStatus::try_from(synctv_proto::common::ReviewStatus::Unspecified).is_err());

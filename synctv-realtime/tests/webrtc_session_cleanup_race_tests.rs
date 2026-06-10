@@ -12,7 +12,7 @@
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
 use synctv_core::models::id::{RoomId, UserId};
-use synctv_realtime::ConnectionManager;
+use synctv_realtime::sync::ConnectionManager;
 
 const SHORT_WEBRTC_TIMEOUT: Duration = Duration::from_millis(60);
 const WEBRTC_TIMEOUT_BUFFER: Duration = Duration::from_millis(25);

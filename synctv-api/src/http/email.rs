@@ -89,7 +89,7 @@ where
 }
 
 /// Create email-related routes.
-pub fn create_email_router() -> Router<AppState> {
+pub(crate) fn create_email_router() -> Router<AppState> {
     Router::new()
         .route("/api/email/password/reset", post(request_password_reset))
         .route(

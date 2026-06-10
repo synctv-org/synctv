@@ -1,11 +1,11 @@
 //! Notification service tests
 //!
 //! Tests event construction, subscription, event type names, and serialization.
-#![allow(clippy::unwrap_used)]
 
 use synctv_core::models::{MediaId, PlaylistId, RoomId, UserId};
 use synctv_core::service::notification::RoomEvent;
 use synctv_core::service::NotificationService;
+use synctv_core_testing::ok;
 
 fn create_service() -> NotificationService {
     NotificationService::default()
@@ -23,11 +23,13 @@ async fn test_notify_user_joined_event_construction() {
 
     assert_eq!(service.notify_user_joined(&room_id, &user_id, "alice"), 1);
 
-    let (received_room_id, received_event) =
-        tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
+    let (received_room_id, received_event) = ok(
+        ok(
+            tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv()).await,
+            "user joined event should arrive before timeout",
+        ),
+        "user joined event should be received",
+    );
 
     assert_eq!(received_room_id, room_id);
     match received_event {
@@ -38,7 +40,7 @@ async fn test_notify_user_joined_event_construction() {
             assert_eq!(uid, user_id);
             assert_eq!(username, "alice");
         }
-        other => panic!("Expected UserJoined, got: {other:?}"),
+        other => std::panic::panic_any(format!("Expected UserJoined, got: {other:?}")),
     }
 }
 
@@ -56,15 +58,21 @@ async fn test_subscribe_receives_events_in_order() {
     assert_eq!(service.notify_user_left(&room_id, &user_id, "alice"), 1);
 
     // Receive in order
-    let (_, event1) = tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    let (_, event1) = ok(
+        ok(
+            tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv()).await,
+            "first room event should arrive before timeout",
+        ),
+        "first room event should be received",
+    );
 
-    let (_, event2) = tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    let (_, event2) = ok(
+        ok(
+            tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv()).await,
+            "second room event should arrive before timeout",
+        ),
+        "second room event should be received",
+    );
 
     assert!(matches!(event1, RoomEvent::UserJoined { .. }));
     assert!(matches!(event2, RoomEvent::UserLeft { .. }));
@@ -196,7 +204,10 @@ fn test_serialization_user_joined_uses_tagged_type() {
         username: "testuser".to_string(),
     };
 
-    let json = serde_json::to_string(&event).unwrap();
+    let json = ok(
+        serde_json::to_string(&event),
+        "user joined event should serialize",
+    );
 
     assert!(
         json.contains(r#""type":"UserJoined""#),

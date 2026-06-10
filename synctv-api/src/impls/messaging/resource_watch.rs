@@ -9,11 +9,10 @@ use synctv_realtime::sync::{ConnectionId, RealtimeEvent};
 use crate::impls::playback::PlaybackService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
 use crate::impls::room_members_snapshot::RoomMembersSnapshotService;
-use crate::impls::room_settings_snapshot::{
-    default_room_settings_snapshot_service, RoomSettingsSnapshotService,
-};
-use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
+use crate::impls::room_settings_snapshot::RoomSettingsSnapshotService;
+use crate::runtime::RealtimeEventService;
 use synctv_proto::client::ObserveResource;
+use synctv_realtime::sync::ConnectionRuntime;
 
 use super::event_policy::{watch_admin_event_matches, watch_disconnect_signal_matches};
 use super::identity::{classify_realtime_join_error_message, RealtimeJoinError, RealtimePrincipal};
@@ -54,13 +53,13 @@ pub struct ResourceWatchSessionConfig {
     pub room_service: Arc<RoomService>,
     pub chat_service: Option<Arc<ChatService>>,
     pub event_service: Arc<dyn RealtimeEventService>,
-    pub connection_service: Arc<dyn RealtimeConnectionService>,
-    pub public_id_codec: Arc<crate::PublicIdCodec>,
+    pub connection_service: Arc<dyn ConnectionRuntime>,
+    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
     pub sender: Arc<dyn MessageSender>,
-    pub playback_service: Option<Arc<dyn PlaybackService>>,
-    pub playlist_items_snapshot_service: Option<Arc<dyn PlaylistItemsSnapshotService>>,
-    pub room_members_snapshot_service: Option<Arc<dyn RoomMembersSnapshotService>>,
-    pub room_settings_snapshot_service: Option<Arc<dyn RoomSettingsSnapshotService>>,
+    pub playback_service: Arc<dyn PlaybackService>,
+    pub playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
+    pub room_members_snapshot_service: Arc<dyn RoomMembersSnapshotService>,
+    pub room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
 }
 
 pub struct ResourceWatchSession {
@@ -71,8 +70,8 @@ pub struct ResourceWatchSession {
     room_service: Arc<RoomService>,
     chat_service: Option<Arc<ChatService>>,
     event_service: Arc<dyn RealtimeEventService>,
-    connection_service: Arc<dyn RealtimeConnectionService>,
-    public_id_codec: Arc<crate::PublicIdCodec>,
+    connection_service: Arc<dyn ConnectionRuntime>,
+    public_id_codec: Arc<synctv_core::PublicIdCodec>,
     resource_observer: Arc<ResourceObserver>,
 }
 
@@ -99,8 +98,6 @@ impl ResourceWatchSession {
         } = config;
         let user_id = principal.connection_user_id();
         let connection_id = generate_resource_watch_connection_id();
-        let room_settings_snapshot_service = room_settings_snapshot_service
-            .unwrap_or_else(|| default_room_settings_snapshot_service(Arc::clone(&room_service)));
         let observer = ResourceObserver::new(ResourceObserverParams {
             room_id,
             user_id,

@@ -153,7 +153,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_probed_node_identity_preserves_peer_epoch() {
+    fn test_extract_probed_node_identity_preserves_peer_epoch() -> Result<(), &'static str> {
         let response = cluster::GetNodesResponse {
             nodes: vec![cluster::NodeInfo {
                 node_id: "peer-node-1".to_string(),
@@ -164,10 +164,11 @@ mod tests {
         };
 
         let identity = extract_probed_node_identity(response, "10.0.0.5:50051")
-            .expect("matching peer should be extracted");
+            .ok_or("matching peer should be extracted")?;
 
         assert_eq!(identity.node_id, "peer-node-1");
         assert_eq!(identity.api_address, "10.0.0.5:50051");
         assert_eq!(identity.epoch, 7);
+        Ok(())
     }
 }

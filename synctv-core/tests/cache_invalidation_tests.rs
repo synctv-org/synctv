@@ -4,7 +4,6 @@
 //! using Redis Pub/Sub or Streams.
 //!
 //! Requires Docker for testcontainers.
-#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 use synctv_core::{
@@ -16,6 +15,7 @@ use synctv_core_testing::{
     create_test_pool_with_options_and_label, redis_connection_manager,
     start_redis_url as start_test_redis_url,
 };
+use synctv_core_testing::{TestOptionExt, TestResultExt};
 use tokio::sync::RwLock;
 
 async fn start_redis() -> (synctv_core_testing::RedisContainer, String) {
@@ -54,7 +54,7 @@ fn shared_runtime_invalidation_service(
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_broadcast_received() {
     let (_container, redis_url) = start_redis().await;
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let redis_client = redis::Client::open(redis_url).checked("Failed to create Redis client");
     let stream_key = unique_stream_key();
 
     let service1 =
@@ -63,8 +63,8 @@ async fn test_cache_invalidation_broadcast_received() {
     let service2 =
         distributed_invalidation_service(redis_client.clone(), "node2", stream_key).await;
 
-    service1.start().await.expect("Failed to start service1");
-    service2.start().await.expect("Failed to start service2");
+    service1.start().await.checked("Failed to start service1");
+    service2.start().await.checked("Failed to start service2");
 
     // Subscribe to service2's local channel
     let mut receiver = service2.subscribe();
@@ -76,21 +76,21 @@ async fn test_cache_invalidation_broadcast_received() {
     service1
         .invalidate_user_permission(&room_id, &user_id)
         .await
-        .expect("Failed to broadcast invalidation");
+        .checked("Failed to broadcast invalidation");
 
     tokio::select! {
         msg = receiver.recv() => {
-            let msg = msg.expect("Failed to receive message");
+            let msg = msg.checked("Failed to receive message");
             match msg {
                 InvalidationMessage::UserPermission { room_id: r, user_id: u } => {
                     assert_eq!(r, room_id.to_string());
                     assert_eq!(u, user_id.to_string());
                 }
-                _ => panic!("Unexpected message type"),
+                other => std::panic::panic_any(format!("unexpected message type: {other:?}")),
             }
         }
         () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
-            panic!("Timeout waiting for invalidation message");
+            std::panic::panic_any("timeout waiting for invalidation message".to_string());
         }
     }
 
@@ -102,7 +102,7 @@ async fn test_cache_invalidation_broadcast_received() {
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_all_message() {
     let (_container, redis_url) = start_redis().await;
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let redis_client = redis::Client::open(redis_url).checked("Failed to create Redis client");
     let stream_key = unique_stream_key();
 
     let service1 =
@@ -111,8 +111,8 @@ async fn test_cache_invalidation_all_message() {
     let service2 =
         distributed_invalidation_service(redis_client.clone(), "node2", stream_key).await;
 
-    service1.start().await.expect("Failed to start service1");
-    service2.start().await.expect("Failed to start service2");
+    service1.start().await.checked("Failed to start service1");
+    service2.start().await.checked("Failed to start service2");
 
     let mut receiver = service2.subscribe();
 
@@ -120,15 +120,15 @@ async fn test_cache_invalidation_all_message() {
     service1
         .invalidate_all()
         .await
-        .expect("Failed to broadcast invalidation");
+        .checked("Failed to broadcast invalidation");
 
     tokio::select! {
         msg = receiver.recv() => {
-            let msg = msg.expect("Failed to receive message");
+            let msg = msg.checked("Failed to receive message");
             assert_eq!(msg, InvalidationMessage::All);
         }
         () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
-            panic!("Timeout waiting for invalidation message");
+            std::panic::panic_any("timeout waiting for invalidation message".to_string());
         }
     }
 
@@ -140,7 +140,7 @@ async fn test_cache_invalidation_all_message() {
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_room_permission() {
     let (_container, redis_url) = start_redis().await;
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let redis_client = redis::Client::open(redis_url).checked("Failed to create Redis client");
     let stream_key = unique_stream_key();
 
     let service1 =
@@ -148,8 +148,8 @@ async fn test_cache_invalidation_room_permission() {
 
     let service2 = distributed_invalidation_service(redis_client, "node2", stream_key).await;
 
-    service1.start().await.expect("Failed to start service1");
-    service2.start().await.expect("Failed to start service2");
+    service1.start().await.checked("Failed to start service1");
+    service2.start().await.checked("Failed to start service2");
 
     let mut receiver = service2.subscribe();
 
@@ -157,20 +157,22 @@ async fn test_cache_invalidation_room_permission() {
     service1
         .invalidate_room_permission(&room_id)
         .await
-        .expect("Failed to broadcast invalidation");
+        .checked("Failed to broadcast invalidation");
 
     tokio::select! {
         msg = receiver.recv() => {
-            let msg = msg.expect("Failed to receive message");
+            let msg = msg.checked("Failed to receive message");
             match msg {
                 InvalidationMessage::RoomPermission { room_id: r } => {
                     assert_eq!(r, room_id.to_string());
                 }
-                _ => panic!("Expected RoomPermission message"),
+                other => {
+                    std::panic::panic_any(format!("expected RoomPermission message, got {other:?}"));
+                }
             }
         }
         () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
-            panic!("Timeout waiting for invalidation message");
+            std::panic::panic_any("timeout waiting for invalidation message".to_string());
         }
     }
 
@@ -182,7 +184,7 @@ async fn test_cache_invalidation_room_permission() {
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_multiple_messages() {
     let (_container, redis_url) = start_redis().await;
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let redis_client = redis::Client::open(redis_url).checked("Failed to create Redis client");
     let stream_key = unique_stream_key();
 
     let service1 =
@@ -190,8 +192,8 @@ async fn test_cache_invalidation_multiple_messages() {
 
     let service2 = distributed_invalidation_service(redis_client, "node2", stream_key).await;
 
-    service1.start().await.expect("Failed to start service1");
-    service2.start().await.expect("Failed to start service2");
+    service1.start().await.checked("Failed to start service1");
+    service2.start().await.checked("Failed to start service2");
 
     let received_messages = Arc::new(RwLock::new(Vec::new()));
     let received_clone = received_messages.clone();
@@ -213,20 +215,20 @@ async fn test_cache_invalidation_multiple_messages() {
     service1
         .invalidate_room(&room1)
         .await
-        .expect("Failed to invalidate room1");
+        .checked("Failed to invalidate room1");
     service1
         .invalidate_room(&room2)
         .await
-        .expect("Failed to invalidate room2");
+        .checked("Failed to invalidate room2");
     service1
         .invalidate_user(&user1)
         .await
-        .expect("Failed to invalidate user");
+        .checked("Failed to invalidate user");
 
     tokio::time::timeout(tokio::time::Duration::from_secs(5), receiver_handle)
         .await
-        .expect("Timeout")
-        .expect("Receiver task failed");
+        .checked("Timeout")
+        .checked("Receiver task failed");
 
     let messages = received_messages.read().await;
     assert_eq!(messages.len(), 3, "Should receive 3 messages");
@@ -247,25 +249,25 @@ async fn test_cache_invalidation_without_redis() {
     service
         .start()
         .await
-        .expect("Failed to start service without Redis");
+        .checked("Failed to start service without Redis");
 
     // invalidate_* methods should return Ok (no-op without Redis)
     let room_id = RoomId::new();
     service
         .invalidate_room(&room_id)
         .await
-        .expect("Failed to invalidate (should be no-op)");
+        .checked("Failed to invalidate (should be no-op)");
 
     let user_id = UserId::new();
     service
         .invalidate_user_permission(&room_id, &user_id)
         .await
-        .expect("Failed to invalidate (should be no-op)");
+        .checked("Failed to invalidate (should be no-op)");
 
     service
         .invalidate_all()
         .await
-        .expect("Failed to invalidate all (should be no-op)");
+        .checked("Failed to invalidate all (should be no-op)");
 
     service.stop().await;
 }
@@ -276,12 +278,12 @@ async fn test_cache_invalidation_self_origin_not_received() {
     // Messages originating from a node's own node_id should NOT be delivered
     // to that node's local subscriber (the subscriber filters them out).
     let (_container, redis_url) = start_redis().await;
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let redis_client = redis::Client::open(redis_url).checked("Failed to create Redis client");
 
     let service =
         distributed_invalidation_service(redis_client, "self_node", unique_stream_key()).await;
 
-    service.start().await.expect("Failed to start service");
+    service.start().await.checked("Failed to start service");
 
     let mut receiver = service.subscribe();
 
@@ -290,7 +292,7 @@ async fn test_cache_invalidation_self_origin_not_received() {
     service
         .invalidate_room(&room_id)
         .await
-        .expect("Failed to broadcast");
+        .checked("Failed to broadcast");
 
     // The subscriber should NOT receive the self-originated message.
     // Use a short timeout to verify nothing arrives.
@@ -320,15 +322,15 @@ async fn test_cache_invalidation_broadcast_local() {
     };
     service
         .broadcast_local(msg.clone())
-        .expect("broadcast_local should succeed");
+        .checked("broadcast_local should succeed");
 
     tokio::select! {
         received = receiver.recv() => {
-            let received = received.expect("Should receive local broadcast");
+            let received = received.checked("Should receive local broadcast");
             assert_eq!(received, msg);
         }
         () = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
-            panic!("Timeout waiting for local broadcast message");
+            std::panic::panic_any("timeout waiting for local broadcast message".to_string());
         }
     }
 }
@@ -337,7 +339,7 @@ async fn test_cache_invalidation_broadcast_local() {
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_playback_state() {
     let (_container, redis_url) = start_redis().await;
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let redis_client = redis::Client::open(redis_url).checked("Failed to create Redis client");
     let stream_key = unique_stream_key();
 
     let service1 =
@@ -345,8 +347,8 @@ async fn test_cache_invalidation_playback_state() {
 
     let service2 = distributed_invalidation_service(redis_client, "node2", stream_key).await;
 
-    service1.start().await.expect("Failed to start service1");
-    service2.start().await.expect("Failed to start service2");
+    service1.start().await.checked("Failed to start service1");
+    service2.start().await.checked("Failed to start service2");
 
     let mut receiver = service2.subscribe();
 
@@ -354,20 +356,22 @@ async fn test_cache_invalidation_playback_state() {
     service1
         .invalidate_playback_state(&room_id)
         .await
-        .expect("Failed to broadcast invalidation");
+        .checked("Failed to broadcast invalidation");
 
     tokio::select! {
         msg = receiver.recv() => {
-            let msg = msg.expect("Failed to receive message");
+            let msg = msg.checked("Failed to receive message");
             match msg {
                 InvalidationMessage::PlaybackState { room_id: r } => {
                     assert_eq!(r, room_id.to_string());
                 }
-                _ => panic!("Expected PlaybackState message"),
+                other => {
+                    std::panic::panic_any(format!("expected PlaybackState message, got {other:?}"));
+                }
             }
         }
         () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
-            panic!("Timeout waiting for invalidation message");
+            std::panic::panic_any("timeout waiting for invalidation message".to_string());
         }
     }
 
@@ -379,7 +383,7 @@ async fn test_cache_invalidation_playback_state() {
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_with_shared_conn_without_client_still_broadcasts() {
     let (_container, redis_url) = start_redis().await;
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let redis_client = redis::Client::open(redis_url).checked("Failed to create Redis client");
     let shared_conn = Arc::new(RwLock::new(redis_connection_manager(&redis_client).await));
     let stream_key = unique_stream_key();
 
@@ -388,8 +392,8 @@ async fn test_cache_invalidation_with_shared_conn_without_client_still_broadcast
         shared_runtime_invalidation_service(shared_conn.clone(), "node1", stream_key.clone());
     let service2 = shared_runtime_invalidation_service(shared_conn, "node2", stream_key);
 
-    service1.start().await.expect("Failed to start service1");
-    service2.start().await.expect("Failed to start service2");
+    service1.start().await.checked("Failed to start service1");
+    service2.start().await.checked("Failed to start service2");
 
     let mut receiver = service2.subscribe();
     let room_id = RoomId::new();
@@ -397,20 +401,22 @@ async fn test_cache_invalidation_with_shared_conn_without_client_still_broadcast
     service1
         .invalidate_room(&room_id)
         .await
-        .expect("shared-conn-only service should still publish remotely");
+        .checked("shared-conn-only service should still publish remotely");
 
     tokio::select! {
         msg = receiver.recv() => {
-            let msg = msg.expect("Failed to receive message");
+            let msg = msg.checked("Failed to receive message");
             match msg {
                 InvalidationMessage::Room { room_id: r } => {
                     assert_eq!(r, room_id.to_string());
                 }
-                other => panic!("Expected Room invalidation, got {other:?}"),
+                other => std::panic::panic_any(format!("expected Room invalidation, got {other:?}")),
             }
         }
         () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
-            panic!("Timeout waiting for shared-conn invalidation message");
+            std::panic::panic_any(
+                "timeout waiting for shared-conn invalidation message".to_string(),
+            );
         }
     }
 
@@ -422,7 +428,7 @@ async fn test_cache_invalidation_with_shared_conn_without_client_still_broadcast
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_restart_resets_consumer_group_for_same_node() {
     let (_container, redis_url) = start_redis().await;
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let redis_client = redis::Client::open(redis_url).checked("Failed to create Redis client");
     let stream_key = unique_stream_key();
     let node_id = "restart-node";
     let consumer_group = format!("cache-invalidation-{node_id}");
@@ -437,11 +443,11 @@ async fn test_cache_invalidation_restart_resets_consumer_group_for_same_node() {
         .arg("payload")
         .arg(
             serde_json::to_string(&InvalidationMessage::All)
-                .expect("Failed to serialize invalidation"),
+                .checked("Failed to serialize invalidation"),
         )
         .query_async(&mut setup_conn)
         .await
-        .expect("Failed to seed stream");
+        .checked("Failed to seed stream");
 
     let _: () = redis::cmd("XGROUP")
         .arg("CREATE")
@@ -450,7 +456,7 @@ async fn test_cache_invalidation_restart_resets_consumer_group_for_same_node() {
         .arg("0")
         .query_async(&mut setup_conn)
         .await
-        .expect("Failed to create consumer group");
+        .checked("Failed to create consumer group");
 
     let pending_reply: redis::streams::StreamReadReply = redis::cmd("XREADGROUP")
         .arg("GROUP")
@@ -463,7 +469,7 @@ async fn test_cache_invalidation_restart_resets_consumer_group_for_same_node() {
         .arg(">")
         .query_async(&mut setup_conn)
         .await
-        .expect("Failed to create pending delivery");
+        .checked("Failed to create pending delivery");
     assert_eq!(pending_reply.keys.len(), 1, "expected seeded stream entry");
     assert_eq!(
         pending_reply.keys[0].ids.len(),
@@ -476,7 +482,7 @@ async fn test_cache_invalidation_restart_resets_consumer_group_for_same_node() {
     service
         .start()
         .await
-        .expect("Failed to start restarted service");
+        .checked("Failed to start restarted service");
 
     let mut receiver = service.subscribe();
     assert!(
@@ -491,7 +497,7 @@ async fn test_cache_invalidation_restart_resets_consumer_group_for_same_node() {
         .arg(&consumer_group)
         .query_async(&mut setup_conn)
         .await
-        .expect("Failed to inspect pending state");
+        .checked("Failed to inspect pending state");
     let summary = format!("{pending:?}");
     assert!(
         summary.contains("int(0)"),
@@ -503,7 +509,7 @@ async fn test_cache_invalidation_restart_resets_consumer_group_for_same_node() {
         .arg(&stream_key)
         .query_async(&mut setup_conn)
         .await
-        .expect("Failed to inspect consumer groups");
+        .checked("Failed to inspect consumer groups");
     let groups_summary = format!("{groups:?}");
     assert!(
         groups_summary.contains(&consumer_group),
@@ -517,14 +523,14 @@ async fn test_cache_invalidation_restart_resets_consumer_group_for_same_node() {
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_stop_destroys_current_consumer_group() {
     let (_container, redis_url) = start_redis().await;
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let redis_client = redis::Client::open(redis_url).checked("Failed to create Redis client");
     let stream_key = unique_stream_key();
     let node_id = "shutdown-node";
     let consumer_group = format!("cache-invalidation-{node_id}");
 
     let service =
         distributed_invalidation_service(redis_client.clone(), node_id, stream_key.clone()).await;
-    service.start().await.expect("Failed to start service");
+    service.start().await.checked("Failed to start service");
     service.stop().await;
 
     let mut conn = redis_connection_manager(&redis_client).await;
@@ -556,7 +562,7 @@ async fn test_cache_invalidation_stop_destroys_current_consumer_group() {
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_start_cleans_empty_foreign_orphan_group() {
     let (_container, redis_url) = start_redis().await;
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let redis_client = redis::Client::open(redis_url).checked("Failed to create Redis client");
     let stream_key = unique_stream_key();
     let foreign_group = "cache-invalidation-old-node";
 
@@ -570,12 +576,12 @@ async fn test_cache_invalidation_start_cleans_empty_foreign_orphan_group() {
         .arg("MKSTREAM")
         .query_async(&mut conn)
         .await
-        .expect("Failed to create orphan foreign group");
+        .checked("Failed to create orphan foreign group");
 
     let service =
         distributed_invalidation_service(redis_client.clone(), "current-node", stream_key.clone())
             .await;
-    service.start().await.expect("Failed to start service");
+    service.start().await.checked("Failed to start service");
 
     let groups: redis::RedisResult<Vec<Vec<redis::Value>>> = redis::cmd("XINFO")
         .arg("GROUPS")
@@ -596,7 +602,7 @@ async fn test_cache_invalidation_start_cleans_empty_foreign_orphan_group() {
 #[ignore = "Requires Docker"]
 async fn test_cache_invalidation_start_preserves_recent_foreign_group() {
     let (_container, redis_url) = start_redis().await;
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let redis_client = redis::Client::open(redis_url).checked("Failed to create Redis client");
     let stream_key = unique_stream_key();
     let foreign_group = "cache-invalidation-remote-node";
     let foreign_consumer = "remote-node";
@@ -611,11 +617,11 @@ async fn test_cache_invalidation_start_preserves_recent_foreign_group() {
         .arg("payload")
         .arg(
             serde_json::to_string(&InvalidationMessage::All)
-                .expect("Failed to serialize invalidation"),
+                .checked("Failed to serialize invalidation"),
         )
         .query_async(&mut conn)
         .await
-        .expect("Failed to seed stream");
+        .checked("Failed to seed stream");
 
     let _: () = redis::cmd("XGROUP")
         .arg("CREATE")
@@ -624,7 +630,7 @@ async fn test_cache_invalidation_start_preserves_recent_foreign_group() {
         .arg("0")
         .query_async(&mut conn)
         .await
-        .expect("Failed to create foreign group");
+        .checked("Failed to create foreign group");
 
     let _: redis::streams::StreamReadReply = redis::cmd("XREADGROUP")
         .arg("GROUP")
@@ -637,19 +643,19 @@ async fn test_cache_invalidation_start_preserves_recent_foreign_group() {
         .arg(">")
         .query_async(&mut conn)
         .await
-        .expect("Failed to mark foreign consumer as active");
+        .checked("Failed to mark foreign consumer as active");
 
     let service =
         distributed_invalidation_service(redis_client.clone(), "current-node", stream_key.clone())
             .await;
-    service.start().await.expect("Failed to start service");
+    service.start().await.checked("Failed to start service");
 
     let groups: Vec<Vec<redis::Value>> = redis::cmd("XINFO")
         .arg("GROUPS")
         .arg(&stream_key)
         .query_async(&mut conn)
         .await
-        .expect("Failed to inspect groups after startup");
+        .checked("Failed to inspect groups after startup");
     let summary = format!("{groups:?}");
     assert!(
         summary.contains(foreign_group),
@@ -686,7 +692,7 @@ async fn test_cache_invalidation_after_commit() {
     .await;
 
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = JwtService::new(secret).checked("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -710,10 +716,10 @@ async fn test_cache_invalidation_after_commit() {
         user_service,
         RoomServiceOptions {
             cache_invalidation: Some(invalidation_service.clone()),
-            ..RoomServiceOptions::test_defaults()
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
-    .expect("room service should build");
+    .checked("room service should build");
 
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -737,7 +743,7 @@ async fn test_cache_invalidation_after_commit() {
             banned_reason: None,
         })
         .await
-        .expect("Failed to create user");
+        .checked("Failed to create user");
     let user_id = user.id;
 
     let room_id = RoomId::new();
@@ -758,7 +764,7 @@ async fn test_cache_invalidation_after_commit() {
             last_activity_at: chrono::Utc::now(),
         })
         .await
-        .expect("Failed to create room");
+        .checked("Failed to create room");
     let room_id = room.id;
 
     let member_repo = RoomMemberRepository::new(pool.clone());
@@ -776,10 +782,13 @@ async fn test_cache_invalidation_after_commit() {
             version: 0,
         })
         .await
-        .expect("Failed to create member");
+        .checked("Failed to create member");
 
     // Prime the read path before deletion.
-    let _ = room_service.get_room(&room_id).await;
+    room_service
+        .get_room(&room_id)
+        .await
+        .checked("Failed to prime room read path");
     let mut invalidation_rx = invalidation_service.subscribe();
 
     // Now delete the room - invalidation must not become observable until
@@ -787,21 +796,21 @@ async fn test_cache_invalidation_after_commit() {
     room_service
         .delete_room(room_id, user_id)
         .await
-        .expect("Failed to delete room");
+        .checked("Failed to delete room");
 
     let observed_room_id = tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
         loop {
             let msg = invalidation_rx
                 .recv()
                 .await
-                .expect("invalidation channel open");
+                .checked("invalidation channel open");
             if let InvalidationMessage::Room { room_id } = msg {
                 break room_id;
             }
         }
     })
     .await
-    .expect("timed out waiting for room invalidation");
+    .checked("timed out waiting for room invalidation");
     assert_eq!(observed_room_id, room_id.to_string());
 
     // At the moment invalidation becomes observable, the DB mutation must
@@ -811,7 +820,7 @@ async fn test_cache_invalidation_after_commit() {
             .bind(room_id)
             .fetch_optional(&pool)
             .await
-            .expect("Failed to query room")
+            .checked("Failed to query room")
             .flatten();
 
     assert!(
@@ -823,7 +832,10 @@ async fn test_cache_invalidation_after_commit() {
     let result = room_service.get_room(&room_id).await;
     assert!(result.is_err(), "Deleted room should not be accessible");
     assert!(
-        matches!(result.unwrap_err(), synctv_core::Error::NotFound(_)),
+        matches!(
+            result.failed("operation should fail"),
+            synctv_core::Error::NotFound(_)
+        ),
         "Should return NotFound"
     );
 }
@@ -851,7 +863,7 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     .await;
 
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
-    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let jwt_service = JwtService::new(secret).checked("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -875,10 +887,10 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
         user_service,
         RoomServiceOptions {
             cache_invalidation: Some(invalidation_service.clone()),
-            ..RoomServiceOptions::test_defaults()
+            ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
-    .expect("room service should build");
+    .checked("room service should build");
 
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -902,7 +914,7 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
             banned_reason: None,
         })
         .await
-        .expect("Failed to create user");
+        .checked("Failed to create user");
     let user_id = user.id;
 
     let room_id = RoomId::new();
@@ -923,14 +935,14 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
             last_activity_at: chrono::Utc::now(),
         })
         .await
-        .expect("Failed to create room");
+        .checked("Failed to create room");
     let room_id = room.id;
 
     // Populate cache by reading the room
     let room_before = room_service
         .get_room(&room_id)
         .await
-        .expect("Failed to get room");
+        .checked("Failed to get room");
     assert_eq!(room_before.id, room_id);
     let mut invalidation_rx = invalidation_service.subscribe();
 
@@ -938,7 +950,7 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     // that delete_room does, but rolling back the transaction instead of committing.
 
     let mut tx: Transaction<sqlx::Postgres> =
-        pool.begin().await.expect("Failed to start transaction");
+        pool.begin().await.checked("Failed to start transaction");
 
     // Mark room as deleted (same as delete_room does)
     let _deleted = sqlx::query(
@@ -950,18 +962,20 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     .bind(chrono::Utc::now())
     .execute(&mut *tx)
     .await
-    .expect("Failed to delete room");
+    .checked("Failed to delete room");
 
     // Rollback the transaction (simulating a failure)
-    tx.rollback().await.expect("Failed to rollback transaction");
+    tx.rollback()
+        .await
+        .checked("Failed to rollback transaction");
 
     // Verify room is still active (not deleted) in the database
     let room_after = room_repo
         .get_by_id(&room_id)
         .await
-        .expect("Failed to fetch room");
+        .checked("Failed to fetch room");
     assert!(room_after.is_some(), "Room should still exist");
-    let room_after = room_after.unwrap();
+    let room_after = room_after.checked("test operation should succeed");
     assert!(
         room_after.deleted_at.is_none(),
         "Room should NOT be marked as deleted"
@@ -981,7 +995,7 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     let room_from_cache = room_service
         .get_room(&room_id)
         .await
-        .expect("Failed to get room after rollback");
+        .checked("Failed to get room after rollback");
     assert_eq!(
         room_from_cache.id, room_id,
         "Should be able to read room after rollback"

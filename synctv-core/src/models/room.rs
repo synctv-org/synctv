@@ -558,17 +558,36 @@ impl std::str::FromStr for RoomSettingsJson {
 mod tests {
     use super::*;
 
+    fn ok<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
+        }
+    }
+
     #[test]
     fn test_play_mode_parse_trimmed_case_insensitive_names() {
         assert_eq!(
-            " sequential ".parse::<PlayMode>().unwrap(),
+            ok(
+                " sequential ".parse::<PlayMode>(),
+                "sequential play mode should parse"
+            ),
             PlayMode::Sequential
         );
         assert_eq!(
-            " REPEAT_ONE ".parse::<PlayMode>().unwrap(),
+            ok(
+                " REPEAT_ONE ".parse::<PlayMode>(),
+                "repeat-one play mode should parse"
+            ),
             PlayMode::RepeatOne
         );
-        assert_eq!(" shuffle ".parse::<PlayMode>().unwrap(), PlayMode::Shuffle);
+        assert_eq!(
+            ok(
+                " shuffle ".parse::<PlayMode>(),
+                "shuffle play mode should parse"
+            ),
+            PlayMode::Shuffle
+        );
     }
 
     #[test]
@@ -578,7 +597,10 @@ mod tests {
             synctv_proto::common::RoomStatus::Active as i32
         );
         assert_eq!(
-            RoomStatus::try_from(synctv_proto::common::RoomStatus::Closed).unwrap(),
+            ok(
+                RoomStatus::try_from(synctv_proto::common::RoomStatus::Closed),
+                "closed room status should convert"
+            ),
             RoomStatus::Closed
         );
         assert!(RoomStatus::try_from(synctv_proto::common::RoomStatus::Unspecified).is_err());

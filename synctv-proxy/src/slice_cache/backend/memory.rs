@@ -72,11 +72,17 @@ impl MemoryBackend {
                 // decrements.  `put()` only adds the new size, and `remove()`
                 // delegates entirely to the listener via `run_pending_tasks`.
                 let size = value.data_size();
-                total_bytes_clone
+                if total_bytes_clone
                     .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                         Some(cur.saturating_sub(size))
                     })
-                    .ok();
+                    .is_err()
+                {
+                    tracing::debug!(
+                        size,
+                        "failed to update in-memory slice cache size during eviction"
+                    );
+                }
 
                 // Only remove from key_set when the key truly no longer exists
                 // in the cache.  For `Replaced`, a new value was just inserted,

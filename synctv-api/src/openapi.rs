@@ -145,7 +145,7 @@ use synctv_proto::client;
         room::get_chat_message_context,
         room::get_chat_message_read_receipts,
         room::send_chat_message,
-        room::create_chat_image_upload_session,
+        room::create_chat_attachment_upload_session,
         room::edit_chat_message,
         room::delete_chat_message,
         room::set_chat_reaction,
@@ -743,7 +743,7 @@ mod tests {
                 &["200", "400", "401", "403", "429"][..],
             ),
             (
-                "/api/rooms/{room_id}/chat/images/upload-session",
+                "/api/rooms/{room_id}/chat/attachments/upload-session",
                 "post",
                 &["200", "400", "401", "403", "429"][..],
             ),

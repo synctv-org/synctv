@@ -662,11 +662,11 @@ pub(crate) fn chat_message_event_to_proto(
                 .reply_to_message_id
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
-            images: event
+            attachments: event
                 .message
-                .images
+                .attachments
                 .iter()
-                .map(core_chat_image_to_proto)
+                .map(core_chat_attachment_to_proto)
                 .collect::<Result<Vec<_>, _>>()?,
             deleted_by_user_id,
             delete_reason: message.delete_reason.clone().unwrap_or_default(),
@@ -689,88 +689,112 @@ pub(crate) fn chat_message_event_to_proto(
     })
 }
 
-pub(crate) fn core_chat_image_to_proto(
-    image: &synctv_core::models::ChatImage,
-) -> Result<synctv_proto::client::ChatImage, String> {
-    Ok(synctv_proto::client::ChatImage {
-        id: image.id.clone(),
-        storage_backend: image.storage_backend.clone(),
-        object_key: image.object_key.clone(),
-        url: required_chat_image_url(image)?,
-        mime_type: required_chat_image_mime_type(image)?,
-        size_bytes: required_chat_image_size_bytes(image)?,
-        width: required_chat_image_dimension(image, image.width, "width")?,
-        height: required_chat_image_dimension(image, image.height, "height")?,
+pub(crate) fn core_chat_attachment_to_proto(
+    attachment: &synctv_core::models::ChatAttachment,
+) -> Result<synctv_proto::client::ChatAttachment, String> {
+    Ok(synctv_proto::client::ChatAttachment {
+        id: attachment.id.clone(),
+        storage_backend: attachment.storage_backend.clone(),
+        object_key: attachment.object_key.clone(),
+        url: required_chat_attachment_url(attachment)?,
+        mime_type: required_chat_attachment_mime_type(attachment)?,
+        size_bytes: required_chat_attachment_size_bytes(attachment)?,
+        width: attachment.width.unwrap_or_default(),
+        height: attachment.height.unwrap_or_default(),
         metadata: crate::impls::client::convert::json_to_vec(
-            &image.metadata,
-            "chat image metadata",
+            &attachment.metadata,
+            "chat attachment metadata",
         )
         .map_err(|error| error.to_string())?,
+        filename: attachment.filename.clone().unwrap_or_default(),
+        kind: chat_attachment_kind_to_proto(attachment.kind) as i32,
     })
 }
 
-fn required_chat_image_url(image: &synctv_core::models::ChatImage) -> Result<String, String> {
-    let url = image
+fn required_chat_attachment_url(
+    attachment: &synctv_core::models::ChatAttachment,
+) -> Result<String, String> {
+    let url = attachment
         .url
         .as_deref()
         .map(str::trim)
-        .ok_or_else(|| "chat image url is missing".to_string())?;
+        .ok_or_else(|| "chat attachment url is missing".to_string())?;
     if url.is_empty() {
-        return Err("chat image url is empty".to_string());
+        return Err("chat attachment url is empty".to_string());
     }
     Ok(url.to_string())
 }
 
-fn required_chat_image_mime_type(image: &synctv_core::models::ChatImage) -> Result<String, String> {
-    let mime_type = image
+fn required_chat_attachment_mime_type(
+    attachment: &synctv_core::models::ChatAttachment,
+) -> Result<String, String> {
+    let mime_type = attachment
         .mime_type
         .as_deref()
         .map(str::trim)
-        .ok_or_else(|| format!("chat image {} is missing mime_type", image.id))?;
+        .ok_or_else(|| format!("chat attachment {} is missing mime_type", attachment.id))?;
     if mime_type.is_empty() {
-        return Err(format!("chat image {} has empty mime_type", image.id));
+        return Err(format!(
+            "chat attachment {} has empty mime_type",
+            attachment.id
+        ));
     }
     Ok(mime_type.to_string())
 }
 
-fn required_chat_image_size_bytes(image: &synctv_core::models::ChatImage) -> Result<i64, String> {
-    match image.size_bytes {
+fn required_chat_attachment_size_bytes(
+    attachment: &synctv_core::models::ChatAttachment,
+) -> Result<i64, String> {
+    match attachment.size_bytes {
         Some(size_bytes) if size_bytes > 0 => Ok(size_bytes),
         _ => Err(format!(
-            "chat image {} is missing valid size_bytes",
-            image.id
+            "chat attachment {} is missing valid size_bytes",
+            attachment.id
         )),
     }
 }
 
-fn required_chat_image_dimension(
-    image: &synctv_core::models::ChatImage,
-    value: Option<i32>,
-    field: &'static str,
-) -> Result<i32, String> {
-    match value {
-        Some(value) if value > 0 => Ok(value),
-        _ => Err(format!("chat image {} is missing valid {field}", image.id)),
+pub(crate) fn chat_attachment_kind_to_proto(
+    kind: synctv_core::models::ChatAttachmentKind,
+) -> synctv_proto::client::ChatAttachmentKind {
+    match kind {
+        synctv_core::models::ChatAttachmentKind::File => {
+            synctv_proto::client::ChatAttachmentKind::File
+        }
+        synctv_core::models::ChatAttachmentKind::Image => {
+            synctv_proto::client::ChatAttachmentKind::Image
+        }
     }
 }
 
-pub(crate) fn proto_chat_image_to_core(
-    image: &synctv_proto::client::ChatImage,
+pub(crate) fn proto_chat_attachment_kind_from_mime_type(
+    mime_type: &str,
+) -> synctv_proto::client::ChatAttachmentKind {
+    if mime_type.trim().to_ascii_lowercase().starts_with("image/") {
+        synctv_proto::client::ChatAttachmentKind::Image
+    } else {
+        synctv_proto::client::ChatAttachmentKind::File
+    }
+}
+
+pub(crate) fn proto_chat_attachment_to_core(
+    attachment: &synctv_proto::client::ChatAttachment,
 ) -> Result<NewStoredFile, String> {
-    let metadata = if image.metadata.is_empty() {
+    let metadata = if attachment.metadata.is_empty() {
         serde_json::Value::Object(Default::default())
     } else {
-        serde_json::from_slice(&image.metadata).map_err(|error| error.to_string())?
+        serde_json::from_slice(&attachment.metadata).map_err(|error| error.to_string())?
     };
     Ok(NewStoredFile {
-        id: image.id.clone(),
-        storage_backend: image.storage_backend.clone(),
-        object_key: image.object_key.clone(),
-        url: (!image.url.trim().is_empty()).then(|| image.url.clone()),
-        mime_type: (!image.mime_type.trim().is_empty()).then(|| image.mime_type.clone()),
-        size_bytes: (image.size_bytes > 0).then_some(image.size_bytes),
-        width: (image.width > 0).then_some(image.width),
-        height: (image.height > 0).then_some(image.height),
+        filename: (!attachment.filename.trim().is_empty()).then(|| attachment.filename.clone()),
+        id: attachment.id.clone(),
+        storage_backend: attachment.storage_backend.clone(),
+        object_key: attachment.object_key.clone(),
+        url: (!attachment.url.trim().is_empty()).then(|| attachment.url.clone()),
+        mime_type: (!attachment.mime_type.trim().is_empty()).then(|| attachment.mime_type.clone()),
+        size_bytes: (attachment.size_bytes > 0).then_some(attachment.size_bytes),
+        width: (attachment.width > 0).then_some(attachment.width),
+        height: (attachment.height > 0).then_some(attachment.height),
         metadata,
     })
 }

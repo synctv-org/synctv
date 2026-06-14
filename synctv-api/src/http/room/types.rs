@@ -12,24 +12,24 @@ pub struct ChatReactionPath {
 }
 
 #[derive(Debug, serde::Deserialize)]
-pub struct ChatImageObjectPath {
+pub struct ChatAttachmentObjectPath {
     pub encoded_object_key: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ChatImageObjectQuery {
+pub struct ChatAttachmentObjectQuery {
     pub token: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
-pub struct VideoCoverObjectPath {
+pub struct MediaCoverObjectPath {
     pub encoded_object_key: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct VideoCoverObjectQuery {
+pub struct MediaCoverObjectQuery {
     pub token: String,
 }
 

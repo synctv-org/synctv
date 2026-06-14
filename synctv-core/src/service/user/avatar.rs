@@ -36,6 +36,7 @@ impl UserService {
                 user_id: *user_id,
                 storage_scope: user_avatar_storage_scope(*user_id),
                 client_file_id: request.client_avatar_id,
+                filename: None,
                 mime_type: request.mime_type,
                 size_bytes: request.size_bytes,
                 width: request.width,

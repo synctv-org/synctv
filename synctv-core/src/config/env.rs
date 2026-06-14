@@ -635,16 +635,16 @@ impl Config {
             &mut self.file_storage.default_backend,
         );
         env_override_str(
-            "SYNCTV_FILE_STORAGE_CHAT_IMAGES_BACKEND",
-            &mut self.file_storage.chat_images_backend,
+            "SYNCTV_FILE_STORAGE_CHAT_ATTACHMENTS_BACKEND",
+            &mut self.file_storage.chat_attachments_backend,
         );
         env_override_str(
             "SYNCTV_FILE_STORAGE_USER_AVATARS_BACKEND",
             &mut self.file_storage.user_avatars_backend,
         );
         env_override_str(
-            "SYNCTV_FILE_STORAGE_VIDEO_COVERS_BACKEND",
-            &mut self.file_storage.video_covers_backend,
+            "SYNCTV_FILE_STORAGE_MEDIA_COVERS_BACKEND",
+            &mut self.file_storage.media_covers_backend,
         );
         env_override_str(
             "SYNCTV_FILE_STORAGE_ROOM_COVERS_BACKEND",

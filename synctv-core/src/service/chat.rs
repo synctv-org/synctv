@@ -13,13 +13,13 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     models::{
-        AuditAction, AuditTargetType, ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatImage,
-        ChatMessage, ChatMessageContext, ChatMessageEvent, ChatMessageEventLog,
-        ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType, ChatMessageWithImages,
-        ChatPlaybackMessagesQuery, ChatReactionUsersCursor, ChatReactionUsersPage,
-        ChatReadStateWithUnread, CreateChatImageUploadSession, DeleteChatMessage, EditChatMessage,
-        FileBlob, FileUploadSession, MarkChatRead, RoomId, SendChatMessage, SetChatReaction,
-        UserId,
+        AuditAction, AuditTargetType, ChatAttachment, ChatEventKind, ChatHistoryCursor,
+        ChatHistoryPage, ChatMessage, ChatMessageContext, ChatMessageEvent, ChatMessageEventLog,
+        ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType,
+        ChatMessageWithAttachments, ChatPlaybackMessagesQuery, ChatReactionUsersCursor,
+        ChatReactionUsersPage, ChatReadStateWithUnread, CreateChatAttachmentUploadSession,
+        DeleteChatMessage, EditChatMessage, FileBlob, FileUploadSession, MarkChatRead, RoomId,
+        SendChatMessage, SetChatReaction, UserId,
     },
     repository::{
         ChatMessageOperationIdempotency, ChatRepository, DeleteChatMessageEventRequest,
@@ -36,7 +36,7 @@ use crate::{
 
 use super::file_storage::{FileStorageCleanupOrigin, FileStorageContext, FileStorageService};
 
-pub use super::file_upload_policies::MAX_CHAT_IMAGE_SIZE_BYTES;
+pub use super::file_upload_policies::MAX_CHAT_ATTACHMENT_SIZE_BYTES;
 
 mod helpers;
 use helpers::*;
@@ -44,7 +44,7 @@ use helpers::*;
 /// Maximum allowed chat message length in characters.
 /// Used by both the WebSocket handler and the service layer for consistent validation.
 pub const MAX_CHAT_MESSAGE_CHARS: usize = 500;
-pub const MAX_CHAT_IMAGES_PER_MESSAGE: usize = 10;
+pub const MAX_CHAT_ATTACHMENTS_PER_MESSAGE: usize = 10;
 const CHAT_REACTION_DETAIL_CACHE_TTL_SECS: u64 = 5;
 const CHAT_REACTION_DETAIL_CACHE_CAPACITY: u64 = 1024;
 
@@ -149,9 +149,9 @@ impl ChatService {
         self.file_storage_service.clone()
     }
 
-    pub async fn create_image_upload_session(
+    pub async fn create_attachment_upload_session(
         &self,
-        request: CreateChatImageUploadSession,
+        request: CreateChatAttachmentUploadSession,
     ) -> Result<FileUploadSession> {
         self.permission_service
             .check_permission(
@@ -169,11 +169,11 @@ impl ChatService {
         }
 
         self.file_storage_service
-            .create_upload_session(chat_image_upload_request_to_file_request(request))
+            .create_upload_session(chat_attachment_upload_request_to_file_request(request))
             .await
     }
 
-    pub async fn store_image_upload_object(
+    pub async fn store_attachment_upload_object(
         &self,
         encoded_object_key: &str,
         upload_token: &str,
@@ -185,7 +185,7 @@ impl ChatService {
             .await
     }
 
-    pub async fn get_image_object(
+    pub async fn get_attachment_object(
         &self,
         encoded_object_key: &str,
         read_token: &str,
@@ -237,7 +237,7 @@ impl ChatService {
                     message_type: ChatMessageType::Text,
                     reply_to_message_id: None,
                     metadata: serde_json::Value::Object(Default::default()),
-                    images: Vec::new(),
+                    attachments: Vec::new(),
                     mentions: Vec::new(),
                 },
                 control,
@@ -279,11 +279,11 @@ impl ChatService {
 
         validate_client_message_id(request.client_message_id.as_deref())?;
         validate_chat_metadata(&request.metadata)?;
-        validate_chat_images(&request.images)?;
+        validate_chat_attachments(&request.attachments)?;
         normalize_chat_mentions(&request.content, &mut request.mentions)?;
-        if request.content.trim().is_empty() && request.images.is_empty() {
+        if request.content.trim().is_empty() && request.attachments.is_empty() {
             return Err(Error::InvalidInput(
-                "empty chat message: content or image is required".to_string(),
+                "empty chat message: content or attachment is required".to_string(),
             ));
         }
         if request.content.chars().count() > MAX_CHAT_MESSAGE_CHARS {
@@ -352,7 +352,7 @@ impl ChatService {
         }
 
         let storage_scope = chat_file_storage_scope(room_id, user_id);
-        request.images = self
+        request.attachments = self
             .file_storage_service
             .prepare_files(
                 FileStorageContext {
@@ -360,11 +360,11 @@ impl ChatService {
                     storage_scope: &storage_scope,
                     client_request_id: request.client_message_id.as_deref(),
                 },
-                request.images,
+                request.attachments,
             )
             .await?;
-        validate_chat_images(&request.images)?;
-        strip_internal_chat_image_metadata(&mut request.images);
+        validate_chat_attachments(&request.attachments)?;
+        strip_internal_chat_attachment_metadata(&mut request.attachments);
 
         let reply_to_message_created_at = self
             .ensure_reply_target_visible(&room_id, request.reply_to_message_id)
@@ -381,14 +381,14 @@ impl ChatService {
                 .filter_chat(&request.content)
                 .map_err(|e| Error::InvalidInput(format!("Content filter error: {e}")))?
         };
-        if filtered_content.trim().is_empty() && request.images.is_empty() {
+        if filtered_content.trim().is_empty() && request.attachments.is_empty() {
             return Err(Error::InvalidInput(
-                "empty chat message: content or image is required".to_string(),
+                "empty chat message: content or attachment is required".to_string(),
             ));
         }
         request.content = filtered_content.clone();
-        if !request.images.is_empty() {
-            request.message_type = ChatMessageType::Image;
+        if !request.attachments.is_empty() {
+            request.message_type = ChatMessageType::Attachment;
         }
 
         // Create message
@@ -406,7 +406,7 @@ impl ChatService {
             .chat_repository
             .insert_message_event_idempotent(
                 &message,
-                &request.images,
+                &request.attachments,
                 &request.mentions,
                 &request_hash,
                 &event_id,
@@ -480,31 +480,31 @@ impl ChatService {
         ))
     }
 
-    pub async fn get_history_with_images(
+    pub async fn get_history_with_attachments(
         &self,
         room_id: &RoomId,
         cursor: Option<ChatHistoryCursor>,
         limit: i32,
         include_deleted: bool,
-    ) -> Result<(Vec<ChatMessageWithImages>, Option<ChatHistoryCursor>)> {
-        self.get_history_with_images_for_viewer(room_id, cursor, limit, include_deleted, None)
+    ) -> Result<(Vec<ChatMessageWithAttachments>, Option<ChatHistoryCursor>)> {
+        self.get_history_with_attachments_for_viewer(room_id, cursor, limit, include_deleted, None)
             .await
     }
 
-    pub async fn get_history_with_images_for_viewer(
+    pub async fn get_history_with_attachments_for_viewer(
         &self,
         room_id: &RoomId,
         cursor: Option<ChatHistoryCursor>,
         limit: i32,
         include_deleted: bool,
         viewer_user_id: Option<&UserId>,
-    ) -> Result<(Vec<ChatMessageWithImages>, Option<ChatHistoryCursor>)> {
+    ) -> Result<(Vec<ChatMessageWithAttachments>, Option<ChatHistoryCursor>)> {
         self.chat_repository
             .list_by_room_cursor_for_viewer(room_id, cursor, limit, include_deleted, viewer_user_id)
             .await
     }
 
-    pub async fn get_history_page_with_images_for_viewer(
+    pub async fn get_history_page_with_attachments_for_viewer(
         &self,
         room_id: &RoomId,
         cursor: Option<ChatHistoryCursor>,
@@ -517,45 +517,45 @@ impl ChatService {
             .await
     }
 
-    pub async fn get_playback_messages_with_images(
+    pub async fn get_playback_messages_with_attachments(
         &self,
         query: ChatPlaybackMessagesQuery,
-    ) -> Result<Vec<ChatMessageWithImages>> {
-        self.get_playback_messages_with_images_for_viewer(query, None)
+    ) -> Result<Vec<ChatMessageWithAttachments>> {
+        self.get_playback_messages_with_attachments_for_viewer(query, None)
             .await
     }
 
-    pub async fn get_playback_messages_with_images_for_viewer(
+    pub async fn get_playback_messages_with_attachments_for_viewer(
         &self,
         query: ChatPlaybackMessagesQuery,
         viewer_user_id: Option<&UserId>,
-    ) -> Result<Vec<ChatMessageWithImages>> {
+    ) -> Result<Vec<ChatMessageWithAttachments>> {
         let query = validate_chat_playback_query(query)?;
         self.chat_repository
             .list_playback_messages_for_viewer(&query, viewer_user_id)
             .await
     }
 
-    pub async fn get_message_with_images(
+    pub async fn get_message_with_attachments(
         &self,
         room_id: &RoomId,
         message_id: i64,
         include_deleted: bool,
-    ) -> Result<ChatMessageWithImages> {
-        self.get_message_with_images_for_viewer(room_id, message_id, include_deleted, None)
+    ) -> Result<ChatMessageWithAttachments> {
+        self.get_message_with_attachments_for_viewer(room_id, message_id, include_deleted, None)
             .await
     }
 
-    pub async fn get_message_with_images_for_viewer(
+    pub async fn get_message_with_attachments_for_viewer(
         &self,
         room_id: &RoomId,
         message_id: i64,
         include_deleted: bool,
         viewer_user_id: Option<&UserId>,
-    ) -> Result<ChatMessageWithImages> {
+    ) -> Result<ChatMessageWithAttachments> {
         let message = self
             .chat_repository
-            .get_with_images_by_room_and_id_for_viewer(room_id, message_id, viewer_user_id)
+            .get_with_attachments_by_room_and_id_for_viewer(room_id, message_id, viewer_user_id)
             .await?
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
         if message.message.status == ChatMessageStatus::Deleted && !include_deleted {
@@ -929,12 +929,12 @@ impl ChatService {
         &self,
         request: DeleteChatMessage,
     ) -> Result<ChatMessageEventOutcome> {
-        let current_with_images = self
+        let current_with_attachments = self
             .chat_repository
-            .get_with_images_by_room_and_id(&request.room_id, request.message_id)
+            .get_with_attachments_by_room_and_id(&request.room_id, request.message_id)
             .await?
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
-        let current = &current_with_images.message;
+        let current = &current_with_attachments.message;
 
         let is_sender = current.user_id.as_ref() == Some(&request.user_id);
         if !is_sender {
@@ -1034,16 +1034,16 @@ impl ChatService {
                     .await;
             }
 
-            let image_file_references = current_with_images
-                .images
+            let attachment_file_references = current_with_attachments
+                .attachments
                 .iter()
-                .map(ChatImage::file_reference_target)
+                .map(ChatAttachment::file_reference_target)
                 .collect::<Vec<_>>();
             if let Err(error) = self
                 .file_storage_service
                 .delete_files(
                     FileStorageCleanupOrigin::ReferenceReleased,
-                    &image_file_references,
+                    &attachment_file_references,
                 )
                 .await
             {
@@ -1051,14 +1051,14 @@ impl ChatService {
                     room_id = %request.room_id,
                     message_id = %request.message_id,
                     error = %error,
-                    "chat image cleanup failed after message deletion"
+                    "chat attachment cleanup failed after message deletion"
                 );
                 if let Err(enqueue_error) = crate::repository::FileStorageRepository::new(
                     self.chat_repository.pool().clone(),
                 )
                 .enqueue_cleanup_jobs(
                     FileStorageCleanupOrigin::ReferenceReleased.as_str(),
-                    &image_file_references,
+                    &attachment_file_references,
                     &serde_json::Value::Object(Default::default()),
                     &error.to_string(),
                 )
@@ -1068,7 +1068,7 @@ impl ChatService {
                         room_id = %request.room_id,
                         message_id = %request.message_id,
                         error = %enqueue_error,
-                        "failed to enqueue chat image cleanup retry after message deletion"
+                        "failed to enqueue chat attachment cleanup retry after message deletion"
                     );
                 }
             }

@@ -41,6 +41,7 @@ impl RoomService {
                 user_id,
                 storage_scope: room_cover_storage_scope(room_id),
                 client_file_id: request.client_cover_id,
+                filename: None,
                 mime_type: request.mime_type,
                 size_bytes: request.size_bytes,
                 width: request.width,

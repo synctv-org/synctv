@@ -30,7 +30,7 @@ use synctv_core::{
     Config,
 };
 use synctv_proto::client::{
-    CreateChatImageUploadSessionRequest, DeleteChatMessageRequest, EditChatMessageRequest,
+    CreateChatAttachmentUploadSessionRequest, DeleteChatMessageRequest, EditChatMessageRequest,
     GetChatHistoryRequest, GetChatMessageContextRequest, GetChatMessageRequest,
     GetChatReadStateRequest, MarkChatReadRequest, SendChatMessageRequest,
 };
@@ -221,9 +221,9 @@ async fn test_chat_write_endpoints_require_signed_in_user_and_chat_permission() 
     );
     expect_authorization(
         client_api
-            .create_chat_image_upload_session_for_actor(
+            .create_chat_attachment_upload_session_for_actor(
                 &guest,
-                CreateChatImageUploadSessionRequest::default(),
+                CreateChatAttachmentUploadSessionRequest::default(),
             )
             .await,
     );
@@ -245,10 +245,11 @@ async fn test_chat_write_endpoints_require_signed_in_user_and_chat_permission() 
     );
     expect_authorization(
         client_api
-            .create_chat_image_upload_session_for_actor(
+            .create_chat_attachment_upload_session_for_actor(
                 &member_actor,
-                CreateChatImageUploadSessionRequest {
-                    client_image_id: "img-blocked".to_string(),
+                CreateChatAttachmentUploadSessionRequest {
+                    client_attachment_id: "attachment-blocked".to_string(),
+                    filename: "blocked.png".to_string(),
                     mime_type: "image/png".to_string(),
                     size_bytes: 10,
                     width: 1,

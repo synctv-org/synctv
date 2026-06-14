@@ -18,7 +18,7 @@ use super::{
     cleanup::CleanupConfig, FileStorageCleanupOrigin, FileStorageService, LeaderCheck,
     SettingsRegistry,
 };
-use crate::models::{ChatImage, FileReferenceTarget};
+use crate::models::{ChatAttachment, FileReferenceTarget};
 use crate::repository::{FileStorageRepository, RoomResourceEventRepository};
 use crate::Result as CoreResult;
 
@@ -226,14 +226,15 @@ impl DatabaseMaintenanceService {
         let retention_days = self.chat_message_retention_days()?;
         let interval = format!("{retention_days} days");
 
-        let images = if let Some(storage) = &self.file_storage_service {
-            let images = sqlx::query_as!(
-                ChatImage,
+        let attachments = if let Some(storage) = &self.file_storage_service {
+            let attachments = sqlx::query_as::<_, ChatAttachment>(
                 r#"
                 SELECT i.id,
-                       i.room_id AS "room_id: crate::models::RoomId",
+                       i.kind,
+                       i.room_id,
                        i.message_id,
                        i.message_created_at,
+                       i.filename,
                        i.storage_backend,
                        i.object_key,
                        i.url,
@@ -243,20 +244,20 @@ impl DatabaseMaintenanceService {
                        i.height,
                        i.metadata,
                        i.created_at
-                FROM chat_message_images i
+                FROM chat_message_attachments i
                 INNER JOIN chat_messages m
                     ON m.id = i.message_id AND m.created_at = i.message_created_at
                 WHERE m.created_at <= NOW() - $1::text::interval
                 ORDER BY m.created_at, m.id, i.created_at
                 "#,
-                &interval
             )
+            .bind(&interval)
             .fetch_all(&self.pool)
             .await?;
-            if images.is_empty() {
+            if attachments.is_empty() {
                 None
             } else {
-                Some((storage.clone(), images))
+                Some((storage.clone(), attachments))
             }
         } else {
             None
@@ -277,10 +278,10 @@ impl DatabaseMaintenanceService {
             );
         }
 
-        if let Some((storage, images)) = images {
-            let file_references = images
+        if let Some((storage, attachments)) = attachments {
+            let file_references = attachments
                 .iter()
-                .map(crate::models::ChatImage::file_reference_target)
+                .map(crate::models::ChatAttachment::file_reference_target)
                 .collect::<Vec<_>>();
             if let Err(error) = storage
                 .delete_files(FileStorageCleanupOrigin::RetentionExpired, &file_references)
@@ -290,7 +291,7 @@ impl DatabaseMaintenanceService {
                     error = %error,
                     deleted,
                     retention_days,
-                    "Chat image cleanup after old message purge failed"
+                    "Chat attachment cleanup after old message purge failed"
                 );
                 if let Err(enqueue_error) = FileStorageRepository::new(self.pool.clone())
                     .enqueue_cleanup_jobs(
@@ -305,7 +306,7 @@ impl DatabaseMaintenanceService {
                         error = %enqueue_error,
                         deleted,
                         retention_days,
-                        "Failed to enqueue chat image cleanup retry after old message purge"
+                        "Failed to enqueue chat attachment cleanup retry after old message purge"
                     );
                 }
             }

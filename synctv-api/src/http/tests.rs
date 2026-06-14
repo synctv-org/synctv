@@ -1024,7 +1024,7 @@ async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult
                 message_type: synctv_core::models::ChatMessageType::Text,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: Vec::new(),
+                attachments: Vec::new(),
                 mentions: Vec::new(),
             })
             .await,
@@ -1039,7 +1039,7 @@ async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult
                 message_type: synctv_core::models::ChatMessageType::Text,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: Vec::new(),
+                attachments: Vec::new(),
                 mentions: Vec::new(),
             })
             .await,
@@ -1054,7 +1054,7 @@ async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult
                 message_type: synctv_core::models::ChatMessageType::Text,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: Vec::new(),
+                attachments: Vec::new(),
                 mentions: Vec::new(),
             })
             .await,

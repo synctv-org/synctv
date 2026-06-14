@@ -255,20 +255,20 @@ pub(crate) fn stored_file_reference_to_resource_cover(
     })
 }
 
-pub(crate) fn stored_file_reference_to_video_cover(
+pub(crate) fn stored_file_reference_to_media_cover(
     file: &synctv_core::models::StoredFileReference,
     url: Option<&str>,
-) -> Result<synctv_proto::client::VideoCover, crate::impls::ApiError> {
-    Ok(synctv_proto::client::VideoCover {
+) -> Result<synctv_proto::client::MediaCover, crate::impls::ApiError> {
+    Ok(synctv_proto::client::MediaCover {
         id: file.file_reference_id.to_string(),
         storage_backend: file.storage_backend.clone(),
         object_key: file.object_key.clone(),
-        url: required_cover_url(url, "video cover")?,
+        url: required_cover_url(url, "media cover")?,
         mime_type: file.mime_type.clone(),
         size_bytes: file.size_bytes,
-        width: metadata_i32(&file.metadata, "width", "video cover")?,
-        height: metadata_i32(&file.metadata, "height", "video cover")?,
-        metadata: json_to_vec(&file.metadata, "video cover metadata")?,
+        width: metadata_i32(&file.metadata, "width", "media cover")?,
+        height: metadata_i32(&file.metadata, "height", "media cover")?,
+        metadata: json_to_vec(&file.metadata, "media cover metadata")?,
     })
 }
 
@@ -720,7 +720,7 @@ pub(crate) fn try_media_to_proto_for_viewer_with_cover(
 ) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
     let mut proto = try_media_to_proto_for_viewer(media, is_available, viewer_id, public_id_codec)?;
     proto.cover = cover
-        .map(|file| stored_file_reference_to_video_cover(file, cover_url))
+        .map(|file| stored_file_reference_to_media_cover(file, cover_url))
         .transpose()?;
     Ok(proto)
 }
@@ -1266,7 +1266,7 @@ mod tests {
     use super::{
         dynamic_playlist_source_fields, normalize_created_room_settings,
         playback_client_profile_from_proto, proto_role_filter_to_room_role,
-        provider_playback_info_to_model, stored_file_reference_to_video_cover,
+        provider_playback_info_to_model, stored_file_reference_to_media_cover,
         try_bilibili_live_danmaku_for_static_media, try_media_to_proto,
         try_media_to_proto_for_viewer, try_playback_to_proto, try_playlist_to_proto,
         try_playlist_to_proto_for_viewer, try_room_to_proto_basic,
@@ -1306,13 +1306,13 @@ mod tests {
     }
 
     #[test]
-    fn video_cover_metadata_dimensions_convert_to_proto() -> TestResult {
+    fn media_cover_metadata_dimensions_convert_to_proto() -> TestResult {
         let file = stored_file_reference_with_metadata(serde_json::json!({
             "width": 1920,
             "height": 1080
         }));
 
-        let cover = api_ok(stored_file_reference_to_video_cover(
+        let cover = api_ok(stored_file_reference_to_media_cover(
             &file,
             Some("https://cdn.example.com/covers/video.png"),
         ))?;
@@ -1323,39 +1323,39 @@ mod tests {
     }
 
     #[test]
-    fn video_cover_metadata_rejects_invalid_dimensions() {
+    fn media_cover_metadata_rejects_invalid_dimensions() {
         let file = stored_file_reference_with_metadata(serde_json::json!({
             "width": "1920",
             "height": 1080
         }));
 
-        let error = stored_file_reference_to_video_cover(
+        let error = stored_file_reference_to_media_cover(
             &file,
             Some("https://cdn.example.com/covers/video.png"),
         )
-        .expect_err("invalid video cover dimensions should fail");
+        .expect_err("invalid media cover dimensions should fail");
 
         assert!(matches!(
             error,
             crate::impls::ApiError::Internal(message)
-                if message.contains("video cover metadata field 'width'")
+                if message.contains("media cover metadata field 'width'")
         ));
     }
 
     #[test]
-    fn video_cover_rejects_missing_url() {
+    fn media_cover_rejects_missing_url() {
         let file = stored_file_reference_with_metadata(serde_json::json!({
             "width": 1920,
             "height": 1080
         }));
 
-        let error = stored_file_reference_to_video_cover(&file, None)
+        let error = stored_file_reference_to_media_cover(&file, None)
             .expect_err("stored file response needs a cover URL");
 
         assert!(matches!(
             error,
             crate::impls::ApiError::Internal(message)
-                if message.contains("video cover url is missing")
+                if message.contains("media cover url is missing")
         ));
     }
 

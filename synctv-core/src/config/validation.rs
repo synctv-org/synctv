@@ -769,16 +769,16 @@ impl Config {
             &self.file_storage.default_backend,
         );
         validate_selected_file_backend(
-            "file_storage.chat_images_backend",
-            self.file_storage.backend_for_chat_images(),
+            "file_storage.chat_attachments_backend",
+            self.file_storage.backend_for_chat_attachments(),
         );
         validate_selected_file_backend(
             "file_storage.user_avatars_backend",
             self.file_storage.backend_for_user_avatars(),
         );
         validate_selected_file_backend(
-            "file_storage.video_covers_backend",
-            self.file_storage.backend_for_video_covers(),
+            "file_storage.media_covers_backend",
+            self.file_storage.backend_for_media_covers(),
         );
         validate_selected_file_backend(
             "file_storage.room_covers_backend",

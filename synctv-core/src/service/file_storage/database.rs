@@ -68,6 +68,20 @@ impl DatabaseFileStorageService {
     }
 }
 
+fn database_upload_max_size_bytes(policy_max_size_bytes: i64) -> i64 {
+    policy_max_size_bytes.min(MAX_DATABASE_FILE_UPLOAD_SIZE_BYTES as i64)
+}
+
+fn validate_database_upload_session_size(request: &CreateFileUploadSession) -> Result<i64> {
+    let max_size_bytes = database_upload_max_size_bytes(request.policy.max_size_bytes);
+    if request.size_bytes > max_size_bytes {
+        return Err(Error::InvalidInput(format!(
+            "file size must be between 1 and {max_size_bytes} bytes for database storage"
+        )));
+    }
+    Ok(max_size_bytes)
+}
+
 async fn compress_payload(
     compression: FileBlobCompression,
     data: Vec<u8>,
@@ -163,6 +177,7 @@ impl FileStorageService for DatabaseFileStorageService {
         request: CreateFileUploadSession,
     ) -> Result<FileUploadSession> {
         validate_create_file_upload_session(&request)?;
+        let max_size_bytes = validate_database_upload_session_size(&request)?;
         let checksum_sha256 = request
             .checksum_sha256
             .as_deref()
@@ -187,6 +202,7 @@ impl FileStorageService for DatabaseFileStorageService {
                 }
                 let mut file = NewStoredFile {
                     id: file_id,
+                    filename: request.filename.clone(),
                     storage_backend: self.storage_backend.clone(),
                     object_key: existing.object_key.clone(),
                     url: Some(database_file_object_url(
@@ -222,7 +238,7 @@ impl FileStorageService for DatabaseFileStorageService {
                     upload_method: None,
                     upload_headers: Default::default(),
                     expires_at: Some(expires_at),
-                    max_size_bytes: request.policy.max_size_bytes,
+                    max_size_bytes,
                 });
             }
         }
@@ -248,6 +264,7 @@ impl FileStorageService for DatabaseFileStorageService {
         };
         let mut file = NewStoredFile {
             id: file_id,
+            filename: request.filename,
             storage_backend: self.storage_backend.clone(),
             object_key,
             url: None,
@@ -305,7 +322,7 @@ impl FileStorageService for DatabaseFileStorageService {
             upload_method: Some("PUT".to_string()),
             upload_headers,
             expires_at: Some(Utc::now() + chrono::Duration::seconds(FILE_UPLOAD_EXPIRES_SECONDS)),
-            max_size_bytes: request.policy.max_size_bytes,
+            max_size_bytes,
         })
     }
 

@@ -1,7 +1,7 @@
 use crate::impls::ApiError;
 use std::net::IpAddr;
 use synctv_core::models::{
-    ChatMessageEvent, ChatMessageWithImages, DeleteChatMessage, EditChatMessage, FileBlob,
+    ChatMessageEvent, ChatMessageWithAttachments, DeleteChatMessage, EditChatMessage, FileBlob,
     FileUploadSession, NewStoredFile, UserId,
 };
 
@@ -274,33 +274,37 @@ pub(super) async fn username_for_chat_message(
         .ok_or_else(|| ApiError::NotFound("Chat message author not found".to_string()))
 }
 
-pub(super) fn chat_image_to_proto(
-    image: &synctv_core::models::ChatImage,
-) -> Result<synctv_proto::client::ChatImage, ApiError> {
-    crate::impls::messaging::core_chat_image_to_proto(image)
+pub(super) fn chat_attachment_to_proto(
+    attachment: &synctv_core::models::ChatAttachment,
+) -> Result<synctv_proto::client::ChatAttachment, ApiError> {
+    crate::impls::messaging::core_chat_attachment_to_proto(attachment)
         .map_err(|error| ApiError::Internal(error.clone()))
 }
 
-pub(super) fn new_chat_image_to_proto(
-    image: &NewStoredFile,
-) -> Result<synctv_proto::client::ChatImage, ApiError> {
-    let fields = required_stored_file_fields(image, "chat image metadata")?;
-    Ok(synctv_proto::client::ChatImage {
-        id: image.id.clone(),
-        storage_backend: image.storage_backend.clone(),
-        object_key: image.object_key.clone(),
+pub(super) fn new_chat_attachment_to_proto(
+    attachment: &NewStoredFile,
+) -> Result<synctv_proto::client::ChatAttachment, ApiError> {
+    let fields = required_stored_file_fields(attachment, "chat attachment metadata")?;
+    Ok(synctv_proto::client::ChatAttachment {
+        id: attachment.id.clone(),
+        storage_backend: attachment.storage_backend.clone(),
+        object_key: attachment.object_key.clone(),
         url: fields.url,
         mime_type: fields.mime_type,
         size_bytes: fields.size_bytes,
         width: fields.width,
         height: fields.height,
         metadata: fields.metadata,
+        filename: attachment.filename.clone().unwrap_or_default(),
+        kind: crate::impls::messaging::proto_chat_attachment_kind_from_mime_type(
+            attachment.mime_type.as_deref().unwrap_or_default(),
+        ) as i32,
     })
 }
 
 pub(super) fn chat_message_to_proto(
     api: &ClientApiImpl,
-    message: ChatMessageWithImages,
+    message: ChatMessageWithAttachments,
     username: String,
 ) -> Result<synctv_proto::client::ChatMessageReceive, ApiError> {
     let msg = message.message;
@@ -376,10 +380,10 @@ pub(super) fn chat_message_to_proto(
             .reply_to_message_id
             .map(|id| id.to_string())
             .unwrap_or_default(),
-        images: message
-            .images
+        attachments: message
+            .attachments
             .iter()
-            .map(chat_image_to_proto)
+            .map(chat_attachment_to_proto)
             .collect::<Result<Vec<_>, _>>()?,
         deleted_by_user_id,
         delete_reason: msg.delete_reason.unwrap_or_default(),
@@ -495,22 +499,22 @@ pub(super) fn parse_json_metadata(bytes: &[u8]) -> Result<serde_json::Value, Api
     Ok(metadata)
 }
 
-pub(super) fn parse_proto_chat_images(
-    images: &[synctv_proto::client::ChatImage],
+pub(super) fn parse_proto_chat_attachments(
+    attachments: &[synctv_proto::client::ChatAttachment],
 ) -> Result<Vec<synctv_core::models::NewStoredFile>, ApiError> {
-    images
+    attachments
         .iter()
-        .map(crate::impls::messaging::proto_chat_image_to_core)
+        .map(crate::impls::messaging::proto_chat_attachment_to_core)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| ApiError::InvalidInput(format!("Invalid chat image: {error}")))
+        .map_err(|error| ApiError::InvalidInput(format!("Invalid chat attachment: {error}")))
 }
 
 pub(super) fn upload_session_to_proto(
     session: FileUploadSession,
-) -> Result<synctv_proto::client::ChatImageUploadSession, ApiError> {
+) -> Result<synctv_proto::client::ChatAttachmentUploadSession, ApiError> {
     let fields = upload_session_fields(&session)?;
-    Ok(synctv_proto::client::ChatImageUploadSession {
-        image: Some(new_chat_image_to_proto(&session.file)?),
+    Ok(synctv_proto::client::ChatAttachmentUploadSession {
+        attachment: Some(new_chat_attachment_to_proto(&session.file)?),
         upload_required: session.upload_required,
         upload_url: fields.upload_url,
         upload_method: fields.upload_method,
@@ -522,20 +526,22 @@ pub(super) fn upload_session_to_proto(
         ownership_proof_ranges: session
             .ownership_proof_ranges
             .into_iter()
-            .map(|range| synctv_proto::client::ChatImageOwnershipProofRange {
-                offset: range.offset,
-                length: range.length,
-            })
+            .map(
+                |range| synctv_proto::client::ChatAttachmentOwnershipProofRange {
+                    offset: range.offset,
+                    length: range.length,
+                },
+            )
             .collect(),
         ownership_proof_metadata_key: fields.ownership_proof_metadata_key,
     })
 }
 
-pub(super) fn chat_image_object_to_proto(
+pub(super) fn chat_attachment_object_to_proto(
     room_id: &str,
     blob: &FileBlob,
-) -> synctv_proto::client::ChatImageObjectResponse {
-    synctv_proto::client::ChatImageObjectResponse {
+) -> synctv_proto::client::ChatAttachmentObjectResponse {
+    synctv_proto::client::ChatAttachmentObjectResponse {
         room_id: room_id.to_string(),
         object_key: blob.object_key.clone(),
         mime_type: blob.mime_type.clone(),

@@ -8,26 +8,27 @@ use axum::{
 
 use super::execute::{execute_public_endpoint, execute_room_actor_endpoint, execute_user_endpoint};
 use super::types::{
-    ChatImageObjectPath, ChatImageObjectQuery, PlaylistCoverObjectPath, PlaylistCoverObjectQuery,
-    RoomCoverObjectPath, RoomCoverObjectQuery, VideoCoverObjectPath, VideoCoverObjectQuery,
+    ChatAttachmentObjectPath, ChatAttachmentObjectQuery, MediaCoverObjectPath,
+    MediaCoverObjectQuery, PlaylistCoverObjectPath, PlaylistCoverObjectQuery, RoomCoverObjectPath,
+    RoomCoverObjectQuery,
 };
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
-    CreateChatImageUploadSessionRequest, CreateChatImageUploadSessionResponse,
+    CreateChatAttachmentUploadSessionRequest, CreateChatAttachmentUploadSessionResponse,
+    CreateMediaCoverUploadSessionRequest, CreateMediaCoverUploadSessionResponse,
     CreatePlaylistCoverUploadSessionRequest, CreatePlaylistCoverUploadSessionResponse,
-    CreateRoomCoverUploadSessionRequest, CreateRoomCoverUploadSessionResponse,
-    CreateVideoCoverUploadSessionRequest, CreateVideoCoverUploadSessionResponse, EditMediaResponse,
-    GetRoomResponse, UpdatePlaylistCoverRequest, UpdatePlaylistResponse, UpdateRoomCoverRequest,
-    UpdateVideoCoverRequest,
+    CreateRoomCoverUploadSessionRequest, CreateRoomCoverUploadSessionResponse, EditMediaResponse,
+    GetRoomResponse, UpdateMediaCoverRequest, UpdatePlaylistCoverRequest, UpdatePlaylistResponse,
+    UpdateRoomCoverRequest,
 };
 
-pub async fn create_video_cover_upload_session(
+pub async fn create_media_cover_upload_session(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomMediaTargetPathRequest>,
-    Json(mut req): Json<CreateVideoCoverUploadSessionRequest>,
-) -> AppResult<Json<CreateVideoCoverUploadSessionResponse>> {
+    Json(mut req): Json<CreateMediaCoverUploadSessionRequest>,
+) -> AppResult<Json<CreateMediaCoverUploadSessionResponse>> {
     let synctv_proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     req.room_id = room_id.clone();
     req.media_id = media_id;
@@ -38,7 +39,7 @@ pub async fn create_video_cover_upload_session(
         EndpointRateLimitScope::MediaCover,
         move |client_api, authenticated| async move {
             client_api
-                .create_video_cover_upload_session(&authenticated.user_id, &room_id, req)
+                .create_media_cover_upload_session(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -47,11 +48,11 @@ pub async fn create_video_cover_upload_session(
     Ok(Json(response))
 }
 
-pub async fn update_video_cover(
+pub async fn update_media_cover(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomMediaTargetPathRequest>,
-    Json(mut req): Json<UpdateVideoCoverRequest>,
+    Json(mut req): Json<UpdateMediaCoverRequest>,
 ) -> AppResult<Json<EditMediaResponse>> {
     let synctv_proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     req.room_id = room_id.clone();
@@ -63,7 +64,7 @@ pub async fn update_video_cover(
         EndpointRateLimitScope::MediaCover,
         move |client_api, authenticated| async move {
             client_api
-                .update_video_cover(&authenticated.user_id, &room_id, req)
+                .update_media_cover(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -72,13 +73,13 @@ pub async fn update_video_cover(
     Ok(Json(response))
 }
 
-pub async fn clear_video_cover(
+pub async fn clear_media_cover(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomMediaTargetPathRequest>,
 ) -> AppResult<Json<EditMediaResponse>> {
     let synctv_proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
-    let req = synctv_proto::client::ClearVideoCoverRequest {
+    let req = synctv_proto::client::ClearMediaCoverRequest {
         room_id: room_id.clone(),
         media_id,
     };
@@ -89,7 +90,7 @@ pub async fn clear_video_cover(
         EndpointRateLimitScope::MediaCover,
         move |client_api, authenticated| async move {
             client_api
-                .clear_video_cover(&authenticated.user_id, &room_id, req)
+                .clear_media_cover(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -257,14 +258,14 @@ pub async fn clear_playlist_cover(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/chat/images/upload-session",
+        path = "/api/rooms/{room_id}/chat/attachments/upload-session",
         tag = "Room",
         params(
             ("room_id" = String, Path, description = "Room ID")
         ),
-        request_body = CreateChatImageUploadSessionRequest,
+        request_body = CreateChatAttachmentUploadSessionRequest,
         responses(
-            (status = 200, description = "Chat image upload session", body = CreateChatImageUploadSessionResponse),
+            (status = 200, description = "Chat attachment upload session", body = CreateChatAttachmentUploadSessionResponse),
             (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
             (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
             (status = 403, description = "Insufficient room permission", body = synctv_proto::client::ApiErrorResponse),
@@ -275,12 +276,12 @@ pub async fn clear_playlist_cover(
         )
     )
 )]
-pub async fn create_chat_image_upload_session(
+pub async fn create_chat_attachment_upload_session(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
-    Json(req): Json<CreateChatImageUploadSessionRequest>,
-) -> AppResult<Json<CreateChatImageUploadSessionResponse>> {
+    Json(req): Json<CreateChatAttachmentUploadSessionRequest>,
+) -> AppResult<Json<CreateChatAttachmentUploadSessionResponse>> {
     let room_id = path.room_id;
     let response = execute_room_actor_endpoint(
         &state,
@@ -290,7 +291,7 @@ pub async fn create_chat_image_upload_session(
         EndpointRateLimitScope::RoomChat,
         move |client_api, actor| async move {
             client_api
-                .create_chat_image_upload_session_for_actor(&actor, req)
+                .create_chat_attachment_upload_session_for_actor(&actor, req)
                 .await
         },
     )
@@ -299,10 +300,10 @@ pub async fn create_chat_image_upload_session(
     Ok(Json(response))
 }
 
-pub async fn upload_chat_image_object(
+pub async fn upload_chat_attachment_object(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Path(path): Path<ChatImageObjectPath>,
+    Path(path): Path<ChatAttachmentObjectPath>,
     headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<StatusCode> {
@@ -328,7 +329,7 @@ pub async fn upload_chat_image_object(
                 )
             })?;
             chat_service
-                .store_image_upload_object(
+                .store_attachment_upload_object(
                     &encoded_object_key,
                     &upload_token,
                     content_type.as_deref(),
@@ -343,11 +344,11 @@ pub async fn upload_chat_image_object(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn get_chat_image_object(
+pub async fn get_chat_attachment_object(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Path(path): Path<ChatImageObjectPath>,
-    Query(query): Query<ChatImageObjectQuery>,
+    Path(path): Path<ChatAttachmentObjectPath>,
+    Query(query): Query<ChatAttachmentObjectQuery>,
 ) -> AppResult<Response> {
     let encoded_object_key = path.encoded_object_key;
     let token = query.token;
@@ -363,7 +364,7 @@ pub async fn get_chat_image_object(
                 )
             })?;
             chat_service
-                .get_image_object(&encoded_object_key, &token)
+                .get_attachment_object(&encoded_object_key, &token)
                 .await
                 .map_err(crate::impls::ApiError::from)
         },
@@ -379,10 +380,10 @@ pub async fn get_chat_image_object(
     Ok((headers, blob.data).into_response())
 }
 
-pub async fn upload_video_cover_object(
+pub async fn upload_media_cover_object(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Path(path): Path<VideoCoverObjectPath>,
+    Path(path): Path<MediaCoverObjectPath>,
     headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<StatusCode> {
@@ -392,7 +393,7 @@ pub async fn upload_video_cover_object(
         "Missing file upload token",
     )?;
     let content_type = super::super::optional_header_str(&headers, &header::CONTENT_TYPE)?;
-    let req = synctv_proto::client::UploadVideoCoverObjectRequest {
+    let req = synctv_proto::client::UploadMediaCoverObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: upload_token.to_string(),
         content_type: content_type.map(str::to_string),
@@ -403,19 +404,19 @@ pub async fn upload_video_cover_object(
         request_meta,
         EndpointRateLimitCategory::Write,
         EndpointRateLimitScope::MediaCover,
-        move |client_api| async move { client_api.upload_video_cover_object(req).await },
+        move |client_api| async move { client_api.upload_media_cover_object(req).await },
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn get_video_cover_object(
+pub async fn get_media_cover_object(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Path(path): Path<VideoCoverObjectPath>,
-    Query(query): Query<VideoCoverObjectQuery>,
+    Path(path): Path<MediaCoverObjectPath>,
+    Query(query): Query<MediaCoverObjectQuery>,
 ) -> AppResult<Response> {
-    let req = synctv_proto::client::GetVideoCoverObjectRequest {
+    let req = synctv_proto::client::GetMediaCoverObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: query.token,
     };
@@ -424,7 +425,7 @@ pub async fn get_video_cover_object(
         request_meta,
         EndpointRateLimitCategory::Read,
         EndpointRateLimitScope::RoomChat,
-        move |client_api| async move { client_api.get_video_cover_object(req).await },
+        move |client_api| async move { client_api.get_media_cover_object(req).await },
     )
     .await?;
     let headers = [

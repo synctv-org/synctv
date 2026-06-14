@@ -225,9 +225,9 @@ curl -fsS http://localhost:8080/health/ready
 | 字段 | 类型/可选值 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `file_storage.default_backend` | backend 名称 | `disabled` | 各业务默认使用的后端 |
-| `file_storage.chat_images_backend` | backend 名称或空 | `""` | 聊天图片后端；空值继承 `default_backend` |
+| `file_storage.chat_attachments_backend` | backend 名称或空 | `""` | 聊天附件后端；空值继承 `default_backend` |
 | `file_storage.user_avatars_backend` | backend 名称或空 | `""` | 用户头像后端；空值继承 `default_backend` |
-| `file_storage.video_covers_backend` | backend 名称或空 | `""` | 视频封面后端；空值继承 `default_backend` |
+| `file_storage.media_covers_backend` | backend 名称或空 | `""` | 媒体封面后端；空值继承 `default_backend` |
 | `file_storage.room_covers_backend` | backend 名称或空 | `""` | 房间封面后端；空值继承 `default_backend` |
 | `file_storage.playlist_covers_backend` | backend 名称或空 | `""` | 播放列表封面后端；空值继承 `default_backend` |
 | `file_storage.upload_token_secret` | secret 字符串 | `""` | 文件上传/读取 token 签名密钥；空值在启动时由 `jwt.secret` 派生 |
@@ -253,9 +253,9 @@ file_storage:
 ```yaml
 file_storage:
   default_backend: "database"
-  chat_images_backend: "database"
+  chat_attachments_backend: "database"
   user_avatars_backend: "database"
-  video_covers_backend: "database"
+  media_covers_backend: "database"
   room_covers_backend: "database"
   playlist_covers_backend: "database"
   upload_token_secret_file: "/run/secrets/file_upload_token_secret"
@@ -271,9 +271,9 @@ file_storage:
 ```yaml
 file_storage:
   default_backend: "s3_public"
-  chat_images_backend: "s3_public"
+  chat_attachments_backend: "s3_public"
   user_avatars_backend: "s3_public"
-  video_covers_backend: "s3_public"
+  media_covers_backend: "s3_public"
   room_covers_backend: "s3_public"
   playlist_covers_backend: "s3_public"
   upload_token_secret_file: "/run/secrets/file_upload_token_secret"

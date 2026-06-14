@@ -115,9 +115,9 @@ service RoomService {
   rpc WatchPlaylistItems(WatchPlaylistItemsRequest) returns (stream WatchPlaylistItemsEvent);
   rpc WatchRoomMemberEvents(WatchRoomMemberEventsRequest) returns (stream WatchRoomMemberEventsEvent);
   rpc WatchChatEvents(WatchChatEventsRequest) returns (stream WatchChatEventsEvent);
-  rpc CreateChatImageUploadSession(CreateChatImageUploadSessionRequest) returns (CreateChatImageUploadSessionResponse);
-  rpc UploadChatImageObject(UploadChatImageObjectRequest) returns (UploadChatImageObjectResponse);
-  rpc GetChatImageObject(GetChatImageObjectRequest) returns (ChatImageObjectResponse);
+  rpc CreateChatAttachmentUploadSession(CreateChatAttachmentUploadSessionRequest) returns (CreateChatAttachmentUploadSessionResponse);
+  rpc UploadChatAttachmentObject(UploadChatAttachmentObjectRequest) returns (UploadChatAttachmentObjectResponse);
+  rpc GetChatAttachmentObject(GetChatAttachmentObjectRequest) returns (ChatAttachmentObjectResponse);
   rpc CreateRoomCoverUploadSession(CreateRoomCoverUploadSessionRequest) returns (CreateRoomCoverUploadSessionResponse);
   rpc UploadRoomCoverObject(UploadRoomCoverObjectRequest) returns (UploadRoomCoverObjectResponse);
   rpc GetRoomCoverObject(GetRoomCoverObjectRequest) returns (RoomCoverObjectResponse);
@@ -159,11 +159,11 @@ service RoomService {
   // Media Management (room-scoped operations)
   rpc AddMedia(AddMediaRequest) returns (AddMediaResponse);
   rpc GetMedia(GetMediaRequest) returns (Media);
-  rpc CreateVideoCoverUploadSession(CreateVideoCoverUploadSessionRequest) returns (CreateVideoCoverUploadSessionResponse);
-  rpc UploadVideoCoverObject(UploadVideoCoverObjectRequest) returns (UploadVideoCoverObjectResponse);
-  rpc GetVideoCoverObject(GetVideoCoverObjectRequest) returns (VideoCoverObjectResponse);
-  rpc UpdateVideoCover(UpdateVideoCoverRequest) returns (EditMediaResponse);
-  rpc ClearVideoCover(ClearVideoCoverRequest) returns (EditMediaResponse);
+  rpc CreateMediaCoverUploadSession(CreateMediaCoverUploadSessionRequest) returns (CreateMediaCoverUploadSessionResponse);
+  rpc UploadMediaCoverObject(UploadMediaCoverObjectRequest) returns (UploadMediaCoverObjectResponse);
+  rpc GetMediaCoverObject(GetMediaCoverObjectRequest) returns (MediaCoverObjectResponse);
+  rpc UpdateMediaCover(UpdateMediaCoverRequest) returns (EditMediaResponse);
+  rpc ClearMediaCover(ClearMediaCoverRequest) returns (EditMediaResponse);
   rpc DeleteMedia(DeleteMediaRequest) returns (DeleteMediaResponse);
   rpc DeleteEntries(DeleteEntriesRequest) returns (DeleteEntriesResponse);
   rpc EditMedia(EditMediaRequest) returns (EditMediaResponse);
@@ -276,7 +276,7 @@ message Media {
   bytes source_config = 11; // JSON source config, only returned to the media creator
   ResourceAvailability availability = 12; // Availability derived from creator state
   int64 version = 13; // Resource version from database
-  VideoCover cover = 14;
+  MediaCover cover = 14;
   string description = 15;
 }
 
@@ -2408,7 +2408,7 @@ message ChatMessageSend {
   string display_position = 2; // Optional chat presentation placement, e.g. "scroll", "top", "bottom".
   string display_color = 3; // Optional chat presentation color, e.g. "#FFFFFF".
   string client_message_id = 4; // Client-generated idempotency key for normal chat messages.
-  repeated ChatImage images = 5; // Image-only payloads; generic file sending is intentionally unsupported.
+  repeated ChatAttachment attachments = 5;
   string reply_to_message_id = 6;
   bytes metadata = 7; // JSON object.
   repeated ChatMentionInput mentions = 8;
@@ -2446,7 +2446,7 @@ message ChatMessageReceive {
   int64 edited_at = 12;
   int64 deleted_at = 13;
   string reply_to_message_id = 14;
-  repeated ChatImage images = 15;
+  repeated ChatAttachment attachments = 15;
   string deleted_by_user_id = 16;
   string delete_reason = 17;
   string playback_media_id = 18;
@@ -2495,7 +2495,13 @@ enum RoomMemberEventKind {
   ROOM_MEMBER_EVENT_KIND_KICKED = 4;
 }
 
-message ChatImage {
+enum ChatAttachmentKind {
+  CHAT_ATTACHMENT_KIND_UNSPECIFIED = 0;
+  CHAT_ATTACHMENT_KIND_FILE = 1;
+  CHAT_ATTACHMENT_KIND_IMAGE = 2;
+}
+
+message ChatAttachment {
   string id = 1;
   string storage_backend = 2;
   string object_key = 3;
@@ -2505,20 +2511,23 @@ message ChatImage {
   int32 width = 7;
   int32 height = 8;
   bytes metadata = 9; // JSON object.
+  string filename = 10;
+  ChatAttachmentKind kind = 11;
 }
 
-message CreateChatImageUploadSessionRequest {
-  string client_image_id = 1;
+message CreateChatAttachmentUploadSessionRequest {
+  string client_attachment_id = 1;
   string mime_type = 2;
   int64 size_bytes = 3;
   int32 width = 4;
   int32 height = 5;
   string checksum_sha256 = 6;
   bytes metadata = 7; // JSON object.
+  string filename = 8;
 }
 
-message ChatImageUploadSession {
-  ChatImage image = 1;
+message ChatAttachmentUploadSession {
+  ChatAttachment attachment = 1;
   bool upload_required = 2;
   optional string upload_url = 3;
   optional string upload_method = 4;
@@ -2527,20 +2536,20 @@ message ChatImageUploadSession {
   int64 max_size_bytes = 7;
   bool ownership_proof_required = 8;
   optional string ownership_proof_nonce = 9;
-  repeated ChatImageOwnershipProofRange ownership_proof_ranges = 10;
+  repeated ChatAttachmentOwnershipProofRange ownership_proof_ranges = 10;
   optional string ownership_proof_metadata_key = 11;
 }
 
-message ChatImageOwnershipProofRange {
+message ChatAttachmentOwnershipProofRange {
   int64 offset = 1;
   int32 length = 2;
 }
 
-message CreateChatImageUploadSessionResponse {
-  ChatImageUploadSession session = 1;
+message CreateChatAttachmentUploadSessionResponse {
+  ChatAttachmentUploadSession session = 1;
 }
 
-message UploadChatImageObjectRequest {
+message UploadChatAttachmentObjectRequest {
   string room_id = 1;
   string encoded_object_key = 2;
   string token = 3;
@@ -2548,13 +2557,13 @@ message UploadChatImageObjectRequest {
   bytes data = 5;
 }
 
-message GetChatImageObjectRequest {
+message GetChatAttachmentObjectRequest {
   string room_id = 1;
   string encoded_object_key = 2;
   string token = 3;
 }
 
-message ChatImageObjectResponse {
+message ChatAttachmentObjectResponse {
   string room_id = 1;
   string object_key = 2;
   string mime_type = 3;
@@ -2562,8 +2571,8 @@ message ChatImageObjectResponse {
   bytes data = 5;
 }
 
-message UploadChatImageObjectResponse {
-  ChatImageObjectResponse object = 1;
+message UploadChatAttachmentObjectResponse {
+  ChatAttachmentObjectResponse object = 1;
 }
 
 message UserAvatar {
@@ -2652,7 +2661,7 @@ message FileCover {
   bytes metadata = 9; // JSON object.
 }
 
-message VideoCover {
+message MediaCover {
   string id = 1;
   string storage_backend = 2;
   string object_key = 3;
@@ -2664,7 +2673,7 @@ message VideoCover {
   bytes metadata = 9; // JSON object.
 }
 
-message CreateVideoCoverUploadSessionRequest {
+message CreateMediaCoverUploadSessionRequest {
   string room_id = 1;
   string media_id = 2 [(buf.validate.field).string.min_len = 1];
   string client_cover_id = 3;
@@ -2676,8 +2685,8 @@ message CreateVideoCoverUploadSessionRequest {
   bytes metadata = 9; // JSON object.
 }
 
-message VideoCoverUploadSession {
-  VideoCover cover = 1;
+message MediaCoverUploadSession {
+  MediaCover cover = 1;
   bool upload_required = 2;
   optional string upload_url = 3;
   optional string upload_method = 4;
@@ -2686,49 +2695,49 @@ message VideoCoverUploadSession {
   int64 max_size_bytes = 7;
   bool ownership_proof_required = 8;
   optional string ownership_proof_nonce = 9;
-  repeated VideoCoverOwnershipProofRange ownership_proof_ranges = 10;
+  repeated MediaCoverOwnershipProofRange ownership_proof_ranges = 10;
   optional string ownership_proof_metadata_key = 11;
 }
 
-message VideoCoverOwnershipProofRange {
+message MediaCoverOwnershipProofRange {
   int64 offset = 1;
   int32 length = 2;
 }
 
-message CreateVideoCoverUploadSessionResponse {
-  VideoCoverUploadSession session = 1;
+message CreateMediaCoverUploadSessionResponse {
+  MediaCoverUploadSession session = 1;
 }
 
-message UploadVideoCoverObjectRequest {
+message UploadMediaCoverObjectRequest {
   string encoded_object_key = 1;
   string token = 2;
   optional string content_type = 3;
   bytes data = 4;
 }
 
-message GetVideoCoverObjectRequest {
+message GetMediaCoverObjectRequest {
   string encoded_object_key = 1;
   string token = 2;
 }
 
-message VideoCoverObjectResponse {
+message MediaCoverObjectResponse {
   string object_key = 1;
   string mime_type = 2;
   string checksum_sha256 = 3;
   bytes data = 4;
 }
 
-message UploadVideoCoverObjectResponse {
-  VideoCoverObjectResponse object = 1;
+message UploadMediaCoverObjectResponse {
+  MediaCoverObjectResponse object = 1;
 }
 
-message UpdateVideoCoverRequest {
+message UpdateMediaCoverRequest {
   string room_id = 1;
   string media_id = 2 [(buf.validate.field).string.min_len = 1];
-  VideoCover cover = 3;
+  MediaCover cover = 3;
 }
 
-message ClearVideoCoverRequest {
+message ClearMediaCoverRequest {
   string room_id = 1;
   string media_id = 2 [(buf.validate.field).string.min_len = 1];
 }
@@ -2949,7 +2958,7 @@ message UserNotification {
 message SendChatMessageRequest {
   string content = 1;
   string client_message_id = 2;
-  repeated ChatImage images = 3;
+  repeated ChatAttachment attachments = 3;
   string reply_to_message_id = 4;
   bytes metadata = 5; // JSON object.
   string display_position = 6;

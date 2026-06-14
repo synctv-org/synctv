@@ -225,9 +225,9 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | Field | Type / values | Default | Meaning |
 | --- | --- | --- | --- |
 | `file_storage.default_backend` | backend name | `disabled` | Fallback backend used by product features |
-| `file_storage.chat_images_backend` | backend name or empty | `""` | Backend for chat images; empty inherits `default_backend` |
+| `file_storage.chat_attachments_backend` | backend name or empty | `""` | Backend for chat attachments; empty inherits `default_backend` |
 | `file_storage.user_avatars_backend` | backend name or empty | `""` | Backend for user avatars; empty inherits `default_backend` |
-| `file_storage.video_covers_backend` | backend name or empty | `""` | Backend for video covers; empty inherits `default_backend` |
+| `file_storage.media_covers_backend` | backend name or empty | `""` | Backend for media covers; empty inherits `default_backend` |
 | `file_storage.room_covers_backend` | backend name or empty | `""` | Backend for room covers; empty inherits `default_backend` |
 | `file_storage.playlist_covers_backend` | backend name or empty | `""` | Backend for playlist covers; empty inherits `default_backend` |
 | `file_storage.upload_token_secret` | secret string | `""` | Signing secret for file upload/read tokens; empty value derives from `jwt.secret` at startup |
@@ -253,9 +253,9 @@ Store file bytes in PostgreSQL:
 ```yaml
 file_storage:
   default_backend: "database"
-  chat_images_backend: "database"
+  chat_attachments_backend: "database"
   user_avatars_backend: "database"
-  video_covers_backend: "database"
+  media_covers_backend: "database"
   room_covers_backend: "database"
   playlist_covers_backend: "database"
   upload_token_secret_file: "/run/secrets/file_upload_token_secret"
@@ -271,9 +271,9 @@ Use S3-compatible object storage:
 ```yaml
 file_storage:
   default_backend: "s3_public"
-  chat_images_backend: "s3_public"
+  chat_attachments_backend: "s3_public"
   user_avatars_backend: "s3_public"
-  video_covers_backend: "s3_public"
+  media_covers_backend: "s3_public"
   room_covers_backend: "s3_public"
   playlist_covers_backend: "s3_public"
   upload_token_secret_file: "/run/secrets/file_upload_token_secret"

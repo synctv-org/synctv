@@ -3,8 +3,8 @@
 use crate::impls::ApiError;
 use std::collections::HashMap;
 use synctv_core::models::{
-    ChatMentionInput, ChatMessageEvent, ChatMessageType, ChatMessageWithImages,
-    ChatPlaybackMessagesQuery, CreateChatImageUploadSession, MarkChatRead, PageParams,
+    ChatMentionInput, ChatMessageEvent, ChatMessageType, ChatMessageWithAttachments,
+    ChatPlaybackMessagesQuery, CreateChatAttachmentUploadSession, MarkChatRead, PageParams,
     RoomListQuery, RoomListSortBy, RoomStatus, SendChatMessage, SetChatReaction, SortDirection,
     UserId,
 };
@@ -1480,7 +1480,7 @@ impl ClientApiImpl {
             .as_ref()
             .ok_or_else(chat_service_unavailable_error)?;
         let page = chat_service
-            .get_history_page_with_images_for_viewer(
+            .get_history_page_with_attachments_for_viewer(
                 rid,
                 cursor,
                 limit,
@@ -1561,7 +1561,7 @@ impl ClientApiImpl {
             .chat_service
             .as_ref()
             .ok_or_else(chat_service_unavailable_error)?;
-        let images = parse_proto_chat_images(&req.images)?;
+        let attachments = parse_proto_chat_attachments(&req.attachments)?;
         let playback_state = self
             .room_service
             .playback_service()
@@ -1581,10 +1581,10 @@ impl ClientApiImpl {
                 user_id,
                 client_message_id: optional_trimmed_string(&req.client_message_id),
                 content: req.content,
-                message_type: if images.is_empty() {
+                message_type: if attachments.is_empty() {
                     ChatMessageType::Text
                 } else {
-                    ChatMessageType::Image
+                    ChatMessageType::Attachment
                 },
                 reply_to_message_id: if req.reply_to_message_id.trim().is_empty() {
                     None
@@ -1592,7 +1592,7 @@ impl ClientApiImpl {
                     Some(parse_chat_message_id(&req.reply_to_message_id)?)
                 },
                 metadata,
-                images,
+                attachments,
                 mentions: self.parse_proto_chat_mentions(req.mentions)?,
             })
             .await
@@ -1605,21 +1605,22 @@ impl ClientApiImpl {
         })
     }
 
-    pub async fn create_chat_image_upload_session_for_actor(
+    pub async fn create_chat_attachment_upload_session_for_actor(
         &self,
         actor: &RoomActor,
-        req: synctv_proto::client::CreateChatImageUploadSessionRequest,
-    ) -> Result<synctv_proto::client::CreateChatImageUploadSessionResponse, ApiError> {
+        req: synctv_proto::client::CreateChatAttachmentUploadSessionRequest,
+    ) -> Result<synctv_proto::client::CreateChatAttachmentUploadSessionResponse, ApiError> {
         let user_id = actor.require_user_id()?;
         let chat_service = self
             .chat_service
             .as_ref()
             .ok_or_else(chat_service_unavailable_error)?;
         let session = chat_service
-            .create_image_upload_session(CreateChatImageUploadSession {
+            .create_attachment_upload_session(CreateChatAttachmentUploadSession {
                 room_id: actor.room_id(),
                 user_id,
-                client_image_id: optional_trimmed_string(&req.client_image_id),
+                client_attachment_id: optional_trimmed_string(&req.client_attachment_id),
+                filename: optional_trimmed_string(&req.filename),
                 mime_type: req.mime_type,
                 size_bytes: req.size_bytes,
                 width: (req.width > 0).then_some(req.width),
@@ -1629,22 +1630,24 @@ impl ClientApiImpl {
             })
             .await
             .map_err(ApiError::from)?;
-        Ok(synctv_proto::client::CreateChatImageUploadSessionResponse {
-            session: Some(upload_session_to_proto(session)?),
-        })
+        Ok(
+            synctv_proto::client::CreateChatAttachmentUploadSessionResponse {
+                session: Some(upload_session_to_proto(session)?),
+            },
+        )
     }
 
-    pub async fn upload_chat_image_object(
+    pub async fn upload_chat_attachment_object(
         &self,
-        req: synctv_proto::client::UploadChatImageObjectRequest,
-    ) -> Result<synctv_proto::client::UploadChatImageObjectResponse, ApiError> {
+        req: synctv_proto::client::UploadChatAttachmentObjectRequest,
+    ) -> Result<synctv_proto::client::UploadChatAttachmentObjectResponse, ApiError> {
         let _room_id = self.parse_room_id(&req.room_id)?;
         let chat_service = self
             .chat_service
             .as_ref()
             .ok_or_else(chat_service_unavailable_error)?;
         let blob = chat_service
-            .store_image_upload_object(
+            .store_attachment_upload_object(
                 &req.encoded_object_key,
                 &req.token,
                 req.content_type.as_deref(),
@@ -1652,25 +1655,25 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        Ok(synctv_proto::client::UploadChatImageObjectResponse {
-            object: Some(chat_image_object_to_proto(&req.room_id, &blob)),
+        Ok(synctv_proto::client::UploadChatAttachmentObjectResponse {
+            object: Some(chat_attachment_object_to_proto(&req.room_id, &blob)),
         })
     }
 
-    pub async fn get_chat_image_object(
+    pub async fn get_chat_attachment_object(
         &self,
-        req: synctv_proto::client::GetChatImageObjectRequest,
-    ) -> Result<synctv_proto::client::ChatImageObjectResponse, ApiError> {
+        req: synctv_proto::client::GetChatAttachmentObjectRequest,
+    ) -> Result<synctv_proto::client::ChatAttachmentObjectResponse, ApiError> {
         let _room_id = self.parse_room_id(&req.room_id)?;
         let chat_service = self
             .chat_service
             .as_ref()
             .ok_or_else(chat_service_unavailable_error)?;
         let blob = chat_service
-            .get_image_object(&req.encoded_object_key, &req.token)
+            .get_attachment_object(&req.encoded_object_key, &req.token)
             .await
             .map_err(ApiError::from)?;
-        Ok(chat_image_object_to_proto(&req.room_id, &blob))
+        Ok(chat_attachment_object_to_proto(&req.room_id, &blob))
     }
 
     pub async fn edit_chat_message_for_actor(
@@ -1949,7 +1952,7 @@ impl ClientApiImpl {
             .as_ref()
             .ok_or_else(chat_service_unavailable_error)?;
         let message = chat_service
-            .get_message_with_images_for_viewer(
+            .get_message_with_attachments_for_viewer(
                 &actor.room_id(),
                 parse_chat_message_id(&req.message_id)?,
                 req.include_deleted,
@@ -2027,7 +2030,7 @@ impl ClientApiImpl {
             optional_positive_window_seconds(req.after_seconds, 30.0, "after_seconds")?;
         let limit = optional_positive_limit(req.limit, 200, 500, "limit")?;
         let messages = chat_service
-            .get_playback_messages_with_images_for_viewer(
+            .get_playback_messages_with_attachments_for_viewer(
                 ChatPlaybackMessagesQuery {
                     room_id: actor.room_id(),
                     media_id,
@@ -2051,7 +2054,7 @@ impl ClientApiImpl {
 
     async fn chat_messages_to_proto(
         &self,
-        messages: Vec<ChatMessageWithImages>,
+        messages: Vec<ChatMessageWithAttachments>,
     ) -> Result<Vec<synctv_proto::client::ChatMessageReceive>, ApiError> {
         let mut user_ids: Vec<UserId> = messages
             .iter()
@@ -2120,8 +2123,8 @@ mod tests {
         build_transfer_room_ownership_request, delete_chat_message_request_to_core,
         edit_chat_message_request_to_core, optional_positive_limit,
         optional_positive_window_seconds, optional_trimmed_string, parse_json_metadata,
-        parse_proto_chat_images, required_playback_position_seconds, required_room_availability,
-        settings_registry_unavailable_error,
+        parse_proto_chat_attachments, required_playback_position_seconds,
+        required_room_availability, settings_registry_unavailable_error,
     };
     use crate::impls::ErrorKind;
     use std::collections::HashMap;
@@ -2613,16 +2616,17 @@ mod tests {
     }
 
     #[test]
-    fn chat_image_proto_roundtrip_preserves_upload_token_metadata() -> TestResult {
+    fn chat_attachment_proto_roundtrip_preserves_upload_token_metadata() -> TestResult {
         let metadata = serde_json::json!({
             "_synctv_upload_token": "v1.payload.signature",
             "blurhash": "abc"
         });
-        let image = synctv_core::models::NewStoredFile {
-            id: "image-1".to_string(),
+        let attachment = synctv_core::models::NewStoredFile {
+            filename: None,
+            id: "attachment-1".to_string(),
             storage_backend: "database".to_string(),
-            object_key: "rooms/1/chat/2/image-1".to_string(),
-            url: Some("https://cdn.example.test/rooms/1/chat/2/image-1.webp".to_string()),
+            object_key: "rooms/1/chat/2/attachment-1".to_string(),
+            url: Some("https://cdn.example.test/rooms/1/chat/2/attachment-1.webp".to_string()),
             mime_type: Some("image/webp".to_string()),
             size_bytes: Some(1024),
             width: Some(640),
@@ -2630,8 +2634,8 @@ mod tests {
             metadata: metadata.clone(),
         };
 
-        let proto = api_ok(super::new_chat_image_to_proto(&image))?;
-        let parsed = api_ok(parse_proto_chat_images(&[proto]))?;
+        let proto = api_ok(super::new_chat_attachment_to_proto(&attachment))?;
+        let parsed = api_ok(parse_proto_chat_attachments(&[proto]))?;
 
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].metadata, metadata);
@@ -2639,12 +2643,13 @@ mod tests {
     }
 
     #[test]
-    fn chat_image_upload_session_requires_upload_metadata_when_upload_required() {
+    fn chat_attachment_upload_session_requires_upload_metadata_when_upload_required() {
         let session = synctv_core::models::FileUploadSession {
             file: synctv_core::models::NewStoredFile {
-                id: "image-1".to_string(),
+                filename: None,
+                id: "attachment-1".to_string(),
                 storage_backend: "database".to_string(),
-                object_key: "rooms/1/chat/2/image-1".to_string(),
+                object_key: "rooms/1/chat/2/attachment-1".to_string(),
                 url: None,
                 mime_type: Some("image/webp".to_string()),
                 size_bytes: Some(1024),
@@ -2657,7 +2662,7 @@ mod tests {
             ownership_proof_nonce: None,
             ownership_proof_ranges: Vec::new(),
             ownership_proof_metadata_key: None,
-            upload_url: Some("https://upload.example.test/image-1".to_string()),
+            upload_url: Some("https://upload.example.test/attachment-1".to_string()),
             upload_method: None,
             upload_headers: Default::default(),
             expires_at: Some(chrono::Utc::now()),

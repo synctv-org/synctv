@@ -5,15 +5,17 @@ use sqlx::{Executor, PgPool, Postgres, Row as _, Transaction};
 
 use crate::{
     models::{
-        ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatImage, ChatMention,
-        ChatMentionInput, ChatMessage, ChatMessageContext, ChatMessageEvent, ChatMessageEventLog,
-        ChatMessageReadReceiptMember, ChatMessageReadReceiptUser, ChatMessageReadReceiptsPage,
-        ChatMessageStatus, ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery,
-        ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage,
-        ChatReadState, EventCursor, NewStoredFile, RoomId, SetChatReaction, User, UserId,
+        ChatAttachment, ChatAttachmentKind, ChatEventKind, ChatHistoryCursor, ChatHistoryPage,
+        ChatMention, ChatMentionInput, ChatMessage, ChatMessageContext, ChatMessageEvent,
+        ChatMessageEventLog, ChatMessageReadReceiptMember, ChatMessageReadReceiptUser,
+        ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType,
+        ChatMessageWithAttachments, ChatPlaybackMessagesQuery, ChatReactionSummary,
+        ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState,
+        EventCursor, NewStoredFile, RoomId, SetChatReaction, User, UserId,
+        CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
         CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
-        CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS, CHAT_IMAGE_ID_MAX_CHARS,
-        CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+        CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS,
+        FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
     },
     repository::FileStorageRepository,
     Error, Result,
@@ -25,8 +27,8 @@ fn chat_message_key(message: &ChatMessage) -> ChatMessageKey {
     (message.id, message.created_at)
 }
 
-fn chat_image_message_key(image: &ChatImage) -> ChatMessageKey {
-    (image.message_id, image.message_created_at)
+fn chat_attachment_message_key(attachment: &ChatAttachment) -> ChatMessageKey {
+    (attachment.message_id, attachment.message_created_at)
 }
 
 fn validate_optional_text(value: Option<&str>, field: &str, max_chars: usize) -> Result<()> {
@@ -73,29 +75,38 @@ fn validate_message_for_insert(message: &ChatMessage) -> Result<()> {
     }
 }
 
-fn validate_chat_image_for_insert(image: &NewStoredFile) -> Result<()> {
-    validate_required_text(&image.id, "chat image id", CHAT_IMAGE_ID_MAX_CHARS)?;
+fn validate_chat_attachment_for_insert(attachment: &NewStoredFile) -> Result<()> {
     validate_required_text(
-        &image.storage_backend,
+        &attachment.id,
+        "chat attachment id",
+        CHAT_ATTACHMENT_ID_MAX_CHARS,
+    )?;
+    validate_optional_text(
+        attachment.filename.as_deref(),
+        "chat attachment filename",
+        CHAT_ATTACHMENT_FILENAME_MAX_CHARS,
+    )?;
+    validate_required_text(
+        &attachment.storage_backend,
         "file storage_backend",
         FILE_STORAGE_BACKEND_MAX_CHARS,
     )?;
     validate_required_text(
-        &image.object_key,
+        &attachment.object_key,
         "file object_key",
         FILE_OBJECT_KEY_MAX_CHARS,
     )?;
-    if image.size_bytes.is_some_and(|size| size <= 0)
-        || image.width.is_some_and(|width| width <= 0)
-        || image.height.is_some_and(|height| height <= 0)
+    if attachment.size_bytes.is_some_and(|size| size <= 0)
+        || attachment.width.is_some_and(|width| width <= 0)
+        || attachment.height.is_some_and(|height| height <= 0)
     {
         return Err(Error::InvalidInput(
-            "chat image size and dimensions must be positive".to_string(),
+            "chat attachment size and dimensions must be positive".to_string(),
         ));
     }
-    if !image.metadata.is_object() {
+    if !attachment.metadata.is_object() {
         return Err(Error::InvalidInput(
-            "chat image metadata must be a JSON object".to_string(),
+            "chat attachment metadata must be a JSON object".to_string(),
         ));
     }
     Ok(())
@@ -177,7 +188,7 @@ impl ChatRepository {
     pub async fn insert_message_event_idempotent(
         &self,
         message: &ChatMessage,
-        images: &[NewStoredFile],
+        attachments: &[NewStoredFile],
         mentions: &[ChatMentionInput],
         request_hash: &str,
         event_id: &str,
@@ -191,8 +202,8 @@ impl ChatRepository {
                 CHAT_CLIENT_MESSAGE_ID_MAX_CHARS,
             )?;
         }
-        for image in images {
-            validate_chat_image_for_insert(image)?;
+        for attachment in attachments {
+            validate_chat_attachment_for_insert(attachment)?;
         }
         let sender_id = message.user_id.ok_or_else(|| {
             Error::InvalidInput("Chat message event insert requires a sender".to_string())
@@ -252,7 +263,9 @@ impl ChatRepository {
         }
 
         let inserted = self.insert_message_in_tx(&mut tx, message).await?;
-        let inserted_images = self.insert_images_in_tx(&mut tx, &inserted, images).await?;
+        let inserted_attachments = self
+            .insert_attachments_in_tx(&mut tx, &inserted, attachments)
+            .await?;
         let inserted_mentions = self
             .insert_mentions_in_tx(&mut tx, &inserted, mentions)
             .await?;
@@ -262,9 +275,9 @@ impl ChatRepository {
             room_id: message.room_id,
             actor_user_id: sender_id,
             kind: ChatEventKind::Created,
-            message: ChatMessageWithImages {
+            message: ChatMessageWithAttachments {
                 message: inserted,
-                images: inserted_images,
+                attachments: inserted_attachments,
                 reactions: Vec::new(),
                 mentions: inserted_mentions,
             },
@@ -389,8 +402,8 @@ impl ChatRepository {
             .await?;
         }
 
-        let images = self
-            .images_for_message_in_tx(&mut tx, message.id, message.created_at)
+        let attachments = self
+            .attachments_for_message_in_tx(&mut tx, message.id, message.created_at)
             .await?;
         let mut reactions = self
             .reaction_summaries_for_messages_with_executor(
@@ -418,9 +431,9 @@ impl ChatRepository {
             room_id: request.room_id,
             actor_user_id: request.user_id,
             kind: ChatEventKind::ReactionsChanged,
-            message: ChatMessageWithImages {
+            message: ChatMessageWithAttachments {
                 message,
-                images,
+                attachments,
                 reactions,
                 mentions,
             },
@@ -573,7 +586,7 @@ impl ChatRepository {
                 })?
         } else {
             let loaded = self
-                .get_with_images_in_tx(&mut tx, room_id, message_id, created_at)
+                .get_with_attachments_in_tx(&mut tx, room_id, message_id, created_at)
                 .await?
                 .ok_or_else(|| {
                     Error::Internal(
@@ -632,24 +645,24 @@ impl ChatRepository {
         Ok(event)
     }
 
-    async fn insert_file_reference_for_image_in_tx(
+    async fn insert_file_reference_for_attachment_in_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
-        image: &ChatImage,
+        attachment: &ChatAttachment,
     ) -> Result<()> {
-        let reference_id = file_reference_id_for_chat_image(image);
+        let reference_id = file_reference_id_for_chat_attachment(attachment);
         FileStorageRepository::insert_reference_in_tx(
             tx,
-            &image.storage_backend,
-            &image.object_key,
-            "chat_message_image",
+            &attachment.storage_backend,
+            &attachment.object_key,
+            "chat_message_attachment",
             &reference_id,
             None,
-            &image.metadata,
+            &attachment.metadata,
         )
         .await?
         .ok_or_else(|| {
-            crate::Error::InvalidInput("chat image object is not registered".to_string())
+            crate::Error::InvalidInput("chat attachment object is not registered".to_string())
         })?;
         Ok(())
     }
@@ -1348,7 +1361,7 @@ impl ChatRepository {
         cursor: Option<ChatHistoryCursor>,
         limit: i32,
         include_deleted: bool,
-    ) -> Result<(Vec<ChatMessageWithImages>, Option<ChatHistoryCursor>)> {
+    ) -> Result<(Vec<ChatMessageWithAttachments>, Option<ChatHistoryCursor>)> {
         self.list_by_room_cursor_for_viewer(room_id, cursor, limit, include_deleted, None)
             .await
     }
@@ -1360,7 +1373,7 @@ impl ChatRepository {
         limit: i32,
         include_deleted: bool,
         viewer_user_id: Option<&UserId>,
-    ) -> Result<(Vec<ChatMessageWithImages>, Option<ChatHistoryCursor>)> {
+    ) -> Result<(Vec<ChatMessageWithAttachments>, Option<ChatHistoryCursor>)> {
         let limit = limit.clamp(1, 100);
         let messages = if let Some(cursor) = cursor {
             sqlx::query_as!(
@@ -1444,7 +1457,7 @@ impl ChatRepository {
         };
 
         let messages = self
-            .attach_images_and_reactions_to_messages(messages, viewer_user_id)
+            .attach_attachments_and_reactions_to_messages(messages, viewer_user_id)
             .await?;
 
         Ok((messages, next_cursor))
@@ -1473,7 +1486,7 @@ impl ChatRepository {
     pub async fn list_playback_messages(
         &self,
         query: &ChatPlaybackMessagesQuery,
-    ) -> Result<Vec<ChatMessageWithImages>> {
+    ) -> Result<Vec<ChatMessageWithAttachments>> {
         self.list_playback_messages_for_viewer(query, None).await
     }
 
@@ -1481,7 +1494,7 @@ impl ChatRepository {
         &self,
         query: &ChatPlaybackMessagesQuery,
         viewer_user_id: Option<&UserId>,
-    ) -> Result<Vec<ChatMessageWithImages>> {
+    ) -> Result<Vec<ChatMessageWithAttachments>> {
         let limit = query.limit.clamp(1, 500);
         let start_seconds = (query.position_seconds - query.before_seconds).max(0.0);
         let end_seconds = query.position_seconds + query.after_seconds;
@@ -1554,7 +1567,7 @@ impl ChatRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        self.attach_images_and_reactions_to_messages(messages, viewer_user_id)
+        self.attach_attachments_and_reactions_to_messages(messages, viewer_user_id)
             .await
     }
 
@@ -1669,18 +1682,18 @@ impl ChatRepository {
         .await?;
 
         let anchor = self
-            .attach_images_and_reactions_to_messages(vec![anchor], viewer_user_id)
+            .attach_attachments_and_reactions_to_messages(vec![anchor], viewer_user_id)
             .await?
             .into_iter()
             .next()
             .ok_or_else(|| Error::Internal("Chat context anchor disappeared".to_string()))?;
         Ok(Some(ChatMessageContext {
             before: self
-                .attach_images_and_reactions_to_messages(before, viewer_user_id)
+                .attach_attachments_and_reactions_to_messages(before, viewer_user_id)
                 .await?,
             anchor,
             after: self
-                .attach_images_and_reactions_to_messages(after, viewer_user_id)
+                .attach_attachments_and_reactions_to_messages(after, viewer_user_id)
                 .await?,
         }))
     }
@@ -1752,28 +1765,28 @@ impl ChatRepository {
         Ok(msg)
     }
 
-    pub async fn get_with_images_by_room_and_id(
+    pub async fn get_with_attachments_by_room_and_id(
         &self,
         room_id: &RoomId,
         message_id: i64,
-    ) -> Result<Option<ChatMessageWithImages>> {
-        self.get_with_images_by_room_and_id_for_viewer(room_id, message_id, None)
+    ) -> Result<Option<ChatMessageWithAttachments>> {
+        self.get_with_attachments_by_room_and_id_for_viewer(room_id, message_id, None)
             .await
     }
 
-    pub async fn get_with_images_by_room_and_id_for_viewer(
+    pub async fn get_with_attachments_by_room_and_id_for_viewer(
         &self,
         room_id: &RoomId,
         message_id: i64,
         viewer_user_id: Option<&UserId>,
-    ) -> Result<Option<ChatMessageWithImages>> {
+    ) -> Result<Option<ChatMessageWithAttachments>> {
         let Some(message) = self.get_by_room_and_id(room_id, message_id).await? else {
             return Ok(None);
         };
-        let images = if message.status == ChatMessageStatus::Deleted {
+        let attachments = if message.status == ChatMessageStatus::Deleted {
             Vec::new()
         } else {
-            self.images_for_message(message.id, message.created_at)
+            self.attachments_for_message(message.id, message.created_at)
                 .await?
         };
         let reactions = self
@@ -1786,9 +1799,9 @@ impl ChatRepository {
             .await?
             .remove(&chat_message_key(&message))
             .unwrap_or_default();
-        Ok(Some(ChatMessageWithImages {
+        Ok(Some(ChatMessageWithAttachments {
             message,
-            images,
+            attachments,
             reactions,
             mentions,
         }))
@@ -1801,7 +1814,7 @@ impl ChatRepository {
         content: &str,
         metadata: &serde_json::Value,
         expected_version: Option<i64>,
-    ) -> Result<Option<ChatMessageWithImages>> {
+    ) -> Result<Option<ChatMessageWithAttachments>> {
         let mut builder = sqlx::QueryBuilder::<Postgres>::new(
             r"
             UPDATE chat_messages
@@ -1840,17 +1853,17 @@ impl ChatRepository {
         let Some(message) = message else {
             return Ok(None);
         };
-        let images = self
-            .images_for_message(message.id, message.created_at)
+        let attachments = self
+            .attachments_for_message(message.id, message.created_at)
             .await?;
         let mentions = self
             .mentions_for_messages(std::slice::from_ref(&message))
             .await?
             .remove(&chat_message_key(&message))
             .unwrap_or_default();
-        Ok(Some(ChatMessageWithImages {
+        Ok(Some(ChatMessageWithAttachments {
             message,
-            images,
+            attachments,
             reactions: Vec::new(),
             mentions,
         }))
@@ -1928,8 +1941,8 @@ impl ChatRepository {
             tx.commit().await?;
             return Ok(None);
         };
-        let images = self
-            .images_for_message_in_tx(&mut tx, message.id, message.created_at)
+        let attachments = self
+            .attachments_for_message_in_tx(&mut tx, message.id, message.created_at)
             .await?;
         let mentions = self
             .mentions_for_message_in_tx(&mut tx, message.id, message.created_at)
@@ -1940,9 +1953,9 @@ impl ChatRepository {
             room_id: *request.room_id,
             actor_user_id: *request.actor_user_id,
             kind: ChatEventKind::Edited,
-            message: ChatMessageWithImages {
+            message: ChatMessageWithAttachments {
                 message,
-                images,
+                attachments,
                 reactions: Vec::new(),
                 mentions,
             },
@@ -1973,7 +1986,7 @@ impl ChatRepository {
         deleted_by: &UserId,
         reason: Option<&str>,
         expected_version: Option<i64>,
-    ) -> Result<Option<ChatMessageWithImages>> {
+    ) -> Result<Option<ChatMessageWithAttachments>> {
         let mut builder = sqlx::QueryBuilder::<Postgres>::new(
             r"
             UPDATE chat_messages
@@ -2014,9 +2027,9 @@ impl ChatRepository {
             .await?
             .remove(&chat_message_key(&message))
             .unwrap_or_default();
-        Ok(Some(ChatMessageWithImages {
+        Ok(Some(ChatMessageWithAttachments {
             message,
-            images: Vec::new(),
+            attachments: Vec::new(),
             reactions: Vec::new(),
             mentions,
         }))
@@ -2100,9 +2113,9 @@ impl ChatRepository {
             room_id: *request.room_id,
             actor_user_id: *request.deleted_by,
             kind: ChatEventKind::Deleted,
-            message: ChatMessageWithImages {
+            message: ChatMessageWithAttachments {
                 message,
-                images: Vec::new(),
+                attachments: Vec::new(),
                 reactions: Vec::new(),
                 mentions,
             },
@@ -2308,53 +2321,62 @@ impl ChatRepository {
         Ok(inserted)
     }
 
-    async fn insert_images_in_tx(
+    async fn insert_attachments_in_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         message: &ChatMessage,
-        images: &[NewStoredFile],
-    ) -> Result<Vec<ChatImage>> {
-        let mut inserted = Vec::with_capacity(images.len());
-        for image in images {
-            validate_chat_image_for_insert(image)?;
-            let row = sqlx::query_as!(
-                ChatImage,
+        attachments: &[NewStoredFile],
+    ) -> Result<Vec<ChatAttachment>> {
+        let mut inserted = Vec::with_capacity(attachments.len());
+        for attachment in attachments {
+            validate_chat_attachment_for_insert(attachment)?;
+            let kind = attachment
+                .mime_type
+                .as_deref()
+                .map(ChatAttachmentKind::from_mime_type)
+                .unwrap_or(ChatAttachmentKind::File);
+            let row = sqlx::query_as::<_, ChatAttachment>(
                 r#"
-                INSERT INTO chat_message_images (
-                    id, room_id, message_id, message_created_at, storage_backend,
-                    object_key, url, mime_type, size_bytes, width, height, metadata
+                INSERT INTO chat_message_attachments (
+                    id, kind, room_id, message_id, message_created_at, filename,
+                    storage_backend, object_key, url, mime_type, size_bytes, width, height, metadata
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                RETURNING id AS "id!",
-                          room_id AS "room_id!: RoomId",
-                          message_id AS "message_id!",
-                          message_created_at AS "message_created_at!",
-                          storage_backend AS "storage_backend!",
-                          object_key AS "object_key!",
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                RETURNING id,
+                          kind,
+                          room_id,
+                          message_id,
+                          message_created_at,
+                          filename,
+                          storage_backend,
+                          object_key,
                           url,
                           mime_type,
                           size_bytes,
                           width,
                           height,
-                          metadata AS "metadata!: serde_json::Value",
-                          created_at AS "created_at!"
+                          metadata,
+                          created_at
                 "#,
-                &image.id,
-                message.room_id.as_i64(),
-                message.id,
-                message.created_at,
-                &image.storage_backend,
-                &image.object_key,
-                image.url.as_deref(),
-                image.mime_type.as_deref(),
-                image.size_bytes,
-                image.width,
-                image.height,
-                &image.metadata
             )
+            .bind(&attachment.id)
+            .bind(kind)
+            .bind(message.room_id.as_i64())
+            .bind(message.id)
+            .bind(message.created_at)
+            .bind(attachment.filename.as_deref())
+            .bind(&attachment.storage_backend)
+            .bind(&attachment.object_key)
+            .bind(attachment.url.as_deref())
+            .bind(attachment.mime_type.as_deref())
+            .bind(attachment.size_bytes)
+            .bind(attachment.width)
+            .bind(attachment.height)
+            .bind(&attachment.metadata)
             .fetch_one(&mut **tx)
             .await?;
-            self.insert_file_reference_for_image_in_tx(tx, &row).await?;
+            self.insert_file_reference_for_attachment_in_tx(tx, &row)
+                .await?;
             inserted.push(row);
         }
         Ok(inserted)
@@ -2455,7 +2477,7 @@ impl ChatRepository {
         };
 
         let loaded = self
-            .get_with_images_in_tx(tx, &request.message.room_id, message_id, created_at)
+            .get_with_attachments_in_tx(tx, &request.message.room_id, message_id, created_at)
             .await?
             .ok_or_else(|| {
                 Error::Internal("idempotency record points to a missing chat message".to_string())
@@ -2643,13 +2665,13 @@ impl ChatRepository {
         Ok(())
     }
 
-    async fn get_with_images_in_tx(
+    async fn get_with_attachments_in_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         room_id: &RoomId,
         message_id: i64,
         created_at: DateTime<Utc>,
-    ) -> Result<Option<ChatMessageWithImages>> {
+    ) -> Result<Option<ChatMessageWithAttachments>> {
         let message = sqlx::query_as!(
             ChatMessage,
             r#"
@@ -2681,53 +2703,54 @@ impl ChatRepository {
         let Some(message) = message else {
             return Ok(None);
         };
-        let images = self
-            .images_for_message_in_tx(tx, message.id, message.created_at)
+        let attachments = self
+            .attachments_for_message_in_tx(tx, message.id, message.created_at)
             .await?;
         let mentions = self
             .mentions_for_message_in_tx(tx, message.id, message.created_at)
             .await?;
 
-        Ok(Some(ChatMessageWithImages {
+        Ok(Some(ChatMessageWithAttachments {
             message,
-            images,
+            attachments,
             reactions: Vec::new(),
             mentions,
         }))
     }
 
-    async fn images_for_message_in_tx(
+    async fn attachments_for_message_in_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         message_id: i64,
         message_created_at: DateTime<Utc>,
-    ) -> Result<Vec<ChatImage>> {
-        let images = sqlx::query_as!(
-            ChatImage,
+    ) -> Result<Vec<ChatAttachment>> {
+        let attachments = sqlx::query_as::<_, ChatAttachment>(
             r#"
-            SELECT id AS "id!",
-                   room_id AS "room_id!: RoomId",
-                   message_id AS "message_id!",
-                   message_created_at AS "message_created_at!",
-                   storage_backend AS "storage_backend!",
-                   object_key AS "object_key!",
+            SELECT id,
+                   kind,
+                   room_id,
+                   message_id,
+                   message_created_at,
+                   filename,
+                   storage_backend,
+                   object_key,
                    url,
                    mime_type,
                    size_bytes,
                    width,
                    height,
-                   metadata AS "metadata!: serde_json::Value",
-                   created_at AS "created_at!"
-            FROM chat_message_images
+                   metadata,
+                   created_at
+            FROM chat_message_attachments
             WHERE message_id = $1 AND message_created_at = $2
             ORDER BY created_at ASC, id ASC
             "#,
-            message_id,
-            message_created_at
         )
+        .bind(message_id)
+        .bind(message_created_at)
         .fetch_all(&mut **tx)
         .await?;
-        Ok(images)
+        Ok(attachments)
     }
 
     async fn mentions_for_message_in_tx(
@@ -2834,94 +2857,101 @@ impl ChatRepository {
         row.map(ChatEventRow::try_into_log).transpose()
     }
 
-    async fn images_for_message(
+    async fn attachments_for_message(
         &self,
         message_id: i64,
         message_created_at: DateTime<Utc>,
-    ) -> Result<Vec<ChatImage>> {
-        let images = sqlx::query_as!(
-            ChatImage,
+    ) -> Result<Vec<ChatAttachment>> {
+        let attachments = sqlx::query_as::<_, ChatAttachment>(
             r#"
-            SELECT id AS "id!",
-                   room_id AS "room_id!: RoomId",
-                   message_id AS "message_id!",
-                   message_created_at AS "message_created_at!",
-                   storage_backend AS "storage_backend!",
-                   object_key AS "object_key!",
+            SELECT id,
+                   kind,
+                   room_id,
+                   message_id,
+                   message_created_at,
+                   filename,
+                   storage_backend,
+                   object_key,
                    url,
                    mime_type,
                    size_bytes,
                    width,
                    height,
-                   metadata AS "metadata!: serde_json::Value",
-                   created_at AS "created_at!"
-            FROM chat_message_images
+                   metadata,
+                   created_at
+            FROM chat_message_attachments
             WHERE message_id = $1 AND message_created_at = $2
             ORDER BY created_at ASC, id ASC
             "#,
-            message_id,
-            message_created_at
         )
+        .bind(message_id)
+        .bind(message_created_at)
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(images)
+        Ok(attachments)
     }
 
-    async fn images_for_messages(&self, messages: &[ChatMessage]) -> Result<Vec<ChatImage>> {
+    async fn attachments_for_messages(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Result<Vec<ChatAttachment>> {
         if messages.is_empty() {
             return Ok(Vec::new());
         }
 
         let ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
         let created_ats: Vec<DateTime<Utc>> = messages.iter().map(|m| m.created_at).collect();
-        let images = sqlx::query_as!(
-            ChatImage,
+        let attachments = sqlx::query_as::<_, ChatAttachment>(
             r#"
-            SELECT a.id AS "id!",
-                   a.room_id AS "room_id!: RoomId",
-                   a.message_id AS "message_id!",
-                   a.message_created_at AS "message_created_at!",
-                   a.storage_backend AS "storage_backend!",
-                   a.object_key AS "object_key!",
+            SELECT a.id,
+                   a.kind,
+                   a.room_id,
+                   a.message_id,
+                   a.message_created_at,
+                   a.filename,
+                   a.storage_backend,
+                   a.object_key,
                    a.url,
                    a.mime_type,
                    a.size_bytes,
                    a.width,
                    a.height,
-                   a.metadata AS "metadata!: serde_json::Value",
-                   a.created_at AS "created_at!"
-            FROM chat_message_images a
+                   a.metadata,
+                   a.created_at
+            FROM chat_message_attachments a
             JOIN unnest($1::bigint[], $2::timestamptz[]) AS m(id, created_at)
               ON a.message_id = m.id AND a.message_created_at = m.created_at
             ORDER BY a.message_created_at DESC, a.message_id DESC, a.created_at ASC, a.id ASC
             "#,
-            &ids,
-            &created_ats
         )
+        .bind(&ids)
+        .bind(&created_ats)
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(images)
+        Ok(attachments)
     }
 
-    async fn attach_images_and_reactions_to_messages(
+    async fn attach_attachments_and_reactions_to_messages(
         &self,
         mut messages: Vec<ChatMessage>,
         viewer_user_id: Option<&UserId>,
-    ) -> Result<Vec<ChatMessageWithImages>> {
-        let visible_image_messages = messages
+    ) -> Result<Vec<ChatMessageWithAttachments>> {
+        let visible_attachment_messages = messages
             .iter()
             .filter(|message| message.status != ChatMessageStatus::Deleted)
             .cloned()
             .collect::<Vec<_>>();
-        let images = self.images_for_messages(&visible_image_messages).await?;
-        let mut grouped = HashMap::<ChatMessageKey, Vec<ChatImage>>::new();
-        for image in images {
+        let attachments = self
+            .attachments_for_messages(&visible_attachment_messages)
+            .await?;
+        let mut grouped = HashMap::<ChatMessageKey, Vec<ChatAttachment>>::new();
+        for attachment in attachments {
             grouped
-                .entry(chat_image_message_key(&image))
+                .entry(chat_attachment_message_key(&attachment))
                 .or_default()
-                .push(image);
+                .push(attachment);
         }
         let mut reaction_grouped = self
             .reaction_summaries_for_messages(&messages, viewer_user_id)
@@ -2932,12 +2962,12 @@ impl ChatRepository {
             .drain(..)
             .map(|message| {
                 let key = chat_message_key(&message);
-                let images = grouped.remove(&key).unwrap_or_default();
+                let attachments = grouped.remove(&key).unwrap_or_default();
                 let reactions = reaction_grouped.remove(&key).unwrap_or_default();
                 let mentions = mention_grouped.remove(&key).unwrap_or_default();
-                ChatMessageWithImages {
+                ChatMessageWithAttachments {
                     message,
-                    images,
+                    attachments,
                     reactions,
                     mentions,
                 }
@@ -3160,13 +3190,13 @@ impl ChatEventRow {
     }
 }
 
-fn file_reference_id_for_chat_image(image: &ChatImage) -> String {
+fn file_reference_id_for_chat_attachment(attachment: &ChatAttachment) -> String {
     format!(
         "{}:{}:{}:{}",
-        image.room_id.as_i64(),
-        image.message_id,
-        image.message_created_at.timestamp_micros(),
-        image.id
+        attachment.room_id.as_i64(),
+        attachment.message_id,
+        attachment.message_created_at.timestamp_micros(),
+        attachment.id
     )
 }
 
@@ -3182,11 +3212,12 @@ mod tests {
         )
     }
 
-    fn valid_image() -> NewStoredFile {
+    fn valid_attachment() -> NewStoredFile {
         NewStoredFile {
-            id: "image-1".to_string(),
+            filename: None,
+            id: "attachment-1".to_string(),
             storage_backend: "database".to_string(),
-            object_key: "database/chat/images/image-1.webp".to_string(),
+            object_key: "database/chat/attachments/attachment-1.webp".to_string(),
             url: None,
             mime_type: Some("image/webp".to_string()),
             size_bytes: Some(1),
@@ -3204,9 +3235,9 @@ mod tests {
             room_id: message.room_id,
             actor_user_id: message.user_id.expect("message user should exist"),
             kind: ChatEventKind::Created,
-            message: ChatMessageWithImages {
+            message: ChatMessageWithAttachments {
                 message,
-                images: Vec::new(),
+                attachments: Vec::new(),
                 reactions: Vec::new(),
                 mentions: Vec::new(),
             },
@@ -3239,25 +3270,25 @@ mod tests {
     }
 
     #[test]
-    fn validates_chat_image_business_fields_in_rust() {
-        let mut image = valid_image();
-        image.id = "x".repeat(CHAT_IMAGE_ID_MAX_CHARS + 1);
+    fn validates_chat_attachment_business_fields_in_rust() {
+        let mut attachment = valid_attachment();
+        attachment.id = "x".repeat(CHAT_ATTACHMENT_ID_MAX_CHARS + 1);
         assert!(matches!(
-            validate_chat_image_for_insert(&image),
-            Err(Error::InvalidInput(error)) if error.contains("image id")
+            validate_chat_attachment_for_insert(&attachment),
+            Err(Error::InvalidInput(error)) if error.contains("attachment id")
         ));
 
-        let mut image = valid_image();
-        image.object_key = String::new();
+        let mut attachment = valid_attachment();
+        attachment.object_key = String::new();
         assert!(matches!(
-            validate_chat_image_for_insert(&image),
+            validate_chat_attachment_for_insert(&attachment),
             Err(Error::InvalidInput(error)) if error.contains("object_key")
         ));
 
-        let mut image = valid_image();
-        image.size_bytes = Some(0);
+        let mut attachment = valid_attachment();
+        attachment.size_bytes = Some(0);
         assert!(matches!(
-            validate_chat_image_for_insert(&image),
+            validate_chat_attachment_for_insert(&attachment),
             Err(Error::InvalidInput(error)) if error.contains("positive")
         ));
     }

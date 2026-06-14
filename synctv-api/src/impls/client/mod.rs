@@ -386,7 +386,7 @@ impl ClientApiImpl {
             .map(|file| {
                 self.stored_file_reference_url(
                     file,
-                    &synctv_core::service::video_cover_upload_policy(),
+                    &synctv_core::service::media_cover_upload_policy(),
                 )
             })
             .transpose()?

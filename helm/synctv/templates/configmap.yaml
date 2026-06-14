@@ -200,9 +200,9 @@ data:
 
     file_storage:
       default_backend: {{ $fileStorage.defaultBackend | default "disabled" | quote }}
-      chat_images_backend: {{ $fileStorage.chatImagesBackend | default "" | quote }}
+      chat_attachments_backend: {{ $fileStorage.chatAttachmentsBackend | default "" | quote }}
       user_avatars_backend: {{ $fileStorage.userAvatarsBackend | default "" | quote }}
-      video_covers_backend: {{ $fileStorage.videoCoversBackend | default "" | quote }}
+      media_covers_backend: {{ $fileStorage.mediaCoversBackend | default "" | quote }}
       room_covers_backend: {{ $fileStorage.roomCoversBackend | default "" | quote }}
       playlist_covers_backend: {{ $fileStorage.playlistCoversBackend | default "" | quote }}
       upload_token_secret: ""

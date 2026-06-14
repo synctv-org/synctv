@@ -1592,12 +1592,12 @@ pub struct FileStorageConfig {
     pub upload_token_secret: String,
     /// Fallback backend name used by product features with no explicit selection.
     pub default_backend: String,
-    /// Backend name for chat image uploads.
-    pub chat_images_backend: String,
+    /// Backend name for chat attachment uploads.
+    pub chat_attachments_backend: String,
     /// Backend name for user avatar uploads.
     pub user_avatars_backend: String,
-    /// Backend name for video cover uploads.
-    pub video_covers_backend: String,
+    /// Backend name for media cover uploads.
+    pub media_covers_backend: String,
     /// Backend name for room cover uploads.
     pub room_covers_backend: String,
     /// Backend name for playlist cover uploads.
@@ -1614,9 +1614,9 @@ impl Default for FileStorageConfig {
         Self {
             upload_token_secret: String::new(),
             default_backend: "disabled".to_string(),
-            chat_images_backend: String::new(),
+            chat_attachments_backend: String::new(),
             user_avatars_backend: String::new(),
-            video_covers_backend: String::new(),
+            media_covers_backend: String::new(),
             room_covers_backend: String::new(),
             playlist_covers_backend: String::new(),
             unreferenced_object_retention_seconds: 86_400,
@@ -1630,9 +1630,9 @@ impl std::fmt::Debug for FileStorageConfig {
         f.debug_struct("FileStorageConfig")
             .field("upload_token_secret", &"<redacted>")
             .field("default_backend", &self.default_backend)
-            .field("chat_images_backend", &self.chat_images_backend)
+            .field("chat_attachments_backend", &self.chat_attachments_backend)
             .field("user_avatars_backend", &self.user_avatars_backend)
-            .field("video_covers_backend", &self.video_covers_backend)
+            .field("media_covers_backend", &self.media_covers_backend)
             .field("room_covers_backend", &self.room_covers_backend)
             .field("playlist_covers_backend", &self.playlist_covers_backend)
             .field(
@@ -1646,8 +1646,8 @@ impl std::fmt::Debug for FileStorageConfig {
 
 impl FileStorageConfig {
     #[must_use]
-    pub fn backend_for_chat_images(&self) -> &str {
-        self.selected_backend_or_default(&self.chat_images_backend)
+    pub fn backend_for_chat_attachments(&self) -> &str {
+        self.selected_backend_or_default(&self.chat_attachments_backend)
     }
 
     #[must_use]
@@ -1656,8 +1656,8 @@ impl FileStorageConfig {
     }
 
     #[must_use]
-    pub fn backend_for_video_covers(&self) -> &str {
-        self.selected_backend_or_default(&self.video_covers_backend)
+    pub fn backend_for_media_covers(&self) -> &str {
+        self.selected_backend_or_default(&self.media_covers_backend)
     }
 
     #[must_use]

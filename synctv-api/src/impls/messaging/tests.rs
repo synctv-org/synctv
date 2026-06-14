@@ -8,10 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::models::notification::{Notification, NotificationType};
 use synctv_core::models::{
-    ChatEventKind, ChatImage, ChatMessage, ChatMessageEvent, ChatMessageStatus, ChatMessageType,
-    ChatMessageWithImages, MediaId, Playlist, PlaylistId, RoomAdminPermissionBits, RoomId,
-    RoomMember, RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomPlaybackState,
-    RoomRole, RoomSettings, SendChatMessage, UserId,
+    ChatAttachment, ChatEventKind, ChatMessage, ChatMessageEvent, ChatMessageStatus,
+    ChatMessageType, ChatMessageWithAttachments, MediaId, Playlist, PlaylistId,
+    RoomAdminPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermission,
+    RoomPermissionSet, RoomPlaybackState, RoomRole, RoomSettings, SendChatMessage, UserId,
 };
 use synctv_core::repository::NotificationRepository;
 use synctv_core::repository::{
@@ -201,15 +201,17 @@ fn event_cursor(sequence: i64) -> synctv_proto::client::EventCursor {
     }
 }
 
-fn chat_image() -> ChatImage {
-    ChatImage {
-        id: "chat-image-1".to_string(),
+fn chat_attachment() -> ChatAttachment {
+    ChatAttachment {
+        id: "chat-attachment-1".to_string(),
+        kind: synctv_core::models::ChatAttachmentKind::Image,
         room_id: room_id(),
         message_id: 10,
         message_created_at: chrono::Utc::now(),
+        filename: Some("chat-attachment-1.png".to_string()),
         storage_backend: "database".to_string(),
-        object_key: "chat/images/chat-image-1".to_string(),
-        url: Some("https://cdn.example.test/chat-image-1.png".to_string()),
+        object_key: "chat/attachments/chat-attachment-1".to_string(),
+        url: Some("https://cdn.example.test/chat-attachment-1.png".to_string()),
         mime_type: Some("image/png".to_string()),
         size_bytes: Some(1024),
         width: Some(320),
@@ -297,38 +299,35 @@ fn internal_guest_user_id_is_deterministic_and_reserved() {
 }
 
 #[test]
-fn core_chat_image_to_proto_requires_storage_metadata() {
-    let image = chat_image();
+fn core_chat_attachment_to_proto_requires_storage_metadata_and_allows_optional_dimensions() {
+    let attachment = chat_attachment();
 
-    let proto = core_chat_image_to_proto(&image).checked("valid chat image should convert");
+    let proto =
+        core_chat_attachment_to_proto(&attachment).checked("valid chat attachment should convert");
     assert_eq!(proto.mime_type, "image/png");
     assert_eq!(proto.size_bytes, 1024);
     assert_eq!(proto.width, 320);
     assert_eq!(proto.height, 240);
 
-    let mut missing_mime_type = image.clone();
+    let mut missing_mime_type = attachment.clone();
     missing_mime_type.mime_type = None;
-    assert!(core_chat_image_to_proto(&missing_mime_type)
+    assert!(core_chat_attachment_to_proto(&missing_mime_type)
         .expect_err("missing mime_type should fail")
         .contains("mime_type"));
 
-    let mut missing_size = image.clone();
+    let mut missing_size = attachment.clone();
     missing_size.size_bytes = None;
-    assert!(core_chat_image_to_proto(&missing_size)
+    assert!(core_chat_attachment_to_proto(&missing_size)
         .expect_err("missing size_bytes should fail")
         .contains("size_bytes"));
 
-    let mut missing_width = image.clone();
-    missing_width.width = None;
-    assert!(core_chat_image_to_proto(&missing_width)
-        .expect_err("missing width should fail")
-        .contains("width"));
-
-    let mut missing_height = image;
-    missing_height.height = Some(0);
-    assert!(core_chat_image_to_proto(&missing_height)
-        .expect_err("invalid height should fail")
-        .contains("height"));
+    let mut missing_dimensions = attachment;
+    missing_dimensions.width = None;
+    missing_dimensions.height = None;
+    let proto = core_chat_attachment_to_proto(&missing_dimensions)
+        .checked("missing dimensions should serialize as zero");
+    assert_eq!(proto.width, 0);
+    assert_eq!(proto.height, 0);
 }
 
 #[test]
@@ -594,7 +593,7 @@ fn chat_event_with_content(
         room_id,
         actor_user_id: user_id,
         kind: ChatEventKind::Created,
-        message: ChatMessageWithImages {
+        message: ChatMessageWithAttachments {
             message: ChatMessage {
                 id: 1,
                 room_id,
@@ -613,7 +612,7 @@ fn chat_event_with_content(
                 delete_reason: None,
                 created_at: now,
             },
-            images: Vec::new(),
+            attachments: Vec::new(),
             reactions: Vec::new(),
             mentions: Vec::new(),
         },
@@ -2733,7 +2732,7 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
+            attachments: Vec::new(),
             mentions: Vec::new(),
         })
         .await
@@ -2747,7 +2746,7 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
+            attachments: Vec::new(),
             mentions: Vec::new(),
         })
         .await
@@ -2761,7 +2760,7 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
+            attachments: Vec::new(),
             mentions: Vec::new(),
         })
         .await
@@ -2845,7 +2844,7 @@ async fn test_observe_chat_events_replays_events_after_sequence() {
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
+            attachments: Vec::new(),
             mentions: Vec::new(),
         })
         .await
@@ -2859,7 +2858,7 @@ async fn test_observe_chat_events_replays_events_after_sequence() {
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
+            attachments: Vec::new(),
             mentions: Vec::new(),
         })
         .await
@@ -6393,7 +6392,7 @@ fn test_durable_chat_message_event_conversion() {
             room_id: room_id(),
             actor_user_id: user_id(),
             kind: ChatEventKind::Deleted,
-            message: ChatMessageWithImages {
+            message: ChatMessageWithAttachments {
                 message: ChatMessage {
                     id: 42,
                     room_id: room_id(),
@@ -6412,7 +6411,7 @@ fn test_durable_chat_message_event_conversion() {
                     delete_reason: Some("policy".to_string()),
                     created_at,
                 },
-                images: Vec::new(),
+                attachments: Vec::new(),
                 reactions: Vec::new(),
                 mentions: Vec::new(),
             },
@@ -7225,7 +7224,7 @@ async fn test_guest_chat_is_rejected_even_if_permission_bits_include_chat() {
                     display_position: String::new(),
                     display_color: String::new(),
                     client_message_id: String::new(),
-                    images: Vec::new(),
+                    attachments: Vec::new(),
                     reply_to_message_id: String::new(),
                     metadata: Vec::new(),
                     mentions: Vec::new(),
@@ -7258,7 +7257,7 @@ async fn test_guest_chat_with_client_id_is_rejected() {
                     display_position: String::new(),
                     display_color: String::new(),
                     client_message_id: String::new(),
-                    images: Vec::new(),
+                    attachments: Vec::new(),
                     reply_to_message_id: String::new(),
                     metadata: Vec::new(),
                     mentions: Vec::new(),

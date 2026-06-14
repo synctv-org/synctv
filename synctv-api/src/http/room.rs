@@ -53,14 +53,15 @@ pub use media::{
 pub(crate) use members::__path_get_room_members;
 pub use members::get_room_members;
 #[cfg(feature = "openapi")]
-pub(crate) use objects::__path_create_chat_image_upload_session;
+pub(crate) use objects::__path_create_chat_attachment_upload_session;
 pub use objects::{
-    clear_playlist_cover, clear_room_cover, clear_video_cover, create_chat_image_upload_session,
+    clear_media_cover, clear_playlist_cover, clear_room_cover,
+    create_chat_attachment_upload_session, create_media_cover_upload_session,
     create_playlist_cover_upload_session, create_room_cover_upload_session,
-    create_video_cover_upload_session, get_chat_image_object, get_playlist_cover_object,
-    get_room_cover_object, get_video_cover_object, update_playlist_cover, update_room_cover,
-    update_video_cover, upload_chat_image_object, upload_playlist_cover_object,
-    upload_room_cover_object, upload_video_cover_object,
+    get_chat_attachment_object, get_media_cover_object, get_playlist_cover_object,
+    get_room_cover_object, update_media_cover, update_playlist_cover, update_room_cover,
+    upload_chat_attachment_object, upload_media_cover_object, upload_playlist_cover_object,
+    upload_room_cover_object,
 };
 #[cfg(feature = "openapi")]
 pub(crate) use playback::{
@@ -112,8 +113,8 @@ pub(crate) use streams::{
 };
 pub use streams::{get_room_stream_info, kick_room_stream, list_room_streams};
 pub use types::{
-    ChatImageObjectQuery, KickRoomStreamBody, PlaylistCoverObjectQuery, RoomCoverObjectQuery,
-    VideoCoverObjectQuery,
+    ChatAttachmentObjectQuery, KickRoomStreamBody, MediaCoverObjectQuery, PlaylistCoverObjectQuery,
+    RoomCoverObjectQuery,
 };
 #[cfg(feature = "openapi")]
 pub(crate) use watch::__path_watch_chat_events;

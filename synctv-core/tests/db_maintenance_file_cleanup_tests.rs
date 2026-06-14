@@ -390,7 +390,7 @@ async fn insert_old_chat_message_with_image(
     .bind(message_id)
     .bind(room_id)
     .bind(user_id)
-    .bind("image message")
+    .bind("attachment message")
     .bind(4_i16)
     .bind(1_i16)
     .bind(1_i64)
@@ -401,11 +401,11 @@ async fn insert_old_chat_message_with_image(
 
     sqlx::query(
         r"
-        INSERT INTO chat_message_images (
-            id, room_id, message_id, message_created_at, storage_backend, object_key, url,
+        INSERT INTO chat_message_attachments (
+            id, kind, room_id, message_id, message_created_at, filename, storage_backend, object_key, url,
             mime_type, size_bytes, width, height, metadata, created_at
         ) VALUES (
-            $1, $2, $3, $4, $5, $6, NULL, NULL, NULL, NULL, NULL, $7, $8
+            $1, 2, $2, $3, $4, NULL, $5, $6, NULL, NULL, NULL, NULL, NULL, $7, $8
         )
         ",
     )

@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use super::{
     build_get_playback_request, parse_optional_query_bool, parse_optional_query_i32,
     sse_event_from_server_message, sse_event_id_from_resource_event, watch_after_event_sequence,
-    CancelOnDropStream, ChatImageObjectQuery, GetPlaybackQuery, PlaylistCoverObjectQuery,
-    RoomCoverObjectQuery, VideoCoverObjectQuery, WatchPlaybackQuery, WatchQuery,
+    CancelOnDropStream, ChatAttachmentObjectQuery, GetPlaybackQuery, MediaCoverObjectQuery,
+    PlaylistCoverObjectQuery, RoomCoverObjectQuery, WatchPlaybackQuery, WatchQuery,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use synctv_proto::client::{
@@ -222,8 +222,10 @@ fn test_handwritten_room_queries_reject_unknown_fields() {
         "format=json&after_event_sequence=12"
     )
     .is_err());
-    assert!(serde_urlencoded::from_str::<ChatImageObjectQuery>("token=token&extra=true").is_err());
-    assert!(serde_urlencoded::from_str::<VideoCoverObjectQuery>("token=token&extra=true").is_err());
+    assert!(
+        serde_urlencoded::from_str::<ChatAttachmentObjectQuery>("token=token&extra=true").is_err()
+    );
+    assert!(serde_urlencoded::from_str::<MediaCoverObjectQuery>("token=token&extra=true").is_err());
     assert!(serde_urlencoded::from_str::<RoomCoverObjectQuery>("token=token&extra=true").is_err());
     assert!(
         serde_urlencoded::from_str::<PlaylistCoverObjectQuery>("token=token&extra=true").is_err()

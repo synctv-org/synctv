@@ -83,10 +83,10 @@ pub use file_storage::{
     S3CompatibleFileStorageService, S3FileStorageConfig,
 };
 pub use file_upload_policies::{
-    chat_image_upload_policy, playlist_cover_upload_policy, room_cover_upload_policy,
-    user_avatar_upload_policy, video_cover_upload_policy, MAX_CHAT_IMAGE_SIZE_BYTES,
-    MAX_PLAYLIST_COVER_SIZE_BYTES, MAX_ROOM_COVER_SIZE_BYTES, MAX_USER_AVATAR_SIZE_BYTES,
-    MAX_VIDEO_COVER_SIZE_BYTES,
+    chat_attachment_upload_policy, media_cover_upload_policy, playlist_cover_upload_policy,
+    room_cover_upload_policy, user_avatar_upload_policy, MAX_CHAT_ATTACHMENT_SIZE_BYTES,
+    MAX_MEDIA_COVER_SIZE_BYTES, MAX_PLAYLIST_COVER_SIZE_BYTES, MAX_ROOM_COVER_SIZE_BYTES,
+    MAX_USER_AVATAR_SIZE_BYTES,
 };
 pub use global_settings::{
     ConfiguredIceServer, IceServerList, OAuth2ProviderConfig, OAuth2ProviderConfigs,

@@ -16,7 +16,7 @@ use crate::{
         UserRepository,
     },
     service::{
-        auth::JwtService, chat_image_upload_policy, BruteForceProtection,
+        auth::JwtService, chat_attachment_upload_policy, BruteForceProtection,
         DisabledFileStorageService, InMemoryTokenBlacklistStore, RateLimiter, RoomService,
     },
 };
@@ -93,9 +93,10 @@ impl FileStorageService for PrefixingFileStorageService {
         let id = request
             .client_file_id
             .take()
-            .unwrap_or_else(|| "custom-image".to_string());
+            .unwrap_or_else(|| "custom-attachment".to_string());
         Ok(FileUploadSession {
             file: NewStoredFile {
+                filename: None,
                 id: id.clone(),
                 storage_backend: "test-storage".to_string(),
                 object_key: format!("normalized/uploads/{id}"),
@@ -115,25 +116,25 @@ impl FileStorageService for PrefixingFileStorageService {
             upload_method: Some("PUT".to_string()),
             upload_headers: Default::default(),
             expires_at: Some(Utc::now()),
-            max_size_bytes: MAX_CHAT_IMAGE_SIZE_BYTES,
+            max_size_bytes: MAX_CHAT_ATTACHMENT_SIZE_BYTES,
         })
     }
 
     async fn prepare_files(
         &self,
         context: FileStorageContext<'_>,
-        images: Vec<NewStoredFile>,
+        attachments: Vec<NewStoredFile>,
     ) -> Result<Vec<NewStoredFile>> {
         assert!(context.user_id.as_i64() > 0);
         assert!(!context.storage_scope.is_empty());
-        validate_chat_images(&images)?;
-        Ok(images
+        validate_chat_attachments(&attachments)?;
+        Ok(attachments
             .into_iter()
-            .map(|mut image| {
-                image.storage_backend = "test-storage".to_string();
-                image.object_key = format!("normalized/{}", image.object_key);
-                image.url = Some(format!("https://cdn.invalid/{}", image.id));
-                image
+            .map(|mut attachment| {
+                attachment.storage_backend = "test-storage".to_string();
+                attachment.object_key = format!("normalized/{}", attachment.object_key);
+                attachment.url = Some(format!("https://cdn.invalid/{}", attachment.id));
+                attachment
             })
             .collect())
     }
@@ -159,9 +160,10 @@ impl FileStorageService for RecordingFileStorageService {
         let id = request
             .client_file_id
             .take()
-            .unwrap_or_else(|| "custom-image".to_string());
+            .unwrap_or_else(|| "custom-attachment".to_string());
         Ok(FileUploadSession {
             file: NewStoredFile {
+                filename: None,
                 id: id.clone(),
                 storage_backend: "test-storage".to_string(),
                 object_key: format!("normalized/uploads/{id}"),
@@ -181,25 +183,25 @@ impl FileStorageService for RecordingFileStorageService {
             upload_method: Some("PUT".to_string()),
             upload_headers: Default::default(),
             expires_at: Some(Utc::now()),
-            max_size_bytes: MAX_CHAT_IMAGE_SIZE_BYTES,
+            max_size_bytes: MAX_CHAT_ATTACHMENT_SIZE_BYTES,
         })
     }
 
     async fn prepare_files(
         &self,
         context: FileStorageContext<'_>,
-        images: Vec<NewStoredFile>,
+        attachments: Vec<NewStoredFile>,
     ) -> Result<Vec<NewStoredFile>> {
         assert!(context.user_id.as_i64() > 0);
         assert!(!context.storage_scope.is_empty());
-        validate_chat_images(&images)?;
-        Ok(images
+        validate_chat_attachments(&attachments)?;
+        Ok(attachments
             .into_iter()
-            .map(|mut image| {
-                image.storage_backend = "test-storage".to_string();
-                image.object_key = format!("normalized/{}", image.object_key);
-                image.url = Some(format!("https://cdn.invalid/{}", image.id));
-                image
+            .map(|mut attachment| {
+                attachment.storage_backend = "test-storage".to_string();
+                attachment.object_key = format!("normalized/{}", attachment.object_key);
+                attachment.url = Some(format!("https://cdn.invalid/{}", attachment.id));
+                attachment
             })
             .collect())
     }
@@ -244,8 +246,9 @@ fn validate_chat_metadata_rejects_non_object_values() {
 }
 
 #[test]
-fn validate_chat_images_rejects_non_object_metadata() {
+fn validate_chat_attachments_rejects_non_object_metadata() {
     let image = NewStoredFile {
+        filename: None,
         id: "img-test".to_string(),
         storage_backend: "database".to_string(),
         object_key: "rooms/1/chat/img-test".to_string(),
@@ -258,8 +261,8 @@ fn validate_chat_images_rejects_non_object_metadata() {
     };
 
     let error = err(
-        validate_chat_images(&[image]),
-        "image metadata should be object",
+        validate_chat_attachments(&[image]),
+        "attachment metadata should be object",
     );
     assert!(
         matches!(error, Error::InvalidInput(message) if message == "chat metadata must be a JSON object")
@@ -440,9 +443,9 @@ fn read_state_allows_forward_event_on_same_message() {
             room_id: message.room_id,
             actor_user_id: UserId::expect_positive(2),
             kind: crate::models::ChatEventKind::Edited,
-            message: ChatMessageWithImages {
+            message: ChatMessageWithAttachments {
                 message: message.clone(),
-                images: Vec::new(),
+                attachments: Vec::new(),
                 reactions: Vec::new(),
                 mentions: Vec::new(),
             },
@@ -523,6 +526,7 @@ async fn disabled_file_storage_rejects_images() {
                 client_request_id: Some("client-1"),
             },
             vec![NewStoredFile {
+                filename: None,
                 id: "image-1".to_string(),
                 storage_backend: "database".to_string(),
                 object_key: "image.webp".to_string(),
@@ -540,8 +544,9 @@ async fn disabled_file_storage_rejects_images() {
 }
 
 #[test]
-fn validate_chat_images_rejects_duplicates_in_one_message() {
+fn validate_chat_attachments_rejects_duplicates_in_one_message() {
     let image = NewStoredFile {
+        filename: None,
         id: "image-1".to_string(),
         storage_backend: "database".to_string(),
         object_key: "image-1.webp".to_string(),
@@ -553,9 +558,10 @@ fn validate_chat_images_rejects_duplicates_in_one_message() {
         metadata: serde_json::Value::Object(Default::default()),
     };
 
-    let duplicate_id = validate_chat_images(&[
+    let duplicate_id = validate_chat_attachments(&[
         image.clone(),
         NewStoredFile {
+            filename: None,
             id: image.id.clone(),
             object_key: "image-2.webp".to_string(),
             ..image.clone()
@@ -563,9 +569,10 @@ fn validate_chat_images_rejects_duplicates_in_one_message() {
     ]);
     assert!(matches!(duplicate_id, Err(Error::InvalidInput(_))));
 
-    let duplicate_key = validate_chat_images(&[
+    let duplicate_key = validate_chat_attachments(&[
         image.clone(),
         NewStoredFile {
+            filename: None,
             id: "image-2".to_string(),
             object_key: image.object_key.clone(),
             ..image
@@ -575,8 +582,9 @@ fn validate_chat_images_rejects_duplicates_in_one_message() {
 }
 
 #[test]
-fn validate_chat_images_rejects_zero_size() {
-    let result = validate_chat_images(&[NewStoredFile {
+fn validate_chat_attachments_rejects_zero_size() {
+    let result = validate_chat_attachments(&[NewStoredFile {
+        filename: None,
         id: "image-1".to_string(),
         storage_backend: "database".to_string(),
         object_key: "image-1.webp".to_string(),
@@ -599,13 +607,14 @@ async fn disabled_file_storage_rejects_upload_session() {
             storage_scope: TEST_FILE_STORAGE_SCOPE.to_string(),
             user_id: UserId::expect_positive(2),
             client_file_id: Some("client-image-1".to_string()),
+            filename: None,
             mime_type: "image/webp".to_string(),
             size_bytes: 1024,
             width: Some(640),
             height: Some(480),
             checksum_sha256: Some("a".repeat(64)),
             metadata: serde_json::json!({"blurhash": "abc"}),
-            policy: chat_image_upload_policy(),
+            policy: chat_attachment_upload_policy(),
         })
         .await;
 
@@ -624,6 +633,7 @@ async fn disabled_file_storage_rejects_prepared_images() {
                 client_request_id: Some("client-1"),
             },
             vec![NewStoredFile {
+                filename: None,
                 id: "image-1".to_string(),
                 storage_backend: "database".to_string(),
                 object_key: "rooms/1/chat/2/image-1".to_string(),
@@ -658,7 +668,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
             pool.clone(),
             (*test_user_service(
                 &pool,
-                UsernameCache::local_only("test:chat:database-image:".to_string(), 100, 60),
+                UsernameCache::local_only("test:chat:database-attachment:".to_string(), 100, 60),
             ))
             .clone(),
         ),
@@ -679,7 +689,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
     let service = DatabaseFileStorageService::new(
         "database",
         Arc::new(FileStorageRepository::new(pool.clone())),
-        "database-image-secret",
+        "database-attachment-secret",
     );
     let expected_checksum = hex::encode(Sha256::digest(b"data"));
     let session = ok(
@@ -687,14 +697,15 @@ async fn database_file_storage_roundtrips_uploaded_object() {
             .create_upload_session(CreateFileUploadSession {
                 storage_scope: TEST_FILE_STORAGE_SCOPE.to_string(),
                 user_id: user.id,
-                client_file_id: Some("database-image-1".to_string()),
+                client_file_id: Some("database-attachment-1".to_string()),
+                filename: None,
                 mime_type: "image/webp".to_string(),
                 size_bytes: 4,
                 width: Some(16),
                 height: Some(16),
                 checksum_sha256: Some(expected_checksum.clone()),
                 metadata: serde_json::Value::Object(Default::default()),
-                policy: chat_image_upload_policy(),
+                policy: chat_attachment_upload_policy(),
             })
             .await,
         "database upload session should be created",
@@ -722,14 +733,14 @@ async fn database_file_storage_roundtrips_uploaded_object() {
                 b"data".to_vec(),
             )
             .await,
-        "database image object should store",
+        "database attachment object should store",
     );
     assert_eq!(stored.object_key, session.file.object_key);
     assert_eq!(stored.data, b"data");
     assert_eq!(stored.checksum_sha256, expected_checksum);
     let loaded = ok(
         service.get_object(&encoded_object_key, &read_token).await,
-        "database image object should load",
+        "database attachment object should load",
     );
     assert_eq!(loaded.data, b"data");
     let prepared = ok(
@@ -738,7 +749,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
                 FileStorageContext {
                     user_id: user.id,
                     storage_scope: TEST_FILE_STORAGE_SCOPE,
-                    client_request_id: Some("database-image-message"),
+                    client_request_id: Some("database-attachment-message"),
                 },
                 vec![session.file],
             )
@@ -752,14 +763,15 @@ async fn database_file_storage_roundtrips_uploaded_object() {
             .create_upload_session(CreateFileUploadSession {
                 storage_scope: TEST_FILE_STORAGE_SCOPE.to_string(),
                 user_id: user.id,
-                client_file_id: Some("database-image-2".to_string()),
+                client_file_id: Some("database-attachment-2".to_string()),
+                filename: None,
                 mime_type: "image/webp".to_string(),
                 size_bytes: 4,
                 width: Some(16),
                 height: Some(16),
                 checksum_sha256: Some(expected_checksum),
                 metadata: serde_json::Value::Object(Default::default()),
-                policy: chat_image_upload_policy(),
+                policy: chat_attachment_upload_policy(),
             })
             .await,
         "database upload session should reuse existing object",
@@ -794,7 +806,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
                 FileStorageContext {
                     user_id: user.id,
                     storage_scope: TEST_FILE_STORAGE_SCOPE,
-                    client_request_id: Some("database-image-reuse-message"),
+                    client_request_id: Some("database-attachment-reuse-message"),
                 },
                 vec![reuse_session.file],
             )
@@ -822,7 +834,7 @@ async fn database_file_storage_rejects_checksum_mismatch() {
             (*test_user_service(
                 &pool,
                 UsernameCache::local_only(
-                    "test:chat:database-image-checksum:".to_string(),
+                    "test:chat:database-attachment-checksum:".to_string(),
                     100,
                     60,
                 ),
@@ -846,21 +858,22 @@ async fn database_file_storage_rejects_checksum_mismatch() {
     let service = DatabaseFileStorageService::new(
         "database",
         Arc::new(FileStorageRepository::new(pool.clone())),
-        "database-image-checksum-secret",
+        "database-attachment-checksum-secret",
     );
     let session = ok(
         service
             .create_upload_session(CreateFileUploadSession {
                 storage_scope: TEST_FILE_STORAGE_SCOPE.to_string(),
                 user_id: user.id,
-                client_file_id: Some("database-image-1".to_string()),
+                client_file_id: Some("database-attachment-1".to_string()),
+                filename: None,
                 mime_type: "image/webp".to_string(),
                 size_bytes: 4,
                 width: Some(16),
                 height: Some(16),
                 checksum_sha256: Some(hex::encode(Sha256::digest(b"data"))),
                 metadata: serde_json::Value::Object(Default::default()),
-                policy: chat_image_upload_policy(),
+                policy: chat_attachment_upload_policy(),
             })
             .await,
         "database upload session should be created",
@@ -902,13 +915,14 @@ async fn image_upload_session_requires_checksum() {
             storage_scope: TEST_FILE_STORAGE_SCOPE.to_string(),
             user_id: UserId::expect_positive(9),
             client_file_id: Some("client-image-1".to_string()),
+            filename: None,
             mime_type: "image/png".to_string(),
             size_bytes: 2048,
             width: Some(800),
             height: Some(600),
             checksum_sha256: None,
             metadata: serde_json::Value::Object(Default::default()),
-            policy: chat_image_upload_policy(),
+            policy: chat_attachment_upload_policy(),
         })
         .await;
 
@@ -927,13 +941,14 @@ async fn s3_file_storage_rejects_tampered_upload_session_image() {
                 storage_scope: TEST_FILE_STORAGE_SCOPE.to_string(),
                 user_id: UserId::expect_positive(2),
                 client_file_id: Some("client-image-1".to_string()),
+                filename: None,
                 mime_type: "image/webp".to_string(),
                 size_bytes: 1024,
                 width: Some(640),
                 height: Some(480),
                 checksum_sha256: Some("b".repeat(64)),
                 metadata: serde_json::Value::Object(Default::default()),
-                policy: chat_image_upload_policy(),
+                policy: chat_attachment_upload_policy(),
             })
             .await,
         "upload session should be created",
@@ -982,13 +997,14 @@ async fn s3_file_storage_creates_presigned_upload_session() {
                 storage_scope: TEST_FILE_STORAGE_SCOPE.to_string(),
                 user_id: UserId::expect_positive(9),
                 client_file_id: Some("client-image-1".to_string()),
+                filename: None,
                 mime_type: "image/png".to_string(),
                 size_bytes: 2048,
                 width: Some(800),
                 height: Some(600),
                 checksum_sha256: Some("a".repeat(64)),
                 metadata: serde_json::json!({"blurhash": "abc"}),
-                policy: chat_image_upload_policy(),
+                policy: chat_attachment_upload_policy(),
             })
             .await,
         "S3 upload session should be created",
@@ -1014,7 +1030,7 @@ async fn s3_file_storage_creates_presigned_upload_session() {
     assert!(session
         .file
         .object_key
-        .starts_with("files/chat/images/sha256/aa/aa/"));
+        .starts_with("files/chat/attachments/sha256/aa/aa/"));
     let expected_public_url = format!(
         "https://cdn.example.com/files/synctv-files/{}",
         session.file.object_key
@@ -1033,7 +1049,7 @@ async fn s3_file_storage_creates_presigned_upload_session() {
     assert!(upload_url.contains("X-Amz-SignedHeaders="));
     assert!(upload_url.contains("X-Amz-Signature="));
     assert!(session.expires_at.is_some());
-    assert_eq!(session.max_size_bytes, MAX_CHAT_IMAGE_SIZE_BYTES);
+    assert_eq!(session.max_size_bytes, MAX_CHAT_ATTACHMENT_SIZE_BYTES);
 }
 
 #[tokio::test]
@@ -1048,13 +1064,14 @@ async fn image_upload_sessions_reuse_content_object_key_for_reused_client_ids() 
                 storage_scope: TEST_FILE_STORAGE_SCOPE.to_string(),
                 user_id: UserId::expect_positive(9),
                 client_file_id: Some("image-1".to_string()),
+                filename: None,
                 mime_type: "image/png".to_string(),
                 size_bytes: 2048,
                 width: Some(800),
                 height: Some(600),
                 checksum_sha256: Some("c".repeat(64)),
                 metadata: serde_json::Value::Object(Default::default()),
-                policy: chat_image_upload_policy(),
+                policy: chat_attachment_upload_policy(),
             })
             .await,
         "first upload session should be created",
@@ -1065,13 +1082,14 @@ async fn image_upload_sessions_reuse_content_object_key_for_reused_client_ids() 
                 storage_scope: TEST_FILE_STORAGE_SCOPE.to_string(),
                 user_id: UserId::expect_positive(9),
                 client_file_id: Some("image-1".to_string()),
+                filename: None,
                 mime_type: "image/png".to_string(),
                 size_bytes: 2048,
                 width: Some(800),
                 height: Some(600),
                 checksum_sha256: Some("c".repeat(64)),
                 metadata: serde_json::Value::Object(Default::default()),
-                policy: chat_image_upload_policy(),
+                policy: chat_attachment_upload_policy(),
             })
             .await,
         "second upload session should be created",
@@ -1087,7 +1105,7 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
     let config = test_s3_file_storage_config();
-    let policy = chat_image_upload_policy();
+    let policy = chat_attachment_upload_policy();
     let checksum = hex::encode(Sha256::digest(b"data"));
     let object_key = file_content_object_key(
         &file_storage_object_base_path(&config.base_path, &policy.storage_namespace),
@@ -1127,13 +1145,14 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
                 storage_scope: TEST_FILE_STORAGE_SCOPE.to_string(),
                 user_id: UserId::expect_positive(9),
                 client_file_id: Some("image-1".to_string()),
+                filename: None,
                 mime_type: "image/webp".to_string(),
                 size_bytes: 4,
                 width: Some(16),
                 height: Some(16),
                 checksum_sha256: Some(checksum),
                 metadata: serde_json::Value::Object(Default::default()),
-                policy: chat_image_upload_policy(),
+                policy: chat_attachment_upload_policy(),
             })
             .await,
         "registered S3 object should create reuse session",
@@ -1183,7 +1202,7 @@ fn s3_public_url_uses_url_path_segment_encoding() {
     let mut config = test_s3_file_storage_config();
     config.bucket = "bucket with spaces".to_string();
     let url = ok(
-        file_storage_public_url(&config, "chat images/with # and ?.png"),
+        file_storage_public_url(&config, "chat attachments/with # and ?.png"),
         "public URL should be built",
     );
 
@@ -1217,6 +1236,7 @@ async fn s3_file_storage_rejects_unexpected_backend_on_send() {
                 client_request_id: Some("client-1"),
             },
             vec![NewStoredFile {
+                filename: None,
                 id: "image-1".to_string(),
                 storage_backend: "database".to_string(),
                 object_key: "image.webp".to_string(),
@@ -1234,10 +1254,10 @@ async fn s3_file_storage_rejects_unexpected_backend_on_send() {
 }
 
 #[tokio::test]
-async fn metadata_only_image_token_is_stripped_before_persistence() {
+async fn metadata_only_attachment_token_is_stripped_before_persistence() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache =
-        UsernameCache::local_only("test:chat:image-token-strip:".to_string(), 100, 60);
+        UsernameCache::local_only("test:chat:attachment-token-strip:".to_string(), 100, 60);
     let service = test_chat_service_with_file_storage(
         &pool,
         username_cache.clone(),
@@ -1251,7 +1271,7 @@ async fn metadata_only_image_token_is_stripped_before_persistence() {
     let user = ok(
         user_repository
             .create(&User::new(
-                "chat_image_token_strip_user".to_string(),
+                "chat_attachment_token_strip_user".to_string(),
                 SignupMethod::Password,
             ))
             .await,
@@ -1266,7 +1286,11 @@ async fn metadata_only_image_token_is_stripped_before_persistence() {
             pool.clone(),
             (*test_user_service(
                 &pool,
-                UsernameCache::local_only("test:chat:image-token-strip:room:".to_string(), 100, 60),
+                UsernameCache::local_only(
+                    "test:chat:attachment-token-strip:room:".to_string(),
+                    100,
+                    60,
+                ),
             ))
             .clone(),
         ),
@@ -1275,7 +1299,7 @@ async fn metadata_only_image_token_is_stripped_before_persistence() {
     let (room, _) = ok(
         room_service
             .create_room(
-                "Image Token Strip Room".to_string(),
+                "Attachment Token Strip Room".to_string(),
                 String::new(),
                 user.id,
                 None,
@@ -1288,10 +1312,11 @@ async fn metadata_only_image_token_is_stripped_before_persistence() {
     let payload = vec![b'd'; 1024];
     let session = ok(
         service
-            .create_image_upload_session(CreateChatImageUploadSession {
+            .create_attachment_upload_session(CreateChatAttachmentUploadSession {
                 room_id: room.id,
                 user_id: user.id,
-                client_image_id: Some("strip-image-1".to_string()),
+                client_attachment_id: Some("strip-attachment-1".to_string()),
+                filename: None,
                 mime_type: "image/webp".to_string(),
                 size_bytes: 1024,
                 width: Some(640),
@@ -1317,14 +1342,14 @@ async fn metadata_only_image_token_is_stripped_before_persistence() {
     );
     ok(
         service
-            .store_image_upload_object(
+            .store_attachment_upload_object(
                 &encoded_object_key,
                 upload_token,
                 Some("image/webp"),
                 payload,
             )
             .await,
-        "database image object should store",
+        "database attachment object should store",
     );
 
     let event = ok(
@@ -1332,28 +1357,31 @@ async fn metadata_only_image_token_is_stripped_before_persistence() {
             .send_message_event(SendChatMessage {
                 room_id: room.id,
                 user_id: user.id,
-                client_message_id: Some("strip-image-message-1".to_string()),
+                client_message_id: Some("strip-attachment-message-1".to_string()),
                 content: String::new(),
-                message_type: ChatMessageType::Image,
+                message_type: ChatMessageType::Attachment,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: vec![session.file],
+                attachments: vec![session.file],
                 mentions: Vec::new(),
             })
             .await,
-        "image message should be stored",
+        "attachment message should be stored",
     );
 
-    let image = some(event.message.images.first(), "image should be present");
-    assert!(image.metadata.get(FILE_UPLOAD_TOKEN_KEY).is_none());
+    let attachment = some(
+        event.message.attachments.first(),
+        "attachment should be present",
+    );
+    assert!(attachment.metadata.get(FILE_UPLOAD_TOKEN_KEY).is_none());
     assert_eq!(
-        image.metadata.get("blurhash").and_then(|v| v.as_str()),
+        attachment.metadata.get("blurhash").and_then(|v| v.as_str()),
         Some("abc")
     );
 }
 
 #[tokio::test]
-async fn custom_file_storage_can_normalize_image_metadata() {
+async fn custom_file_storage_can_normalize_attachment_metadata() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache = UsernameCache::local_only("test:chat:image:".to_string(), 100, 60);
     let service = test_chat_service_with_file_storage(
@@ -1389,7 +1417,7 @@ async fn custom_file_storage_can_normalize_image_metadata() {
     let (room, _) = ok(
         room_service
             .create_room(
-                "Image Storage Room".to_string(),
+                "Attachment Storage Room".to_string(),
                 String::new(),
                 user.id,
                 None,
@@ -1402,14 +1430,14 @@ async fn custom_file_storage_can_normalize_image_metadata() {
         FileStorageRepository::new(pool.clone())
             .upsert_object(
                 "test-storage",
-                "normalized/raw/image.webp",
+                "normalized/raw/attachment.webp",
                 "image/webp",
                 123,
-                &hex::encode(Sha256::digest(b"raw/image.webp")),
+                &hex::encode(Sha256::digest(b"raw/attachment.webp")),
                 &serde_json::Value::Object(Default::default()),
             )
             .await,
-        "normalized image object should be registered",
+        "normalized attachment object should be registered",
     );
 
     let event = ok(
@@ -1417,15 +1445,16 @@ async fn custom_file_storage_can_normalize_image_metadata() {
             .send_message_event(SendChatMessage {
                 room_id: room.id,
                 user_id: user.id,
-                client_message_id: Some("image-storage-client-id".to_string()),
+                client_message_id: Some("attachment-storage-client-id".to_string()),
                 content: String::new(),
-                message_type: ChatMessageType::Image,
+                message_type: ChatMessageType::Attachment,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: vec![NewStoredFile {
-                    id: "image-storage-1".to_string(),
+                attachments: vec![NewStoredFile {
+                    filename: None,
+                    id: "attachment-storage-1".to_string(),
                     storage_backend: "client".to_string(),
-                    object_key: "raw/image.webp".to_string(),
+                    object_key: "raw/attachment.webp".to_string(),
                     url: None,
                     mime_type: Some("image/webp".to_string()),
                     size_bytes: Some(123),
@@ -1436,22 +1465,26 @@ async fn custom_file_storage_can_normalize_image_metadata() {
                 mentions: Vec::new(),
             })
             .await,
-        "image message should be stored",
+        "attachment message should be stored",
     );
 
-    let image = some(event.message.images.first(), "image should be present");
-    assert_eq!(image.storage_backend, "test-storage");
-    assert_eq!(image.object_key, "normalized/raw/image.webp");
+    let attachment = some(
+        event.message.attachments.first(),
+        "attachment should be present",
+    );
+    assert_eq!(attachment.storage_backend, "test-storage");
+    assert_eq!(attachment.object_key, "normalized/raw/attachment.webp");
     assert_eq!(
-        image.url.as_deref(),
-        Some("https://cdn.invalid/image-storage-1")
+        attachment.url.as_deref(),
+        Some("https://cdn.invalid/attachment-storage-1")
     );
 }
 
 #[tokio::test]
-async fn deleting_image_message_releases_image_objects() {
+async fn deleting_attachment_message_releases_attachment_objects() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
-    let username_cache = UsernameCache::local_only("test:chat:delete-image:".to_string(), 100, 60);
+    let username_cache =
+        UsernameCache::local_only("test:chat:delete-attachment:".to_string(), 100, 60);
     let storage = Arc::new(RecordingFileStorageService::default());
     let service =
         test_chat_service_with_file_storage(&pool, username_cache.clone(), storage.clone());
@@ -1459,7 +1492,7 @@ async fn deleting_image_message_releases_image_objects() {
     let user = ok(
         user_repository
             .create(&User::new(
-                "chat_delete_image_user".to_string(),
+                "chat_delete_attachment_user".to_string(),
                 SignupMethod::Password,
             ))
             .await,
@@ -1474,7 +1507,7 @@ async fn deleting_image_message_releases_image_objects() {
             pool.clone(),
             (*test_user_service(
                 &pool,
-                UsernameCache::local_only("test:chat:delete-image:room:".to_string(), 100, 60),
+                UsernameCache::local_only("test:chat:delete-attachment:room:".to_string(), 100, 60),
             ))
             .clone(),
         ),
@@ -1483,7 +1516,7 @@ async fn deleting_image_message_releases_image_objects() {
     let (room, _) = ok(
         room_service
             .create_room(
-                "Delete Image Room".to_string(),
+                "Delete Attachment Room".to_string(),
                 String::new(),
                 user.id,
                 None,
@@ -1496,14 +1529,14 @@ async fn deleting_image_message_releases_image_objects() {
         FileStorageRepository::new(pool.clone())
             .upsert_object(
                 "test-storage",
-                "normalized/raw/delete-image.webp",
+                "normalized/raw/delete-attachment.webp",
                 "image/webp",
                 123,
-                &hex::encode(Sha256::digest(b"raw/delete-image.webp")),
+                &hex::encode(Sha256::digest(b"raw/delete-attachment.webp")),
                 &serde_json::Value::Object(Default::default()),
             )
             .await,
-        "normalized image object should be registered",
+        "normalized attachment object should be registered",
     );
 
     let created = ok(
@@ -1511,15 +1544,16 @@ async fn deleting_image_message_releases_image_objects() {
             .send_message_event(SendChatMessage {
                 room_id: room.id,
                 user_id: user.id,
-                client_message_id: Some("delete-image-client-id".to_string()),
+                client_message_id: Some("delete-attachment-client-id".to_string()),
                 content: String::new(),
-                message_type: ChatMessageType::Image,
+                message_type: ChatMessageType::Attachment,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: vec![NewStoredFile {
-                    id: "delete-image-1".to_string(),
+                attachments: vec![NewStoredFile {
+                    filename: None,
+                    id: "delete-attachment-1".to_string(),
                     storage_backend: "client".to_string(),
-                    object_key: "raw/delete-image.webp".to_string(),
+                    object_key: "raw/delete-attachment.webp".to_string(),
                     url: None,
                     mime_type: Some("image/webp".to_string()),
                     size_bytes: Some(123),
@@ -1530,7 +1564,7 @@ async fn deleting_image_message_releases_image_objects() {
                 mentions: Vec::new(),
             })
             .await,
-        "image message should be stored",
+        "attachment message should be stored",
     );
 
     ok(
@@ -1544,7 +1578,7 @@ async fn deleting_image_message_releases_image_objects() {
                 expected_version: Some(created.message.message.version),
             })
             .await,
-        "image message should delete cleanly",
+        "attachment message should delete cleanly",
     );
 
     let deleted_object_keys = ok(
@@ -1554,7 +1588,7 @@ async fn deleting_image_message_releases_image_objects() {
     .clone();
     assert_eq!(
         deleted_object_keys,
-        vec!["normalized/raw/delete-image.webp".to_string()]
+        vec!["normalized/raw/delete-attachment.webp".to_string()]
     );
     let deleted_origins = ok(storage.deleted_origins.lock(), "deleted origins lock").clone();
     assert_eq!(deleted_origins, vec!["reference_released".to_string()]);
@@ -1612,7 +1646,7 @@ async fn concurrent_idempotent_send_returns_existing_created_event() {
         message_type: ChatMessageType::Text,
         reply_to_message_id: None,
         metadata: serde_json::Value::Object(Default::default()),
-        images: Vec::new(),
+        attachments: Vec::new(),
         mentions: Vec::new(),
     };
     let worker_count = 6;
@@ -1738,7 +1772,7 @@ async fn concurrent_same_edit_returns_existing_edit_event() {
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: Vec::new(),
+                attachments: Vec::new(),
                 mentions: Vec::new(),
             })
             .await,
@@ -1862,7 +1896,7 @@ async fn concurrent_same_delete_returns_existing_delete_event() {
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: Vec::new(),
+                attachments: Vec::new(),
                 mentions: Vec::new(),
             })
             .await,
@@ -2000,7 +2034,7 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: Vec::new(),
+                attachments: Vec::new(),
                 mentions: Vec::new(),
             })
             .await,
@@ -2040,7 +2074,7 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
 
     let (owner_history, _) = ok(
         service
-            .get_history_with_images_for_viewer(&room.id, None, 10, false, Some(&owner.id))
+            .get_history_with_attachments_for_viewer(&room.id, None, 10, false, Some(&owner.id))
             .await,
         "owner history should load",
     );
@@ -2069,7 +2103,7 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
 
     let (owner_history, _) = ok(
         service
-            .get_history_with_images_for_viewer(&room.id, None, 10, false, Some(&owner.id))
+            .get_history_with_attachments_for_viewer(&room.id, None, 10, false, Some(&owner.id))
             .await,
         "owner history should reload",
     );
@@ -2085,7 +2119,7 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
 
     let (member_history, _) = ok(
         service
-            .get_history_with_images_for_viewer(&room.id, None, 10, false, Some(&member.id))
+            .get_history_with_attachments_for_viewer(&room.id, None, 10, false, Some(&member.id))
             .await,
         "member history should load",
     );
@@ -2248,7 +2282,7 @@ async fn read_state_tracks_unread_count_and_stays_monotonic() {
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: Vec::new(),
+                attachments: Vec::new(),
                 mentions: Vec::new(),
             })
             .await,
@@ -2264,7 +2298,7 @@ async fn read_state_tracks_unread_count_and_stays_monotonic() {
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: Vec::new(),
+                attachments: Vec::new(),
                 mentions: Vec::new(),
             })
             .await,
@@ -2280,7 +2314,7 @@ async fn read_state_tracks_unread_count_and_stays_monotonic() {
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: Vec::new(),
+                attachments: Vec::new(),
                 mentions: Vec::new(),
             })
             .await,
@@ -2435,7 +2469,7 @@ async fn message_context_returns_messages_around_anchor_in_chronological_order()
                     message_type: ChatMessageType::Text,
                     reply_to_message_id: None,
                     metadata: serde_json::Value::Object(Default::default()),
-                    images: Vec::new(),
+                    attachments: Vec::new(),
                     mentions: Vec::new(),
                 })
                 .await,
@@ -2524,7 +2558,7 @@ async fn chat_text_validation_rejects_whitespace_send_and_edit() {
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: Vec::new(),
+                attachments: Vec::new(),
                 mentions: Vec::new(),
             })
             .await,
@@ -2542,7 +2576,7 @@ async fn chat_text_validation_rejects_whitespace_send_and_edit() {
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                images: Vec::new(),
+                attachments: Vec::new(),
                 mentions: Vec::new(),
             })
             .await,

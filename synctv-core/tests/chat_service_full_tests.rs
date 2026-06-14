@@ -175,7 +175,7 @@ fn make_chat_service_with_database_storage(pool: &PgPool) -> (ChatService, Usern
     )
 }
 
-async fn upload_chat_image_file(
+async fn upload_chat_attachment_file(
     chat_service: &ChatService,
     session: &synctv_core::models::FileUploadSession,
     payload: Vec<u8>,
@@ -195,14 +195,14 @@ async fn upload_chat_image_file(
         .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
         .checked("database upload token header should be returned");
     chat_service
-        .store_image_upload_object(
+        .store_attachment_upload_object(
             encoded_object_key,
             upload_token,
             Some("image/webp"),
             payload,
         )
         .await
-        .checked("database image object should store");
+        .checked("database attachment object should store");
 }
 
 fn make_user(username: &str) -> User {
@@ -1347,7 +1347,7 @@ async fn test_send_message_event_idempotency_returns_existing_message() {
         message_type: ChatMessageType::Text,
         reply_to_message_id: None,
         metadata: serde_json::Value::Object(Default::default()),
-        images: Vec::new(),
+        attachments: Vec::new(),
         mentions: Vec::new(),
     };
 
@@ -1406,7 +1406,7 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
         .checked("test operation should succeed");
 
     let empty_page = chat_service
-        .get_history_page_with_images_for_viewer(&room.id, None, 10, true, Some(&creator.id))
+        .get_history_page_with_attachments_for_viewer(&room.id, None, 10, true, Some(&creator.id))
         .await
         .checked("test operation should succeed");
     assert_eq!(empty_page.event_cursor.sequence, 0);
@@ -1421,7 +1421,7 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
+            attachments: Vec::new(),
             mentions: Vec::new(),
         })
         .await
@@ -1435,14 +1435,14 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
+            attachments: Vec::new(),
             mentions: Vec::new(),
         })
         .await
         .checked("test operation should succeed");
 
     let page = chat_service
-        .get_history_page_with_images_for_viewer(&room.id, None, 10, true, Some(&creator.id))
+        .get_history_page_with_attachments_for_viewer(&room.id, None, 10, true, Some(&creator.id))
         .await
         .checked("test operation should succeed");
     assert_eq!(page.messages.len(), 2);
@@ -1537,7 +1537,7 @@ async fn test_send_message_event_idempotency_rejects_different_payload() {
         message_type: ChatMessageType::Text,
         reply_to_message_id: None,
         metadata: serde_json::Value::Object(Default::default()),
-        images: Vec::new(),
+        attachments: Vec::new(),
         mentions: Vec::new(),
     };
     chat_service
@@ -1869,7 +1869,7 @@ async fn test_delete_message_client_operation_id_replays_without_expected_versio
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_image_message_history_returns_image_metadata() {
+async fn test_attachment_message_history_returns_attachment_metadata() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -1885,7 +1885,7 @@ async fn test_image_message_history_returns_image_metadata() {
         .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
-            "Image History Room".to_string(),
+            "Attachment History Room".to_string(),
             String::new(),
             creator.id,
             None,
@@ -1896,10 +1896,11 @@ async fn test_image_message_history_returns_image_metadata() {
 
     let payload = b"image-1".to_vec();
     let session = chat_service
-        .create_image_upload_session(synctv_core::models::CreateChatImageUploadSession {
+        .create_attachment_upload_session(synctv_core::models::CreateChatAttachmentUploadSession {
             room_id: room.id,
             user_id: creator.id,
-            client_image_id: Some("image-1".to_string()),
+            client_attachment_id: Some("image-1".to_string()),
+            filename: None,
             mime_type: "image/webp".to_string(),
             size_bytes: i64::try_from(payload.len()).checked("test operation should succeed"),
             width: Some(640),
@@ -1909,7 +1910,7 @@ async fn test_image_message_history_returns_image_metadata() {
         })
         .await
         .checked("test operation should succeed");
-    upload_chat_image_file(&chat_service, &session, payload).await;
+    upload_chat_attachment_file(&chat_service, &session, payload).await;
 
     let event = chat_service
         .send_message_event(SendChatMessage {
@@ -1917,39 +1918,42 @@ async fn test_image_message_history_returns_image_metadata() {
             user_id: creator.id,
             client_message_id: Some("image-msg-1".to_string()),
             content: String::new(),
-            message_type: ChatMessageType::Image,
+            message_type: ChatMessageType::Attachment,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: vec![session.file],
+            attachments: vec![session.file],
             mentions: Vec::new(),
         })
         .await
         .checked("test operation should succeed");
 
     let (history, _) = chat_service
-        .get_history_with_images(&room.id, None, 10, true)
+        .get_history_with_attachments(&room.id, None, 10, true)
         .await
         .checked("test operation should succeed");
 
-    assert_eq!(event.message.message.message_type, ChatMessageType::Image);
-    assert_eq!(history.len(), 1);
-    assert_eq!(history[0].images.len(), 1);
-    assert_eq!(history[0].images[0].id, "image-1");
     assert_eq!(
-        history[0].images[0].mime_type.as_deref(),
+        event.message.message.message_type,
+        ChatMessageType::Attachment
+    );
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].attachments.len(), 1);
+    assert_eq!(history[0].attachments[0].id, "image-1");
+    assert_eq!(
+        history[0].attachments[0].mime_type.as_deref(),
         Some("image/webp")
     );
-    assert_eq!(history[0].images[0].width, Some(640));
-    assert_eq!(history[0].images[0].height, Some(480));
+    assert_eq!(history[0].attachments[0].width, Some(640));
+    assert_eq!(history[0].attachments[0].height, Some(480));
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_reused_chat_image_object_keeps_storage_until_last_reference_is_released() {
+async fn test_reused_chat_attachment_object_keeps_storage_until_last_reference_is_released() {
     let (_container, pool) = create_test_pool().await;
     let file_repo = FileStorageRepository::new(pool.clone());
-    let object_key = "database/chat/images/shared.webp";
-    let payload = b"shared-image";
+    let object_key = "database/chat/attachments/shared.webp";
+    let payload = b"shared-attachment";
     let checksum_sha256 = hex::encode(sha2::Sha256::digest(payload));
     let metadata = serde_json::Value::Object(Default::default());
 
@@ -1984,7 +1988,7 @@ async fn test_reused_chat_image_object_keeps_storage_until_last_reference_is_rel
     let (_chat_service, username_cache) = make_chat_service(&pool);
 
     let creator = user_repo
-        .create(&make_user("shared_image_creator"))
+        .create(&make_user("shared_attachment_creator"))
         .await
         .checked("test operation should succeed");
     username_cache
@@ -1993,7 +1997,7 @@ async fn test_reused_chat_image_object_keeps_storage_until_last_reference_is_rel
         .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
-            "Shared Image Room".to_string(),
+            "Shared Attachment Room".to_string(),
             String::new(),
             creator.id,
             None,
@@ -2003,6 +2007,7 @@ async fn test_reused_chat_image_object_keeps_storage_until_last_reference_is_rel
         .checked("test operation should succeed");
 
     let image = |id: &str| NewStoredFile {
+        filename: None,
         id: id.to_string(),
         storage_backend: "database".to_string(),
         object_key: object_key.to_string(),
@@ -2015,31 +2020,31 @@ async fn test_reused_chat_image_object_keeps_storage_until_last_reference_is_rel
     };
 
     let mut first_message = ChatMessage::new(room.id, creator.id, String::new());
-    first_message.client_message_id = Some("shared-image-msg-1".to_string());
-    first_message.message_type = ChatMessageType::Image;
+    first_message.client_message_id = Some("shared-attachment-msg-1".to_string());
+    first_message.message_type = ChatMessageType::Attachment;
     let first = checked_idempotent_insert_event(
         chat_repo
             .insert_message_event_idempotent(
                 &first_message,
-                &[image("shared-image-1")],
+                &[image("shared-attachment-1")],
                 &[],
-                "shared-image-hash-1",
-                "shared-image-event-1",
+                "shared-attachment-hash-1",
+                "shared-attachment-event-1",
                 Utc::now(),
             )
             .await,
     );
     let mut second_message = ChatMessage::new(room.id, creator.id, String::new());
-    second_message.client_message_id = Some("shared-image-msg-2".to_string());
-    second_message.message_type = ChatMessageType::Image;
+    second_message.client_message_id = Some("shared-attachment-msg-2".to_string());
+    second_message.message_type = ChatMessageType::Attachment;
     let second = checked_idempotent_insert_event(
         chat_repo
             .insert_message_event_idempotent(
                 &second_message,
-                &[image("shared-image-2")],
+                &[image("shared-attachment-2")],
                 &[],
-                "shared-image-hash-2",
-                "shared-image-event-2",
+                "shared-attachment-hash-2",
+                "shared-attachment-event-2",
                 Utc::now(),
             )
             .await,
@@ -2068,13 +2073,13 @@ async fn test_reused_chat_image_object_keeps_storage_until_last_reference_is_rel
             &[FileReferenceTarget {
                 storage_backend: "database".to_string(),
                 object_key: object_key.to_string(),
-                reference_kind: "chat_message_image".to_string(),
+                reference_kind: "chat_message_attachment".to_string(),
                 reference_id: format!(
                     "{}:{}:{}:{}",
                     first.event.message.message.room_id.as_i64(),
                     first.event.message.message.id,
                     first.event.message.message.created_at.timestamp_micros(),
-                    "shared-image-1"
+                    "shared-attachment-1"
                 ),
             }],
         )
@@ -2100,14 +2105,14 @@ async fn test_reused_chat_image_object_keeps_storage_until_last_reference_is_rel
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_image_message_idempotency_replays_and_rejects_changed_images() {
+async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachments() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
     let (chat_service, username_cache) = make_chat_service_with_database_storage(&pool);
 
     let creator = user_repo
-        .create(&make_user("image_idempotent_creator"))
+        .create(&make_user("attachment_idempotent_creator"))
         .await
         .checked("test operation should succeed");
     username_cache
@@ -2116,7 +2121,7 @@ async fn test_image_message_idempotency_replays_and_rejects_changed_images() {
         .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
-            "Image Idempotent Room".to_string(),
+            "Attachment Idempotent Room".to_string(),
             String::new(),
             creator.id,
             None,
@@ -2125,12 +2130,13 @@ async fn test_image_message_idempotency_replays_and_rejects_changed_images() {
         .await
         .checked("test operation should succeed");
 
-    let payload = b"idempotent-image-1".to_vec();
+    let payload = b"idempotent-attachment-1".to_vec();
     let session = chat_service
-        .create_image_upload_session(synctv_core::models::CreateChatImageUploadSession {
+        .create_attachment_upload_session(synctv_core::models::CreateChatAttachmentUploadSession {
             room_id: room.id,
             user_id: creator.id,
-            client_image_id: Some("idempotent-image-1".to_string()),
+            client_attachment_id: Some("idempotent-attachment-1".to_string()),
+            filename: None,
             mime_type: "image/webp".to_string(),
             size_bytes: i64::try_from(payload.len()).checked("test operation should succeed"),
             width: Some(640),
@@ -2140,17 +2146,17 @@ async fn test_image_message_idempotency_replays_and_rejects_changed_images() {
         })
         .await
         .checked("test operation should succeed");
-    upload_chat_image_file(&chat_service, &session, payload).await;
+    upload_chat_attachment_file(&chat_service, &session, payload).await;
 
     let mut request = SendChatMessage {
         room_id: room.id,
         user_id: creator.id,
         client_message_id: Some("image-idempotent-msg".to_string()),
         content: String::new(),
-        message_type: ChatMessageType::Image,
+        message_type: ChatMessageType::Attachment,
         reply_to_message_id: None,
         metadata: serde_json::Value::Object(Default::default()),
-        images: vec![session.file],
+        attachments: vec![session.file],
         mentions: Vec::new(),
     };
 
@@ -2166,18 +2172,19 @@ async fn test_image_message_idempotency_replays_and_rejects_changed_images() {
     assert!(first.inserted);
     assert!(!replay.inserted);
     assert_eq!(first.event.event_id, replay.event.event_id);
-    assert_eq!(replay.event.message.images.len(), 1);
+    assert_eq!(replay.event.message.attachments.len(), 1);
     assert_eq!(
-        replay.event.message.images[0].object_key,
-        request.images[0].object_key
+        replay.event.message.attachments[0].object_key,
+        request.attachments[0].object_key
     );
 
-    let changed_payload = b"idempotent-image-2".to_vec();
+    let changed_payload = b"idempotent-attachment-2".to_vec();
     let changed_session = chat_service
-        .create_image_upload_session(synctv_core::models::CreateChatImageUploadSession {
+        .create_attachment_upload_session(synctv_core::models::CreateChatAttachmentUploadSession {
             room_id: room.id,
             user_id: creator.id,
-            client_image_id: Some("idempotent-image-2".to_string()),
+            client_attachment_id: Some("idempotent-attachment-2".to_string()),
+            filename: None,
             mime_type: "image/webp".to_string(),
             size_bytes: i64::try_from(changed_payload.len())
                 .checked("test operation should succeed"),
@@ -2188,18 +2195,18 @@ async fn test_image_message_idempotency_replays_and_rejects_changed_images() {
         })
         .await
         .checked("test operation should succeed");
-    upload_chat_image_file(&chat_service, &changed_session, changed_payload).await;
-    request.images[0] = changed_session.file;
+    upload_chat_attachment_file(&chat_service, &changed_session, changed_payload).await;
+    request.attachments[0] = changed_session.file;
     let changed = chat_service
         .send_message_event_outcome(request)
         .await
-        .failed("same client_message_id with changed image should conflict");
+        .failed("same client_message_id with changed attachment should conflict");
     assert!(matches!(changed, Error::Conflict(_)));
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_chat_message_images_require_matching_room_id() {
+async fn test_chat_message_attachments_require_matching_room_id() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -2215,7 +2222,7 @@ async fn test_chat_message_images_require_matching_room_id() {
         .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
-            "Image Room FK".to_string(),
+            "Attachment Room FK".to_string(),
             String::new(),
             creator.id,
             None,
@@ -2225,7 +2232,7 @@ async fn test_chat_message_images_require_matching_room_id() {
         .checked("test operation should succeed");
     let (other_room, _) = room_service
         .create_room(
-            "Other Image Room FK".to_string(),
+            "Other Attachment Room FK".to_string(),
             String::new(),
             creator.id,
             None,
@@ -2237,12 +2244,12 @@ async fn test_chat_message_images_require_matching_room_id() {
         .send_message_event(SendChatMessage {
             room_id: room.id,
             user_id: creator.id,
-            client_message_id: Some("image-room-fk-message".to_string()),
+            client_message_id: Some("attachment-room-fk-message".to_string()),
             content: "message".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
+            attachments: Vec::new(),
             mentions: Vec::new(),
         })
         .await
@@ -2250,14 +2257,14 @@ async fn test_chat_message_images_require_matching_room_id() {
 
     let result = sqlx::query(
         r"
-        INSERT INTO chat_message_images (
-            id, room_id, message_id, message_created_at, storage_backend,
+        INSERT INTO chat_message_attachments (
+            id, kind, room_id, message_id, message_created_at, filename, storage_backend,
             object_key, url, mime_type, size_bytes, width, height, metadata
         )
-        VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9, $10, $11)
+        VALUES ($1, 2, $2, $3, $4, NULL, $5, $6, NULL, $7, $8, $9, $10, $11)
         ",
     )
-    .bind("wrong-room-image")
+    .bind("wrong-room-attachment")
     .bind(other_room.id)
     .bind(event.message.message.id)
     .bind(event.message.message.created_at)
@@ -2276,7 +2283,7 @@ async fn test_chat_message_images_require_matching_room_id() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_deleted_image_message_history_hides_image_metadata() {
+async fn test_deleted_attachment_message_history_hides_attachment_metadata() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -2292,7 +2299,7 @@ async fn test_deleted_image_message_history_hides_image_metadata() {
         .checked("test operation should succeed");
     let (room, _) = room_service
         .create_room(
-            "Deleted Image History Room".to_string(),
+            "Deleted Attachment History Room".to_string(),
             String::new(),
             creator.id,
             None,
@@ -2301,12 +2308,13 @@ async fn test_deleted_image_message_history_hides_image_metadata() {
         .await
         .checked("test operation should succeed");
 
-    let payload = b"deleted-image-1".to_vec();
+    let payload = b"deleted-attachment-1".to_vec();
     let session = chat_service
-        .create_image_upload_session(synctv_core::models::CreateChatImageUploadSession {
+        .create_attachment_upload_session(synctv_core::models::CreateChatAttachmentUploadSession {
             room_id: room.id,
             user_id: creator.id,
-            client_image_id: Some("deleted-image-1".to_string()),
+            client_attachment_id: Some("deleted-attachment-1".to_string()),
+            filename: None,
             mime_type: "image/webp".to_string(),
             size_bytes: i64::try_from(payload.len()).checked("test operation should succeed"),
             width: Some(640),
@@ -2316,18 +2324,18 @@ async fn test_deleted_image_message_history_hides_image_metadata() {
         })
         .await
         .checked("test operation should succeed");
-    upload_chat_image_file(&chat_service, &session, payload).await;
+    upload_chat_attachment_file(&chat_service, &session, payload).await;
 
     let event = chat_service
         .send_message_event(SendChatMessage {
             room_id: room.id,
             user_id: creator.id,
-            client_message_id: Some("deleted-image-msg-1".to_string()),
+            client_message_id: Some("deleted-attachment-msg-1".to_string()),
             content: String::new(),
-            message_type: ChatMessageType::Image,
+            message_type: ChatMessageType::Attachment,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: vec![session.file],
+            attachments: vec![session.file],
             mentions: Vec::new(),
         })
         .await
@@ -2346,17 +2354,17 @@ async fn test_deleted_image_message_history_hides_image_metadata() {
         .checked("test operation should succeed");
 
     let (history, _) = chat_service
-        .get_history_with_images(&room.id, None, 10, true)
+        .get_history_with_attachments(&room.id, None, 10, true)
         .await
         .checked("test operation should succeed");
 
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].message.status, ChatMessageStatus::Deleted);
     assert!(history[0].message.content.is_empty());
-    assert!(history[0].images.is_empty());
+    assert!(history[0].attachments.is_empty());
 
     let (visible_history, _) = chat_service
-        .get_history_with_images(&room.id, None, 10, false)
+        .get_history_with_attachments(&room.id, None, 10, false)
         .await
         .checked("test operation should succeed");
     assert!(visible_history.is_empty());
@@ -2398,7 +2406,7 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             message_type: ChatMessageType::Text,
             reply_to_message_id: Some(9_999_999),
             metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
+            attachments: Vec::new(),
             mentions: Vec::new(),
         })
         .await
@@ -2414,7 +2422,7 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
+            attachments: Vec::new(),
             mentions: Vec::new(),
         })
         .await
@@ -2428,7 +2436,7 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             message_type: ChatMessageType::Text,
             reply_to_message_id: Some(target.message.message.id),
             metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
+            attachments: Vec::new(),
             mentions: Vec::new(),
         })
         .await
@@ -2463,7 +2471,7 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             message_type: ChatMessageType::Text,
             reply_to_message_id: Some(target.message.message.id),
             metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
+            attachments: Vec::new(),
             mentions: Vec::new(),
         })
         .await
@@ -2507,7 +2515,7 @@ async fn test_idempotent_reply_send_replays_after_reply_target_is_deleted() {
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            images: Vec::new(),
+            attachments: Vec::new(),
             mentions: Vec::new(),
         })
         .await
@@ -2520,7 +2528,7 @@ async fn test_idempotent_reply_send_replays_after_reply_target_is_deleted() {
         message_type: ChatMessageType::Text,
         reply_to_message_id: Some(target.message.message.id),
         metadata: serde_json::Value::Object(Default::default()),
-        images: Vec::new(),
+        attachments: Vec::new(),
         mentions: Vec::new(),
     };
 

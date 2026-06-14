@@ -130,11 +130,13 @@ CREATE INDEX IF NOT EXISTS idx_chat_message_idempotency_event
     ON chat_message_idempotency(event_id)
     WHERE event_id IS NOT NULL;
 
-CREATE TABLE IF NOT EXISTS chat_message_images (
+CREATE TABLE IF NOT EXISTS chat_message_attachments (
     id TEXT NOT NULL,
+    kind SMALLINT NOT NULL,
     room_id BIGINT NOT NULL,
     message_id BIGINT NOT NULL,
     message_created_at TIMESTAMPTZ NOT NULL,
+    filename TEXT,
     storage_backend TEXT NOT NULL,
     object_key TEXT NOT NULL,
     url TEXT,
@@ -153,10 +155,10 @@ CREATE TABLE IF NOT EXISTS chat_message_images (
         REFERENCES chat_messages(room_id, id, created_at) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_chat_message_images_message
-    ON chat_message_images(message_id, message_created_at);
-CREATE INDEX IF NOT EXISTS idx_chat_message_images_room
-    ON chat_message_images(room_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_message_attachments_message
+    ON chat_message_attachments(message_id, message_created_at);
+CREATE INDEX IF NOT EXISTS idx_chat_message_attachments_room
+    ON chat_message_attachments(room_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS chat_message_operation_idempotency (
     room_id BIGINT NOT NULL,

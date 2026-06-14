@@ -4,10 +4,10 @@ use super::super::{map_api_error, ClientServiceImpl};
 use crate::impls::EndpointRateLimitCategory;
 use synctv_proto::client::*;
 
-pub(super) async fn create_chat_image_upload_session(
+pub(super) async fn create_chat_attachment_upload_session(
     service: &ClientServiceImpl,
-    request: Request<CreateChatImageUploadSessionRequest>,
-) -> Result<Response<CreateChatImageUploadSessionResponse>, Status> {
+    request: Request<CreateChatAttachmentUploadSessionRequest>,
+) -> Result<Response<CreateChatAttachmentUploadSessionResponse>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let response = service
@@ -17,7 +17,7 @@ pub(super) async fn create_chat_image_upload_session(
             EndpointRateLimitCategory::Write,
             move |client_api, actor| async move {
                 client_api
-                    .create_chat_image_upload_session_for_actor(&actor, req)
+                    .create_chat_attachment_upload_session_for_actor(&actor, req)
                     .await
             },
         )
@@ -25,34 +25,34 @@ pub(super) async fn create_chat_image_upload_session(
     Ok(Response::new(response))
 }
 
-pub(super) async fn upload_chat_image_object(
+pub(super) async fn upload_chat_attachment_object(
     service: &ClientServiceImpl,
-    request: Request<UploadChatImageObjectRequest>,
-) -> Result<Response<UploadChatImageObjectResponse>, Status> {
+    request: Request<UploadChatAttachmentObjectRequest>,
+) -> Result<Response<UploadChatAttachmentObjectResponse>, Status> {
     let metadata = service.request_metadata(&request)?;
     let req = request.into_inner();
     let response = service
         .client_api
         .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
             let client_api = service.client_api.clone();
-            async move { client_api.upload_chat_image_object(req).await }
+            async move { client_api.upload_chat_attachment_object(req).await }
         })
         .await
         .map_err(map_api_error)?;
     Ok(Response::new(response))
 }
 
-pub(super) async fn get_chat_image_object(
+pub(super) async fn get_chat_attachment_object(
     service: &ClientServiceImpl,
-    request: Request<GetChatImageObjectRequest>,
-) -> Result<Response<ChatImageObjectResponse>, Status> {
+    request: Request<GetChatAttachmentObjectRequest>,
+) -> Result<Response<ChatAttachmentObjectResponse>, Status> {
     let metadata = service.request_metadata(&request)?;
     let req = request.into_inner();
     let response = service
         .client_api
         .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, move || {
             let client_api = service.client_api.clone();
-            async move { client_api.get_chat_image_object(req).await }
+            async move { client_api.get_chat_attachment_object(req).await }
         })
         .await
         .map_err(map_api_error)?;

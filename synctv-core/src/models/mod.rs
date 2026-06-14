@@ -132,16 +132,17 @@ pub mod user_preferences;
 
 pub use audit::{AuditAction, AuditTargetType};
 pub use chat::{
-    ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatImage, ChatImageUploadSession,
-    ChatMention, ChatMentionInput, ChatMessage, ChatMessageContext, ChatMessageEvent,
-    ChatMessageEventLog, ChatMessageReadReceiptMember, ChatMessageReadReceiptUser,
-    ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType, ChatMessageWithImages,
-    ChatPlaybackMessagesQuery, ChatReaction, ChatReactionSummary, ChatReactionUser,
-    ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState, ChatReadStateWithUnread,
-    CreateChatImageUploadSession, DeleteChatMessage, EditChatMessage, EventCursor, MarkChatRead,
-    SendChatMessage, SendChatRequest, SetChatReaction, CHAT_CLIENT_MESSAGE_ID_MAX_CHARS,
-    CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS,
-    CHAT_IMAGE_ID_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS,
+    ChatAttachment, ChatAttachmentKind, ChatAttachmentUploadSession, ChatEventKind,
+    ChatHistoryCursor, ChatHistoryPage, ChatMention, ChatMentionInput, ChatMessage,
+    ChatMessageContext, ChatMessageEvent, ChatMessageEventLog, ChatMessageReadReceiptMember,
+    ChatMessageReadReceiptUser, ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType,
+    ChatMessageWithAttachments, ChatPlaybackMessagesQuery, ChatReaction, ChatReactionSummary,
+    ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState,
+    ChatReadStateWithUnread, CreateChatAttachmentUploadSession, DeleteChatMessage, EditChatMessage,
+    EventCursor, MarkChatRead, SendChatMessage, SendChatRequest, SetChatReaction,
+    CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
+    CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_EVENT_ID_MAX_CHARS,
+    CHAT_EVENT_TYPE_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS,
 };
 pub use content_report::{
     ContentReport, ContentReportAdminRow, ContentReportStatus, ContentReportTarget,

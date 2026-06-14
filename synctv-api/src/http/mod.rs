@@ -572,14 +572,14 @@ pub(crate) mod body_limits {
     /// subtitles, but should never be megabyte-scale).
     pub const MEDIA: usize = 512 * 1024;
 
-    /// Chat image database uploads: match the service-level image cap.
-    pub const CHAT_IMAGE: usize = 20 * 1024 * 1024;
+    /// Chat attachment database uploads: match the service-level attachment cap.
+    pub const CHAT_ATTACHMENT: usize = 50 * 1024 * 1024;
 
     /// User avatar database uploads: match the service-level avatar cap.
     pub const USER_AVATAR: usize = 5 * 1024 * 1024;
 
-    /// Video cover database uploads: match the service-level cover cap.
-    pub const VIDEO_COVER: usize = 10 * 1024 * 1024;
+    /// Cover database uploads: match the service-level cover cap.
+    pub const COVER: usize = 10 * 1024 * 1024;
 }
 
 /// Authentication routes that are mounted inside the strict rate-limit group.
@@ -691,11 +691,11 @@ fn register_media_routes() -> Router<AppState> {
         )
         .route(
             "/api/rooms/{room_id}/media/{media_id}/cover/upload-session",
-            post(room::create_video_cover_upload_session),
+            post(room::create_media_cover_upload_session),
         )
         .route(
             "/api/rooms/{room_id}/media/{media_id}/cover",
-            axum::routing::put(room::update_video_cover).delete(room::clear_video_cover),
+            axum::routing::put(room::update_media_cover).delete(room::clear_media_cover),
         )
         .route(
             "/api/rooms/{room_id}/cover/upload-session",
@@ -807,8 +807,8 @@ fn register_write_routes() -> Router<AppState> {
             post(room::send_chat_message),
         )
         .route(
-            "/api/rooms/{room_id}/chat/images/upload-session",
-            post(room::create_chat_image_upload_session),
+            "/api/rooms/{room_id}/chat/attachments/upload-session",
+            post(room::create_chat_attachment_upload_session),
         )
         .route(
             "/api/rooms/{room_id}/chat/messages/{message_id}",
@@ -919,26 +919,25 @@ fn register_read_routes() -> Router<AppState> {
         )
 }
 
-fn register_chat_image_object_routes() -> Router<AppState> {
+fn register_chat_attachment_object_routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/chat/image-objects/{encoded_object_key}",
-            axum::routing::put(room::upload_chat_image_object).get(room::get_chat_image_object),
+            "/api/chat/attachment-objects/{encoded_object_key}",
+            axum::routing::put(room::upload_chat_attachment_object)
+                .get(room::get_chat_attachment_object),
         )
         .layer(axum::extract::DefaultBodyLimit::max(
-            body_limits::CHAT_IMAGE,
+            body_limits::CHAT_ATTACHMENT,
         ))
 }
 
-fn register_video_cover_object_routes() -> Router<AppState> {
+fn register_media_cover_object_routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/video/cover-objects/{encoded_object_key}",
-            axum::routing::put(room::upload_video_cover_object).get(room::get_video_cover_object),
+            "/api/media/cover-objects/{encoded_object_key}",
+            axum::routing::put(room::upload_media_cover_object).get(room::get_media_cover_object),
         )
-        .layer(axum::extract::DefaultBodyLimit::max(
-            body_limits::VIDEO_COVER,
-        ))
+        .layer(axum::extract::DefaultBodyLimit::max(body_limits::COVER))
 }
 
 fn register_room_cover_object_routes() -> Router<AppState> {
@@ -947,9 +946,7 @@ fn register_room_cover_object_routes() -> Router<AppState> {
             "/api/room/cover-objects/{encoded_object_key}",
             axum::routing::put(room::upload_room_cover_object).get(room::get_room_cover_object),
         )
-        .layer(axum::extract::DefaultBodyLimit::max(
-            body_limits::VIDEO_COVER,
-        ))
+        .layer(axum::extract::DefaultBodyLimit::max(body_limits::COVER))
 }
 
 fn register_playlist_cover_object_routes() -> Router<AppState> {
@@ -959,9 +956,7 @@ fn register_playlist_cover_object_routes() -> Router<AppState> {
             axum::routing::put(room::upload_playlist_cover_object)
                 .get(room::get_playlist_cover_object),
         )
-        .layer(axum::extract::DefaultBodyLimit::max(
-            body_limits::VIDEO_COVER,
-        ))
+        .layer(axum::extract::DefaultBodyLimit::max(body_limits::COVER))
 }
 
 fn register_extracted_user_routes() -> Router<AppState> {
@@ -1108,8 +1103,8 @@ fn register_all_routes() -> Router<AppState> {
         .merge(register_media_routes())
         .merge(register_write_routes())
         .merge(register_read_routes())
-        .merge(register_chat_image_object_routes())
-        .merge(register_video_cover_object_routes())
+        .merge(register_chat_attachment_object_routes())
+        .merge(register_media_cover_object_routes())
         .merge(register_room_cover_object_routes())
         .merge(register_playlist_cover_object_routes())
         // WebRTC configuration endpoints

@@ -38,14 +38,14 @@ Implement sign-in, room list, ticket creation, Realtime, and playbacks first. Th
 
 ## Chat Message API
 
-Room chat is a durable message system. HTTP and gRPC handle history, single-message lookup, context lookup, send, edit, delete, image upload sessions, and read state. Realtime connections deliver message events after explicit subscription.
+Room chat is a durable message system. HTTP and gRPC handle history, single-message lookup, context lookup, send, edit, delete, attachment upload sessions, and read state. Realtime connections deliver message events after explicit subscription.
 
 HTTP endpoints:
 
 | Goal | HTTP |
 | --- | --- |
 | Send message | `POST /api/rooms/{room_id}/chat/messages` |
-| Create image upload session | `POST /api/rooms/{room_id}/chat/images/upload-session` |
+| Create attachment upload session | `POST /api/rooms/{room_id}/chat/attachments/upload-session` |
 | Edit message | `PATCH /api/rooms/{room_id}/chat/messages/{message_id}` |
 | Delete message | `DELETE /api/rooms/{room_id}/chat/messages/{message_id}` |
 | Page history | `GET /api/rooms/{room_id}/chat/history` |
@@ -61,7 +61,7 @@ gRPC methods on `synctv.client.RoomService`:
 | Goal | RPC |
 | --- | --- |
 | Send message | `SendChatMessage` |
-| Create image upload session | `CreateChatImageUploadSession` |
+| Create attachment upload session | `CreateChatAttachmentUploadSession` |
 | Edit message | `EditChatMessage` |
 | Delete message | `DeleteChatMessage` |
 | Page history | `GetChatHistory` |
@@ -79,9 +79,9 @@ Client rules:
 - When a message is sent, the server records the current playback context: `playback_media_id`, `playback_playlist_id`, `playback_target`, `playback_target_hash`, and `playback_position_seconds`. `GetChatPlaybackMessages` reads historical chat for the current playback object and time window.
 - `expected_version` enables optimistic locking for edit and delete. On conflict, reload the message or context before submitting again.
 - `metadata` must be a JSON object. Empty metadata can be omitted.
-- Images use `CreateChatImageUploadSession`, then the returned `ChatImage` goes into `SendChatMessage.images`. Requests must include `checksum_sha256`; the server uses global content-addressed objects for reuse. When `upload_required=true`, upload the object with `upload_url`, `upload_method`, and `upload_headers`. When `ownership_proof_required=true`, read the returned `ownership_proof_ranges` from the local original image, compute the SHA-256 hex proof with `ownership_proof_nonce`, and write it into `image.metadata[ownership_proof_metadata_key]` before sending. The proof hash input order is `synctv-file-ownership-proof-v1`, one `0x00` byte, nonce UTF-8, then each range's `offset` as big-endian i64, `length` as big-endian i32, and range bytes.
-- Chat supports image attachments. Generic file transfer belongs to a separate product capability.
-- Delete is soft delete: history and events keep the message id, version, delete actor, and reason, while content and images are hidden in deleted views.
+- Files and images use `CreateChatAttachmentUploadSession`, then the returned `ChatAttachment` goes into `SendChatMessage.attachments`. Requests must include `checksum_sha256`; the server uses global content-addressed objects for reuse and infers `kind` from MIME type. When `upload_required=true`, upload the object with `upload_url`, `upload_method`, and `upload_headers`. When `ownership_proof_required=true`, read the returned `ownership_proof_ranges` from the local file, compute the SHA-256 hex proof with `ownership_proof_nonce`, and write it into `attachment.metadata[ownership_proof_metadata_key]` before sending. The proof hash input order is `synctv-file-ownership-proof-v1`, one `0x00` byte, nonce UTF-8, then each range's `offset` as big-endian i64, `length` as big-endian i32, and range bytes.
+- Chat attachments support images, audio, video, common documents, archives, text, CSV, Markdown, JSON, and PDF. Image attachments carry `kind=image` plus optional width and height for previews; other attachments carry `kind=file`.
+- Delete is soft delete: history and events keep the message id, version, delete actor, and reason, while content and attachments are hidden in deleted views.
 
 Event subscription:
 

@@ -65,10 +65,10 @@ pub(super) async fn get_media(
     Ok(Response::new(response))
 }
 
-pub(super) async fn create_video_cover_upload_session(
+pub(super) async fn create_media_cover_upload_session(
     service: &ClientServiceImpl,
-    request: Request<CreateVideoCoverUploadSessionRequest>,
-) -> Result<Response<CreateVideoCoverUploadSessionResponse>, Status> {
+    request: Request<CreateMediaCoverUploadSessionRequest>,
+) -> Result<Response<CreateMediaCoverUploadSessionResponse>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();
@@ -79,7 +79,7 @@ pub(super) async fn create_video_cover_upload_session(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .create_video_cover_upload_session(
+                    .create_media_cover_upload_session(
                         &authenticated.user_id,
                         room_id.as_str(),
                         req,
@@ -195,43 +195,43 @@ pub(super) async fn clear_room_cover(
     Ok(Response::new(response))
 }
 
-pub(super) async fn upload_video_cover_object(
+pub(super) async fn upload_media_cover_object(
     service: &ClientServiceImpl,
-    request: Request<UploadVideoCoverObjectRequest>,
-) -> Result<Response<UploadVideoCoverObjectResponse>, Status> {
+    request: Request<UploadMediaCoverObjectRequest>,
+) -> Result<Response<UploadMediaCoverObjectResponse>, Status> {
     let metadata = service.request_metadata(&request)?;
     let req = request.into_inner();
     let response = service
         .client_api
         .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
             let client_api = service.client_api.clone();
-            async move { client_api.upload_video_cover_object(req).await }
+            async move { client_api.upload_media_cover_object(req).await }
         })
         .await
         .map_err(map_api_error)?;
     Ok(Response::new(response))
 }
 
-pub(super) async fn get_video_cover_object(
+pub(super) async fn get_media_cover_object(
     service: &ClientServiceImpl,
-    request: Request<GetVideoCoverObjectRequest>,
-) -> Result<Response<VideoCoverObjectResponse>, Status> {
+    request: Request<GetMediaCoverObjectRequest>,
+) -> Result<Response<MediaCoverObjectResponse>, Status> {
     let metadata = service.request_metadata(&request)?;
     let req = request.into_inner();
     let response = service
         .client_api
         .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, move || {
             let client_api = service.client_api.clone();
-            async move { client_api.get_video_cover_object(req).await }
+            async move { client_api.get_media_cover_object(req).await }
         })
         .await
         .map_err(map_api_error)?;
     Ok(Response::new(response))
 }
 
-pub(super) async fn update_video_cover(
+pub(super) async fn update_media_cover(
     service: &ClientServiceImpl,
-    request: Request<UpdateVideoCoverRequest>,
+    request: Request<UpdateMediaCoverRequest>,
 ) -> Result<Response<EditMediaResponse>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
@@ -243,7 +243,7 @@ pub(super) async fn update_video_cover(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .update_video_cover(&authenticated.user_id, room_id.as_str(), req)
+                    .update_media_cover(&authenticated.user_id, room_id.as_str(), req)
                     .await
             },
         )
@@ -252,9 +252,9 @@ pub(super) async fn update_video_cover(
     Ok(Response::new(response))
 }
 
-pub(super) async fn clear_video_cover(
+pub(super) async fn clear_media_cover(
     service: &ClientServiceImpl,
-    request: Request<synctv_proto::client::ClearVideoCoverRequest>,
+    request: Request<synctv_proto::client::ClearMediaCoverRequest>,
 ) -> Result<Response<EditMediaResponse>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
@@ -266,7 +266,7 @@ pub(super) async fn clear_video_cover(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .clear_video_cover(&authenticated.user_id, room_id.as_str(), req)
+                    .clear_media_cover(&authenticated.user_id, room_id.as_str(), req)
                     .await
             },
         )

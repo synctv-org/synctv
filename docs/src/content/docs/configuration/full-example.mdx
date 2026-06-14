@@ -81,9 +81,9 @@ jwt:
 
 file_storage:
   default_backend: "s3_public"
-  chat_images_backend: "s3_public"
+  chat_attachments_backend: "s3_public"
   user_avatars_backend: "s3_public"
-  video_covers_backend: "s3_public"
+  media_covers_backend: "s3_public"
   room_covers_backend: "s3_public"
   playlist_covers_backend: "s3_public"
   upload_token_secret_file: "/run/secrets/file_upload_token_secret"
@@ -282,9 +282,9 @@ livestream:
 
 file_storage:
   default_backend: "disabled"
-  chat_images_backend: ""
+  chat_attachments_backend: ""
   user_avatars_backend: ""
-  video_covers_backend: ""
+  media_covers_backend: ""
   room_covers_backend: ""
   playlist_covers_backend: ""
   upload_token_secret: ""

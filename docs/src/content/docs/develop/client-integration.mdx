@@ -38,14 +38,14 @@ OpenAPI 和 protobuf 定义请求、响应和消息结构；客户端还需要�
 
 ## 聊天消息 API
 
-房间聊天是持久化消息系统。HTTP 和 gRPC 负责历史、单条消息、上下文、发送、编辑、删除、图片上传会话和已读状态；实时连接负责订阅之后的消息事件推送。
+房间聊天是持久化消息系统。HTTP 和 gRPC 负责历史、单条消息、上下文、发送、编辑、删除、附件上传会话和已读状态；实时连接负责订阅之后的消息事件推送。
 
 HTTP 入口：
 
 | 目标 | HTTP |
 | --- | --- |
 | 发送消息 | `POST /api/rooms/{room_id}/chat/messages` |
-| 创建图片上传会话 | `POST /api/rooms/{room_id}/chat/images/upload-session` |
+| 创建附件上传会话 | `POST /api/rooms/{room_id}/chat/attachments/upload-session` |
 | 编辑消息 | `PATCH /api/rooms/{room_id}/chat/messages/{message_id}` |
 | 删除消息 | `DELETE /api/rooms/{room_id}/chat/messages/{message_id}` |
 | 历史分页 | `GET /api/rooms/{room_id}/chat/history` |
@@ -61,7 +61,7 @@ gRPC 对应 `synctv.client.RoomService`：
 | 目标 | RPC |
 | --- | --- |
 | 发送消息 | `SendChatMessage` |
-| 创建图片上传会话 | `CreateChatImageUploadSession` |
+| 创建附件上传会话 | `CreateChatAttachmentUploadSession` |
 | 编辑消息 | `EditChatMessage` |
 | 删除消息 | `DeleteChatMessage` |
 | 历史分页 | `GetChatHistory` |
@@ -79,9 +79,9 @@ gRPC 对应 `synctv.client.RoomService`：
 - 发送消息时服务端会记录当前播放上下文，包括 `playback_media_id`、`playback_playlist_id`、`playback_target`、`playback_target_hash` 和 `playback_position_seconds`。`GetChatPlaybackMessages` 可按当前播放对象和时间窗口读取历史聊天。
 - `expected_version` 用于编辑和删除的乐观锁。客户端持有旧版本时会收到冲突错误，应重新读取消息或上下文后再提交。
 - `metadata` 必须是 JSON object。空 metadata 可省略。
-- 图片走 `CreateChatImageUploadSession`，再把返回的 `ChatImage` 放进 `SendChatMessage.images`。请求必须带 `checksum_sha256`，服务端用全局内容寻址对象实现复用；`upload_required=true` 时先按 `upload_url`、`upload_method`、`upload_headers` 上传对象；`ownership_proof_required=true` 时按返回的 `ownership_proof_nonce` 和 `ownership_proof_ranges` 从本地原图读取字节，计算 SHA-256 hex，并写入 `image.metadata[ownership_proof_metadata_key]` 后发送。proof 哈希输入顺序为 `synctv-file-ownership-proof-v1`、一个 `0x00` 字节、nonce UTF-8、每个 range 的 `offset` big-endian i64、`length` big-endian i32、range 字节。
-- 聊天只支持图片附件。通用文件传输属于另一类产品能力。
-- 删除是软删除：历史和事件保留消息 id、版本、删除者和原因，内容与图片按删除视图隐藏。
+- 文件和图片走 `CreateChatAttachmentUploadSession`，再把返回的 `ChatAttachment` 放进 `SendChatMessage.attachments`。请求必须带 `checksum_sha256`，服务端用全局内容寻址对象实现复用，并按 MIME 类型推断 `kind`；`upload_required=true` 时先按 `upload_url`、`upload_method`、`upload_headers` 上传对象；`ownership_proof_required=true` 时按返回的 `ownership_proof_nonce` 和 `ownership_proof_ranges` 从本地文件读取字节，计算 SHA-256 hex，并写入 `attachment.metadata[ownership_proof_metadata_key]` 后发送。proof 哈希输入顺序为 `synctv-file-ownership-proof-v1`、一个 `0x00` 字节、nonce UTF-8、每个 range 的 `offset` big-endian i64、`length` big-endian i32、range 字节。
+- 聊天附件支持图片、音频、视频、常见文档、压缩包、纯文本、CSV、Markdown、JSON 和 PDF。图片附件带 `kind=image`，并可带 width/height 用于预览；其他附件带 `kind=file`。
+- 删除是软删除：历史和事件保留消息 id、版本、删除者和原因，内容与附件按删除视图隐藏。
 
 事件订阅：
 

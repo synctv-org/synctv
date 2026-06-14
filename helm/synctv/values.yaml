@@ -474,9 +474,9 @@ config:
   ## config file, so prefer existingConfigMap for externally managed S3 secrets.
   fileStorage:
     defaultBackend: "disabled"
-    chatImagesBackend: ""
+    chatAttachmentsBackend: ""
     userAvatarsBackend: ""
-    videoCoversBackend: ""
+    mediaCoversBackend: ""
     roomCoversBackend: ""
     playlistCoversBackend: ""
     unreferencedObjectRetentionSeconds: 86400

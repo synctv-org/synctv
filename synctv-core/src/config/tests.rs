@@ -2457,7 +2457,10 @@ fn test_from_env_overrides_livestream_extended_runtime_limits() {
 fn test_from_env_overrides_file_s3_storage() {
     let config = Config::from_env_map(&env_map(&[
         ("SYNCTV_FILE_STORAGE_DEFAULT_BACKEND", "s3_public"),
-        ("SYNCTV_FILE_STORAGE_CHAT_IMAGES_BACKEND", "s3_public"),
+        (
+            "SYNCTV_FILE_STORAGE_CHAT_ATTACHMENTS_BACKEND",
+            "s3_public",
+        ),
         (
             "SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS",
             "7200",
@@ -2471,7 +2474,10 @@ fn test_from_env_overrides_file_s3_storage() {
     .checked("file storage S3 env overrides should parse");
 
     assert_eq!(config.file_storage.default_backend, "s3_public");
-    assert_eq!(config.file_storage.backend_for_chat_images(), "s3_public");
+    assert_eq!(
+        config.file_storage.backend_for_chat_attachments(),
+        "s3_public"
+    );
     assert_eq!(
         config.file_storage.upload_token_secret,
         "upload-token-secret"
@@ -2527,7 +2533,7 @@ fn test_file_storage_backend_accepts_disabled_database_and_s3() {
     );
     assert!("metadata".parse::<FileStorageBackendType>().is_err());
     assert_eq!(
-        FileStorageConfig::default().backend_for_chat_images(),
+        FileStorageConfig::default().backend_for_chat_attachments(),
         "disabled"
     );
     assert_eq!(
@@ -3169,7 +3175,7 @@ fn test_validate_file_s3_storage_requires_required_fields() {
     config.cluster.enabled = false;
     config.cluster.secret.clear();
     config.file_storage.default_backend = "broken_s3".to_string();
-    config.file_storage.chat_images_backend = "broken_s3".to_string();
+    config.file_storage.chat_attachments_backend = "broken_s3".to_string();
     config.file_storage.backends.insert(
         "broken_s3".to_string(),
         FileStorageBackendConfig {

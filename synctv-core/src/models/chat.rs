@@ -10,7 +10,8 @@ pub const CHAT_CLIENT_MESSAGE_ID_MAX_CHARS: usize = 128;
 pub const CHAT_CLIENT_OPERATION_ID_MAX_CHARS: usize = 128;
 pub const CHAT_EVENT_ID_MAX_CHARS: usize = 128;
 pub const CHAT_EVENT_TYPE_MAX_CHARS: usize = 128;
-pub const CHAT_IMAGE_ID_MAX_CHARS: usize = 128;
+pub const CHAT_ATTACHMENT_ID_MAX_CHARS: usize = 128;
+pub const CHAT_ATTACHMENT_FILENAME_MAX_CHARS: usize = 255;
 pub const CHAT_REACTION_KEY_MAX_CHARS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,7 +21,7 @@ pub enum ChatMessageType {
     Text = 1,
     System = 2,
     Action = 3,
-    Image = 4,
+    Attachment = 4,
 }
 
 impl ChatMessageType {
@@ -30,7 +31,7 @@ impl ChatMessageType {
             Self::Text => "text",
             Self::System => "system",
             Self::Action => "action",
-            Self::Image => "image",
+            Self::Attachment => "attachment",
         }
     }
 }
@@ -49,7 +50,7 @@ impl FromStr for ChatMessageType {
             "text" => Ok(Self::Text),
             "system" => Ok(Self::System),
             "action" => Ok(Self::Action),
-            "image" => Ok(Self::Image),
+            "attachment" => Ok(Self::Attachment),
             other => Err(format!("Unknown chat message type: {other}")),
         }
     }
@@ -59,7 +60,45 @@ sqlx_i16_enum!(ChatMessageType, "Invalid chat message type", {
     Text = 1,
     System = 2,
     Action = 3,
-    Image = 4,
+    Attachment = 4,
+});
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(i16)]
+pub enum ChatAttachmentKind {
+    File = 1,
+    Image = 2,
+}
+
+impl ChatAttachmentKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Image => "image",
+        }
+    }
+
+    #[must_use]
+    pub fn from_mime_type(mime_type: &str) -> Self {
+        if mime_type.trim().to_ascii_lowercase().starts_with("image/") {
+            Self::Image
+        } else {
+            Self::File
+        }
+    }
+}
+
+impl std::fmt::Display for ChatAttachmentKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+sqlx_i16_enum!(ChatAttachmentKind, "Invalid chat attachment kind", {
+    File = 1,
+    Image = 2,
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,11 +200,13 @@ pub struct SendChatRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct ChatImage {
+pub struct ChatAttachment {
     pub id: String,
+    pub kind: ChatAttachmentKind,
     pub room_id: RoomId,
     pub message_id: i64,
     pub message_created_at: DateTime<Utc>,
+    pub filename: Option<String>,
     pub storage_backend: String,
     pub object_key: String,
     pub url: Option<String>,
@@ -177,13 +218,13 @@ pub struct ChatImage {
     pub created_at: DateTime<Utc>,
 }
 
-impl ChatImage {
+impl ChatAttachment {
     #[must_use]
     pub fn file_reference_target(&self) -> super::file_storage::FileReferenceTarget {
         super::file_storage::FileReferenceTarget {
             storage_backend: self.storage_backend.clone(),
             object_key: self.object_key.clone(),
-            reference_kind: "chat_message_image".to_string(),
+            reference_kind: "chat_message_attachment".to_string(),
             reference_id: format!(
                 "{}:{}:{}:{}",
                 self.room_id.as_i64(),
@@ -196,10 +237,11 @@ impl ChatImage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateChatImageUploadSession {
+pub struct CreateChatAttachmentUploadSession {
     pub room_id: RoomId,
     pub user_id: UserId,
-    pub client_image_id: Option<String>,
+    pub client_attachment_id: Option<String>,
+    pub filename: Option<String>,
     pub mime_type: String,
     pub size_bytes: i64,
     pub width: Option<i32>,
@@ -209,8 +251,8 @@ pub struct CreateChatImageUploadSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatImageUploadSession {
-    pub image: super::file_storage::NewStoredFile,
+pub struct ChatAttachmentUploadSession {
+    pub attachment: super::file_storage::NewStoredFile,
     pub upload_required: bool,
     pub ownership_proof_required: bool,
     pub ownership_proof_nonce: Option<String>,
@@ -224,18 +266,18 @@ pub struct ChatImageUploadSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessageWithImages {
+pub struct ChatMessageWithAttachments {
     pub message: ChatMessage,
-    pub images: Vec<ChatImage>,
+    pub attachments: Vec<ChatAttachment>,
     pub reactions: Vec<ChatReactionSummary>,
     pub mentions: Vec<ChatMention>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessageContext {
-    pub before: Vec<ChatMessageWithImages>,
-    pub anchor: ChatMessageWithImages,
-    pub after: Vec<ChatMessageWithImages>,
+    pub before: Vec<ChatMessageWithAttachments>,
+    pub anchor: ChatMessageWithAttachments,
+    pub after: Vec<ChatMessageWithAttachments>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,7 +289,7 @@ pub struct SendChatMessage {
     pub message_type: ChatMessageType,
     pub reply_to_message_id: Option<i64>,
     pub metadata: JsonValue,
-    pub images: Vec<super::file_storage::NewStoredFile>,
+    pub attachments: Vec<super::file_storage::NewStoredFile>,
     pub mentions: Vec<ChatMentionInput>,
 }
 
@@ -362,7 +404,7 @@ pub struct ChatMessageEvent {
     pub room_id: RoomId,
     pub actor_user_id: UserId,
     pub kind: ChatEventKind,
-    pub message: ChatMessageWithImages,
+    pub message: ChatMessageWithAttachments,
     pub occurred_at: DateTime<Utc>,
 }
 
@@ -429,7 +471,7 @@ pub struct ChatHistoryCursor {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatHistoryPage {
-    pub messages: Vec<ChatMessageWithImages>,
+    pub messages: Vec<ChatMessageWithAttachments>,
     pub next_cursor: Option<ChatHistoryCursor>,
     pub event_cursor: EventCursor,
 }

@@ -96,6 +96,15 @@ pub(crate) fn validate_create_file_upload_session(request: &CreateFileUploadSess
             ));
         }
     }
+    if let Some(filename) = &request.filename {
+        let len = filename.chars().count();
+        if filename.trim().is_empty() || len > 255 || filename.chars().any(char::is_control) {
+            return Err(Error::InvalidInput(
+                "filename must be between 1 and 255 characters without control characters"
+                    .to_string(),
+            ));
+        }
+    }
     validate_file_upload_policy(&request.policy)?;
     validate_file_mime_type(&request.policy, &request.mime_type)?;
     if request.size_bytes <= 0 || request.size_bytes > request.policy.max_size_bytes {

@@ -197,7 +197,7 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use synctv_core::models::{
-        ChatEventKind, ChatMessage, ChatMessageStatus, ChatMessageType, ChatMessageWithImages,
+        ChatEventKind, ChatMessage, ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments,
         Playlist, RoomPlaybackState,
     };
 
@@ -217,7 +217,7 @@ mod tests {
             room_id: room_id(),
             actor_user_id: user_id(),
             kind: ChatEventKind::Created,
-            message: ChatMessageWithImages {
+            message: ChatMessageWithAttachments {
                 message: ChatMessage {
                     id: 1,
                     room_id: room_id(),
@@ -236,7 +236,7 @@ mod tests {
                     delete_reason: None,
                     created_at: now,
                 },
-                images: Vec::new(),
+                attachments: Vec::new(),
                 reactions: Vec::new(),
                 mentions: Vec::new(),
             },

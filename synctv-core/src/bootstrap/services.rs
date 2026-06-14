@@ -712,10 +712,10 @@ pub async fn init_services_with_options(
             .routed(config.file_storage.backend_for_user_avatars().to_string())
             .map_err(|error| anyhow::anyhow!("failed to route user avatar storage: {error}"))?,
     );
-    let video_cover_file_storage: Arc<dyn FileStorageService> = Arc::new(
+    let media_cover_file_storage: Arc<dyn FileStorageService> = Arc::new(
         file_storage_registry
-            .routed(config.file_storage.backend_for_video_covers().to_string())
-            .map_err(|error| anyhow::anyhow!("failed to route video cover storage: {error}"))?,
+            .routed(config.file_storage.backend_for_media_covers().to_string())
+            .map_err(|error| anyhow::anyhow!("failed to route media cover storage: {error}"))?,
     );
     let room_cover_file_storage: Arc<dyn FileStorageService> = Arc::new(
         file_storage_registry
@@ -843,7 +843,7 @@ pub async fn init_services_with_options(
                 &shared_state_profile,
             )?,
         realtime_outbox: options.realtime_outbox.clone(),
-        media_file_storage_service: Some(video_cover_file_storage),
+        media_file_storage_service: Some(media_cover_file_storage),
         room_file_storage_service: Some(room_cover_file_storage),
         playlist_file_storage_service: Some(playlist_cover_file_storage),
         runtime: room_runtime,
@@ -872,8 +872,13 @@ pub async fn init_services_with_options(
     );
     let permission_service_for_chat = room_service.permission_service().clone();
     let chat_file_storage = file_storage_registry
-        .routed(config.file_storage.backend_for_chat_images().to_string())
-        .map_err(|error| anyhow::anyhow!("failed to route chat image storage: {error}"))?;
+        .routed(
+            config
+                .file_storage
+                .backend_for_chat_attachments()
+                .to_string(),
+        )
+        .map_err(|error| anyhow::anyhow!("failed to route chat attachment storage: {error}"))?;
     let chat_service = ChatService::new(
         chat_repo.clone(),
         crate::service::chat::ChatRuntime {

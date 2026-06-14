@@ -5,17 +5,18 @@ use sha2::{Digest, Sha256};
 use crate::{
     models::{
         ChatMessage, ChatMessageEventLog, ChatPlaybackMessagesQuery, ChatReadState,
-        CreateChatImageUploadSession, CreateFileUploadSession, DeleteChatMessage, EditChatMessage,
-        NewStoredFile, RoomId, SendChatMessage, UserId, CHAT_CLIENT_MESSAGE_ID_MAX_CHARS,
-        CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_IMAGE_ID_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS,
-        FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+        CreateChatAttachmentUploadSession, CreateFileUploadSession, DeleteChatMessage,
+        EditChatMessage, NewStoredFile, RoomId, SendChatMessage, UserId,
+        CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
+        CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
+        CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
     },
     Error, Result,
 };
 
-use super::MAX_CHAT_IMAGES_PER_MESSAGE;
+use super::MAX_CHAT_ATTACHMENTS_PER_MESSAGE;
 use crate::service::file_storage::{FILE_OWNERSHIP_PROOF_KEY, FILE_UPLOAD_TOKEN_KEY};
-use crate::service::file_upload_policies::chat_image_upload_policy;
+use crate::service::file_upload_policies::chat_attachment_upload_policy;
 
 pub(super) fn max_messages_to_keep_count(max_messages: u64) -> Result<i32> {
     i32::try_from(max_messages)
@@ -185,20 +186,21 @@ pub(super) fn normalize_chat_mentions(
     Ok(())
 }
 
-pub(super) fn chat_image_upload_request_to_file_request(
-    request: CreateChatImageUploadSession,
+pub(super) fn chat_attachment_upload_request_to_file_request(
+    request: CreateChatAttachmentUploadSession,
 ) -> CreateFileUploadSession {
     CreateFileUploadSession {
         user_id: request.user_id,
         storage_scope: chat_file_storage_scope(request.room_id, request.user_id),
-        client_file_id: request.client_image_id,
+        client_file_id: request.client_attachment_id,
+        filename: request.filename,
         mime_type: request.mime_type,
         size_bytes: request.size_bytes,
         width: request.width,
         height: request.height,
         checksum_sha256: request.checksum_sha256,
         metadata: request.metadata,
-        policy: chat_image_upload_policy(),
+        policy: chat_attachment_upload_policy(),
     }
 }
 
@@ -215,8 +217,8 @@ pub(super) fn validate_chat_metadata(metadata: &serde_json::Value) -> Result<()>
     Ok(())
 }
 
-fn validate_chat_image_mime_type(mime_type: &str) -> Result<()> {
-    let policy = chat_image_upload_policy();
+fn validate_chat_attachment_mime_type(mime_type: &str) -> Result<()> {
+    let policy = chat_attachment_upload_policy();
     let normalized = mime_type.trim().to_ascii_lowercase();
     let allowed_exact = policy
         .allowed_mime_types
@@ -230,62 +232,88 @@ fn validate_chat_image_mime_type(mime_type: &str) -> Result<()> {
         return Ok(());
     }
     Err(Error::InvalidInput(
-        "chat image mime_type is not allowed".to_string(),
+        "chat attachment mime_type is not allowed".to_string(),
     ))
 }
 
-pub(super) fn validate_chat_images(images: &[NewStoredFile]) -> Result<()> {
-    if images.len() > MAX_CHAT_IMAGES_PER_MESSAGE {
+pub(super) fn validate_chat_attachments(attachments: &[NewStoredFile]) -> Result<()> {
+    if attachments.len() > MAX_CHAT_ATTACHMENTS_PER_MESSAGE {
         return Err(Error::InvalidInput(format!(
-            "Chat messages support at most {MAX_CHAT_IMAGES_PER_MESSAGE} images"
+            "Chat messages support at most {MAX_CHAT_ATTACHMENTS_PER_MESSAGE} attachments"
         )));
     }
-    let mut image_ids = std::collections::HashSet::with_capacity(images.len());
-    let mut object_keys = std::collections::HashSet::with_capacity(images.len());
-    for image in images {
-        if image.id.trim().is_empty() || image.id.chars().count() > CHAT_IMAGE_ID_MAX_CHARS {
+    let mut attachment_ids = std::collections::HashSet::with_capacity(attachments.len());
+    let mut object_keys = std::collections::HashSet::with_capacity(attachments.len());
+    for attachment in attachments {
+        if attachment.id.trim().is_empty()
+            || attachment.id.chars().count() > CHAT_ATTACHMENT_ID_MAX_CHARS
+        {
             return Err(Error::InvalidInput(format!(
-                "image id must be between 1 and {CHAT_IMAGE_ID_MAX_CHARS} characters"
+                "attachment id must be between 1 and {CHAT_ATTACHMENT_ID_MAX_CHARS} characters"
             )));
         }
-        if image.storage_backend.trim().is_empty()
-            || image.storage_backend.chars().count() > FILE_STORAGE_BACKEND_MAX_CHARS
-            || image.object_key.trim().is_empty()
-            || image.object_key.chars().count() > FILE_OBJECT_KEY_MAX_CHARS
+        if let Some(filename) = &attachment.filename {
+            if filename.trim().is_empty()
+                || filename.chars().count() > CHAT_ATTACHMENT_FILENAME_MAX_CHARS
+                || filename.chars().any(char::is_control)
+            {
+                return Err(Error::InvalidInput(format!(
+                    "attachment filename must be between 1 and {CHAT_ATTACHMENT_FILENAME_MAX_CHARS} characters without control characters"
+                )));
+            }
+        }
+        if attachment.storage_backend.trim().is_empty()
+            || attachment.storage_backend.chars().count() > FILE_STORAGE_BACKEND_MAX_CHARS
+            || attachment.object_key.trim().is_empty()
+            || attachment.object_key.chars().count() > FILE_OBJECT_KEY_MAX_CHARS
         {
             return Err(Error::InvalidInput(format!(
                 "file storage_backend must be 1-{FILE_STORAGE_BACKEND_MAX_CHARS} characters and object_key must be 1-{FILE_OBJECT_KEY_MAX_CHARS} characters"
             )));
         }
-        if !image_ids.insert(image.id.as_str()) {
+        if !attachment_ids.insert(attachment.id.as_str()) {
             return Err(Error::InvalidInput(
-                "duplicate image id in one message".to_string(),
+                "duplicate attachment id in one message".to_string(),
             ));
         }
-        if !object_keys.insert(image.object_key.as_str()) {
+        if !object_keys.insert(attachment.object_key.as_str()) {
             return Err(Error::InvalidInput(
-                "duplicate image object_key in one message".to_string(),
+                "duplicate attachment object_key in one message".to_string(),
             ));
         }
-        if image.size_bytes.is_some_and(|size| size <= 0)
-            || image.width.is_some_and(|width| width <= 0)
-            || image.height.is_some_and(|height| height <= 0)
+        if attachment
+            .mime_type
+            .as_deref()
+            .is_none_or(|mime| mime.trim().is_empty())
         {
             return Err(Error::InvalidInput(
-                "image size and dimensions must be positive".to_string(),
+                "attachment mime_type is required".to_string(),
             ));
         }
-        if let Some(mime_type) = &image.mime_type {
-            validate_chat_image_mime_type(mime_type)?;
+        if attachment.size_bytes.is_none() {
+            return Err(Error::InvalidInput(
+                "attachment size_bytes is required".to_string(),
+            ));
         }
-        validate_chat_metadata(&image.metadata)?;
+        if attachment.size_bytes.is_some_and(|size| size <= 0)
+            || attachment.width.is_some_and(|width| width <= 0)
+            || attachment.height.is_some_and(|height| height <= 0)
+        {
+            return Err(Error::InvalidInput(
+                "attachment size and dimensions must be positive".to_string(),
+            ));
+        }
+        if let Some(mime_type) = &attachment.mime_type {
+            validate_chat_attachment_mime_type(mime_type)?;
+        }
+        validate_chat_metadata(&attachment.metadata)?;
     }
     Ok(())
 }
 
-pub(super) fn strip_internal_chat_image_metadata(images: &mut [NewStoredFile]) {
-    for image in images {
-        if let Some(metadata) = image.metadata.as_object_mut() {
+pub(super) fn strip_internal_chat_attachment_metadata(attachments: &mut [NewStoredFile]) {
+    for attachment in attachments {
+        if let Some(metadata) = attachment.metadata.as_object_mut() {
             metadata.remove(FILE_UPLOAD_TOKEN_KEY);
             metadata.remove(FILE_OWNERSHIP_PROOF_KEY);
         }
@@ -299,7 +327,7 @@ pub(super) fn chat_send_request_hash(request: &SendChatMessage) -> Result<String
         "reply_to_message_id": request.reply_to_message_id,
         "metadata": request.metadata,
         "mentions": request.mentions,
-        "images": request.images,
+        "attachments": request.attachments,
     });
     let bytes = serde_json::to_vec(&payload)?;
     Ok(hex::encode(Sha256::digest(bytes)))

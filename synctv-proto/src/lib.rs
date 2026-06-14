@@ -248,7 +248,7 @@ mod tests {
             edited_at: 0,
             deleted_at: 0,
             reply_to_message_id: String::new(),
-            images: Vec::new(),
+            attachments: Vec::new(),
             deleted_by_user_id: String::new(),
             delete_reason: String::new(),
             playback_media_id: String::new(),
@@ -284,7 +284,7 @@ mod tests {
                     display_position: String::new(),
                     display_color: String::new(),
                     client_message_id: "client-1".into(),
-                    images: Vec::new(),
+                    attachments: Vec::new(),
                     reply_to_message_id: String::new(),
                     metadata: Vec::new(),
                     mentions: Vec::new(),
@@ -519,7 +519,7 @@ mod tests {
                     display_position: String::new(),
                     display_color: String::new(),
                     client_message_id: String::new(),
-                    images: Vec::new(),
+                    attachments: Vec::new(),
                     reply_to_message_id: String::new(),
                     metadata: Vec::new(),
                     mentions: Vec::new(),
@@ -2168,7 +2168,7 @@ mod tests {
             }"#,
         )
         .expect("Plain text chat send should allow omitted optional payload fields");
-        assert!(decoded.images.is_empty());
+        assert!(decoded.attachments.is_empty());
         assert!(decoded.metadata.is_empty());
         assert!(decoded.reply_to_message_id.is_empty());
         assert!(decoded.display_position.is_empty());
@@ -2178,11 +2178,11 @@ mod tests {
             r#"{
                 "content":"",
                 "client_message_id":"client-message-2",
-                "images":[{
-                    "id":"image-1",
+                "attachments":[{
+                    "id":"attachment-1",
                     "storage_backend":"database",
-                    "object_key":"chat/images/one.png",
-                    "url":"https://example.test/image.png",
+                    "object_key":"chat/attachments/one.png",
+                    "url":"https://example.test/attachment.png",
                     "mime_type":"image/png",
                     "size_bytes":"68",
                     "width":1,
@@ -2190,9 +2190,9 @@ mod tests {
                 }]
             }"#,
         )
-        .expect("Chat image send should allow omitted image metadata");
-        assert_eq!(decoded.images.len(), 1);
-        assert!(decoded.images[0].metadata.is_empty());
+        .expect("Chat attachment send should allow omitted attachment metadata");
+        assert_eq!(decoded.attachments.len(), 1);
+        assert!(decoded.attachments[0].metadata.is_empty());
 
         let decoded: crate::client::EditChatMessageRequest = serde_json::from_str(
             r#"{

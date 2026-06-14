@@ -788,6 +788,7 @@ impl PlaylistService {
                 user_id,
                 storage_scope: playlist_cover_storage_scope(room_id, playlist_id),
                 client_file_id: request.client_cover_id,
+                filename: None,
                 mime_type: request.mime_type,
                 size_bytes: request.size_bytes,
                 width: request.width,

@@ -25,7 +25,7 @@ use tracing::{info, warn};
 
 use super::{FileStorageCleanupOrigin, FileStorageService, LeaderCheck, SettingsRegistry};
 use crate::{
-    models::{ChatImage, FileReferenceTarget},
+    models::{ChatAttachment, FileReferenceTarget},
     repository::{FileStorageRepository, RoomResourceEventRepository},
     InternalExt, Result,
 };
@@ -701,9 +701,8 @@ impl CleanupService {
             return Ok(0);
         }
 
-        let images = if let Some(storage) = &self.file_storage_service {
-            let images = sqlx::query_as!(
-                ChatImage,
+        let attachments = if let Some(storage) = &self.file_storage_service {
+            let attachments = sqlx::query_as::<_, ChatAttachment>(
                 r#"
                 WITH ranked AS (
                     SELECT id, created_at,
@@ -716,9 +715,11 @@ impl CleanupService {
                     WHERE rn > $1
                 )
                 SELECT i.id,
-                       i.room_id AS "room_id: crate::models::RoomId",
+                       i.kind,
+                       i.room_id,
                        i.message_id,
                        i.message_created_at,
+                       i.filename,
                        i.storage_backend,
                        i.object_key,
                        i.url,
@@ -728,20 +729,20 @@ impl CleanupService {
                        i.height,
                        i.metadata,
                        i.created_at
-                FROM chat_message_images i
+                FROM chat_message_attachments i
                 INNER JOIN candidates c
                     ON c.id = i.message_id AND c.created_at = i.message_created_at
                 ORDER BY i.message_created_at, i.message_id, i.created_at
                 "#,
-                keep_count
             )
+            .bind(keep_count)
             .fetch_all(&self.pool)
             .await
-            .internal_with_err("Failed to collect chat image cleanup candidates")?;
-            if images.is_empty() {
+            .internal_with_err("Failed to collect chat attachment cleanup candidates")?;
+            if attachments.is_empty() {
                 None
             } else {
-                Some((storage.clone(), images))
+                Some((storage.clone(), attachments))
             }
         } else {
             None
@@ -770,10 +771,10 @@ impl CleanupService {
         .await
         .internal_with_err("Failed to cleanup chat messages")?;
 
-        if let Some((storage, images)) = images {
-            let file_references = images
+        if let Some((storage, attachments)) = attachments {
+            let file_references = attachments
                 .iter()
-                .map(crate::models::ChatImage::file_reference_target)
+                .map(crate::models::ChatAttachment::file_reference_target)
                 .collect::<Vec<_>>();
             if let Err(error) = storage
                 .delete_files(
@@ -786,7 +787,7 @@ impl CleanupService {
                     error = %error,
                     deleted = result.rows_affected(),
                     keep_count,
-                    "Chat image cleanup after per-room cap purge failed"
+                    "Chat attachment cleanup after per-room cap purge failed"
                 );
                 if let Err(enqueue_error) = FileStorageRepository::new(self.pool.clone())
                     .enqueue_cleanup_jobs(
@@ -800,7 +801,7 @@ impl CleanupService {
                     warn!(
                         error = %enqueue_error,
                         keep_count,
-                        "Failed to enqueue chat image cleanup retry after per-room cap purge"
+                        "Failed to enqueue chat attachment cleanup retry after per-room cap purge"
                     );
                 }
             }

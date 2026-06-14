@@ -1,12 +1,29 @@
 use crate::models::FileUploadPolicy;
 
-pub const MAX_CHAT_IMAGE_SIZE_BYTES: i64 = 20 * 1024 * 1024;
+pub const MAX_CHAT_ATTACHMENT_SIZE_BYTES: i64 = 50 * 1024 * 1024;
 pub const MAX_USER_AVATAR_SIZE_BYTES: i64 = 5 * 1024 * 1024;
-pub const MAX_VIDEO_COVER_SIZE_BYTES: i64 = 10 * 1024 * 1024;
+pub const MAX_MEDIA_COVER_SIZE_BYTES: i64 = 10 * 1024 * 1024;
 pub const MAX_ROOM_COVER_SIZE_BYTES: i64 = 10 * 1024 * 1024;
 pub const MAX_PLAYLIST_COVER_SIZE_BYTES: i64 = 10 * 1024 * 1024;
 
 const COVER_IMAGE_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/webp", "image/avif"];
+const CHAT_ATTACHMENT_MIME_TYPES: &[&str] = &[
+    "application/json",
+    "application/pdf",
+    "application/zip",
+    "application/gzip",
+    "application/x-7z-compressed",
+    "application/x-tar",
+    "application/vnd.ms-excel",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.ms-word",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/csv",
+    "text/markdown",
+    "text/plain",
+];
 
 fn policy_from_slices(
     kind: &str,
@@ -49,14 +66,14 @@ fn typed_image_policy(
 }
 
 #[must_use]
-pub fn chat_image_upload_policy() -> FileUploadPolicy {
+pub fn chat_attachment_upload_policy() -> FileUploadPolicy {
     policy_from_slices(
-        "chat_image",
-        MAX_CHAT_IMAGE_SIZE_BYTES,
-        &["image/"],
-        &[],
-        "chat/images",
-        "/api/chat/image-objects",
+        "chat_attachment",
+        MAX_CHAT_ATTACHMENT_SIZE_BYTES,
+        &["image/", "audio/", "video/"],
+        CHAT_ATTACHMENT_MIME_TYPES,
+        "chat/attachments",
+        "/api/chat/attachment-objects",
     )
 }
 
@@ -71,12 +88,12 @@ pub fn user_avatar_upload_policy() -> FileUploadPolicy {
 }
 
 #[must_use]
-pub fn video_cover_upload_policy() -> FileUploadPolicy {
+pub fn media_cover_upload_policy() -> FileUploadPolicy {
     typed_image_policy(
-        "video_cover",
-        MAX_VIDEO_COVER_SIZE_BYTES,
-        "videos/covers",
-        "/api/video/cover-objects",
+        "media_cover",
+        MAX_MEDIA_COVER_SIZE_BYTES,
+        "media/covers",
+        "/api/media/cover-objects",
     )
 }
 
@@ -125,6 +142,7 @@ mod tests {
             user_id: UserId::expect_positive(1),
             storage_scope: "test-scope".to_string(),
             client_file_id: Some("client-file-1".to_string()),
+            filename: None,
             mime_type: mime_type.to_string(),
             size_bytes,
             width: Some(320),
@@ -137,15 +155,15 @@ mod tests {
 
     #[test]
     fn product_upload_policies_use_distinct_namespaces_and_kinds() {
-        let chat = chat_image_upload_policy();
+        let chat = chat_attachment_upload_policy();
         let avatar = user_avatar_upload_policy();
-        let cover = video_cover_upload_policy();
+        let cover = media_cover_upload_policy();
         let room_cover = room_cover_upload_policy();
         let playlist_cover = playlist_cover_upload_policy();
 
-        assert_eq!(chat.kind, "chat_image");
+        assert_eq!(chat.kind, "chat_attachment");
         assert_eq!(avatar.kind, "user_avatar");
-        assert_eq!(cover.kind, "video_cover");
+        assert_eq!(cover.kind, "media_cover");
         assert_eq!(room_cover.kind, "room_cover");
         assert_eq!(playlist_cover.kind, "playlist_cover");
         assert_ne!(chat.storage_namespace, avatar.storage_namespace);
@@ -162,9 +180,9 @@ mod tests {
     fn product_upload_policies_validate_expected_upload_requests() {
         let cases = [
             (
-                chat_image_upload_policy(),
-                "image/gif",
-                MAX_CHAT_IMAGE_SIZE_BYTES,
+                chat_attachment_upload_policy(),
+                "application/pdf",
+                MAX_CHAT_ATTACHMENT_SIZE_BYTES,
             ),
             (
                 user_avatar_upload_policy(),
@@ -172,9 +190,9 @@ mod tests {
                 MAX_USER_AVATAR_SIZE_BYTES,
             ),
             (
-                video_cover_upload_policy(),
+                media_cover_upload_policy(),
                 "image/avif",
-                MAX_VIDEO_COVER_SIZE_BYTES,
+                MAX_MEDIA_COVER_SIZE_BYTES,
             ),
             (
                 room_cover_upload_policy(),
@@ -200,7 +218,7 @@ mod tests {
             assert!(matches!(
                 validate_create_file_upload_session(&upload_request(
                     policy.clone(),
-                    "text/plain",
+                    "application/x-msdownload",
                     max_size_bytes
                 )),
                 Err(Error::InvalidInput(_))

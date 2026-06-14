@@ -244,25 +244,25 @@ impl RoomService for ClientServiceImpl {
         streaming::watch_chat_events(self, request).await
     }
 
-    async fn create_chat_image_upload_session(
+    async fn create_chat_attachment_upload_session(
         &self,
-        request: Request<CreateChatImageUploadSessionRequest>,
-    ) -> Result<Response<CreateChatImageUploadSessionResponse>, Status> {
-        chat::create_chat_image_upload_session(self, request).await
+        request: Request<CreateChatAttachmentUploadSessionRequest>,
+    ) -> Result<Response<CreateChatAttachmentUploadSessionResponse>, Status> {
+        chat::create_chat_attachment_upload_session(self, request).await
     }
 
-    async fn upload_chat_image_object(
+    async fn upload_chat_attachment_object(
         &self,
-        request: Request<UploadChatImageObjectRequest>,
-    ) -> Result<Response<UploadChatImageObjectResponse>, Status> {
-        chat::upload_chat_image_object(self, request).await
+        request: Request<UploadChatAttachmentObjectRequest>,
+    ) -> Result<Response<UploadChatAttachmentObjectResponse>, Status> {
+        chat::upload_chat_attachment_object(self, request).await
     }
 
-    async fn get_chat_image_object(
+    async fn get_chat_attachment_object(
         &self,
-        request: Request<GetChatImageObjectRequest>,
-    ) -> Result<Response<ChatImageObjectResponse>, Status> {
-        chat::get_chat_image_object(self, request).await
+        request: Request<GetChatAttachmentObjectRequest>,
+    ) -> Result<Response<ChatAttachmentObjectResponse>, Status> {
+        chat::get_chat_attachment_object(self, request).await
     }
 
     async fn get_chat_history(
@@ -398,11 +398,11 @@ impl RoomService for ClientServiceImpl {
         media::get_media(self, request).await
     }
 
-    async fn create_video_cover_upload_session(
+    async fn create_media_cover_upload_session(
         &self,
-        request: Request<CreateVideoCoverUploadSessionRequest>,
-    ) -> Result<Response<CreateVideoCoverUploadSessionResponse>, Status> {
-        media::create_video_cover_upload_session(self, request).await
+        request: Request<CreateMediaCoverUploadSessionRequest>,
+    ) -> Result<Response<CreateMediaCoverUploadSessionResponse>, Status> {
+        media::create_media_cover_upload_session(self, request).await
     }
 
     async fn create_room_cover_upload_session(
@@ -440,32 +440,32 @@ impl RoomService for ClientServiceImpl {
         media::clear_room_cover(self, request).await
     }
 
-    async fn upload_video_cover_object(
+    async fn upload_media_cover_object(
         &self,
-        request: Request<UploadVideoCoverObjectRequest>,
-    ) -> Result<Response<UploadVideoCoverObjectResponse>, Status> {
-        media::upload_video_cover_object(self, request).await
+        request: Request<UploadMediaCoverObjectRequest>,
+    ) -> Result<Response<UploadMediaCoverObjectResponse>, Status> {
+        media::upload_media_cover_object(self, request).await
     }
 
-    async fn get_video_cover_object(
+    async fn get_media_cover_object(
         &self,
-        request: Request<GetVideoCoverObjectRequest>,
-    ) -> Result<Response<VideoCoverObjectResponse>, Status> {
-        media::get_video_cover_object(self, request).await
+        request: Request<GetMediaCoverObjectRequest>,
+    ) -> Result<Response<MediaCoverObjectResponse>, Status> {
+        media::get_media_cover_object(self, request).await
     }
 
-    async fn update_video_cover(
+    async fn update_media_cover(
         &self,
-        request: Request<UpdateVideoCoverRequest>,
+        request: Request<UpdateMediaCoverRequest>,
     ) -> Result<Response<EditMediaResponse>, Status> {
-        media::update_video_cover(self, request).await
+        media::update_media_cover(self, request).await
     }
 
-    async fn clear_video_cover(
+    async fn clear_media_cover(
         &self,
-        request: Request<synctv_proto::client::ClearVideoCoverRequest>,
+        request: Request<synctv_proto::client::ClearMediaCoverRequest>,
     ) -> Result<Response<EditMediaResponse>, Status> {
-        media::clear_video_cover(self, request).await
+        media::clear_media_cover(self, request).await
     }
 
     async fn create_playlist_cover_upload_session(

@@ -93,8 +93,9 @@ pub use codec::ProtoCodec;
 pub(crate) use codec::{
     chat_display_color_from_metadata, chat_display_position_from_metadata,
     chat_event_kind_to_proto, chat_message_event_to_proto, chat_metadata_for_send,
-    chat_playback_metadata_from_metadata, core_chat_image_to_proto, online_event_to_proto,
-    proto_chat_image_to_core, room_member_event_to_proto,
+    chat_playback_metadata_from_metadata, core_chat_attachment_to_proto, online_event_to_proto,
+    proto_chat_attachment_kind_from_mime_type, proto_chat_attachment_to_core,
+    room_member_event_to_proto,
 };
 #[cfg(test)]
 pub(crate) use codec::{
@@ -2596,10 +2597,10 @@ impl StreamMessageHandler {
 
         // Delegate to ChatService which handles permission checks, content filtering,
         // rate limiting, and persistence (no fallback path).
-        let images = chat_msg
-            .images
+        let attachments = chat_msg
+            .attachments
             .iter()
-            .map(proto_chat_image_to_core)
+            .map(proto_chat_attachment_to_core)
             .collect::<Result<Vec<_>, _>>()?;
         let reply_to_message_id = parse_optional_chat_message_id(&chat_msg.reply_to_message_id)?;
         let playback_state = self
@@ -2623,14 +2624,14 @@ impl StreamMessageHandler {
                     client_message_id: (!chat_msg.client_message_id.trim().is_empty())
                         .then(|| chat_msg.client_message_id.trim().to_string()),
                     content: chat_msg.content.clone(),
-                    message_type: if images.is_empty() {
+                    message_type: if attachments.is_empty() {
                         ChatMessageType::Text
                     } else {
-                        ChatMessageType::Image
+                        ChatMessageType::Attachment
                     },
                     reply_to_message_id,
                     metadata,
-                    images,
+                    attachments,
                     mentions: proto_chat_mentions_to_core(
                         &chat_msg.mentions,
                         &self.public_id_codec,

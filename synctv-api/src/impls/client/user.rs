@@ -14,7 +14,7 @@ use synctv_proto::client::{
     OpaquePasswordUpdateVerificationMethod, SensitiveOperationVerificationMethod,
 };
 
-use super::convert::{stored_file_reference_to_video_cover, try_user_to_proto};
+use super::convert::{stored_file_reference_to_media_cover, try_user_to_proto};
 use super::media::{required_stored_file_fields, upload_session_fields};
 use super::ClientApiImpl;
 
@@ -166,6 +166,7 @@ fn avatar_proto_to_new_file(
         ));
     }
     Ok(NewStoredFile {
+        filename: None,
         id: avatar.id,
         storage_backend: avatar.storage_backend,
         object_key: avatar.object_key,
@@ -353,7 +354,7 @@ impl ClientApiImpl {
                 &file,
                 &synctv_core::service::user_avatar_upload_policy(),
             )?;
-            let file = stored_file_reference_to_video_cover(&file, url.as_deref())?;
+            let file = stored_file_reference_to_media_cover(&file, url.as_deref())?;
             proto.avatar = Some(synctv_proto::client::UserAvatar {
                 id: file.id,
                 storage_backend: file.storage_backend,

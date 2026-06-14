@@ -35,7 +35,7 @@ use std::sync::Arc;
 mod cover;
 mod dynamic;
 mod helpers;
-pub use cover::CreateVideoCoverUploadSession;
+pub use cover::CreateMediaCoverUploadSession;
 use helpers::{
     batch_media_position, dedup_media_ids, ensure_media_creator_can_edit,
     media_source_config_error, media_source_prepare_error, validate_media_name, MAX_BATCH_SIZE,

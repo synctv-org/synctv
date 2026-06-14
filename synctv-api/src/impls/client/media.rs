@@ -14,7 +14,7 @@ use synctv_core::models::{
 use synctv_core::provider::DynamicListQuery;
 use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
 use synctv_core::service::media::{
-    AddMediaRequest as CoreAddMediaRequest, CreateVideoCoverUploadSession,
+    AddMediaRequest as CoreAddMediaRequest, CreateMediaCoverUploadSession,
     MoveMediaRequest as CoreMoveMediaRequest,
 };
 use synctv_core::service::room::{
@@ -225,6 +225,7 @@ pub(crate) fn file_cover_proto_to_stored_file(
     cover: synctv_proto::client::FileCover,
 ) -> Result<NewStoredFile, ApiError> {
     Ok(NewStoredFile {
+        filename: None,
         id: cover.id,
         storage_backend: cover.storage_backend,
         object_key: cover.object_key,
@@ -237,11 +238,11 @@ pub(crate) fn file_cover_proto_to_stored_file(
     })
 }
 
-pub(crate) fn stored_file_to_video_cover_proto(
+pub(crate) fn stored_file_to_media_cover_proto(
     file: &NewStoredFile,
-) -> Result<synctv_proto::client::VideoCover, ApiError> {
-    let fields = required_stored_file_fields(file, "video cover metadata")?;
-    Ok(synctv_proto::client::VideoCover {
+) -> Result<synctv_proto::client::MediaCover, ApiError> {
+    let fields = required_stored_file_fields(file, "media cover metadata")?;
+    Ok(synctv_proto::client::MediaCover {
         id: file.id.clone(),
         storage_backend: file.storage_backend.clone(),
         object_key: file.object_key.clone(),
@@ -254,10 +255,11 @@ pub(crate) fn stored_file_to_video_cover_proto(
     })
 }
 
-fn video_cover_proto_to_stored_file(
-    cover: synctv_proto::client::VideoCover,
+fn media_cover_proto_to_stored_file(
+    cover: synctv_proto::client::MediaCover,
 ) -> Result<NewStoredFile, ApiError> {
     Ok(NewStoredFile {
+        filename: None,
         id: cover.id,
         storage_backend: cover.storage_backend,
         object_key: cover.object_key,
@@ -270,12 +272,12 @@ fn video_cover_proto_to_stored_file(
     })
 }
 
-fn video_cover_upload_session_to_proto(
+fn media_cover_upload_session_to_proto(
     session: FileUploadSession,
-) -> Result<synctv_proto::client::VideoCoverUploadSession, ApiError> {
+) -> Result<synctv_proto::client::MediaCoverUploadSession, ApiError> {
     let fields = upload_session_fields(&session)?;
-    Ok(synctv_proto::client::VideoCoverUploadSession {
-        cover: Some(stored_file_to_video_cover_proto(&session.file)?),
+    Ok(synctv_proto::client::MediaCoverUploadSession {
+        cover: Some(stored_file_to_media_cover_proto(&session.file)?),
         upload_required: session.upload_required,
         upload_url: fields.upload_url,
         upload_method: fields.upload_method,
@@ -288,7 +290,7 @@ fn video_cover_upload_session_to_proto(
             .ownership_proof_ranges
             .into_iter()
             .map(
-                |range| synctv_proto::client::VideoCoverOwnershipProofRange {
+                |range| synctv_proto::client::MediaCoverOwnershipProofRange {
                     offset: range.offset,
                     length: range.length,
                 },
@@ -350,10 +352,10 @@ pub(crate) fn file_upload_session_to_playlist_cover_proto(
     })
 }
 
-pub(crate) fn video_cover_object_to_proto(
+pub(crate) fn media_cover_object_to_proto(
     blob: &FileBlob,
-) -> synctv_proto::client::VideoCoverObjectResponse {
-    synctv_proto::client::VideoCoverObjectResponse {
+) -> synctv_proto::client::MediaCoverObjectResponse {
+    synctv_proto::client::MediaCoverObjectResponse {
         object_key: blob.object_key.clone(),
         mime_type: blob.mime_type.clone(),
         checksum_sha256: blob.checksum_sha256.clone(),
@@ -1154,12 +1156,12 @@ impl ClientApiImpl {
         })
     }
 
-    pub async fn create_video_cover_upload_session(
+    pub async fn create_media_cover_upload_session(
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: synctv_proto::client::CreateVideoCoverUploadSessionRequest,
-    ) -> Result<synctv_proto::client::CreateVideoCoverUploadSessionResponse, ApiError> {
+        req: synctv_proto::client::CreateMediaCoverUploadSessionRequest,
+    ) -> Result<synctv_proto::client::CreateMediaCoverUploadSessionResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = self.parse_room_id(room_id)?;
         let media_id =
@@ -1167,11 +1169,11 @@ impl ClientApiImpl {
         let session = self
             .room_service
             .media_service()
-            .create_video_cover_upload_session(
+            .create_media_cover_upload_session(
                 rid,
                 media_id,
                 *user_id,
-                CreateVideoCoverUploadSession {
+                CreateMediaCoverUploadSession {
                     client_cover_id: optional_trimmed_string(&req.client_cover_id),
                     mime_type: req.mime_type,
                     size_bytes: req.size_bytes,
@@ -1184,20 +1186,20 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         Ok(
-            synctv_proto::client::CreateVideoCoverUploadSessionResponse {
-                session: Some(video_cover_upload_session_to_proto(session)?),
+            synctv_proto::client::CreateMediaCoverUploadSessionResponse {
+                session: Some(media_cover_upload_session_to_proto(session)?),
             },
         )
     }
 
-    pub async fn upload_video_cover_object(
+    pub async fn upload_media_cover_object(
         &self,
-        req: synctv_proto::client::UploadVideoCoverObjectRequest,
-    ) -> Result<synctv_proto::client::UploadVideoCoverObjectResponse, ApiError> {
+        req: synctv_proto::client::UploadMediaCoverObjectRequest,
+    ) -> Result<synctv_proto::client::UploadMediaCoverObjectResponse, ApiError> {
         let blob = self
             .room_service
             .media_service()
-            .store_video_cover_upload_object(
+            .store_media_cover_upload_object(
                 &req.encoded_object_key,
                 &req.token,
                 req.content_type.as_deref(),
@@ -1205,29 +1207,29 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        Ok(synctv_proto::client::UploadVideoCoverObjectResponse {
-            object: Some(video_cover_object_to_proto(&blob)),
+        Ok(synctv_proto::client::UploadMediaCoverObjectResponse {
+            object: Some(media_cover_object_to_proto(&blob)),
         })
     }
 
-    pub async fn get_video_cover_object(
+    pub async fn get_media_cover_object(
         &self,
-        req: synctv_proto::client::GetVideoCoverObjectRequest,
-    ) -> Result<synctv_proto::client::VideoCoverObjectResponse, ApiError> {
+        req: synctv_proto::client::GetMediaCoverObjectRequest,
+    ) -> Result<synctv_proto::client::MediaCoverObjectResponse, ApiError> {
         let blob = self
             .room_service
             .media_service()
-            .get_video_cover_object(&req.encoded_object_key, &req.token)
+            .get_media_cover_object(&req.encoded_object_key, &req.token)
             .await
             .map_err(ApiError::from)?;
-        Ok(video_cover_object_to_proto(&blob))
+        Ok(media_cover_object_to_proto(&blob))
     }
 
-    pub async fn update_video_cover(
+    pub async fn update_media_cover(
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: synctv_proto::client::UpdateVideoCoverRequest,
+        req: synctv_proto::client::UpdateMediaCoverRequest,
     ) -> Result<synctv_proto::client::EditMediaResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = self.parse_room_id(room_id)?;
@@ -1239,11 +1241,11 @@ impl ClientApiImpl {
         let media = self
             .room_service
             .media_service()
-            .update_video_cover(
+            .update_media_cover(
                 rid,
                 media_id,
                 *user_id,
-                video_cover_proto_to_stored_file(cover)?,
+                media_cover_proto_to_stored_file(cover)?,
             )
             .await
             .map_err(ApiError::from)?;
@@ -1256,11 +1258,11 @@ impl ClientApiImpl {
         })
     }
 
-    pub async fn clear_video_cover(
+    pub async fn clear_media_cover(
         &self,
         user_id: &UserId,
         room_id: &str,
-        req: synctv_proto::client::ClearVideoCoverRequest,
+        req: synctv_proto::client::ClearMediaCoverRequest,
     ) -> Result<synctv_proto::client::EditMediaResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = self.parse_room_id(room_id)?;
@@ -1269,7 +1271,7 @@ impl ClientApiImpl {
         let media = self
             .room_service
             .media_service()
-            .clear_video_cover(rid, media_id, *user_id)
+            .clear_media_cover(rid, media_id, *user_id)
             .await
             .map_err(ApiError::from)?;
         self.room_cache_fanout.publish_invalidation(&rid);
@@ -2361,6 +2363,7 @@ mod tests {
 
     fn make_stored_file() -> NewStoredFile {
         NewStoredFile {
+            filename: None,
             id: "file-1".to_string(),
             storage_backend: "database".to_string(),
             object_key: "objects/file-1".to_string(),

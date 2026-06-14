@@ -151,6 +151,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
                     validate_file_mime_type(&request.policy, &existing.mime_type)?;
                     let mut file = NewStoredFile {
                         id: file_id,
+                        filename: request.filename.clone(),
                         storage_backend: self.config.storage_backend.clone(),
                         object_key: existing.object_key.clone(),
                         url: optional_file_storage_public_url(&self.config, &existing.object_key)?,
@@ -241,6 +242,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
         let public_url = optional_file_storage_public_url(&self.config, &object_key)?;
         let mut file = NewStoredFile {
             id: file_id,
+            filename: request.filename,
             storage_backend: self.config.storage_backend.clone(),
             object_key,
             url: public_url,

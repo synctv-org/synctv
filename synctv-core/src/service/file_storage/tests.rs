@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use super::*;
 use crate::{
     repository::{FileStorageRepository, UpsertFileBlob},
-    service::file_upload_policies::{chat_image_upload_policy, user_avatar_upload_policy},
+    service::file_upload_policies::{chat_attachment_upload_policy, user_avatar_upload_policy},
 };
 
 fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
@@ -174,6 +174,7 @@ fn upload_media_type_extracts_base_type_and_rejects_empty_values() {
 
 fn valid_new_stored_file() -> NewStoredFile {
     NewStoredFile {
+        filename: None,
         id: "file-1".to_string(),
         storage_backend: "database".to_string(),
         object_key: "objects/file-1".to_string(),
@@ -248,6 +249,7 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
                 user_id: UserId::expect_positive(1),
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-1".to_string()),
+                filename: None,
                 mime_type: "image/png".to_string(),
                 size_bytes: payload_size(payload),
                 width: Some(16),
@@ -310,6 +312,7 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
                 user_id: UserId::expect_positive(1),
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-1".to_string()),
+                filename: None,
                 mime_type: "image/png".to_string(),
                 size_bytes: payload_size(&payload),
                 width: Some(16),
@@ -380,12 +383,49 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
 }
 
 #[tokio::test]
+async fn database_storage_rejects_sessions_above_database_payload_cap() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let storage =
+        DatabaseFileStorageService::new("database", repository, "test-file-storage-secret");
+    let size_bytes = i64::try_from(MAX_DATABASE_FILE_UPLOAD_SIZE_BYTES + 1)
+        .expect("database upload cap should fit in i64");
+    let checksum = hex::encode(Sha256::digest(b"oversized-chat-attachment"));
+
+    let error = err(
+        storage
+            .create_upload_session(CreateFileUploadSession {
+                user_id: UserId::expect_positive(1),
+                storage_scope: "rooms/1/chat/attachments".to_string(),
+                client_file_id: Some("chat-attachment-1".to_string()),
+                filename: Some("large.bin".to_string()),
+                mime_type: "application/pdf".to_string(),
+                size_bytes,
+                width: None,
+                height: None,
+                checksum_sha256: Some(checksum),
+                metadata: serde_json::Value::Object(Default::default()),
+                policy: chat_attachment_upload_policy(),
+            })
+            .await,
+        "database storage should reject upload sessions above its payload cap",
+    );
+
+    assert!(matches!(
+        error,
+        Error::InvalidInput(message)
+            if message.contains("for database storage")
+                && message.contains(&MAX_DATABASE_FILE_UPLOAD_SIZE_BYTES.to_string())
+    ));
+}
+
+#[tokio::test]
 async fn database_storage_omitted_compression_defaults_to_uncompressed_blob() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool.clone()));
     let storage =
         DatabaseFileStorageService::new("database", repository, "test-file-storage-secret");
-    let object_key = "database/chat/images/raw-default.png";
+    let object_key = "database/chat/attachments/raw-default.png";
     let payload = b"raw-default-payload";
     let checksum = hex::encode(Sha256::digest(payload));
     let metadata = serde_json::Value::Object(Default::default());
@@ -465,6 +505,7 @@ async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
                 user_id: UserId::expect_positive(1),
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-1".to_string()),
+                filename: None,
                 mime_type: "image/png".to_string(),
                 size_bytes: payload_size(&payload),
                 width: Some(16),
@@ -544,7 +585,7 @@ async fn database_storage_rejects_checksum_reuse_when_existing_mime_violates_pol
     upsert_uncompressed_blob(
         repository.as_ref(),
         "database",
-        "database/chat/images/animated.gif",
+        "database/chat/attachments/animated.gif",
         "image/gif",
         payload,
     )
@@ -553,14 +594,14 @@ async fn database_storage_rejects_checksum_reuse_when_existing_mime_violates_pol
         repository
             .upsert_object(
                 "database",
-                "database/chat/images/animated.gif",
+                "database/chat/attachments/animated.gif",
                 "image/gif",
                 payload_size(payload),
                 &checksum,
                 &serde_json::Value::Object(Default::default()),
             )
             .await,
-        "chat image object should be inserted",
+        "chat attachment object should be inserted",
     );
 
     let err = err(
@@ -569,6 +610,7 @@ async fn database_storage_rejects_checksum_reuse_when_existing_mime_violates_pol
                 user_id: UserId::expect_positive(1),
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-1".to_string()),
+                filename: None,
                 mime_type: "image/png".to_string(),
                 size_bytes: payload_size(payload),
                 width: Some(16),
@@ -598,7 +640,7 @@ async fn database_storage_allows_checksum_reuse_when_existing_mime_matches_polic
     upsert_uncompressed_blob(
         repository.as_ref(),
         "database",
-        "database/chat/images/animated.gif",
+        "database/chat/attachments/animated.gif",
         "image/gif",
         payload,
     )
@@ -607,29 +649,30 @@ async fn database_storage_allows_checksum_reuse_when_existing_mime_matches_polic
         repository
             .upsert_object(
                 "database",
-                "database/chat/images/animated.gif",
+                "database/chat/attachments/animated.gif",
                 "image/gif",
                 payload_size(payload),
                 &checksum,
                 &serde_json::Value::Object(Default::default()),
             )
             .await,
-        "chat image object should be inserted",
+        "chat attachment object should be inserted",
     );
 
     let session = ok(
         storage
             .create_upload_session(CreateFileUploadSession {
                 user_id: UserId::expect_positive(1),
-                storage_scope: "rooms/1/chat/images".to_string(),
+                storage_scope: "rooms/1/chat/attachments".to_string(),
                 client_file_id: Some("chat-image-1".to_string()),
+                filename: None,
                 mime_type: "image/gif".to_string(),
                 size_bytes: payload_size(payload),
                 width: Some(16),
                 height: Some(16),
                 checksum_sha256: Some(checksum),
                 metadata: serde_json::Value::Object(Default::default()),
-                policy: chat_image_upload_policy(),
+                policy: chat_attachment_upload_policy(),
             })
             .await,
         "chat policy should allow GIF reuse",
@@ -653,6 +696,7 @@ async fn database_storage_strips_upload_token_from_prepared_files() {
                 user_id: UserId::expect_positive(1),
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-1".to_string()),
+                filename: None,
                 mime_type: "image/png".to_string(),
                 size_bytes: payload_size(payload),
                 width: Some(16),
@@ -748,6 +792,7 @@ async fn database_storage_strips_ownership_proof_from_prepared_files() {
                 user_id: UserId::expect_positive(1),
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-1".to_string()),
+                filename: None,
                 mime_type: "image/png".to_string(),
                 size_bytes: payload_size(payload),
                 width: Some(16),
@@ -892,7 +937,7 @@ async fn database_storage_deletes_unreferenced_object_without_reference_row() {
     upsert_uncompressed_blob(
         repository.as_ref(),
         "primary_db",
-        "database/chat/images/orphan.webp",
+        "database/chat/attachments/orphan.webp",
         "image/webp",
         b"orphan",
     )
@@ -901,7 +946,7 @@ async fn database_storage_deletes_unreferenced_object_without_reference_row() {
         repository
             .upsert_object(
                 "primary_db",
-                "database/chat/images/orphan.webp",
+                "database/chat/attachments/orphan.webp",
                 "image/webp",
                 6,
                 &hex::encode(Sha256::digest(b"orphan")),
@@ -917,9 +962,9 @@ async fn database_storage_deletes_unreferenced_object_without_reference_row() {
                 FileStorageCleanupOrigin::UnreferencedObject,
                 &[FileReferenceTarget {
                     storage_backend: "primary_db".to_string(),
-                    object_key: "database/chat/images/orphan.webp".to_string(),
+                    object_key: "database/chat/attachments/orphan.webp".to_string(),
                     reference_kind: "unreferenced_file".to_string(),
-                    reference_id: "database/chat/images/orphan.webp".to_string(),
+                    reference_id: "database/chat/attachments/orphan.webp".to_string(),
                 }],
             )
             .await,
@@ -928,7 +973,7 @@ async fn database_storage_deletes_unreferenced_object_without_reference_row() {
 
     assert!(!ok(
         repository
-            .object_exists("primary_db", "database/chat/images/orphan.webp")
+            .object_exists("primary_db", "database/chat/attachments/orphan.webp")
             .await,
         "object lookup should succeed"
     ));

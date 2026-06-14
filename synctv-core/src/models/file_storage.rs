@@ -168,6 +168,7 @@ pub struct FileUploadPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewStoredFile {
     pub id: String,
+    pub filename: Option<String>,
     pub storage_backend: String,
     pub object_key: String,
     pub url: Option<String>,
@@ -183,6 +184,7 @@ pub struct CreateFileUploadSession {
     pub user_id: UserId,
     pub storage_scope: String,
     pub client_file_id: Option<String>,
+    pub filename: Option<String>,
     pub mime_type: String,
     pub size_bytes: i64,
     pub width: Option<i32>,

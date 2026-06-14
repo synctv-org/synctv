@@ -62,7 +62,9 @@ mod tests {
     use super::*;
     use crate::test_support::RecordingRealtimeEventService;
     use chrono::Utc;
-    use synctv_core::models::{ChatEventKind, ChatMessage, ChatMessageWithImages, RoomId, UserId};
+    use synctv_core::models::{
+        ChatEventKind, ChatMessage, ChatMessageWithAttachments, RoomId, UserId,
+    };
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
@@ -84,9 +86,9 @@ mod tests {
             room_id,
             actor_user_id: user_id,
             kind: ChatEventKind::Created,
-            message: ChatMessageWithImages {
+            message: ChatMessageWithAttachments {
                 message,
-                images: Vec::new(),
+                attachments: Vec::new(),
                 reactions: Vec::new(),
                 mentions: Vec::new(),
             },

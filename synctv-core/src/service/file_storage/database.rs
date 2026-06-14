@@ -5,9 +5,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     models::{
-        CreateFileUploadSession, FileBlob, FileReferenceTarget, FileUploadSession, NewStoredFile,
+        CreateFileUploadSession, FileBlob, FileBlobCompression, FileReferenceTarget,
+        FileUploadSession, NewStoredFile,
     },
-    repository::FileStorageRepository,
+    repository::{FileStorageRepository, UpsertFileBlob},
     service::file_storage::{
         attach_file_ownership_proof_token, attach_file_upload_token, constant_time_eq,
         database_file_namespace_base_path, database_file_object_url,
@@ -32,12 +33,105 @@ impl DatabaseFileStorageService {
         repository: Arc<FileStorageRepository>,
         upload_token_secret: impl Into<String>,
     ) -> Self {
+        Self::new_with_compression(
+            storage_backend,
+            repository,
+            upload_token_secret,
+            FileBlobCompression::Zstd,
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_compression(
+        storage_backend: impl Into<String>,
+        repository: Arc<FileStorageRepository>,
+        upload_token_secret: impl Into<String>,
+        compression: FileBlobCompression,
+    ) -> Self {
         Self {
             storage_backend: storage_backend.into(),
             repository,
             upload_token_secret: upload_token_secret.into(),
+            compression,
         }
     }
+
+    async fn load_blob(&self, object_key: &str) -> Result<Option<FileBlob>> {
+        match self
+            .repository
+            .get_blob(&self.storage_backend, object_key)
+            .await?
+        {
+            Some(blob) => decompress_blob(blob).await.map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
+async fn compress_payload(
+    compression: FileBlobCompression,
+    data: Vec<u8>,
+) -> Result<(FileBlobCompression, Vec<u8>)> {
+    match compression {
+        FileBlobCompression::None => Ok((compression, data)),
+        FileBlobCompression::Lz4 => {
+            let data = tokio::task::spawn_blocking(move || lz4_flex::compress_prepend_size(&data))
+                .await
+                .map_err(|error| {
+                    Error::Internal(format!("file compression task failed: {error}"))
+                })?;
+            Ok((compression, data))
+        }
+        FileBlobCompression::Zstd => {
+            let data = tokio::task::spawn_blocking(move || zstd::bulk::compress(&data, 0))
+                .await
+                .map_err(|error| Error::Internal(format!("file compression task failed: {error}")))?
+                .map_err(|error| Error::Internal(format!("file compression failed: {error}")))?;
+            Ok((compression, data))
+        }
+    }
+}
+
+async fn decompress_blob(mut blob: FileBlob) -> Result<FileBlob> {
+    let compression = blob.compression;
+    let expected_size = usize::try_from(blob.size_bytes)
+        .map_err(|_| Error::Internal("file blob size is invalid".to_string()))?;
+    let data = std::mem::take(&mut blob.data);
+    blob.data = match compression {
+        FileBlobCompression::None => data,
+        FileBlobCompression::Lz4 => {
+            tokio::task::spawn_blocking(move || lz4_flex::decompress_size_prepended(&data))
+                .await
+                .map_err(|error| {
+                    Error::Internal(format!("file decompression task failed: {error}"))
+                })?
+                .map_err(|error| Error::Internal(format!("file decompression failed: {error}")))?
+        }
+        FileBlobCompression::Zstd => {
+            tokio::task::spawn_blocking(move || zstd::bulk::decompress(&data, expected_size))
+                .await
+                .map_err(|error| {
+                    Error::Internal(format!("file decompression task failed: {error}"))
+                })?
+                .map_err(|error| Error::Internal(format!("file decompression failed: {error}")))?
+        }
+    };
+    blob.compression = FileBlobCompression::None;
+    let actual_size = payload_len_i64(blob.data.len())?;
+    if actual_size != blob.size_bytes {
+        return Err(Error::Internal(format!(
+            "file blob decompressed size mismatch for {}:{}",
+            blob.storage_backend, blob.object_key
+        )));
+    }
+    let actual_checksum = hex::encode(Sha256::digest(&blob.data));
+    if actual_checksum != blob.checksum_sha256 {
+        return Err(Error::Internal(format!(
+            "file blob checksum mismatch for {}:{}",
+            blob.storage_backend, blob.object_key
+        )));
+    }
+    Ok(blob)
 }
 
 #[async_trait::async_trait]
@@ -255,13 +349,9 @@ impl FileStorageService for DatabaseFileStorageService {
                     .and_then(serde_json::Value::as_str)
                     .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
                 let ranges = ownership_proof_ranges_from_payload(&payload)?;
-                let blob = self
-                    .repository
-                    .get_blob(&self.storage_backend, &file.object_key)
-                    .await?
-                    .ok_or_else(|| {
-                        Error::InvalidInput("file object has not been uploaded".to_string())
-                    })?;
+                let blob = self.load_blob(&file.object_key).await?.ok_or_else(|| {
+                    Error::InvalidInput("file object has not been uploaded".to_string())
+                })?;
                 let chunks = ownership_proof_chunks_from_bytes(&blob.data, &ranges)?;
                 let expected =
                     file_ownership_proof_digest(nonce, &ranges, chunks.iter().map(Vec::as_slice));
@@ -376,15 +466,20 @@ impl FileStorageService for DatabaseFileStorageService {
                 ));
             }
         }
+        let (compression, stored_data) = compress_payload(self.compression, data).await?;
+        let empty_metadata = serde_json::Value::Object(Default::default());
         let blob = self
             .repository
-            .upsert_blob(
-                &self.storage_backend,
-                &object_key,
+            .upsert_blob(UpsertFileBlob {
+                storage_backend: &self.storage_backend,
+                object_key: &object_key,
                 mime_type,
-                data,
-                &serde_json::Value::Object(Default::default()),
-            )
+                size_bytes: expected_size,
+                checksum_sha256: &actual_checksum,
+                compression,
+                data: stored_data,
+                metadata: &empty_metadata,
+            })
             .await?;
         self.repository
             .upsert_object(
@@ -396,7 +491,7 @@ impl FileStorageService for DatabaseFileStorageService {
                 &serde_json::Value::Object(Default::default()),
             )
             .await?;
-        Ok(blob)
+        decompress_blob(blob).await
     }
 
     async fn get_object(&self, encoded_object_key: &str, read_token: &str) -> Result<FileBlob> {
@@ -407,8 +502,7 @@ impl FileStorageService for DatabaseFileStorageService {
             read_token,
             &self.upload_token_secret,
         )?;
-        self.repository
-            .get_blob(&self.storage_backend, &object_key)
+        self.load_blob(&object_key)
             .await?
             .ok_or_else(|| Error::NotFound("File object not found".to_string()))
     }

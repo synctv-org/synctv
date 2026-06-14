@@ -88,6 +88,10 @@ file_storage:
   playlist_covers_backend: "s3_public"
   upload_token_secret_file: "/run/secrets/file_upload_token_secret"
   backends:
+    database:
+      type: "database"
+      database:
+        compression: "zstd"
     s3_public:
       type: "s3"
       s3:

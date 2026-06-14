@@ -2465,7 +2465,7 @@ fn test_from_env_overrides_file_s3_storage() {
         ("SYNCTV_FILE_UPLOAD_TOKEN_SECRET", "upload-token-secret"),
         (
             "SYNCTV_FILE_STORAGE_BACKENDS",
-            r#"{"s3_public":{"type":"s3","s3":{"endpoint":"https://s3.example.com","bucket":"synctv-files","region":"auto","base_path":"/synctv/files","access_key_id":"access-key","secret_access_key":"secret-key","public_base_url":"https://cdn.example.com/files","upload_expires_seconds":600}}}"#,
+            r#"{"s3_public":{"type":"s3","s3":{"endpoint":"https://s3.example.com","bucket":"synctv-files","region":"auto","base_path":"/synctv/files","access_key_id":"access-key","secret_access_key":"secret-key","public_base_url":"https://cdn.example.com/files","upload_expires_seconds":600}},"database_files":{"type":"database","database":{"compression":"none"}}}"#,
         ),
     ]))
     .checked("file storage S3 env overrides should parse");
@@ -2497,6 +2497,13 @@ fn test_from_env_overrides_file_s3_storage() {
         Some("https://cdn.example.com/files")
     );
     assert_eq!(s3.upload_expires_seconds, 600);
+    let database = &config
+        .file_storage
+        .backends
+        .get("database_files")
+        .checked("database backend")
+        .database;
+    assert_eq!(database.compression, FileStorageDatabaseCompression::None);
 }
 
 #[test]
@@ -2527,6 +2534,23 @@ fn test_file_storage_backend_accepts_disabled_database_and_s3() {
         FileStorageConfig::default().unreferenced_object_retention_seconds,
         86_400
     );
+    assert_eq!(
+        FileStorageBackendConfig::default().database.compression,
+        FileStorageDatabaseCompression::Zstd
+    );
+    assert_eq!(
+        "none"
+            .parse::<FileStorageDatabaseCompression>()
+            .checked("operation should succeed"),
+        FileStorageDatabaseCompression::None
+    );
+    assert_eq!(
+        "lz4"
+            .parse::<FileStorageDatabaseCompression>()
+            .checked("operation should succeed"),
+        FileStorageDatabaseCompression::Lz4
+    );
+    assert!("gzip".parse::<FileStorageDatabaseCompression>().is_err());
 }
 
 #[test]
@@ -3150,6 +3174,7 @@ fn test_validate_file_s3_storage_requires_required_fields() {
         "broken_s3".to_string(),
         FileStorageBackendConfig {
             backend_type: FileStorageBackendType::S3,
+            database: FileStorageDatabaseConfig::default(),
             s3: FileStorageS3Config {
                 upload_expires_seconds: 0,
                 ..FileStorageS3Config::default()

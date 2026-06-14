@@ -18,40 +18,7 @@ CREATE TABLE IF NOT EXISTS content_reports (
     resolution_note TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (target_type BETWEEN 1 AND 4),
-    CHECK (length(reason_code) BETWEEN 1 AND 64),
-    CHECK (length(reason) <= 2000),
     CHECK (jsonb_typeof(metadata) = 'object'),
-    CHECK (status BETWEEN 1 AND 4),
-    CHECK (
-        (target_type = 1 AND target_room_id IS NOT NULL
-            AND target_user_id IS NULL
-            AND target_member_room_id IS NULL
-            AND target_member_user_id IS NULL
-            AND target_chat_message_id IS NULL
-            AND target_chat_message_created_at IS NULL)
-        OR
-        (target_type = 2 AND target_user_id IS NOT NULL
-            AND target_room_id IS NULL
-            AND target_member_room_id IS NULL
-            AND target_member_user_id IS NULL
-            AND target_chat_message_id IS NULL
-            AND target_chat_message_created_at IS NULL)
-        OR
-        (target_type = 3 AND target_member_room_id IS NOT NULL
-            AND target_member_user_id IS NOT NULL
-            AND target_room_id IS NULL
-            AND target_user_id IS NULL
-            AND target_chat_message_id IS NULL
-            AND target_chat_message_created_at IS NULL)
-        OR
-        (target_type = 4 AND target_chat_message_id IS NOT NULL
-            AND target_chat_message_created_at IS NOT NULL
-            AND target_room_id IS NULL
-            AND target_user_id IS NULL
-            AND target_member_room_id IS NULL
-            AND target_member_user_id IS NULL)
-    ),
     FOREIGN KEY (reporter_user_id) REFERENCES users(id) ON DELETE RESTRICT,
     FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL
 );

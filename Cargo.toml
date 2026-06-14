@@ -272,6 +272,8 @@ handlebars = "6.4.1"
 # Compression
 flate2 = "1.1.9"
 brotli = "8.0.3"
+lz4_flex = "0.11.5"
+zstd = "0.13.3"
 
 # Resilience
 governor = "0.10.4"

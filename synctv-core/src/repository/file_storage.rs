@@ -1,9 +1,13 @@
 use chrono::{DateTime, Utc};
-use sha2::Digest;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::{
-    models::{FileBlob, FileCleanupJob, FileObject, FileReferenceTarget, StoredFileReference},
+    models::{
+        FileBlob, FileBlobCompression, FileCleanupJob, FileObject, FileReferenceTarget,
+        StoredFileReference, FILE_CHECKSUM_SHA256_HEX_CHARS, FILE_CLEANUP_ORIGIN_MAX_CHARS,
+        FILE_OBJECT_KEY_MAX_CHARS, FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS,
+        FILE_STORAGE_BACKEND_MAX_CHARS,
+    },
     Error, Result,
 };
 
@@ -15,9 +19,96 @@ fn scalar_value<T>(value: Option<T>, query_description: &str) -> Result<T> {
     })
 }
 
+fn validate_required_text(value: &str, field: &str, max_chars: usize) -> Result<()> {
+    let len = value.chars().count();
+    if value.trim().is_empty() || len > max_chars {
+        return Err(Error::InvalidInput(format!(
+            "{field} must be between 1 and {max_chars} characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_file_object_fields(
+    storage_backend: &str,
+    object_key: &str,
+    size_bytes: i64,
+    checksum_sha256: &str,
+    metadata: &serde_json::Value,
+) -> Result<()> {
+    validate_required_text(
+        storage_backend,
+        "file storage_backend",
+        FILE_STORAGE_BACKEND_MAX_CHARS,
+    )?;
+    validate_required_text(object_key, "file object_key", FILE_OBJECT_KEY_MAX_CHARS)?;
+    if size_bytes <= 0 {
+        return Err(Error::InvalidInput(
+            "file size_bytes must be positive".to_string(),
+        ));
+    }
+    let valid_checksum = checksum_sha256.len() == FILE_CHECKSUM_SHA256_HEX_CHARS
+        && checksum_sha256
+            .chars()
+            .all(|value| value.is_ascii_hexdigit());
+    if !valid_checksum {
+        return Err(Error::InvalidInput(format!(
+            "file checksum_sha256 must be a {FILE_CHECKSUM_SHA256_HEX_CHARS}-character hex string"
+        )));
+    }
+    if !metadata.is_object() {
+        return Err(Error::InvalidInput(
+            "file metadata must be a JSON object".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_file_reference_fields(
+    storage_backend: &str,
+    object_key: &str,
+    reference_kind: &str,
+    reference_id: &str,
+    metadata: &serde_json::Value,
+) -> Result<()> {
+    validate_required_text(
+        storage_backend,
+        "file storage_backend",
+        FILE_STORAGE_BACKEND_MAX_CHARS,
+    )?;
+    validate_required_text(object_key, "file object_key", FILE_OBJECT_KEY_MAX_CHARS)?;
+    validate_required_text(
+        reference_kind,
+        "file reference_kind",
+        FILE_REFERENCE_KIND_MAX_CHARS,
+    )?;
+    validate_required_text(
+        reference_id,
+        "file reference_id",
+        FILE_REFERENCE_ID_MAX_CHARS,
+    )?;
+    if !metadata.is_object() {
+        return Err(Error::InvalidInput(
+            "file metadata must be a JSON object".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct FileStorageRepository {
     pool: PgPool,
+}
+
+pub struct UpsertFileBlob<'a> {
+    pub storage_backend: &'a str,
+    pub object_key: &'a str,
+    pub mime_type: &'a str,
+    pub size_bytes: i64,
+    pub checksum_sha256: &'a str,
+    pub compression: FileBlobCompression,
+    pub data: Vec<u8>,
+    pub metadata: &'a serde_json::Value,
 }
 
 impl FileStorageRepository {
@@ -26,46 +117,45 @@ impl FileStorageRepository {
         Self { pool }
     }
 
-    pub async fn upsert_blob(
-        &self,
-        storage_backend: &str,
-        object_key: &str,
-        mime_type: &str,
-        data: Vec<u8>,
-        metadata: &serde_json::Value,
-    ) -> Result<FileBlob> {
-        let checksum_sha256 = hex::encode(sha2::Sha256::digest(&data));
-        let size_bytes = i64::try_from(data.len())
-            .map_err(|_| Error::InvalidInput("file payload is too large".to_string()))?;
-        let row = sqlx::query_as!(
-            FileBlob,
-            r#"
+    pub async fn upsert_blob(&self, blob: UpsertFileBlob<'_>) -> Result<FileBlob> {
+        validate_file_object_fields(
+            blob.storage_backend,
+            blob.object_key,
+            blob.size_bytes,
+            blob.checksum_sha256,
+            blob.metadata,
+        )?;
+        let row = sqlx::query(
+            r"
             INSERT INTO file_blobs (
-                storage_backend, object_key, mime_type, size_bytes, checksum_sha256, data, metadata
+                storage_backend, object_key, mime_type, size_bytes, checksum_sha256,
+                compression, data, metadata
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (storage_backend, object_key)
             DO UPDATE SET
                 mime_type = EXCLUDED.mime_type,
                 size_bytes = EXCLUDED.size_bytes,
                 checksum_sha256 = EXCLUDED.checksum_sha256,
+                compression = EXCLUDED.compression,
                 data = EXCLUDED.data,
                 metadata = EXCLUDED.metadata,
                 created_at = CURRENT_TIMESTAMP
             RETURNING storage_backend, object_key, mime_type, size_bytes, checksum_sha256,
-                      data, metadata as "metadata: serde_json::Value", created_at
-            "#,
-            storage_backend,
-            object_key,
-            mime_type,
-            size_bytes,
-            checksum_sha256,
-            data,
-            metadata,
+                      compression, data, metadata, created_at
+            ",
         )
+        .bind(blob.storage_backend)
+        .bind(blob.object_key)
+        .bind(blob.mime_type)
+        .bind(blob.size_bytes)
+        .bind(blob.checksum_sha256)
+        .bind(i16::from(blob.compression))
+        .bind(blob.data)
+        .bind(blob.metadata)
         .fetch_one(&self.pool)
         .await?;
-        Ok(row)
+        file_blob_from_row(&row)
     }
 
     pub async fn upsert_object(
@@ -77,6 +167,13 @@ impl FileStorageRepository {
         checksum_sha256: &str,
         metadata: &serde_json::Value,
     ) -> Result<FileObject> {
+        validate_file_object_fields(
+            storage_backend,
+            object_key,
+            size_bytes,
+            checksum_sha256,
+            metadata,
+        )?;
         let row = sqlx::query_as!(
             FileObject,
             r#"
@@ -116,6 +213,13 @@ impl FileStorageRepository {
         checksum_sha256: &str,
         metadata: &serde_json::Value,
     ) -> Result<FileObject> {
+        validate_file_object_fields(
+            storage_backend,
+            object_key,
+            size_bytes,
+            checksum_sha256,
+            metadata,
+        )?;
         let row = sqlx::query_as!(
             FileObject,
             r#"
@@ -258,6 +362,13 @@ impl FileStorageRepository {
         expires_at: Option<DateTime<Utc>>,
         metadata: &serde_json::Value,
     ) -> Result<Option<i64>> {
+        validate_file_reference_fields(
+            storage_backend,
+            object_key,
+            reference_kind,
+            reference_id,
+            metadata,
+        )?;
         let object_registered = sqlx::query_scalar!(
             "SELECT EXISTS(SELECT 1 FROM file_objects WHERE storage_backend = $1 AND object_key = $2)",
             storage_backend,
@@ -402,20 +513,19 @@ impl FileStorageRepository {
         storage_backend: &str,
         object_key: &str,
     ) -> Result<Option<FileBlob>> {
-        let row = sqlx::query_as!(
-            FileBlob,
-            r#"
+        let row = sqlx::query(
+            r"
             SELECT storage_backend, object_key, mime_type, size_bytes, checksum_sha256,
-                   data, metadata as "metadata: serde_json::Value", created_at
+                   compression, data, metadata, created_at
             FROM file_blobs
             WHERE storage_backend = $1 AND object_key = $2
-            "#,
-            storage_backend,
-            object_key,
+            ",
         )
+        .bind(storage_backend)
+        .bind(object_key)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row)
+        row.as_ref().map(file_blob_from_row).transpose()
     }
 
     pub async fn delete_blob(&self, storage_backend: &str, object_key: &str) -> Result<bool> {
@@ -506,9 +616,22 @@ impl FileStorageRepository {
         if files.is_empty() {
             return Ok(());
         }
+        validate_required_text(origin, "file cleanup origin", FILE_CLEANUP_ORIGIN_MAX_CHARS)?;
+        if !metadata.is_object() {
+            return Err(Error::InvalidInput(
+                "file cleanup metadata must be a JSON object".to_string(),
+            ));
+        }
 
         let mut tx = self.pool.begin().await?;
         for file in files {
+            validate_file_reference_fields(
+                &file.storage_backend,
+                &file.object_key,
+                &file.reference_kind,
+                &file.reference_id,
+                metadata,
+            )?;
             sqlx::query!(
                 r#"
                 INSERT INTO file_cleanup_jobs (
@@ -641,5 +764,90 @@ impl FileStorageRepository {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+}
+
+fn file_blob_from_row(row: &sqlx::postgres::PgRow) -> Result<FileBlob> {
+    let compression = row.try_get::<i16, _>("compression")?;
+    let compression = FileBlobCompression::try_from(compression).map_err(|()| {
+        Error::Internal(format!("unknown file blob compression value {compression}"))
+    })?;
+    Ok(FileBlob {
+        storage_backend: row.try_get("storage_backend")?,
+        object_key: row.try_get("object_key")?,
+        mime_type: row.try_get("mime_type")?,
+        size_bytes: row.try_get("size_bytes")?,
+        checksum_sha256: row.try_get("checksum_sha256")?,
+        compression,
+        data: row.try_get("data")?,
+        metadata: row.try_get("metadata")?,
+        created_at: row.try_get("created_at")?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn object_metadata() -> serde_json::Value {
+        serde_json::json!({})
+    }
+
+    fn checksum() -> String {
+        "a".repeat(FILE_CHECKSUM_SHA256_HEX_CHARS)
+    }
+
+    #[test]
+    fn file_object_validation_rejects_business_field_policy_violations() {
+        let metadata = object_metadata();
+        assert!(matches!(
+            validate_file_object_fields("", "object", 1, &checksum(), &metadata),
+            Err(Error::InvalidInput(message)) if message.contains("storage_backend")
+        ));
+        assert!(matches!(
+            validate_file_object_fields(
+                "backend",
+                &"k".repeat(FILE_OBJECT_KEY_MAX_CHARS + 1),
+                1,
+                &checksum(),
+                &metadata,
+            ),
+            Err(Error::InvalidInput(message)) if message.contains("object_key")
+        ));
+        assert!(matches!(
+            validate_file_object_fields("backend", "object", 0, &checksum(), &metadata),
+            Err(Error::InvalidInput(message)) if message.contains("size_bytes")
+        ));
+        assert!(matches!(
+            validate_file_object_fields("backend", "object", 1, "bad", &metadata),
+            Err(Error::InvalidInput(message)) if message.contains("checksum_sha256")
+        ));
+        assert!(matches!(
+            validate_file_object_fields("backend", "object", 1, &checksum(), &serde_json::json!([])),
+            Err(Error::InvalidInput(message)) if message.contains("metadata")
+        ));
+    }
+
+    #[test]
+    fn file_reference_validation_rejects_business_field_policy_violations() {
+        let metadata = object_metadata();
+        assert!(matches!(
+            validate_file_reference_fields("backend", "object", "", "ref", &metadata),
+            Err(Error::InvalidInput(message)) if message.contains("reference_kind")
+        ));
+        assert!(matches!(
+            validate_file_reference_fields(
+                "backend",
+                "object",
+                "kind",
+                &"r".repeat(FILE_REFERENCE_ID_MAX_CHARS + 1),
+                &metadata,
+            ),
+            Err(Error::InvalidInput(message)) if message.contains("reference_id")
+        ));
+        assert!(matches!(
+            validate_required_text("", "file cleanup origin", FILE_CLEANUP_ORIGIN_MAX_CHARS),
+            Err(Error::InvalidInput(message)) if message.contains("cleanup origin")
+        ));
     }
 }

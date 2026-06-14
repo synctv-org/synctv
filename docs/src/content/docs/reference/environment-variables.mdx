@@ -272,7 +272,7 @@ SYNCTV_FILE_STORAGE_ROOM_COVERS_BACKEND=database
 SYNCTV_FILE_STORAGE_PLAYLIST_COVERS_BACKEND=database
 SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS=86400
 SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE=/run/secrets/file_upload_token_secret
-SYNCTV_FILE_STORAGE_BACKENDS='{"database":{"type":"database"}}'
+SYNCTV_FILE_STORAGE_BACKENDS='{"database":{"type":"database","database":{"compression":"zstd"}}}'
 ```
 
 示例：使用 S3-compatible 对象存储

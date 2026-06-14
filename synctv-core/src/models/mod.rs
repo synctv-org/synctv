@@ -139,7 +139,9 @@ pub use chat::{
     ChatPlaybackMessagesQuery, ChatReaction, ChatReactionSummary, ChatReactionUser,
     ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState, ChatReadStateWithUnread,
     CreateChatImageUploadSession, DeleteChatMessage, EditChatMessage, EventCursor, MarkChatRead,
-    SendChatMessage, SendChatRequest, SetChatReaction,
+    SendChatMessage, SendChatRequest, SetChatReaction, CHAT_CLIENT_MESSAGE_ID_MAX_CHARS,
+    CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS,
+    CHAT_IMAGE_ID_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS,
 };
 pub use content_report::{
     ContentReport, ContentReportAdminRow, ContentReportStatus, ContentReportTarget,
@@ -147,8 +149,11 @@ pub use content_report::{
 };
 pub use email_token::EmailTokenType;
 pub use file_storage::{
-    CreateFileUploadSession, FileBlob, FileCleanupJob, FileObject, FileOwnershipProofRange,
-    FileReferenceTarget, FileUploadPolicy, FileUploadSession, NewStoredFile, StoredFileReference,
+    CreateFileUploadSession, FileBlob, FileBlobCompression, FileCleanupJob, FileObject,
+    FileOwnershipProofRange, FileReferenceTarget, FileUploadPolicy, FileUploadSession,
+    NewStoredFile, StoredFileReference, FILE_CHECKSUM_SHA256_HEX_CHARS,
+    FILE_CLEANUP_ORIGIN_MAX_CHARS, FILE_ID_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS,
+    FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
 };
 pub use id::{
     generate_id, BanRecordId, ContentReportId, EmailRegistrationTokenId, MediaId, PlaylistId,
@@ -179,8 +184,9 @@ pub use permission::{
     RoomPermission, RoomPermissionSet,
 };
 pub use playback::{
-    hash_playback_target, PlaybackDurationSource, PlaybackDurationStatus, PlaybackSourceIdentity,
-    ClaimedPlaybackDurationProbe, PlaybackSourceMetadata, RoomPlaybackProgress, RoomPlaybackState,
+    hash_playback_target, ClaimedPlaybackDurationProbe, PlaybackDurationSource,
+    PlaybackDurationStatus, PlaybackSourceIdentity, PlaybackSourceMetadata, RoomPlaybackProgress,
+    RoomPlaybackState,
 };
 pub use playlist::{
     CreatePlaylistRequest, Playlist, PlaylistListQuery, PlaylistListSortBy, PlaylistWithCount,

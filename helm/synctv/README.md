@@ -224,6 +224,7 @@ The application currently uses split database/Redis configuration rather than re
 | `config.bootstrap` | Bootstrap root-user settings |
 | `config.email` | SMTP base settings; credentials can come from a secret |
 | `config.livestream` | RTMP/HLS/pull timeout and cache settings |
+| `config.fileStorage` | Uploaded file storage backends and product-level backend routing |
 | `config.cache` | Business L1/L2 cache settings |
 | `config.proxySliceCache` | Startup-only media proxy Range-slice cache settings |
 | `config.mediaProviders` | Local built-in provider adapter request and connect timeouts |
@@ -245,6 +246,7 @@ The chart creates separate Services for application traffic:
 Important transport defaults:
 
 - `config.server.grpcCompressionEnabled=true` enables gzip negotiation for public gRPC traffic and cluster gRPC calls.
+- `config.fileStorage.backends.<name>.database.compression=zstd` controls PostgreSQL file blob compression for database file-storage backends; allowed values are `none`, `lz4`, and `zstd`.
 - To expose the built-in STUN server, set `stunService.enabled=true`, use `stunService.type=LoadBalancer` or `NodePort`, and set `config.webrtc.stunExternalAddr` to the public client-reachable address.
 - `config.redis.responseTimeoutSeconds=5` bounds how long a Redis command can wait for a response.
 - `config.redis.pipelineBufferSize=512` controls the Redis connection manager pipeline buffer for bursty short-command workloads.

@@ -18,6 +18,7 @@ metadata:
 {{- $webauthn := .Values.config.webauthn | default dict }}
 {{- $cache := .Values.config.cache | default dict }}
 {{- $proxySliceCache := .Values.config.proxySliceCache | default dict }}
+{{- $fileStorage := .Values.config.fileStorage | default dict }}
 {{- $security := .Values.config.security | default dict }}
 {{- $ssrf := $security.ssrf | default dict }}
 data:
@@ -196,6 +197,48 @@ data:
       {{- end }}
       flv_max_connection_duration_seconds: {{ .Values.config.livestream.flvMaxConnectionDurationSeconds | default 86400 }}
       flv_write_timeout_seconds: {{ .Values.config.livestream.flvWriteTimeoutSeconds | default 30 }}
+
+    file_storage:
+      default_backend: {{ $fileStorage.defaultBackend | default "disabled" | quote }}
+      chat_images_backend: {{ $fileStorage.chatImagesBackend | default "" | quote }}
+      user_avatars_backend: {{ $fileStorage.userAvatarsBackend | default "" | quote }}
+      video_covers_backend: {{ $fileStorage.videoCoversBackend | default "" | quote }}
+      room_covers_backend: {{ $fileStorage.roomCoversBackend | default "" | quote }}
+      playlist_covers_backend: {{ $fileStorage.playlistCoversBackend | default "" | quote }}
+      upload_token_secret: ""
+      unreferenced_object_retention_seconds: {{ $fileStorage.unreferencedObjectRetentionSeconds | default 86400 }}
+      {{- $fileStorageBackends := $fileStorage.backends | default dict }}
+      {{- if $fileStorageBackends }}
+      backends:
+        {{- range $name, $backend := $fileStorageBackends }}
+        {{- $backendType := index $backend "type" | default "disabled" }}
+        {{ $name }}:
+          type: {{ $backendType | quote }}
+          {{- if eq $backendType "database" }}
+          {{- $database := index $backend "database" | default dict }}
+          database:
+            compression: {{ $database.compression | default "zstd" | quote }}
+          {{- end }}
+          {{- if eq $backendType "s3" }}
+          {{- $s3 := index $backend "s3" | default dict }}
+          s3:
+            endpoint: {{ $s3.endpoint | default "" | quote }}
+            access_key_id: {{ $s3.accessKeyId | default "" | quote }}
+            secret_access_key: {{ $s3.secretAccessKey | default "" | quote }}
+            bucket: {{ $s3.bucket | default "" | quote }}
+            region: {{ $s3.region | default "auto" | quote }}
+            base_path: {{ $s3.basePath | default "files/" | quote }}
+            {{- if $s3.publicBaseUrl }}
+            public_base_url: {{ $s3.publicBaseUrl | quote }}
+            {{- else }}
+            public_base_url: null
+            {{- end }}
+            upload_expires_seconds: {{ $s3.uploadExpiresSeconds | default 900 }}
+          {{- end }}
+        {{- end }}
+      {{- else }}
+      backends: {}
+      {{- end }}
 
     cluster:
       enabled: {{ .Values.config.cluster.enabled }}

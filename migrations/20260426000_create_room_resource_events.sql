@@ -16,12 +16,6 @@ CREATE TABLE IF NOT EXISTS room_resource_events (
     summary JSONB NOT NULL DEFAULT '{}'::jsonb,
     occurred_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CHECK (length(event_id) BETWEEN 1 AND 128),
-    CHECK (length(aggregate_type) BETWEEN 1 AND 64),
-    CHECK (length(aggregate_id) BETWEEN 1 AND 128),
-    CHECK (length(resource_type) BETWEEN 1 AND 64),
-    CHECK (length(resource_id) BETWEEN 1 AND 128),
-    CHECK (length(event_type) BETWEEN 1 AND 128),
     CHECK (event_version >= 1),
     CHECK (jsonb_typeof(summary) = 'object'),
     CHECK (payload IS NULL OR jsonb_typeof(payload) = 'object')

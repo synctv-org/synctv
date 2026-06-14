@@ -5,13 +5,65 @@ use std::collections::BTreeMap;
 
 use super::UserId;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub const FILE_ID_MAX_CHARS: usize = 128;
+pub const FILE_STORAGE_BACKEND_MAX_CHARS: usize = 64;
+pub const FILE_OBJECT_KEY_MAX_CHARS: usize = 2048;
+pub const FILE_REFERENCE_KIND_MAX_CHARS: usize = 64;
+pub const FILE_REFERENCE_ID_MAX_CHARS: usize = 256;
+pub const FILE_CLEANUP_ORIGIN_MAX_CHARS: usize = 64;
+pub const FILE_CHECKSUM_SHA256_HEX_CHARS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i16)]
+#[serde(rename_all = "snake_case")]
+pub enum FileBlobCompression {
+    None = 0,
+    Zstd = 1,
+    Lz4 = 2,
+}
+
+impl FileBlobCompression {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Zstd => "zstd",
+            Self::Lz4 => "lz4",
+        }
+    }
+}
+
+impl From<FileBlobCompression> for i16 {
+    fn from(value: FileBlobCompression) -> Self {
+        match value {
+            FileBlobCompression::None => 0,
+            FileBlobCompression::Zstd => 1,
+            FileBlobCompression::Lz4 => 2,
+        }
+    }
+}
+
+impl TryFrom<i16> for FileBlobCompression {
+    type Error = ();
+
+    fn try_from(value: i16) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::None),
+            1 => Ok(Self::Zstd),
+            2 => Ok(Self::Lz4),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileBlob {
     pub storage_backend: String,
     pub object_key: String,
     pub mime_type: String,
     pub size_bytes: i64,
     pub checksum_sha256: String,
+    pub compression: FileBlobCompression,
     pub data: Vec<u8>,
     pub metadata: JsonValue,
     pub created_at: DateTime<Utc>,

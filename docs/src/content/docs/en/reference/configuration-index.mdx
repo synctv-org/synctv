@@ -233,6 +233,7 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `file_storage.upload_token_secret` | secret string | `""` | Signing secret for file upload/read tokens; empty value derives from `jwt.secret` at startup |
 | `file_storage.unreferenced_object_retention_seconds` | seconds | `86400` | Grace period before uploaded objects with no active product reference are cleaned; `0` disables orphan cleanup |
 | `file_storage.backends.<name>.type` | `disabled`, `database`, or `s3` | `disabled` | Registered backend implementation type |
+| `file_storage.backends.<name>.database.compression` | `none`, `lz4`, or `zstd` | `zstd` | Compression algorithm used by `type: "database"` backends for bytes stored in PostgreSQL `file_blobs` |
 | `file_storage.backends.<name>.s3.*` | S3 config | default S3 fields | S3-compatible settings for backends with `type: "s3"` |
 
 Clients provide `checksum_sha256` in upload-session requests. The selected backend stores content-addressed objects by `(storage_backend, checksum_sha256, size_bytes)`, so duplicate files return `upload_required=false` with an ownership proof challenge. Reads and cleanup use each object's stored `storage_backend`, allowing product data to mix backends across configuration changes.
@@ -261,6 +262,8 @@ file_storage:
   backends:
     database:
       type: "database"
+      database:
+        compression: "zstd"
 ```
 
 Use S3-compatible object storage:

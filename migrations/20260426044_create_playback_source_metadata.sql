@@ -21,12 +21,6 @@ CREATE TABLE IF NOT EXISTS playback_source_metadata (
     ),
     CONSTRAINT playback_source_metadata_duration_non_negative CHECK (
         duration_seconds IS NULL OR duration_seconds >= 0
-    ),
-    CONSTRAINT playback_source_metadata_duration_source_valid CHECK (
-        duration_source IS NULL OR duration_source IN (1, 2)
-    ),
-    CONSTRAINT playback_source_metadata_duration_status_valid CHECK (
-        duration_status IN (0, 1, 2, 3, 4)
     )
 );
 

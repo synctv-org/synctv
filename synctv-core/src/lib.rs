@@ -109,8 +109,9 @@ pub(crate) mod test_helpers;
 pub use cache::KeyBuilder;
 pub use config::{
     ChatConfig, Config, FileStorageBackendConfig, FileStorageBackendType, FileStorageConfig,
-    FileStorageS3Config, PublicIdsConfig, PublicIdsSqidsConfig, RateLimitScopeRule,
-    RateLimitScopeStrategy, RequestRateLimitConfig,
+    FileStorageDatabaseCompression, FileStorageDatabaseConfig, FileStorageS3Config,
+    PublicIdsConfig, PublicIdsSqidsConfig, RateLimitScopeRule, RateLimitScopeStrategy,
+    RequestRateLimitConfig,
 };
 pub use error::{Error, InternalExt, Result};
 pub use public_id::{PublicIdCodec, PublicIdKind, PublicIdType};

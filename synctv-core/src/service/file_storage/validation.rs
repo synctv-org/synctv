@@ -1,7 +1,10 @@
 use std::collections::HashSet;
 
 use crate::{
-    models::{CreateFileUploadSession, FileUploadPolicy, NewStoredFile},
+    models::{
+        CreateFileUploadSession, FileUploadPolicy, NewStoredFile, FILE_ID_MAX_CHARS,
+        FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+    },
     service::file_storage::{S3FileStorageConfig, FILE_OWNERSHIP_PROOF_KEY, FILE_UPLOAD_TOKEN_KEY},
     Error, Result,
 };
@@ -28,15 +31,19 @@ pub(super) fn validate_stored_files(files: &[NewStoredFile]) -> Result<()> {
     let mut file_ids = HashSet::with_capacity(files.len());
     let mut object_keys = HashSet::with_capacity(files.len());
     for file in files {
-        if file.id.trim().is_empty() || file.id.chars().count() > 128 {
-            return Err(Error::InvalidInput(
-                "file id must be between 1 and 128 characters".to_string(),
-            ));
+        if file.id.trim().is_empty() || file.id.chars().count() > FILE_ID_MAX_CHARS {
+            return Err(Error::InvalidInput(format!(
+                "file id must be between 1 and {FILE_ID_MAX_CHARS} characters"
+            )));
         }
-        if file.storage_backend.trim().is_empty() || file.object_key.trim().is_empty() {
-            return Err(Error::InvalidInput(
-                "file storage_backend and object_key are required".to_string(),
-            ));
+        if file.storage_backend.trim().is_empty()
+            || file.storage_backend.chars().count() > FILE_STORAGE_BACKEND_MAX_CHARS
+            || file.object_key.trim().is_empty()
+            || file.object_key.chars().count() > FILE_OBJECT_KEY_MAX_CHARS
+        {
+            return Err(Error::InvalidInput(format!(
+                "file storage_backend must be 1-{FILE_STORAGE_BACKEND_MAX_CHARS} characters and object_key must be 1-{FILE_OBJECT_KEY_MAX_CHARS} characters"
+            )));
         }
         if !file_ids.insert(file.id.as_str()) {
             return Err(Error::InvalidInput(

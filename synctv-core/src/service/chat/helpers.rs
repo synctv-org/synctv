@@ -6,7 +6,9 @@ use crate::{
     models::{
         ChatMessage, ChatMessageEventLog, ChatPlaybackMessagesQuery, ChatReadState,
         CreateChatImageUploadSession, CreateFileUploadSession, DeleteChatMessage, EditChatMessage,
-        NewStoredFile, RoomId, SendChatMessage, UserId,
+        NewStoredFile, RoomId, SendChatMessage, UserId, CHAT_CLIENT_MESSAGE_ID_MAX_CHARS,
+        CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_IMAGE_ID_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS,
+        FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
     },
     Error, Result,
 };
@@ -91,10 +93,10 @@ pub(super) fn read_state_covers_message(
 pub(super) fn validate_client_message_id(client_message_id: Option<&str>) -> Result<()> {
     if let Some(id) = client_message_id {
         let len = id.chars().count();
-        if !(1..=128).contains(&len) {
-            return Err(Error::InvalidInput(
-                "client_message_id must be between 1 and 128 characters".to_string(),
-            ));
+        if !(1..=CHAT_CLIENT_MESSAGE_ID_MAX_CHARS).contains(&len) {
+            return Err(Error::InvalidInput(format!(
+                "client_message_id must be between 1 and {CHAT_CLIENT_MESSAGE_ID_MAX_CHARS} characters"
+            )));
         }
     }
     Ok(())
@@ -103,10 +105,10 @@ pub(super) fn validate_client_message_id(client_message_id: Option<&str>) -> Res
 pub(super) fn validate_client_operation_id(client_operation_id: Option<&str>) -> Result<()> {
     if let Some(id) = client_operation_id {
         let len = id.chars().count();
-        if !(1..=128).contains(&len) {
-            return Err(Error::InvalidInput(
-                "client_operation_id must be between 1 and 128 characters".to_string(),
-            ));
+        if !(1..=CHAT_CLIENT_OPERATION_ID_MAX_CHARS).contains(&len) {
+            return Err(Error::InvalidInput(format!(
+                "client_operation_id must be between 1 and {CHAT_CLIENT_OPERATION_ID_MAX_CHARS} characters"
+            )));
         }
     }
     Ok(())
@@ -114,10 +116,10 @@ pub(super) fn validate_client_operation_id(client_operation_id: Option<&str>) ->
 
 pub(super) fn validate_chat_reaction_key(key: &str) -> Result<()> {
     let len = key.chars().count();
-    if !(1..=64).contains(&len) {
-        return Err(Error::InvalidInput(
-            "reaction_key must be between 1 and 64 characters".to_string(),
-        ));
+    if !(1..=CHAT_REACTION_KEY_MAX_CHARS).contains(&len) {
+        return Err(Error::InvalidInput(format!(
+            "reaction_key must be between 1 and {CHAT_REACTION_KEY_MAX_CHARS} characters"
+        )));
     }
     if key.trim() != key || key.chars().any(char::is_control) {
         return Err(Error::InvalidInput(
@@ -241,15 +243,19 @@ pub(super) fn validate_chat_images(images: &[NewStoredFile]) -> Result<()> {
     let mut image_ids = std::collections::HashSet::with_capacity(images.len());
     let mut object_keys = std::collections::HashSet::with_capacity(images.len());
     for image in images {
-        if image.id.trim().is_empty() || image.id.chars().count() > 128 {
-            return Err(Error::InvalidInput(
-                "image id must be between 1 and 128 characters".to_string(),
-            ));
+        if image.id.trim().is_empty() || image.id.chars().count() > CHAT_IMAGE_ID_MAX_CHARS {
+            return Err(Error::InvalidInput(format!(
+                "image id must be between 1 and {CHAT_IMAGE_ID_MAX_CHARS} characters"
+            )));
         }
-        if image.storage_backend.trim().is_empty() || image.object_key.trim().is_empty() {
-            return Err(Error::InvalidInput(
-                "file storage_backend and object_key are required".to_string(),
-            ));
+        if image.storage_backend.trim().is_empty()
+            || image.storage_backend.chars().count() > FILE_STORAGE_BACKEND_MAX_CHARS
+            || image.object_key.trim().is_empty()
+            || image.object_key.chars().count() > FILE_OBJECT_KEY_MAX_CHARS
+        {
+            return Err(Error::InvalidInput(format!(
+                "file storage_backend must be 1-{FILE_STORAGE_BACKEND_MAX_CHARS} characters and object_key must be 1-{FILE_OBJECT_KEY_MAX_CHARS} characters"
+            )));
         }
         if !image_ids.insert(image.id.as_str()) {
             return Err(Error::InvalidInput(

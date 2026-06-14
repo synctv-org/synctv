@@ -14,12 +14,13 @@ use synctv_core::{
     models::{
         room_settings::ChatEnabled, AuditAction, AuditTargetType, ChatEventKind, ChatMessage,
         ChatMessageStatus, ChatMessageType, DeleteChatMessage, EditChatMessage,
-        FileReferenceTarget, NewStoredFile, RoomAdminPermissionBits, RoomMemberPermissionBits,
-        RoomSettings, SendChatMessage, User, UserId, UserRole, UserStatus,
+        FileBlobCompression, FileReferenceTarget, NewStoredFile, RoomAdminPermissionBits,
+        RoomMemberPermissionBits, RoomSettings, SendChatMessage, User, UserId, UserRole,
+        UserStatus,
     },
     repository::{
         ChatRepository, FileStorageRepository, RoomMemberRepository, RoomRepository,
-        RoomSettingsRepository, UserRepository,
+        RoomSettingsRepository, UpsertFileBlob, UserRepository,
     },
     service::{
         auth::{BruteForceProtection, JwtService},
@@ -1949,15 +1950,20 @@ async fn test_reused_chat_image_object_keeps_storage_until_last_reference_is_rel
     let file_repo = FileStorageRepository::new(pool.clone());
     let object_key = "database/chat/images/shared.webp";
     let payload = b"shared-image";
+    let checksum_sha256 = hex::encode(sha2::Sha256::digest(payload));
+    let metadata = serde_json::Value::Object(Default::default());
 
     file_repo
-        .upsert_blob(
-            "database",
+        .upsert_blob(UpsertFileBlob {
+            storage_backend: "database",
             object_key,
-            "image/webp",
-            payload.to_vec(),
-            &serde_json::Value::Object(Default::default()),
-        )
+            mime_type: "image/webp",
+            size_bytes: i64::try_from(payload.len()).checked("payload length should fit"),
+            checksum_sha256: &checksum_sha256,
+            compression: FileBlobCompression::None,
+            data: payload.to_vec(),
+            metadata: &metadata,
+        })
         .await
         .checked("test operation should succeed");
     file_repo
@@ -1966,8 +1972,8 @@ async fn test_reused_chat_image_object_keeps_storage_until_last_reference_is_rel
             object_key,
             "image/webp",
             i64::try_from(payload.len()).checked("test operation should succeed"),
-            &hex::encode(sha2::Sha256::digest(payload)),
-            &serde_json::Value::Object(Default::default()),
+            &checksum_sha256,
+            &metadata,
         )
         .await
         .checked("test operation should succeed");

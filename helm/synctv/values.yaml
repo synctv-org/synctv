@@ -467,6 +467,37 @@ config:
     flvMaxConnectionDurationSeconds: 86400
     flvWriteTimeoutSeconds: 30
 
+  ## FileStorageConfig
+  ## The built-in "disabled" backend always exists. Database backends store
+  ## object bytes in PostgreSQL file_blobs; compression accepts none, lz4, zstd.
+  ## S3 backend accessKeyId / secretAccessKey are rendered into the generated
+  ## config file, so prefer existingConfigMap for externally managed S3 secrets.
+  fileStorage:
+    defaultBackend: "disabled"
+    chatImagesBackend: ""
+    userAvatarsBackend: ""
+    videoCoversBackend: ""
+    roomCoversBackend: ""
+    playlistCoversBackend: ""
+    unreferencedObjectRetentionSeconds: 86400
+    backends: {}
+    # backends:
+    #   database:
+    #     type: "database"
+    #     database:
+    #       compression: "zstd"
+    #   s3_public:
+    #     type: "s3"
+    #     s3:
+    #       endpoint: "https://s3.example.com"
+    #       accessKeyId: "access-key"
+    #       secretAccessKey: "secret-key"
+    #       bucket: "synctv-files"
+    #       region: "auto"
+    #       basePath: "files/"
+    #       publicBaseUrl: "https://cdn.example.com/files"
+    #       uploadExpiresSeconds: 900
+
   ## ClusterChannelConfig (matches code defaults)
   cluster:
     ## Enable only for multi-replica deployments. Local HLS backends work through

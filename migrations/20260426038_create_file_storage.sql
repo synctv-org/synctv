@@ -9,8 +9,6 @@ CREATE TABLE IF NOT EXISTS file_objects (
     validated_at TIMESTAMPTZ,
     PRIMARY KEY (storage_backend, object_key),
     UNIQUE (storage_backend, checksum_sha256, size_bytes),
-    CHECK (length(storage_backend) BETWEEN 1 AND 64),
-    CHECK (length(object_key) BETWEEN 1 AND 2048),
     CHECK (size_bytes > 0),
     CHECK (length(checksum_sha256) = 64),
     CHECK (jsonb_typeof(metadata) = 'object')
@@ -33,10 +31,6 @@ CREATE TABLE IF NOT EXISTS file_references (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (reference_kind, reference_id, storage_backend, object_key),
-    CHECK (length(storage_backend) BETWEEN 1 AND 64),
-    CHECK (length(object_key) BETWEEN 1 AND 2048),
-    CHECK (length(reference_kind) BETWEEN 1 AND 64),
-    CHECK (length(reference_id) BETWEEN 1 AND 256),
     CHECK (jsonb_typeof(metadata) = 'object'),
     FOREIGN KEY (storage_backend, object_key)
         REFERENCES file_objects(storage_backend, object_key) ON DELETE CASCADE
@@ -55,14 +49,12 @@ CREATE TABLE IF NOT EXISTS file_blobs (
     mime_type TEXT NOT NULL,
     size_bytes BIGINT NOT NULL,
     checksum_sha256 TEXT NOT NULL,
+    compression SMALLINT NOT NULL DEFAULT 0,
     data BYTEA NOT NULL,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (storage_backend, object_key),
-    CHECK (length(storage_backend) BETWEEN 1 AND 64),
-    CHECK (length(object_key) BETWEEN 1 AND 2048),
     CHECK (size_bytes > 0),
-    CHECK (octet_length(data) = size_bytes),
     CHECK (length(checksum_sha256) = 64),
     CHECK (jsonb_typeof(metadata) = 'object')
 );
@@ -87,11 +79,6 @@ CREATE TABLE IF NOT EXISTS file_cleanup_jobs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (reference_kind, reference_id, storage_backend, object_key),
-    CHECK (length(origin) BETWEEN 1 AND 64),
-    CHECK (length(storage_backend) BETWEEN 1 AND 64),
-    CHECK (length(object_key) BETWEEN 1 AND 2048),
-    CHECK (length(reference_kind) BETWEEN 1 AND 64),
-    CHECK (length(reference_id) BETWEEN 1 AND 256),
     CHECK (attempt_count >= 0),
     CHECK (jsonb_typeof(metadata) = 'object')
 );

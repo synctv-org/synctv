@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     deleted_by BIGINT,
     delete_reason TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (client_message_id IS NULL OR length(client_message_id) BETWEEN 1 AND 128),
     CHECK (version >= 1),
     CHECK (jsonb_typeof(metadata) = 'object'),
     CHECK (
@@ -89,8 +88,6 @@ CREATE TABLE IF NOT EXISTS chat_message_events (
     summary JSONB NOT NULL DEFAULT '{}'::jsonb,
     occurred_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (length(event_id) BETWEEN 1 AND 128),
-    CHECK (length(event_type) BETWEEN 1 AND 128),
     CHECK (event_version >= 1),
     CHECK (message_version >= 1),
     CHECK (jsonb_typeof(payload) = 'object'),
@@ -119,7 +116,6 @@ CREATE TABLE IF NOT EXISTS chat_message_idempotency (
     event_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (room_id, user_id, client_message_id),
-    CHECK (length(client_message_id) BETWEEN 1 AND 128),
     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (room_id, message_id, message_created_at)
@@ -148,9 +144,6 @@ CREATE TABLE IF NOT EXISTS chat_message_images (
     height INTEGER,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (length(id) BETWEEN 1 AND 128),
-    CHECK (length(storage_backend) BETWEEN 1 AND 64),
-    CHECK (length(object_key) BETWEEN 1 AND 2048),
     CHECK (size_bytes IS NULL OR size_bytes > 0),
     CHECK (width IS NULL OR width > 0),
     CHECK (height IS NULL OR height > 0),
@@ -176,7 +169,6 @@ CREATE TABLE IF NOT EXISTS chat_message_operation_idempotency (
     event_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (room_id, user_id, client_operation_id),
-    CHECK (length(client_operation_id) BETWEEN 1 AND 128),
     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (room_id, message_id, message_created_at)

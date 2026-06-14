@@ -5,8 +5,15 @@ use sqlx::PgPool;
 
 use crate::{
     models::{EventCursor, RoomId},
-    Result,
+    Error, Result,
 };
+
+const ROOM_RESOURCE_EVENT_ID_MAX_CHARS: usize = 128;
+const ROOM_RESOURCE_EVENT_AGGREGATE_TYPE_MAX_CHARS: usize = 64;
+const ROOM_RESOURCE_EVENT_AGGREGATE_ID_MAX_CHARS: usize = 128;
+const ROOM_RESOURCE_EVENT_RESOURCE_TYPE_MAX_CHARS: usize = 64;
+const ROOM_RESOURCE_EVENT_RESOURCE_ID_MAX_CHARS: usize = 128;
+const ROOM_RESOURCE_EVENT_TYPE_MAX_CHARS: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i16)]
@@ -253,6 +260,84 @@ impl RoomResourceEventRepository {
     }
 }
 
+fn validate_required_text(value: &str, field: &str, max_chars: usize) -> Result<()> {
+    let len = value.chars().count();
+    if value.trim().is_empty() || len > max_chars {
+        return Err(Error::InvalidInput(format!(
+            "{field} must be between 1 and {max_chars} characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_new_room_resource_event(event: &NewRoomResourceEvent) -> Result<()> {
+    validate_required_text(
+        &event.event_id,
+        "room resource event_id",
+        ROOM_RESOURCE_EVENT_ID_MAX_CHARS,
+    )?;
+    validate_required_text(
+        &event.aggregate_type,
+        "room resource aggregate_type",
+        ROOM_RESOURCE_EVENT_AGGREGATE_TYPE_MAX_CHARS,
+    )?;
+    validate_required_text(
+        &event.aggregate_id,
+        "room resource aggregate_id",
+        ROOM_RESOURCE_EVENT_AGGREGATE_ID_MAX_CHARS,
+    )?;
+    validate_required_text(
+        &event.resource_type,
+        "room resource resource_type",
+        ROOM_RESOURCE_EVENT_RESOURCE_TYPE_MAX_CHARS,
+    )?;
+    validate_required_text(
+        &event.resource_id,
+        "room resource resource_id",
+        ROOM_RESOURCE_EVENT_RESOURCE_ID_MAX_CHARS,
+    )?;
+    validate_required_text(
+        &event.event_type,
+        "room resource event_type",
+        ROOM_RESOURCE_EVENT_TYPE_MAX_CHARS,
+    )?;
+    if event.event_version < 1 {
+        return Err(Error::InvalidInput(
+            "room resource event_version must be positive".to_string(),
+        ));
+    }
+    if !event.summary.is_object() {
+        return Err(Error::InvalidInput(
+            "room resource summary must be a JSON object".to_string(),
+        ));
+    }
+    if event
+        .payload
+        .as_ref()
+        .is_some_and(|payload| !payload.is_object())
+    {
+        return Err(Error::InvalidInput(
+            "room resource payload must be a JSON object".to_string(),
+        ));
+    }
+    match event.scope_type {
+        RoomResourceEventScope::Room if event.room_id.is_none() => {
+            return Err(Error::InvalidInput(
+                "room resource room-scoped event requires room_id".to_string(),
+            ));
+        }
+        RoomResourceEventScope::User if event.user_id.is_none() => {
+            return Err(Error::InvalidInput(
+                "room resource user-scoped event requires user_id".to_string(),
+            ));
+        }
+        RoomResourceEventScope::Global
+        | RoomResourceEventScope::Room
+        | RoomResourceEventScope::User => {}
+    }
+    Ok(())
+}
+
 pub async fn insert_room_resource_event_with_executor<'e, E>(
     event: &NewRoomResourceEvent,
     executor: E,
@@ -260,6 +345,7 @@ pub async fn insert_room_resource_event_with_executor<'e, E>(
 where
     E: sqlx::PgExecutor<'e>,
 {
+    validate_new_room_resource_event(event)?;
     sqlx::query!(
         r"
         INSERT INTO room_resource_events (
@@ -289,4 +375,77 @@ where
     .execute(executor)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_event() -> NewRoomResourceEvent {
+        NewRoomResourceEvent {
+            event_id: "event-1".to_string(),
+            scope_type: RoomResourceEventScope::Room,
+            room_id: Some(1),
+            user_id: None,
+            aggregate_type: "room".to_string(),
+            aggregate_id: "1".to_string(),
+            resource_type: "room_member_events".to_string(),
+            resource_id: "1".to_string(),
+            event_type: "user_joined".to_string(),
+            event_version: 1,
+            aggregate_version: Some(1),
+            actor_user_id: Some(1),
+            payload: Some(serde_json::json!({})),
+            summary: serde_json::json!({}),
+            occurred_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn validates_room_resource_event_business_fields_in_rust() {
+        let mut event = valid_event();
+        event.event_id = String::new();
+        assert!(matches!(
+            validate_new_room_resource_event(&event),
+            Err(Error::InvalidInput(message)) if message.contains("event_id")
+        ));
+
+        let mut event = valid_event();
+        event.event_type = "x".repeat(ROOM_RESOURCE_EVENT_TYPE_MAX_CHARS + 1);
+        assert!(matches!(
+            validate_new_room_resource_event(&event),
+            Err(Error::InvalidInput(message)) if message.contains("event_type")
+        ));
+
+        let mut event = valid_event();
+        event.event_version = 0;
+        assert!(matches!(
+            validate_new_room_resource_event(&event),
+            Err(Error::InvalidInput(message)) if message.contains("event_version")
+        ));
+    }
+
+    #[test]
+    fn validates_room_resource_event_shape_in_rust() {
+        let mut event = valid_event();
+        event.summary = serde_json::json!([]);
+        assert!(matches!(
+            validate_new_room_resource_event(&event),
+            Err(Error::InvalidInput(message)) if message.contains("summary")
+        ));
+
+        let mut event = valid_event();
+        event.payload = Some(serde_json::json!("payload"));
+        assert!(matches!(
+            validate_new_room_resource_event(&event),
+            Err(Error::InvalidInput(message)) if message.contains("payload")
+        ));
+
+        let mut event = valid_event();
+        event.room_id = None;
+        assert!(matches!(
+            validate_new_room_resource_event(&event),
+            Err(Error::InvalidInput(message)) if message.contains("room_id")
+        ));
+    }
 }

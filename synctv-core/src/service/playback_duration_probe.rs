@@ -162,8 +162,9 @@ impl PlaybackDurationProbeService {
             return Ok(());
         };
 
-        if let Some(duration_seconds) =
-            playback.duration_seconds.filter(|duration| duration.is_finite() && *duration > 0.0)
+        if let Some(duration_seconds) = playback
+            .duration_seconds
+            .filter(|duration| duration.is_finite() && *duration > 0.0)
         {
             self.playback_service
                 .source_metadata_repository()
@@ -379,13 +380,15 @@ fn validate_probe_url(url: &str, guard: &synctv_common::ssrf::SsrfGuard) -> Resu
     let port = parsed.port_or_known_default().ok_or_else(|| {
         Error::InvalidInput("duration probe URL is missing effective port".to_string())
     })?;
-    let addrs = (host, port)
-        .to_socket_addrs()
-        .map_err(|error| Error::ServiceUnavailable(format!("duration probe DNS failed: {error}")))?;
+    let addrs = (host, port).to_socket_addrs().map_err(|error| {
+        Error::ServiceUnavailable(format!("duration probe DNS failed: {error}"))
+    })?;
     let mut resolved = false;
     for addr in addrs {
         resolved = true;
-        if guard.is_ip_blocked_for_host(host, &addr.ip()) || guard.is_port_blocked_for_ip(port, &addr.ip()) {
+        if guard.is_ip_blocked_for_host(host, &addr.ip())
+            || guard.is_port_blocked_for_ip(port, &addr.ip())
+        {
             return Err(Error::Authorization(
                 "duration probe URL address is blocked".to_string(),
             ));
@@ -408,7 +411,9 @@ async fn fetch_text(
     let response = apply_provider_headers(client.get(url), headers)
         .send()
         .await
-        .map_err(|error| Error::ServiceUnavailable(format!("duration probe GET failed: {error}")))?;
+        .map_err(|error| {
+            Error::ServiceUnavailable(format!("duration probe GET failed: {error}"))
+        })?;
     if !response.status().is_success() {
         return Err(Error::ServiceUnavailable(format!(
             "duration probe GET returned status {}",
@@ -417,15 +422,18 @@ async fn fetch_text(
     }
     if let Some(len) = response.content_length() {
         if len > MANIFEST_MAX_BYTES {
-            return Err(Error::InvalidInput("manifest is too large to probe".to_string()));
+            return Err(Error::InvalidInput(
+                "manifest is too large to probe".to_string(),
+            ));
         }
     }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| Error::ServiceUnavailable(format!("duration probe body failed: {error}")))?;
+    let bytes = response.bytes().await.map_err(|error| {
+        Error::ServiceUnavailable(format!("duration probe body failed: {error}"))
+    })?;
     if bytes.len() as u64 > MANIFEST_MAX_BYTES {
-        return Err(Error::InvalidInput("manifest is too large to probe".to_string()));
+        return Err(Error::InvalidInput(
+            "manifest is too large to probe".to_string(),
+        ));
     }
     String::from_utf8(bytes.to_vec())
         .map_err(|error| Error::InvalidInput(format!("manifest is not utf-8: {error}")))
@@ -446,7 +454,9 @@ async fn fetch_range(
         .header(RANGE, format!("bytes={start}-{end}"))
         .send()
         .await
-        .map_err(|error| Error::ServiceUnavailable(format!("duration probe range GET failed: {error}")))?;
+        .map_err(|error| {
+            Error::ServiceUnavailable(format!("duration probe range GET failed: {error}"))
+        })?;
     let status = response.status();
     if status != reqwest::StatusCode::PARTIAL_CONTENT && status != reqwest::StatusCode::OK {
         return Err(Error::ServiceUnavailable(format!(
@@ -469,12 +479,13 @@ async fn fetch_range(
     }
 
     let total_len = parse_total_len(&headers).or_else(|| parse_content_length(&headers));
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| Error::ServiceUnavailable(format!("duration probe range body failed: {error}")))?;
+    let bytes = response.bytes().await.map_err(|error| {
+        Error::ServiceUnavailable(format!("duration probe range body failed: {error}"))
+    })?;
     if bytes.len() as u64 > MP4_SCAN_BYTES {
-        return Err(Error::InvalidInput("range response is too large".to_string()));
+        return Err(Error::InvalidInput(
+            "range response is too large".to_string(),
+        ));
     }
 
     Ok(RangeFetch { bytes, total_len })
@@ -538,9 +549,9 @@ fn parse_hls_media_duration(manifest: &str) -> Result<Option<f64>> {
             continue;
         };
         let value = rest.split(',').next().unwrap_or_default().trim();
-        let duration = value
-            .parse::<f64>()
-            .map_err(|error| Error::InvalidInput(format!("invalid HLS EXTINF duration: {error}")))?;
+        let duration = value.parse::<f64>().map_err(|error| {
+            Error::InvalidInput(format!("invalid HLS EXTINF duration: {error}"))
+        })?;
         if !duration.is_finite() || duration < 0.0 {
             return Err(Error::InvalidInput(
                 "invalid HLS EXTINF duration".to_string(),
@@ -715,9 +726,13 @@ fn valid_scaled_duration(duration: f64, timescale: f64) -> Option<f64> {
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_be_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?))
+    Some(u32::from_be_bytes(
+        bytes.get(offset..offset + 4)?.try_into().ok()?,
+    ))
 }
 
 fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
-    Some(u64::from_be_bytes(bytes.get(offset..offset + 8)?.try_into().ok()?))
+    Some(u64::from_be_bytes(
+        bytes.get(offset..offset + 8)?.try_into().ok()?,
+    ))
 }

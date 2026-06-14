@@ -45,7 +45,7 @@ pub use content_report::{
 pub use email_bind::EmailBindRepository;
 pub use email_registration_token::{EmailRegistrationToken, EmailRegistrationTokenRepository};
 pub use email_token::EmailTokenRepository;
-pub use file_storage::FileStorageRepository;
+pub use file_storage::{FileStorageRepository, UpsertFileBlob};
 pub use media::MediaRepository;
 pub use notification::NotificationRepository;
 pub use playback::RoomPlaybackStateRepository;

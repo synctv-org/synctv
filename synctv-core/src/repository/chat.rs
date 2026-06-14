@@ -11,6 +11,9 @@ use crate::{
         ChatMessageStatus, ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery,
         ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage,
         ChatReadState, EventCursor, NewStoredFile, RoomId, SetChatReaction, User, UserId,
+        CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
+        CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS, CHAT_IMAGE_ID_MAX_CHARS,
+        CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
     },
     repository::FileStorageRepository,
     Error, Result,
@@ -24,6 +27,89 @@ fn chat_message_key(message: &ChatMessage) -> ChatMessageKey {
 
 fn chat_image_message_key(image: &ChatImage) -> ChatMessageKey {
     (image.message_id, image.message_created_at)
+}
+
+fn validate_optional_text(value: Option<&str>, field: &str, max_chars: usize) -> Result<()> {
+    if let Some(value) = value {
+        validate_required_text(value, field, max_chars)?;
+    }
+    Ok(())
+}
+
+fn validate_required_text(value: &str, field: &str, max_chars: usize) -> Result<()> {
+    let len = value.chars().count();
+    if value.trim().is_empty() || len > max_chars {
+        return Err(Error::InvalidInput(format!(
+            "{field} must be between 1 and {max_chars} characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_message_for_insert(message: &ChatMessage) -> Result<()> {
+    validate_optional_text(
+        message.client_message_id.as_deref(),
+        "client_message_id",
+        CHAT_CLIENT_MESSAGE_ID_MAX_CHARS,
+    )?;
+    if message.version < 1 {
+        return Err(Error::InvalidInput(
+            "chat message version must be positive".to_string(),
+        ));
+    }
+    if !message.metadata.is_object() {
+        return Err(Error::InvalidInput(
+            "chat metadata must be a JSON object".to_string(),
+        ));
+    }
+    match (
+        message.reply_to_message_id,
+        message.reply_to_message_created_at,
+    ) {
+        (Some(_), Some(_)) | (None, None) => Ok(()),
+        _ => Err(Error::InvalidInput(
+            "reply target requires both message id and created_at".to_string(),
+        )),
+    }
+}
+
+fn validate_chat_image_for_insert(image: &NewStoredFile) -> Result<()> {
+    validate_required_text(&image.id, "chat image id", CHAT_IMAGE_ID_MAX_CHARS)?;
+    validate_required_text(
+        &image.storage_backend,
+        "file storage_backend",
+        FILE_STORAGE_BACKEND_MAX_CHARS,
+    )?;
+    validate_required_text(
+        &image.object_key,
+        "file object_key",
+        FILE_OBJECT_KEY_MAX_CHARS,
+    )?;
+    if image.size_bytes.is_some_and(|size| size <= 0)
+        || image.width.is_some_and(|width| width <= 0)
+        || image.height.is_some_and(|height| height <= 0)
+    {
+        return Err(Error::InvalidInput(
+            "chat image size and dimensions must be positive".to_string(),
+        ));
+    }
+    if !image.metadata.is_object() {
+        return Err(Error::InvalidInput(
+            "chat image metadata must be a JSON object".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_chat_event_for_insert(event: &ChatMessageEvent, event_type: &str) -> Result<()> {
+    validate_required_text(&event.event_id, "chat event_id", CHAT_EVENT_ID_MAX_CHARS)?;
+    validate_required_text(event_type, "chat event_type", CHAT_EVENT_TYPE_MAX_CHARS)?;
+    if event.message.message.version < 1 {
+        return Err(Error::InvalidInput(
+            "chat message_version must be positive".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -43,6 +129,7 @@ impl ChatRepository {
     }
 
     pub async fn create(&self, message: &ChatMessage) -> Result<ChatMessage> {
+        validate_message_for_insert(message)?;
         let inserted = sqlx::query_as!(
             ChatMessage,
             r#"
@@ -96,6 +183,17 @@ impl ChatRepository {
         event_id: &str,
         occurred_at: DateTime<Utc>,
     ) -> Result<IdempotentChatEventInsert> {
+        validate_message_for_insert(message)?;
+        if let Some(client_message_id) = message.client_message_id.as_deref() {
+            validate_required_text(
+                client_message_id,
+                "client_message_id",
+                CHAT_CLIENT_MESSAGE_ID_MAX_CHARS,
+            )?;
+        }
+        for image in images {
+            validate_chat_image_for_insert(image)?;
+        }
         let sender_id = message.user_id.ok_or_else(|| {
             Error::InvalidInput("Chat message event insert requires a sender".to_string())
         })?;
@@ -212,6 +310,12 @@ impl ChatRepository {
         event_id: &str,
         occurred_at: DateTime<Utc>,
     ) -> Result<ChatMessageEventLog> {
+        validate_required_text(
+            &request.reaction_key,
+            "reaction_key",
+            CHAT_REACTION_KEY_MAX_CHARS,
+        )?;
+        validate_required_text(event_id, "chat event_id", CHAT_EVENT_ID_MAX_CHARS)?;
         let mut tx = self.pool.begin().await?;
         let message = sqlx::query_as!(
             ChatMessage,
@@ -2159,6 +2263,7 @@ impl ChatRepository {
         tx: &mut Transaction<'_, Postgres>,
         message: &ChatMessage,
     ) -> Result<ChatMessage> {
+        validate_message_for_insert(message)?;
         let inserted = sqlx::query_as!(
             ChatMessage,
             r#"
@@ -2211,6 +2316,7 @@ impl ChatRepository {
     ) -> Result<Vec<ChatImage>> {
         let mut inserted = Vec::with_capacity(images.len());
         for image in images {
+            validate_chat_image_for_insert(image)?;
             let row = sqlx::query_as!(
                 ChatImage,
                 r#"
@@ -2403,6 +2509,11 @@ impl ChatRepository {
         user_id: &UserId,
         operation: &ChatMessageOperationIdempotency<'_>,
     ) -> Result<Option<ChatMessageEventLog>> {
+        validate_required_text(
+            operation.client_operation_id,
+            "client_operation_id",
+            CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
+        )?;
         let inserted = sqlx::query!(
             r"
             INSERT INTO chat_message_operation_idempotency (
@@ -2657,6 +2768,7 @@ impl ChatRepository {
         let payload = serde_json::to_value(event)?;
         let summary = chat_event_summary(event);
         let event_type = chat_event_type(event.kind);
+        validate_chat_event_for_insert(event, event_type)?;
         let row = sqlx::query_as!(
             ChatEventRow,
             r#"
@@ -3056,4 +3168,121 @@ fn file_reference_id_for_chat_image(image: &ChatImage) -> String {
         image.message_created_at.timestamp_micros(),
         image.id
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_message() -> ChatMessage {
+        ChatMessage::new(
+            RoomId::expect_positive(10),
+            UserId::expect_positive(20),
+            "hello".to_string(),
+        )
+    }
+
+    fn valid_image() -> NewStoredFile {
+        NewStoredFile {
+            id: "image-1".to_string(),
+            storage_backend: "database".to_string(),
+            object_key: "database/chat/images/image-1.webp".to_string(),
+            url: None,
+            mime_type: Some("image/webp".to_string()),
+            size_bytes: Some(1),
+            width: Some(1),
+            height: Some(1),
+            metadata: serde_json::json!({}),
+        }
+    }
+
+    fn valid_event() -> ChatMessageEvent {
+        let message = valid_message();
+        ChatMessageEvent {
+            event_id: "event-1".to_string(),
+            sequence: 0,
+            room_id: message.room_id,
+            actor_user_id: message.user_id.expect("message user should exist"),
+            kind: ChatEventKind::Created,
+            message: ChatMessageWithImages {
+                message,
+                images: Vec::new(),
+                reactions: Vec::new(),
+                mentions: Vec::new(),
+            },
+            occurred_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn validates_chat_message_business_fields_in_rust() {
+        let mut message = valid_message();
+        message.client_message_id = Some(String::new());
+        assert!(matches!(
+            validate_message_for_insert(&message),
+            Err(Error::InvalidInput(error)) if error.contains("client_message_id")
+        ));
+
+        let mut message = valid_message();
+        message.version = 0;
+        assert!(matches!(
+            validate_message_for_insert(&message),
+            Err(Error::InvalidInput(error)) if error.contains("version")
+        ));
+
+        let mut message = valid_message();
+        message.reply_to_message_id = Some(1);
+        assert!(matches!(
+            validate_message_for_insert(&message),
+            Err(Error::InvalidInput(error)) if error.contains("reply target")
+        ));
+    }
+
+    #[test]
+    fn validates_chat_image_business_fields_in_rust() {
+        let mut image = valid_image();
+        image.id = "x".repeat(CHAT_IMAGE_ID_MAX_CHARS + 1);
+        assert!(matches!(
+            validate_chat_image_for_insert(&image),
+            Err(Error::InvalidInput(error)) if error.contains("image id")
+        ));
+
+        let mut image = valid_image();
+        image.object_key = String::new();
+        assert!(matches!(
+            validate_chat_image_for_insert(&image),
+            Err(Error::InvalidInput(error)) if error.contains("object_key")
+        ));
+
+        let mut image = valid_image();
+        image.size_bytes = Some(0);
+        assert!(matches!(
+            validate_chat_image_for_insert(&image),
+            Err(Error::InvalidInput(error)) if error.contains("positive")
+        ));
+    }
+
+    #[test]
+    fn validates_chat_event_business_fields_in_rust() {
+        let mut event = valid_event();
+        event.event_id = String::new();
+        assert!(matches!(
+            validate_chat_event_for_insert(&event, "chat_message_created"),
+            Err(Error::InvalidInput(error)) if error.contains("event_id")
+        ));
+
+        let event = valid_event();
+        let long_event_type = "x".repeat(CHAT_EVENT_TYPE_MAX_CHARS + 1);
+        assert!(matches!(
+            validate_chat_event_for_insert(&event, &long_event_type),
+            Err(Error::InvalidInput(error)) if error.contains("event_type")
+        ));
+
+        let mut event = valid_event();
+        event.message.message.version = 0;
+        assert!(matches!(
+            validate_chat_event_for_insert(&event, "chat_message_created"),
+            Err(Error::InvalidInput(error)) if error.contains("message_version")
+        ));
+    }
 }

@@ -673,11 +673,14 @@ pub async fn init_services_with_options(
     for (name, backend_config) in &config.file_storage.backends {
         let service: Arc<dyn FileStorageService> = match backend_config.backend_type {
             FileStorageBackendType::Disabled => Arc::new(DisabledFileStorageService),
-            FileStorageBackendType::Database => Arc::new(DatabaseFileStorageService::new(
-                name.clone(),
-                file_storage_repo.clone(),
-                file_upload_token_secret.clone(),
-            )),
+            FileStorageBackendType::Database => {
+                Arc::new(DatabaseFileStorageService::new_with_compression(
+                    name.clone(),
+                    file_storage_repo.clone(),
+                    file_upload_token_secret.clone(),
+                    backend_config.database.compression.into(),
+                ))
+            }
             FileStorageBackendType::S3 => {
                 let s3 = &backend_config.s3;
                 let file_storage = S3CompatibleFileStorageService::new_with_repository(

@@ -7,7 +7,6 @@ CREATE TABLE IF NOT EXISTS chat_message_reactions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (room_id, message_id, message_created_at, user_id, reaction_key),
-    CHECK (length(reaction_key) BETWEEN 1 AND 64),
     FOREIGN KEY (room_id, message_id, message_created_at)
         REFERENCES chat_messages(room_id, id, created_at) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE

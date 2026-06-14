@@ -131,6 +131,8 @@ SyncTV 进程内部 HTTP REST 和 gRPC 使用同一个容器端口，但 Helm ch
 
 `config.server.grpcCompressionEnabled` 默认是 `true`，会让 gRPC 客户端和服务端协商 gzip 压缩。跨节点调用、Ingress 转发、批量响应较多时通常保持开启；如果你的 gRPC 调用都在本地低延迟网络且 CPU 比带宽更紧张，可以显式关闭。
 
+`config.fileStorage.backends.<name>.database.compression` 控制数据库文件存储后端写入 PostgreSQL `file_blobs` 的压缩算法，默认 `zstd`，可选 `none`、`lz4`、`zstd`。
+
 ## Ingress
 
 默认 HTTP Ingress 使用：

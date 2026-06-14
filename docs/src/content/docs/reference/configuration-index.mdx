@@ -233,6 +233,7 @@ curl -fsS http://localhost:8080/health/ready
 | `file_storage.upload_token_secret` | secret 字符串 | `""` | 文件上传/读取 token 签名密钥；空值在启动时由 `jwt.secret` 派生 |
 | `file_storage.unreferenced_object_retention_seconds` | 秒数 | `86400` | 未被业务引用的已上传对象清理宽限期；`0` 表示关闭孤儿对象清理 |
 | `file_storage.backends.<name>.type` | `disabled`、`database` 或 `s3` | `disabled` | 已注册后端实现类型 |
+| `file_storage.backends.<name>.database.compression` | `none`、`lz4` 或 `zstd` | `zstd` | `type: "database"` 后端写入 PostgreSQL `file_blobs` 的压缩算法 |
 | `file_storage.backends.<name>.s3.*` | S3 配置 | S3 默认字段 | `type: "s3"` 后端的 S3-compatible 配置 |
 
 客户端在上传会话请求中提供 `checksum_sha256`。选中的后端按 `(storage_backend, checksum_sha256, size_bytes)` 存储内容寻址对象，重复文件会返回 `upload_required=false` 和 ownership proof challenge。读取和清理使用对象记录里的 `storage_backend`，业务数据可以在配置切换后混合多个后端。
@@ -261,6 +262,8 @@ file_storage:
   backends:
     database:
       type: "database"
+      database:
+        compression: "zstd"
 ```
 
 使用 S3-compatible 对象存储：

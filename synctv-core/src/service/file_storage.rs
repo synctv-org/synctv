@@ -7,8 +7,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     models::{
-        CreateFileUploadSession, FileBlob, FileOwnershipProofRange, FileReferenceTarget,
-        FileUploadSession, NewStoredFile, UserId,
+        CreateFileUploadSession, FileBlob, FileBlobCompression, FileOwnershipProofRange,
+        FileReferenceTarget, FileUploadSession, NewStoredFile, UserId,
     },
     repository::FileStorageRepository,
     Error, Result,
@@ -132,6 +132,7 @@ pub struct DatabaseFileStorageService {
     pub(crate) storage_backend: String,
     pub(crate) repository: Arc<FileStorageRepository>,
     pub(crate) upload_token_secret: String,
+    pub(crate) compression: FileBlobCompression,
 }
 
 #[async_trait::async_trait]

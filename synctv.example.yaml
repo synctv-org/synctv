@@ -378,6 +378,9 @@ file_storage:
 #   backends:
 #     database:
 #       type: "database"
+#       database:
+#         # Compression for bytes stored in file_blobs: none, lz4, or zstd.
+#         compression: "zstd"
 
 # Example: store files in multiple S3-compatible backends.
 # file_storage:

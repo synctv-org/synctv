@@ -1,3 +1,4 @@
+use crate::models::FileBlobCompression;
 use config::{ConfigError, FileFormat};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1493,12 +1494,72 @@ impl std::fmt::Debug for FileStorageS3Config {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum FileStorageDatabaseCompression {
+    None,
+    Lz4,
+    #[default]
+    Zstd,
+}
+
+impl FromStr for FileStorageDatabaseCompression {
+    type Err = ConfigError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "lz4" => Ok(Self::Lz4),
+            "zstd" => Ok(Self::Zstd),
+            _ => Err(ConfigError::Message(format!(
+                "database file storage compression '{value}' must be one of: none, lz4, zstd"
+            ))),
+        }
+    }
+}
+
+impl From<FileStorageDatabaseCompression> for FileBlobCompression {
+    fn from(value: FileStorageDatabaseCompression) -> Self {
+        match value {
+            FileStorageDatabaseCompression::None => Self::None,
+            FileStorageDatabaseCompression::Lz4 => Self::Lz4,
+            FileStorageDatabaseCompression::Zstd => Self::Zstd,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileStorageDatabaseConfig {
+    /// Compression algorithm used for payload bytes stored in `file_blobs`.
+    pub compression: FileStorageDatabaseCompression,
+}
+
+impl Default for FileStorageDatabaseConfig {
+    fn default() -> Self {
+        Self {
+            compression: FileStorageDatabaseCompression::Zstd,
+        }
+    }
+}
+
+impl std::fmt::Debug for FileStorageDatabaseConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileStorageDatabaseConfig")
+            .field("compression", &self.compression)
+            .finish()
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FileStorageBackendConfig {
     /// Backend implementation type.
     #[serde(rename = "type")]
     pub backend_type: FileStorageBackendType,
+    /// Database settings used when `type=database`.
+    pub database: FileStorageDatabaseConfig,
     /// S3-compatible settings used when `type=s3`.
     pub s3: FileStorageS3Config,
 }
@@ -1507,6 +1568,7 @@ impl Default for FileStorageBackendConfig {
     fn default() -> Self {
         Self {
             backend_type: FileStorageBackendType::Disabled,
+            database: FileStorageDatabaseConfig::default(),
             s3: FileStorageS3Config::default(),
         }
     }
@@ -1516,6 +1578,7 @@ impl std::fmt::Debug for FileStorageBackendConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileStorageBackendConfig")
             .field("type", &self.backend_type)
+            .field("database", &self.database)
             .field("s3", &self.s3)
             .finish()
     }

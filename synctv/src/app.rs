@@ -1166,7 +1166,8 @@ impl Application {
         );
         shutdown.register_task(
             "playback_auto_advance",
-            playback_auto_advance.spawn(std::time::Duration::from_secs(1), singleton_cancel.clone()),
+            playback_auto_advance
+                .spawn(std::time::Duration::from_secs(1), singleton_cancel.clone()),
         );
         info!("Playback auto-advance service started (leader-gated, interval: 1s)");
 

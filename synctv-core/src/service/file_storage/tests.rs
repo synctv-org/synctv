@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::{
-    repository::FileStorageRepository,
+    repository::{FileStorageRepository, UpsertFileBlob},
     service::file_upload_policies::{chat_image_upload_policy, user_avatar_upload_policy},
 };
 
@@ -31,6 +31,32 @@ fn some<T>(value: Option<T>, context: &str) -> T {
 
 fn payload_size(payload: &[u8]) -> i64 {
     ok(i64::try_from(payload.len()), "payload length should fit")
+}
+
+async fn upsert_uncompressed_blob(
+    repository: &FileStorageRepository,
+    storage_backend: &str,
+    object_key: &str,
+    mime_type: &str,
+    payload: &[u8],
+) {
+    let checksum_sha256 = hex::encode(Sha256::digest(payload));
+    let metadata = serde_json::Value::Object(Default::default());
+    ok(
+        repository
+            .upsert_blob(UpsertFileBlob {
+                storage_backend,
+                object_key,
+                mime_type,
+                size_bytes: payload_size(payload),
+                checksum_sha256: &checksum_sha256,
+                compression: FileBlobCompression::None,
+                data: payload.to_vec(),
+                metadata: &metadata,
+            })
+            .await,
+        "blob should be inserted",
+    );
 }
 
 fn object_url_parts(upload_url: &str) -> (String, String) {
@@ -271,6 +297,243 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
 }
 
 #[tokio::test]
+async fn database_storage_default_zstd_compresses_blob_and_returns_original_payload() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool.clone()));
+    let storage =
+        DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
+    let payload = vec![b'a'; 4096];
+    let checksum = hex::encode(Sha256::digest(&payload));
+    let session = ok(
+        storage
+            .create_upload_session(CreateFileUploadSession {
+                user_id: UserId::expect_positive(1),
+                storage_scope: "users/1/avatars".to_string(),
+                client_file_id: Some("avatar-1".to_string()),
+                mime_type: "image/png".to_string(),
+                size_bytes: payload_size(&payload),
+                width: Some(16),
+                height: Some(16),
+                checksum_sha256: Some(checksum.clone()),
+                metadata: serde_json::Value::Object(Default::default()),
+                policy: user_avatar_upload_policy(),
+            })
+            .await,
+        "upload session should be created",
+    );
+    let upload_url = some(
+        session.upload_url.as_deref(),
+        "database upload url should be returned",
+    );
+    let (encoded_object_key, read_token) = object_url_parts(upload_url);
+    let upload_token = some(
+        session
+            .upload_headers
+            .get(FILE_UPLOAD_TOKEN_HEADER)
+            .map(String::as_str),
+        "upload token should exist",
+    );
+
+    let stored = ok(
+        storage
+            .store_upload_object(
+                &encoded_object_key,
+                upload_token,
+                Some("image/png"),
+                payload.clone(),
+            )
+            .await,
+        "object should store",
+    );
+    assert_eq!(stored.compression, FileBlobCompression::None);
+    assert_eq!(stored.size_bytes, payload_size(&payload));
+    assert_eq!(stored.checksum_sha256, checksum);
+    assert_eq!(stored.data, payload);
+
+    let row = ok(
+        sqlx::query_as::<_, (i16, Option<i64>)>(
+            r"
+            SELECT compression, octet_length(data)::BIGINT AS stored_size_bytes
+            FROM file_blobs
+            WHERE storage_backend = $1 AND object_key = $2
+            ",
+        )
+        .bind("database")
+        .bind(&stored.object_key)
+        .fetch_one(&pool)
+        .await,
+        "stored blob row should load",
+    );
+    let (compression, stored_size_bytes) = row;
+    assert_eq!(compression, i16::from(FileBlobCompression::Zstd));
+    assert!(
+        some(stored_size_bytes, "stored size should exist") < payload_size(&payload),
+        "compressed payload should be smaller than original payload"
+    );
+
+    let loaded = ok(
+        storage.get_object(&encoded_object_key, &read_token).await,
+        "object should read",
+    );
+    assert_eq!(loaded.compression, FileBlobCompression::None);
+    assert_eq!(loaded.data, payload);
+}
+
+#[tokio::test]
+async fn database_storage_omitted_compression_defaults_to_uncompressed_blob() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool.clone()));
+    let storage =
+        DatabaseFileStorageService::new("database", repository, "test-file-storage-secret");
+    let object_key = "database/chat/images/raw-default.png";
+    let payload = b"raw-default-payload";
+    let checksum = hex::encode(Sha256::digest(payload));
+    let metadata = serde_json::Value::Object(Default::default());
+
+    ok(
+        sqlx::query(
+            r"
+            INSERT INTO file_blobs (
+                storage_backend, object_key, mime_type, size_bytes,
+                checksum_sha256, data, metadata
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ",
+        )
+        .bind("database")
+        .bind(object_key)
+        .bind("image/png")
+        .bind(payload_size(payload))
+        .bind(&checksum)
+        .bind(payload.as_slice())
+        .bind(&metadata)
+        .execute(&pool)
+        .await,
+        "blob with omitted compression should insert",
+    );
+
+    let (stored_compression,) = ok(
+        sqlx::query_as::<_, (i16,)>(
+            r"
+            SELECT compression
+            FROM file_blobs
+            WHERE storage_backend = $1 AND object_key = $2
+            ",
+        )
+        .bind("database")
+        .bind(object_key)
+        .fetch_one(&pool)
+        .await,
+        "stored blob compression should load",
+    );
+    assert_eq!(stored_compression, i16::from(FileBlobCompression::None));
+
+    let object_url = ok(
+        database_file_object_url(
+            "/api/files",
+            "database",
+            object_key,
+            "test-file-storage-secret",
+        ),
+        "database object url should build",
+    );
+    let (encoded_object_key, read_token) = object_url_parts(&object_url);
+    let loaded = ok(
+        storage.get_object(&encoded_object_key, &read_token).await,
+        "object should read",
+    );
+    assert_eq!(loaded.compression, FileBlobCompression::None);
+    assert_eq!(loaded.checksum_sha256, checksum);
+    assert_eq!(loaded.data, payload);
+}
+
+#[tokio::test]
+async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool.clone()));
+    let storage = DatabaseFileStorageService::new_with_compression(
+        "database",
+        repository.clone(),
+        "test-file-storage-secret",
+        FileBlobCompression::Lz4,
+    );
+    let payload = vec![b'b'; 4096];
+    let checksum = hex::encode(Sha256::digest(&payload));
+    let session = ok(
+        storage
+            .create_upload_session(CreateFileUploadSession {
+                user_id: UserId::expect_positive(1),
+                storage_scope: "users/1/avatars".to_string(),
+                client_file_id: Some("avatar-1".to_string()),
+                mime_type: "image/png".to_string(),
+                size_bytes: payload_size(&payload),
+                width: Some(16),
+                height: Some(16),
+                checksum_sha256: Some(checksum.clone()),
+                metadata: serde_json::Value::Object(Default::default()),
+                policy: user_avatar_upload_policy(),
+            })
+            .await,
+        "upload session should be created",
+    );
+    let upload_url = some(
+        session.upload_url.as_deref(),
+        "database upload url should be returned",
+    );
+    let (encoded_object_key, read_token) = object_url_parts(upload_url);
+    let upload_token = some(
+        session
+            .upload_headers
+            .get(FILE_UPLOAD_TOKEN_HEADER)
+            .map(String::as_str),
+        "upload token should exist",
+    );
+
+    let stored = ok(
+        storage
+            .store_upload_object(
+                &encoded_object_key,
+                upload_token,
+                Some("image/png"),
+                payload.clone(),
+            )
+            .await,
+        "object should store",
+    );
+    assert_eq!(stored.compression, FileBlobCompression::None);
+    assert_eq!(stored.checksum_sha256, checksum);
+    assert_eq!(stored.data, payload);
+
+    let row = ok(
+        sqlx::query_as::<_, (i16, Option<i64>)>(
+            r"
+            SELECT compression, octet_length(data)::BIGINT AS stored_size_bytes
+            FROM file_blobs
+            WHERE storage_backend = $1 AND object_key = $2
+            ",
+        )
+        .bind("database")
+        .bind(&stored.object_key)
+        .fetch_one(&pool)
+        .await,
+        "stored blob row should load",
+    );
+    let (compression, stored_size_bytes) = row;
+    assert_eq!(compression, i16::from(FileBlobCompression::Lz4));
+    assert!(
+        some(stored_size_bytes, "stored size should exist") < payload_size(&payload),
+        "compressed payload should be smaller than original payload"
+    );
+
+    let loaded = ok(
+        storage.get_object(&encoded_object_key, &read_token).await,
+        "object should read",
+    );
+    assert_eq!(loaded.compression, FileBlobCompression::None);
+    assert_eq!(loaded.data, payload);
+}
+
+#[tokio::test]
 async fn database_storage_rejects_checksum_reuse_when_existing_mime_violates_policy() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -278,18 +541,14 @@ async fn database_storage_rejects_checksum_reuse_when_existing_mime_violates_pol
         DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
     let payload = b"animated-gif";
     let checksum = hex::encode(Sha256::digest(payload));
-    ok(
-        repository
-            .upsert_blob(
-                "database",
-                "database/chat/images/animated.gif",
-                "image/gif",
-                payload.to_vec(),
-                &serde_json::Value::Object(Default::default()),
-            )
-            .await,
-        "blob should be inserted",
-    );
+    upsert_uncompressed_blob(
+        repository.as_ref(),
+        "database",
+        "database/chat/images/animated.gif",
+        "image/gif",
+        payload,
+    )
+    .await;
     ok(
         repository
             .upsert_object(
@@ -336,18 +595,14 @@ async fn database_storage_allows_checksum_reuse_when_existing_mime_matches_polic
         DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
     let payload = b"animated-gif";
     let checksum = hex::encode(Sha256::digest(payload));
-    ok(
-        repository
-            .upsert_blob(
-                "database",
-                "database/chat/images/animated.gif",
-                "image/gif",
-                payload.to_vec(),
-                &serde_json::Value::Object(Default::default()),
-            )
-            .await,
-        "blob should be inserted",
-    );
+    upsert_uncompressed_blob(
+        repository.as_ref(),
+        "database",
+        "database/chat/images/animated.gif",
+        "image/gif",
+        payload,
+    )
+    .await;
     ok(
         repository
             .upsert_object(
@@ -465,18 +720,14 @@ async fn database_storage_strips_ownership_proof_from_prepared_files() {
         DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
     let payload = b"avatar";
     let checksum = hex::encode(Sha256::digest(payload));
-    ok(
-        repository
-            .upsert_blob(
-                "database",
-                "database/users/avatars/avatar.png",
-                "image/png",
-                payload.to_vec(),
-                &serde_json::Value::Object(Default::default()),
-            )
-            .await,
-        "blob should be inserted",
-    );
+    upsert_uncompressed_blob(
+        repository.as_ref(),
+        "database",
+        "database/users/avatars/avatar.png",
+        "image/png",
+        payload,
+    )
+    .await;
     ok(
         repository
             .upsert_object(
@@ -563,18 +814,14 @@ async fn database_storage_delete_uses_configured_backend_name() {
         repository.clone(),
         "test-file-storage-secret",
     );
-    ok(
-        repository
-            .upsert_blob(
-                "primary_db",
-                "database/users/avatars/file.webp",
-                "image/webp",
-                b"avatar".to_vec(),
-                &serde_json::Value::Object(Default::default()),
-            )
-            .await,
-        "blob should be inserted",
-    );
+    upsert_uncompressed_blob(
+        repository.as_ref(),
+        "primary_db",
+        "database/users/avatars/file.webp",
+        "image/webp",
+        b"avatar",
+    )
+    .await;
     ok(
         repository
             .upsert_object(
@@ -642,18 +889,14 @@ async fn database_storage_deletes_unreferenced_object_without_reference_row() {
         repository.clone(),
         "test-file-storage-secret",
     );
-    ok(
-        repository
-            .upsert_blob(
-                "primary_db",
-                "database/chat/images/orphan.webp",
-                "image/webp",
-                b"orphan".to_vec(),
-                &serde_json::Value::Object(Default::default()),
-            )
-            .await,
-        "blob should be inserted",
-    );
+    upsert_uncompressed_blob(
+        repository.as_ref(),
+        "primary_db",
+        "database/chat/images/orphan.webp",
+        "image/webp",
+        b"orphan",
+    )
+    .await;
     ok(
         repository
             .upsert_object(

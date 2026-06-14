@@ -6,6 +6,13 @@ use std::str::FromStr;
 
 use super::id::{MediaId, PlaylistId, RoomId, UserId};
 
+pub const CHAT_CLIENT_MESSAGE_ID_MAX_CHARS: usize = 128;
+pub const CHAT_CLIENT_OPERATION_ID_MAX_CHARS: usize = 128;
+pub const CHAT_EVENT_ID_MAX_CHARS: usize = 128;
+pub const CHAT_EVENT_TYPE_MAX_CHARS: usize = 128;
+pub const CHAT_IMAGE_ID_MAX_CHARS: usize = 128;
+pub const CHAT_REACTION_KEY_MAX_CHARS: usize = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[repr(i16)]

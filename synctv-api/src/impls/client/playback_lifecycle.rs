@@ -467,7 +467,7 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
         Ok(())
     }
 
-    async fn state_before_playback_update(
+    async fn state_before_playback_state_update(
         &self,
         room_id: &synctv_core::models::RoomId,
     ) -> Result<RoomPlaybackState, ApiError> {
@@ -768,6 +768,7 @@ mod tests {
         PlaybackResult {
             playback_infos,
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata,
         }
     }

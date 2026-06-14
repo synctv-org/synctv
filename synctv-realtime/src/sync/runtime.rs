@@ -13,43 +13,53 @@ use super::events::RealtimeEvent;
 use super::room_hub::{ConnectionId, RoomLifecycleEvent, RoomMessageHub};
 use crate::error::{Error, Result};
 use synctv_core::models::id::{RoomId, UserId};
-use synctv_core::{SharedStateMode, SharedStateProfile};
+use synctv_core::{service::OnlinePresenceService, SharedStateMode, SharedStateProfile};
 
 pub fn build_connection_manager(
     limits: ConnectionLimits,
     profile: &SharedStateProfile,
+    presence_service: Arc<OnlinePresenceService>,
+    node_id: impl Into<Arc<str>>,
 ) -> Result<ConnectionManager> {
-    match profile.state_mode() {
+    let manager = match profile.state_mode() {
         SharedStateMode::SharedRequired => {
             let shared_runtime = profile.shared_runtime().ok_or_else(|| {
                 Error::Configuration(
                     "distributed runtime requires shared realtime connection state".to_string(),
                 )
             })?;
-            Ok(ConnectionManager::from_redis_runtime(
+            ConnectionManager::from_redis_runtime(
                 limits,
                 Some(shared_runtime),
                 profile.key_prefix(),
-            ))
+            )
         }
-        SharedStateMode::SharedBestEffort => Ok(ConnectionManager::from_redis_runtime(
+        SharedStateMode::SharedBestEffort => ConnectionManager::from_redis_runtime(
             limits,
             profile.shared_runtime(),
             profile.key_prefix(),
-        )),
-        SharedStateMode::LocalOnly => Ok(ConnectionManager::from_redis_runtime(
-            limits,
-            None,
-            profile.key_prefix(),
-        )),
-    }
+        ),
+        SharedStateMode::LocalOnly => {
+            ConnectionManager::from_redis_runtime(limits, None, profile.key_prefix())
+        }
+    };
+    Ok(manager
+        .with_presence_service(presence_service)
+        .with_node_id(node_id))
 }
 
 pub fn build_connection_runtime(
     limits: ConnectionLimits,
     profile: &SharedStateProfile,
+    presence_service: Arc<OnlinePresenceService>,
+    node_id: impl Into<Arc<str>>,
 ) -> Result<Arc<dyn ConnectionRuntime>> {
-    Ok(Arc::new(build_connection_manager(limits, profile)?))
+    Ok(Arc::new(build_connection_manager(
+        limits,
+        profile,
+        presence_service,
+        node_id,
+    )?))
 }
 
 pub fn build_room_message_runtime(
@@ -175,40 +185,6 @@ pub trait ConnectionRuntime: Send + Sync {
 
     fn mark_rtc_joined(&self, room_id: &RoomId, user_id: &UserId, conn_id: &str, joined: bool);
 
-    async fn has_other_connection_for_user_in_room_distributed(
-        &self,
-        user_id: &UserId,
-        room_id: &RoomId,
-        exclude_connection_id: &str,
-    ) -> std::result::Result<bool, String>;
-
-    async fn has_existing_presence_for_user_in_room_distributed(
-        &self,
-        user_id: &UserId,
-        room_id: &RoomId,
-        exclude_connection_id: &str,
-    ) -> std::result::Result<bool, String>;
-
-    async fn room_online_user_count_distributed(
-        &self,
-        room_id: &RoomId,
-    ) -> std::result::Result<usize, String>;
-
-    async fn room_online_user_ids_distributed(
-        &self,
-        room_id: &RoomId,
-        user_ids: &[UserId],
-    ) -> std::result::Result<Vec<UserId>, String>;
-
-    async fn room_online_user_count_distributed_batch(
-        &self,
-        room_ids: &[&RoomId],
-    ) -> std::result::Result<Vec<usize>, String>;
-
-    async fn hot_room_online_user_counts_distributed(
-        &self,
-    ) -> std::result::Result<Vec<(RoomId, usize)>, String>;
-
     fn connection_count(&self) -> usize;
 
     fn room_connection_count(&self, room_id: &RoomId) -> usize;
@@ -319,64 +295,6 @@ impl ConnectionRuntime for ConnectionManager {
         ConnectionManager::mark_rtc_joined(self, room_id, user_id, conn_id, joined);
     }
 
-    async fn has_other_connection_for_user_in_room_distributed(
-        &self,
-        user_id: &UserId,
-        room_id: &RoomId,
-        exclude_connection_id: &str,
-    ) -> std::result::Result<bool, String> {
-        ConnectionManager::has_other_connection_for_user_in_room_distributed(
-            self,
-            user_id,
-            room_id,
-            exclude_connection_id,
-        )
-        .await
-    }
-
-    async fn has_existing_presence_for_user_in_room_distributed(
-        &self,
-        user_id: &UserId,
-        room_id: &RoomId,
-        exclude_connection_id: &str,
-    ) -> std::result::Result<bool, String> {
-        ConnectionManager::has_existing_presence_for_user_in_room_distributed(
-            self,
-            user_id,
-            room_id,
-            exclude_connection_id,
-        )
-        .await
-    }
-
-    async fn room_online_user_count_distributed(
-        &self,
-        room_id: &RoomId,
-    ) -> std::result::Result<usize, String> {
-        ConnectionManager::room_online_user_count_distributed(self, room_id).await
-    }
-
-    async fn room_online_user_ids_distributed(
-        &self,
-        room_id: &RoomId,
-        user_ids: &[UserId],
-    ) -> std::result::Result<Vec<UserId>, String> {
-        ConnectionManager::room_online_user_ids_distributed(self, room_id, user_ids).await
-    }
-
-    async fn room_online_user_count_distributed_batch(
-        &self,
-        room_ids: &[&RoomId],
-    ) -> std::result::Result<Vec<usize>, String> {
-        ConnectionManager::room_online_user_count_distributed_batch(self, room_ids).await
-    }
-
-    async fn hot_room_online_user_counts_distributed(
-        &self,
-    ) -> std::result::Result<Vec<(RoomId, usize)>, String> {
-        ConnectionManager::hot_room_online_user_counts_distributed(self).await
-    }
-
     fn connection_count(&self) -> usize {
         ConnectionManager::connection_count(self)
     }
@@ -419,6 +337,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use synctv_core::models::id::RoomId;
+    use synctv_core::service::OnlinePresenceService;
     use synctv_core::{RedisConnectionRuntime, SharedStateMode, SharedStateProfile};
 
     struct HangingRedisRuntime;
@@ -436,6 +355,10 @@ mod tests {
 
     fn hanging_runtime() -> Arc<dyn RedisConnectionRuntime> {
         Arc::new(HangingRedisRuntime)
+    }
+
+    fn local_presence() -> Arc<OnlinePresenceService> {
+        Arc::new(OnlinePresenceService::local())
     }
 
     fn require_error<T>(result: crate::Result<T>, message: &'static str) -> crate::Result<Error> {
@@ -457,7 +380,12 @@ mod tests {
     ) -> crate::Result<()> {
         let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
         let error = require_error(
-            build_connection_manager(ConnectionLimits::default(), &profile),
+            build_connection_manager(
+                ConnectionLimits::default(),
+                &profile,
+                local_presence(),
+                "test-node",
+            ),
             "cluster realtime connection state must require a shared runtime",
         )?;
 
@@ -475,7 +403,12 @@ mod tests {
     ) -> crate::Result<()> {
         let profile = SharedStateProfile::for_cluster_runtime(None, "test:", false);
 
-        let manager = build_connection_manager(ConnectionLimits::default(), &profile)?;
+        let manager = build_connection_manager(
+            ConnectionLimits::default(),
+            &profile,
+            local_presence(),
+            "test-node",
+        )?;
 
         assert_eq!(manager.connection_count(), 0);
         manager.shutdown().await;
@@ -488,7 +421,12 @@ mod tests {
         let profile =
             SharedStateProfile::for_cluster_runtime(Some(hanging_runtime()), "test:", false);
 
-        let manager = build_connection_manager(ConnectionLimits::default(), &profile)?;
+        let manager = build_connection_manager(
+            ConnectionLimits::default(),
+            &profile,
+            local_presence(),
+            "test-node",
+        )?;
 
         let error = manager
             .connection_count_distributed()

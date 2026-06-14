@@ -104,6 +104,7 @@ security:
   credential_encryption_key_file: "/run/secrets/credential_encryption_key"
   opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
   ssrf:
+    enabled: false
     allow_private_network_targets: false
     allowed_hosts: []
     allowed_ip_ranges: []
@@ -116,7 +117,6 @@ management:
 bootstrap:
   create_root_user: true
   root_username: "root"
-  root_email: "admin@example.com"
   root_password_file: "/run/secrets/bootstrap_root_password"
 
 logging:
@@ -170,6 +170,7 @@ security:
   opaque_server_setup_secret: ""
   opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
   ssrf:
+    enabled: false
     allow_private_network_targets: false
     allowed_hosts: []
     allowed_ip_ranges: []
@@ -337,7 +338,6 @@ connection_limits:
 bootstrap:
   create_root_user: true
   root_username: "root"
-  root_email: "admin@example.com"
   root_password: ""
   root_password_file: "/run/secrets/bootstrap_root_password"
 

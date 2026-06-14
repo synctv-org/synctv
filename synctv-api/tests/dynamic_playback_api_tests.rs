@@ -217,6 +217,7 @@ impl MediaProvider for StubDynamicProvider {
         Ok(PlaybackResult {
             playback_infos: infos,
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata: std::collections::HashMap::new(),
         })
     }
@@ -515,10 +516,10 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
     );
 
     let update_response = client_api
-        .update_playback(
+        .update_playback_state(
             &owner.id,
             &room_public_id,
-            synctv_proto::client::UpdatePlaybackRequest {
+            synctv_proto::client::UpdatePlaybackStateRequest {
                 r#type: synctv_proto::client::PlaybackUpdateType::Seek as i32,
                 playing: None,
                 position: Some(12.5),
@@ -542,16 +543,6 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
     assert!(
         update_state.position < 17.5,
         "playing update response should not jump far beyond the requested seek position"
-    );
-    let update_playback = update_response
-        .playback
-        .expect("update response should preserve read-after-write playback");
-    assert_eq!(update_playback.playlist_id, playlist_public_id);
-    assert_eq!(update_playback.name, "episode-1.mp4");
-    let update_direct = update_playback.playback_infos.get("direct").unwrap();
-    assert_eq!(
-        update_direct.urls[0].url,
-        "https://alist_default.example.com/episode-1.mp4"
     );
 }
 

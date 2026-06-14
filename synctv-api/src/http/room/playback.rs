@@ -19,7 +19,8 @@ use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
     GetPlaybackResponse, StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest,
-    StopPlaybackResponse, UpdatePlaybackRequest, WatchPlaybackRequest, WatchPlaybackStateRequest,
+    StopPlaybackResponse, UpdatePlaybackStateRequest, UpdatePlaybackStateResponse,
+    WatchPlaybackRequest, WatchPlaybackStateRequest,
 };
 
 #[cfg_attr(
@@ -204,9 +205,9 @@ pub async fn watch_playback(
         params(
             ("room_id" = String, Path, description = "Room ID")
         ),
-        request_body = UpdatePlaybackRequest,
+        request_body = UpdatePlaybackStateRequest,
         responses(
-            (status = 200, description = "Playback updated", body = GetPlaybackResponse),
+            (status = 200, description = "Playback state updated", body = UpdatePlaybackStateResponse),
             (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
             (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
         ),
@@ -215,12 +216,12 @@ pub async fn watch_playback(
         )
     )
 )]
-pub async fn update_playback(
+pub async fn update_playback_state(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
-    Json(req): Json<UpdatePlaybackRequest>,
-) -> AppResult<Json<GetPlaybackResponse>> {
+    Json(req): Json<UpdatePlaybackStateRequest>,
+) -> AppResult<Json<UpdatePlaybackStateResponse>> {
     let room_id = path.room_id;
     let response = execute_user_endpoint(
         &state,
@@ -229,7 +230,7 @@ pub async fn update_playback(
         EndpointRateLimitScope::RoomPlayback,
         move |client_api, authenticated| async move {
             client_api
-                .update_playback(&authenticated.user_id, &room_id, req)
+                .update_playback_state(&authenticated.user_id, &room_id, req)
                 .await
         },
     )

@@ -485,6 +485,7 @@ mod tests {
             result: PlaybackResult {
                 playback_infos: HashMap::new(),
                 default_mode: "hls".to_string(),
+                duration_seconds: None,
                 metadata: HashMap::from([
                     (
                         "room_id".to_string(),
@@ -620,6 +621,7 @@ mod tests {
             result: PlaybackResult {
                 playback_infos: HashMap::new(),
                 default_mode: "hls".to_string(),
+                duration_seconds: None,
                 metadata: HashMap::from([
                     ("room_id".to_string(), json!(10)),
                     ("media_id".to_string(), json!(100)),

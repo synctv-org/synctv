@@ -7,19 +7,21 @@ use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
     models::{RoomId, UserId},
     repository::RoomResourceEventRepository,
-    service::{ChatService, RoomService},
+    service::{ChatService, OnlinePresenceService, RoomService},
 };
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
 use super::MessageSender;
 use crate::impls::client::convert::{
-    playback_client_profile_from_proto, try_playback_state_to_proto,
+    playback_client_profile_from_proto, proto_role_filter_to_room_role,
+    try_playback_state_to_proto, try_room_member_to_proto_with_permissions,
 };
 use crate::impls::client::RoomActor;
-use crate::impls::messaging::chat_message_event_to_proto;
+use crate::impls::messaging::{
+    chat_message_event_to_proto, online_event_to_proto, room_member_event_to_proto,
+};
 use crate::impls::playback::PlaybackService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
-use crate::impls::room_members_snapshot::RoomMembersSnapshotService;
 use crate::impls::room_settings_snapshot::RoomSettingsSnapshotService;
 use crate::resource_change::{
     provider_credential_resource_invalidation, resource_invalidations_for_cache_targets,
@@ -27,13 +29,14 @@ use crate::resource_change::{
 };
 use synctv_proto::client::{ResourceDeliveryMode, ServerMessage};
 
-const RESOURCE_EVALUATION_REUSE_WINDOW: Duration = Duration::from_millis(25);
+const RESOURCE_EVALUATION_REUSE_WINDOW: Duration = Duration::from_secs(5);
 const MEDIA_RESOURCE_REFRESH_DEDUP_WINDOW: Duration = Duration::from_secs(5);
 pub(super) const MAX_RESOURCE_OBSERVATIONS_PER_CONNECTION: usize = 64;
 const CHAT_EVENT_REPLAY_BATCH_LIMIT: i32 = 500;
 const CHAT_EVENT_REPLAY_BATCH_LIMIT_USIZE: usize = 500;
 const ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT: i32 = 500;
 const ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT_USIZE: usize = 500;
+const ONLINE_COUNT_REFRESH_INTERVAL_SECONDS: i64 = 10;
 
 fn event_cursor_for_chat_event(
     event: &synctv_core::models::ChatMessageEvent,
@@ -50,6 +53,24 @@ fn proto_event_cursor(
     synctv_proto::client::EventCursor {
         event_id: cursor.event_id,
         sequence: cursor.sequence,
+    }
+}
+
+pub(super) fn room_member_event_visible_to_observer(
+    event: &RealtimeEvent,
+    observer_user_id: &UserId,
+) -> bool {
+    match event {
+        RealtimeEvent::UserJoined { user_id, .. }
+        | RealtimeEvent::UserLeft { user_id, .. }
+        | RealtimeEvent::KickUserFromRoom { user_id, .. } => user_id != observer_user_id,
+        RealtimeEvent::PermissionChanged {
+            target_user_id,
+            role_changed,
+            ..
+        } => target_user_id != observer_user_id && *role_changed,
+        RealtimeEvent::GuestJoined { .. } | RealtimeEvent::GuestLeft { .. } => true,
+        _ => false,
     }
 }
 
@@ -72,14 +93,14 @@ struct ResourceObservation {
 #[derive(Debug, Clone)]
 struct ObservationUpdate {
     changed: bool,
-    changed_message: Option<synctv_proto::client::ResourceChanged>,
+    changed_message: Option<synctv_proto::client::ResourceEvent>,
 }
 
 #[derive(Debug, Clone)]
 struct ResourceEvaluation {
     fingerprint: String,
     expires_at: Option<i64>,
-    payload: synctv_proto::client::resource_changed::Payload,
+    payload: synctv_proto::client::resource_event::Payload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -98,11 +119,21 @@ enum ObservationEvaluationKey {
         delivery_mode: i32,
         request: Vec<u8>,
     },
-    RoomMembers {
+    RoomMemberEvents {
         delivery_mode: i32,
-        request: Vec<u8>,
+    },
+    SelfRoomMember {
+        delivery_mode: i32,
     },
     ChatEvents {
+        delivery_mode: i32,
+    },
+    OnlineCount {
+        delivery_mode: i32,
+        roles: Vec<i32>,
+        user_ids: Vec<UserId>,
+    },
+    OnlineEvent {
         delivery_mode: i32,
     },
 }
@@ -121,7 +152,6 @@ enum SharedResourceServiceWeak {
     Playback(Weak<dyn PlaybackService>),
     RoomSettings(Weak<dyn RoomSettingsSnapshotService>),
     PlaylistItems(Weak<dyn PlaylistItemsSnapshotService>),
-    RoomMembers(Weak<dyn RoomMembersSnapshotService>),
 }
 
 impl SharedResourceServiceWeak {
@@ -131,7 +161,6 @@ impl SharedResourceServiceWeak {
             Self::Playback(service) => service.upgrade().is_some(),
             Self::RoomSettings(service) => service.upgrade().is_some(),
             Self::PlaylistItems(service) => service.upgrade().is_some(),
-            Self::RoomMembers(service) => service.upgrade().is_some(),
         }
     }
 }
@@ -321,10 +350,18 @@ enum ObservedResource {
     PlaylistItems {
         request: synctv_proto::client::ListPlaylistItemsRequest,
     },
-    RoomMembers {
-        request: synctv_proto::client::GetRoomMembersRequest,
-    },
+    RoomMemberEvents,
+    SelfRoomMember,
     ChatEvents,
+    OnlineCount {
+        roles: Vec<i32>,
+        user_ids: Vec<UserId>,
+    },
+    OnlineEvent {
+        roles: Vec<i32>,
+        kinds: Vec<i32>,
+        user_ids: Vec<UserId>,
+    },
 }
 
 impl ResourceObservation {
@@ -338,17 +375,16 @@ impl ResourceObservation {
             ObservedResource::PlaylistItems { .. } => {
                 Some(&["playlist_items", "playlist", "media"])
             }
-            ObservedResource::RoomMembers { .. } => {
-                Some(&["room_members", "room_settings", "room"])
-            }
-            ObservedResource::ChatEvents => None,
+            ObservedResource::RoomMemberEvents => Some(&["room_member_events"]),
+            ObservedResource::SelfRoomMember => Some(&["room_member_events", "room_settings"]),
+            ObservedResource::ChatEvents | ObservedResource::OnlineEvent { .. } => None,
+            ObservedResource::OnlineCount { .. } => Some(&["online_count"]),
         }
     }
 
     fn exposes_client_event_cursor(&self) -> bool {
-        !matches!(self.resource, ObservedResource::Playback { .. })
-            && (matches!(self.resource, ObservedResource::ChatEvents)
-                || self.room_resource_cursor_types().is_some())
+        matches!(self.resource, ObservedResource::ChatEvents)
+            || self.room_resource_cursor_types().is_some()
     }
 
     fn evaluation_key(&self) -> ObservationEvaluationKey {
@@ -374,11 +410,23 @@ impl ResourceObservation {
                     request: request.encode_to_vec(),
                 }
             }
-            ObservedResource::RoomMembers { request } => ObservationEvaluationKey::RoomMembers {
-                delivery_mode,
-                request: request.encode_to_vec(),
-            },
+            ObservedResource::RoomMemberEvents => {
+                ObservationEvaluationKey::RoomMemberEvents { delivery_mode }
+            }
+            ObservedResource::SelfRoomMember => {
+                ObservationEvaluationKey::SelfRoomMember { delivery_mode }
+            }
             ObservedResource::ChatEvents => ObservationEvaluationKey::ChatEvents { delivery_mode },
+            ObservedResource::OnlineCount { roles, user_ids } => {
+                ObservationEvaluationKey::OnlineCount {
+                    delivery_mode,
+                    roles: roles.clone(),
+                    user_ids: user_ids.clone(),
+                }
+            }
+            ObservedResource::OnlineEvent { .. } => {
+                ObservationEvaluationKey::OnlineEvent { delivery_mode }
+            }
         }
     }
 
@@ -395,12 +443,12 @@ pub(super) struct ResourceObserver {
     actor: RoomActor,
     connection_id: String,
     room_service: Arc<RoomService>,
+    presence_service: Arc<OnlinePresenceService>,
     public_id_codec: Arc<synctv_core::PublicIdCodec>,
     sender: Arc<dyn MessageSender>,
     pub(super) room_hub: Arc<MediaResourceHub>,
     playback_service: Arc<dyn PlaybackService>,
     playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
-    room_members_snapshot_service: Arc<dyn RoomMembersSnapshotService>,
     room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
     room_settings_snapshot_service_id: usize,
     state: tokio::sync::Mutex<ResourceObserverState>,
@@ -412,11 +460,11 @@ pub(super) struct ResourceObserverParams {
     pub(super) actor: RoomActor,
     pub(super) connection_id: String,
     pub(super) room_service: Arc<RoomService>,
+    pub(super) presence_service: Arc<OnlinePresenceService>,
     pub(super) public_id_codec: Arc<synctv_core::PublicIdCodec>,
     pub(super) sender: Arc<dyn MessageSender>,
     pub(super) playback_service: Arc<dyn PlaybackService>,
     pub(super) playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
-    pub(super) room_members_snapshot_service: Arc<dyn RoomMembersSnapshotService>,
     pub(super) room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
 }
 
@@ -428,11 +476,11 @@ impl ResourceObserver {
             actor,
             connection_id,
             room_service,
+            presence_service,
             public_id_codec,
             sender,
             playback_service,
             playlist_items_snapshot_service,
-            room_members_snapshot_service,
             room_settings_snapshot_service,
         } = params;
         let room_settings_snapshot_service_id =
@@ -444,12 +492,12 @@ impl ResourceObserver {
             actor,
             connection_id,
             room_service,
+            presence_service,
             public_id_codec,
             sender,
             room_hub,
             playback_service,
             playlist_items_snapshot_service,
-            room_members_snapshot_service,
             room_settings_snapshot_service,
             room_settings_snapshot_service_id,
             state: tokio::sync::Mutex::new(ResourceObserverState::default()),
@@ -487,12 +535,6 @@ impl ResourceObserver {
             .observations
             .values()
             .any(|observation| matches!(observation.resource, ObservedResource::ChatEvents))
-    }
-
-    fn public_room_id(&self) -> Result<String, String> {
-        self.public_id_codec
-            .encode_room_id(self.room_id)
-            .map_err(|error| format!("Failed to encode room public id: {error}"))
     }
 
     fn shared_evaluation_key(
@@ -642,14 +684,19 @@ impl ResourceObserver {
                 synctv_proto::client::observe_resource::Resource::PlaybackState(observe) => {
                     observe.after_event_sequence
                 }
-                synctv_proto::client::observe_resource::Resource::Playback(_) => None,
+                synctv_proto::client::observe_resource::Resource::Playback(_)
+                | synctv_proto::client::observe_resource::Resource::OnlineCount(_)
+                | synctv_proto::client::observe_resource::Resource::OnlineEvent(_) => None,
                 synctv_proto::client::observe_resource::Resource::RoomSettings(observe) => {
                     observe.after_event_sequence
                 }
                 synctv_proto::client::observe_resource::Resource::PlaylistItems(observe) => {
                     observe.after_event_sequence
                 }
-                synctv_proto::client::observe_resource::Resource::RoomMembers(observe) => {
+                synctv_proto::client::observe_resource::Resource::RoomMemberEvents(observe) => {
+                    observe.after_event_sequence
+                }
+                synctv_proto::client::observe_resource::Resource::SelfRoomMember(observe) => {
                     observe.after_event_sequence
                 }
                 synctv_proto::client::observe_resource::Resource::ChatEvents(observe) => {
@@ -687,6 +734,40 @@ impl ResourceObserver {
         }
         observation.last_sent_event_sequence = cursor.sequence;
         true
+    }
+
+    async fn initial_event_cursor_for_observation(
+        &self,
+        observation: &ResourceObservation,
+        start_sequence: i64,
+        exposes_client_event_cursor: bool,
+        has_requested_replay_sequence: bool,
+    ) -> Result<Option<synctv_proto::client::EventCursor>, String> {
+        if !exposes_client_event_cursor {
+            return Ok(None);
+        }
+        if matches!(observation.resource, ObservedResource::ChatEvents)
+            || has_requested_replay_sequence
+        {
+            return Ok(Some(synctv_proto::client::EventCursor {
+                event_id: None,
+                sequence: start_sequence,
+            }));
+        }
+        let Some(resource_types) = observation.room_resource_cursor_types() else {
+            return Ok(None);
+        };
+        if resource_types.is_empty() {
+            return Ok(None);
+        }
+        let cursor = RoomResourceEventRepository::new(self.room_service.pool().clone())
+            .latest_room_event_cursor_for_resource_types(&self.room_id, resource_types)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(Some(synctv_proto::client::EventCursor {
+            event_id: cursor.event_id,
+            sequence: cursor.sequence.max(start_sequence),
+        }))
     }
 }
 
@@ -753,6 +834,10 @@ impl MediaResourceHub {
         self.state.lock().await.resource_generation
     }
 
+    async fn has_subscriptions(&self) -> bool {
+        !self.state.lock().await.subscriptions.is_empty()
+    }
+
     async fn bump_resource_generation(&self) {
         let mut state = self.state.lock().await;
         state.resource_generation = state.resource_generation.saturating_add(1);
@@ -765,6 +850,9 @@ impl MediaResourceHub {
     ) -> Result<(), String> {
         let invalidations = resource_invalidations_for_room_event(event);
         if invalidations.is_empty() {
+            return Ok(());
+        }
+        if !self.has_subscriptions().await {
             return Ok(());
         }
         let event_cursor = match RoomResourceEventRepository::new(self.pool.clone())
@@ -791,9 +879,10 @@ impl MediaResourceHub {
             );
         }
         let outcome = self
-            .refresh_for_invalidations_with_key(
+            .refresh_for_room_event_invalidations_with_key(
                 Some(format!("cluster:{}", event.event_id())),
                 invalidations,
+                event,
                 false,
                 event_cursor,
             )
@@ -827,9 +916,10 @@ impl MediaResourceHub {
             return Ok(());
         }
         let outcome = self
-            .refresh_for_invalidations_with_key(
+            .refresh_for_room_event_invalidations_with_key(
                 Some(format!("cluster:{}", event.event_id())),
                 invalidations,
+                event,
                 false,
                 Some(cursor),
             )
@@ -875,6 +965,47 @@ impl MediaResourceHub {
             .await
     }
 
+    async fn refresh_for_room_event_invalidations_with_key(
+        self: &Arc<Self>,
+        refresh_key: Option<String>,
+        invalidations: Vec<ResourceInvalidation>,
+        event: &RealtimeEvent,
+        force: bool,
+        event_cursor: Option<synctv_proto::client::EventCursor>,
+    ) -> ResourceRefreshOutcome {
+        if invalidations.is_empty() {
+            return ResourceRefreshOutcome::default();
+        }
+        self.bump_resource_generation().await;
+        if let Some(refresh_key) = refresh_key {
+            let Some(entry) = self.start_deduped_refresh(&refresh_key).await else {
+                return ResourceRefreshOutcome::default();
+            };
+            let result = entry
+                .result
+                .get_or_init(|| async {
+                    self.refresh_for_room_event_invalidations_uncached(
+                        &invalidations,
+                        event,
+                        force,
+                        event_cursor.clone(),
+                    )
+                    .await
+                })
+                .await
+                .clone();
+            self.finish_deduped_refresh(&refresh_key, &entry).await;
+            return result;
+        }
+        self.refresh_for_room_event_invalidations_uncached(
+            &invalidations,
+            event,
+            force,
+            event_cursor,
+        )
+        .await
+    }
+
     async fn refresh_for_cache_targets(
         self: &Arc<Self>,
         event_id: &str,
@@ -895,70 +1026,6 @@ impl MediaResourceHub {
             .clone();
         self.finish_deduped_refresh(&refresh_key, &entry).await;
         result
-    }
-
-    async fn refresh_expired_playbacks(
-        self: &Arc<Self>,
-        fatal_connection_id: Option<&str>,
-    ) -> Result<(), String> {
-        let refresh_key = format!("playback_expiry:room:{}", self.room_id);
-        let entry = self.start_in_flight_refresh(&refresh_key).await;
-        let result = entry
-            .result
-            .get_or_init(|| async {
-                let now = chrono::Utc::now().timestamp();
-                let subscriptions = {
-                    let state = self.state.lock().await;
-                    state
-                        .subscriptions
-                        .iter()
-                        .filter_map(|(key, subscription)| {
-                            let is_expired = matches!(
-                                &subscription.observation.resource,
-                                ObservedResource::Playback { .. }
-                            ) && subscription
-                                .observation
-                                .expires_at
-                                .is_some_and(|expires_at| now >= expires_at);
-                            is_expired.then_some((
-                                key.clone(),
-                                subscription.observer.clone(),
-                                subscription.observation.clone(),
-                                true,
-                                subscription.revision,
-                            ))
-                        })
-                        .collect::<Vec<_>>()
-                };
-                if subscriptions.is_empty() {
-                    return ResourceRefreshOutcome::default();
-                }
-                self.bump_resource_generation().await;
-                self.refresh_subscription_batch(subscriptions, None).await
-            })
-            .await
-            .clone();
-        self.finish_in_flight_refresh(&refresh_key, &entry).await;
-        if let Some(error) = result.error_for_connection(fatal_connection_id) {
-            Err(error)
-        } else {
-            Ok(())
-        }
-    }
-
-    async fn start_in_flight_refresh(&self, refresh_key: &str) -> MediaResourceRefreshEntry {
-        let mut state = self.state.lock().await;
-        if let Some(entry) = state.in_flight_refreshes.get(refresh_key) {
-            return entry.clone();
-        }
-        let entry = MediaResourceRefreshEntry {
-            result: Arc::new(tokio::sync::OnceCell::new()),
-            subscription_generation: state.subscription_generation,
-        };
-        state
-            .in_flight_refreshes
-            .insert(refresh_key.to_string(), entry.clone());
-        entry
     }
 
     async fn start_deduped_refresh(&self, refresh_key: &str) -> Option<MediaResourceRefreshEntry> {
@@ -1012,20 +1079,6 @@ impl MediaResourceHub {
                     subscription_generation: entry.subscription_generation,
                 },
             );
-        }
-    }
-
-    async fn finish_in_flight_refresh(&self, refresh_key: &str, entry: &MediaResourceRefreshEntry) {
-        let mut state = self.state.lock().await;
-        if state
-            .in_flight_refreshes
-            .get(refresh_key)
-            .is_some_and(|current| {
-                current.subscription_generation == entry.subscription_generation
-                    && Arc::ptr_eq(&current.result, &entry.result)
-            })
-        {
-            state.in_flight_refreshes.remove(refresh_key);
         }
     }
 
@@ -1127,9 +1180,9 @@ impl MediaResourceHub {
                                 continue;
                             }
                         };
-                    let changed = synctv_proto::client::ResourceChanged {
+                    let changed = synctv_proto::client::ResourceEvent {
                         observe_id: updated_observation.observe_id.clone(),
-                        payload: Some(synctv_proto::client::resource_changed::Payload::ChatEvent(
+                        payload: Some(synctv_proto::client::resource_event::Payload::ChatEvent(
                             event_payload,
                         )),
                         event_cursor: Some(cursor),
@@ -1219,6 +1272,376 @@ impl MediaResourceHub {
         outcome
     }
 
+    async fn refresh_for_room_event_invalidations_uncached(
+        &self,
+        invalidations: &[ResourceInvalidation],
+        event: &RealtimeEvent,
+        force: bool,
+        event_cursor: Option<synctv_proto::client::EventCursor>,
+    ) -> ResourceRefreshOutcome {
+        let subscriptions = self.snapshot_subscriptions().await;
+        let mut refresh_plan = HashMap::<
+            ResourceSubscriberKey,
+            (Weak<ResourceObserver>, ResourceObservation, bool, u64),
+        >::new();
+        let mut event_outcome = ResourceRefreshOutcome::default();
+
+        for invalidation in invalidations {
+            for (key, observer, observation, revision) in &subscriptions {
+                let Some(observer) = observer.upgrade() else {
+                    self.remove_stale_subscription(key, *revision).await;
+                    continue;
+                };
+
+                if !ResourceObserver::observation_invalidated_by_invalidation(
+                    observation,
+                    invalidation,
+                ) {
+                    continue;
+                }
+
+                match invalidation {
+                    ResourceInvalidation::PlaybackState => {
+                        let RealtimeEvent::PlaybackStateChanged { state, .. } = event else {
+                            refresh_plan.insert(
+                                key.clone(),
+                                (
+                                    Arc::downgrade(&observer),
+                                    observation.clone(),
+                                    force,
+                                    *revision,
+                                ),
+                            );
+                            continue;
+                        };
+                        if !matches!(observation.resource, ObservedResource::PlaybackState) {
+                            continue;
+                        }
+                        let cursor = event_cursor.clone().unwrap_or_else(|| {
+                            synctv_proto::client::EventCursor {
+                                event_id: Some(event.event_id().to_string()),
+                                sequence: observation.last_sent_event_sequence.saturating_add(1),
+                            }
+                        });
+                        let mut updated_observation = observation.clone();
+                        if !ResourceObserver::apply_event_cursor_to_observation(
+                            &mut updated_observation,
+                            &cursor,
+                        ) {
+                            continue;
+                        }
+                        let payload = match try_playback_state_to_proto(
+                            state,
+                            &observer.public_id_codec,
+                        ) {
+                            Ok(state) => state,
+                            Err(error) => {
+                                let error = error.to_string();
+                                tracing::warn!(
+                                    room_id = %observer.room_id,
+                                    user_id = %observer.user_id,
+                                    observe_id = %updated_observation.observe_id,
+                                    error = %error,
+                                    "Failed to convert playback state event for resource observer"
+                                );
+                                event_outcome.record_send_failure(key.connection_id.clone(), error);
+                                continue;
+                            }
+                        };
+                        updated_observation.last_fingerprint = hex::encode(payload.encode_to_vec());
+                        let changed = synctv_proto::client::ResourceEvent {
+                            observe_id: updated_observation.observe_id.clone(),
+                            payload: Some(
+                                synctv_proto::client::resource_event::Payload::PlaybackState(
+                                    payload,
+                                ),
+                            ),
+                            event_cursor: Some(cursor),
+                        };
+                        match self
+                            .send_and_commit_subscription_update(
+                                key,
+                                *revision,
+                                &observer,
+                                updated_observation.clone(),
+                                Some(changed),
+                            )
+                            .await
+                        {
+                            SubscriptionRefreshCommit::Committed => {
+                                observer
+                                    .replace_local_observation(updated_observation)
+                                    .await;
+                            }
+                            SubscriptionRefreshCommit::Stale => {}
+                            SubscriptionRefreshCommit::SendFailed(error) => {
+                                observer.remove_local_observation(&key.observe_id).await;
+                                event_outcome.record_send_failure(key.connection_id.clone(), error);
+                            }
+                        }
+                    }
+                    ResourceInvalidation::ChatEvents { event } => {
+                        let mut updated_observation = observation.clone();
+                        let cursor = event_cursor_for_chat_event(event);
+                        if !ResourceObserver::apply_event_cursor_to_observation(
+                            &mut updated_observation,
+                            &cursor,
+                        ) {
+                            continue;
+                        }
+                        let event_payload =
+                            match chat_message_event_to_proto(event, &observer.public_id_codec) {
+                                Ok(event) => event,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        room_id = %observer.room_id,
+                                        user_id = %observer.user_id,
+                                        observe_id = %updated_observation.observe_id,
+                                        error = %error,
+                                        "Failed to convert chat event for resource observer"
+                                    );
+                                    event_outcome
+                                        .record_send_failure(key.connection_id.clone(), error);
+                                    continue;
+                                }
+                            };
+                        let changed = synctv_proto::client::ResourceEvent {
+                            observe_id: updated_observation.observe_id.clone(),
+                            payload: Some(
+                                synctv_proto::client::resource_event::Payload::ChatEvent(
+                                    event_payload,
+                                ),
+                            ),
+                            event_cursor: Some(cursor),
+                        };
+                        match self
+                            .send_and_commit_subscription_update(
+                                key,
+                                *revision,
+                                &observer,
+                                updated_observation.clone(),
+                                Some(changed),
+                            )
+                            .await
+                        {
+                            SubscriptionRefreshCommit::Committed => {
+                                observer
+                                    .replace_local_observation(updated_observation)
+                                    .await;
+                            }
+                            SubscriptionRefreshCommit::Stale => {}
+                            SubscriptionRefreshCommit::SendFailed(error) => {
+                                observer.remove_local_observation(&key.observe_id).await;
+                                event_outcome.record_send_failure(key.connection_id.clone(), error);
+                            }
+                        }
+                    }
+                    ResourceInvalidation::RoomMemberEvents => {
+                        if !matches!(observation.resource, ObservedResource::RoomMemberEvents) {
+                            refresh_plan
+                                .entry(key.clone())
+                                .and_modify(|(_, _, refresh_force, _)| *refresh_force |= force)
+                                .or_insert_with(|| {
+                                    (
+                                        Arc::downgrade(&observer),
+                                        observation.clone(),
+                                        force,
+                                        *revision,
+                                    )
+                                });
+                            continue;
+                        }
+                        if !room_member_event_visible_to_observer(event, &observer.user_id) {
+                            continue;
+                        }
+                        let cursor = event_cursor.clone().unwrap_or_else(|| {
+                            tracing::warn!(
+                                room_id = %observer.room_id,
+                                event_id = %event.event_id(),
+                                observe_id = %observation.observe_id,
+                                "Delivering live room member event without durable cursor"
+                            );
+                            synctv_proto::client::EventCursor {
+                                event_id: Some(event.event_id().to_string()),
+                                sequence: observation.last_sent_event_sequence.saturating_add(1),
+                            }
+                        });
+                        let mut updated_observation = observation.clone();
+                        if !ResourceObserver::apply_event_cursor_to_observation(
+                            &mut updated_observation,
+                            &cursor,
+                        ) {
+                            continue;
+                        }
+                        let event_payload = match room_member_event_to_proto(
+                            event,
+                            &observer.public_id_codec,
+                            cursor.sequence,
+                        ) {
+                            Ok(Some(event)) => event,
+                            Ok(None) => continue,
+                            Err(error) => {
+                                tracing::warn!(
+                                    room_id = %observer.room_id,
+                                    user_id = %observer.user_id,
+                                    observe_id = %updated_observation.observe_id,
+                                    error = %error,
+                                    "Failed to convert room member event for resource observer"
+                                );
+                                event_outcome.record_send_failure(key.connection_id.clone(), error);
+                                continue;
+                            }
+                        };
+                        let changed = synctv_proto::client::ResourceEvent {
+                            observe_id: updated_observation.observe_id.clone(),
+                            payload: Some(
+                                synctv_proto::client::resource_event::Payload::RoomMemberEvent(
+                                    event_payload,
+                                ),
+                            ),
+                            event_cursor: Some(cursor),
+                        };
+                        match self
+                            .send_and_commit_subscription_update(
+                                key,
+                                *revision,
+                                &observer,
+                                updated_observation.clone(),
+                                Some(changed),
+                            )
+                            .await
+                        {
+                            SubscriptionRefreshCommit::Committed => {
+                                observer
+                                    .replace_local_observation(updated_observation)
+                                    .await;
+                            }
+                            SubscriptionRefreshCommit::Stale => {}
+                            SubscriptionRefreshCommit::SendFailed(error) => {
+                                observer.remove_local_observation(&key.observe_id).await;
+                                event_outcome.record_send_failure(key.connection_id.clone(), error);
+                            }
+                        }
+                    }
+                    ResourceInvalidation::OnlineEvent => {
+                        if !ResourceObserver::online_event_matches_observation(
+                            event,
+                            &observation.resource,
+                        ) {
+                            continue;
+                        }
+                        let event_payload =
+                            match online_event_to_proto(event, &observer.public_id_codec) {
+                                Ok(Some(event)) => event,
+                                Ok(None) => continue,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        room_id = %observer.room_id,
+                                        user_id = %observer.user_id,
+                                        observe_id = %observation.observe_id,
+                                        error = %error,
+                                        "Failed to convert online event for resource observer"
+                                    );
+                                    event_outcome
+                                        .record_send_failure(key.connection_id.clone(), error);
+                                    continue;
+                                }
+                            };
+                        let changed = synctv_proto::client::ResourceEvent {
+                            observe_id: observation.observe_id.clone(),
+                            payload: Some(
+                                synctv_proto::client::resource_event::Payload::OnlineEvent(
+                                    event_payload,
+                                ),
+                            ),
+                            event_cursor: event_cursor.clone(),
+                        };
+                        match self
+                            .send_and_commit_subscription_update(
+                                key,
+                                *revision,
+                                &observer,
+                                observation.clone(),
+                                Some(changed),
+                            )
+                            .await
+                        {
+                            SubscriptionRefreshCommit::Committed
+                            | SubscriptionRefreshCommit::Stale => {}
+                            SubscriptionRefreshCommit::SendFailed(error) => {
+                                observer.remove_local_observation(&key.observe_id).await;
+                                event_outcome.record_send_failure(key.connection_id.clone(), error);
+                            }
+                        }
+                    }
+                    ResourceInvalidation::ProviderCredential {
+                        user_id,
+                        provider,
+                        server_id,
+                    } => {
+                        let should_refresh = match &observation.resource {
+                            ObservedResource::Playback { .. } => observer
+                                .current_playback_depends_on_provider_credential(
+                                    user_id, provider, server_id,
+                                )
+                                .await
+                                .unwrap_or_else(|error| {
+                                    tracing::warn!(
+                                        room_id = %self.room_id,
+                                        user_id = %observer.user_id,
+                                        error = %error,
+                                        "Failed to resolve playback credential dependencies"
+                                    );
+                                    true
+                                }),
+                            ObservedResource::PlaylistItems { .. } => true,
+                            _ => false,
+                        };
+                        if should_refresh {
+                            refresh_plan
+                                .entry(key.clone())
+                                .and_modify(|(_, _, refresh_force, _)| *refresh_force |= force)
+                                .or_insert_with(|| {
+                                    (
+                                        Arc::downgrade(&observer),
+                                        observation.clone(),
+                                        force,
+                                        *revision,
+                                    )
+                                });
+                        }
+                    }
+                    _ => {
+                        refresh_plan
+                            .entry(key.clone())
+                            .and_modify(|(_, _, refresh_force, _)| *refresh_force |= force)
+                            .or_insert_with(|| {
+                                (
+                                    Arc::downgrade(&observer),
+                                    observation.clone(),
+                                    force,
+                                    *revision,
+                                )
+                            });
+                    }
+                }
+            }
+        }
+
+        let mut outcome = self
+            .refresh_subscription_batch(
+                refresh_plan
+                    .into_iter()
+                    .map(|(key, (observer, observation, force, revision))| {
+                        (key, observer, observation, force, revision)
+                    }),
+                event_cursor,
+            )
+            .await;
+        outcome.send_failures.extend(event_outcome.send_failures);
+        outcome
+    }
+
     async fn snapshot_subscriptions(
         &self,
     ) -> Vec<(
@@ -1290,6 +1713,7 @@ impl MediaResourceHub {
                     shared_key.evaluation,
                     &first.observation.resource,
                     first.observation.delivery_mode,
+                    false,
                 )
                 .await;
 
@@ -1344,7 +1768,7 @@ impl MediaResourceHub {
                                     user_id = %entry.observer.user_id,
                                     observe_id = %entry.key.observe_id,
                                     error = %error,
-                                    "Removed observed resource after ResourceChanged send failure"
+                                    "Removed observed resource after ResourceEvent send failure"
                                 );
                                 outcome.record_send_failure(entry.key.connection_id, error);
                             }
@@ -1374,6 +1798,10 @@ impl MediaResourceHub {
                                     error = %send_error,
                                     "Failed to send ResourceObserveError after refresh failure"
                                 );
+                                outcome.record_send_failure(
+                                    entry.key.connection_id.clone(),
+                                    send_error,
+                                );
                             }
                             tracing::warn!(
                                 room_id = %self.room_id,
@@ -1397,7 +1825,7 @@ impl MediaResourceHub {
         revision: u64,
         observer: &ResourceObserver,
         observation: ResourceObservation,
-        changed_message: Option<synctv_proto::client::ResourceChanged>,
+        changed_message: Option<synctv_proto::client::ResourceEvent>,
     ) -> SubscriptionRefreshCommit {
         let mut state = self.state.lock().await;
         let Some(subscription_revision) = state
@@ -1413,7 +1841,7 @@ impl MediaResourceHub {
         if let Some(changed) = changed_message {
             if let Err(error) = observer.send_server_message(ServerMessage {
                 message: Some(
-                    synctv_proto::client::server_message::Message::ResourceChanged(changed),
+                    synctv_proto::client::server_message::Message::ResourceEvent(changed),
                 ),
             }) {
                 state.subscriptions.remove(key);
@@ -1491,6 +1919,7 @@ impl ResourceObserver {
     }
 
     fn observation_from_request(
+        &self,
         request: &synctv_proto::client::ObserveResource,
     ) -> Result<ResourceObservation, String> {
         use synctv_proto::client::observe_resource::Resource;
@@ -1525,13 +1954,38 @@ impl ResourceObserver {
                     .clone()
                     .ok_or_else(|| "playlist_items request is required".to_string())?,
             },
-            Resource::RoomMembers(observe) => ObservedResource::RoomMembers {
-                request: observe
-                    .request
-                    .clone()
-                    .ok_or_else(|| "room_members request is required".to_string())?,
-            },
+            Resource::RoomMemberEvents(_) => ObservedResource::RoomMemberEvents,
+            Resource::SelfRoomMember(_) => ObservedResource::SelfRoomMember,
             Resource::ChatEvents(_) => ObservedResource::ChatEvents,
+            Resource::OnlineCount(observe) => ObservedResource::OnlineCount {
+                roles: observe.roles.clone(),
+                user_ids: observe
+                    .user_ids
+                    .iter()
+                    .map(|user_id| {
+                        self.public_id_codec
+                            .decode_user_id(user_id)
+                            .map_err(|error| {
+                                format!("Invalid online_count user_ids entry: {error}")
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+            Resource::OnlineEvent(observe) => ObservedResource::OnlineEvent {
+                roles: observe.roles.clone(),
+                kinds: observe.kinds.clone(),
+                user_ids: observe
+                    .user_ids
+                    .iter()
+                    .map(|user_id| {
+                        self.public_id_codec
+                            .decode_user_id(user_id)
+                            .map_err(|error| {
+                                format!("Invalid online_event user_ids entry: {error}")
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
         };
 
         Ok(ResourceObservation {
@@ -1548,7 +2002,7 @@ impl ResourceObserver {
         self: &Arc<Self>,
         request: &synctv_proto::client::ObserveResource,
     ) -> Result<(), String> {
-        let mut observation = match Self::observation_from_request(request) {
+        let mut observation = match self.observation_from_request(request) {
             Ok(observation) => observation,
             Err(error) => {
                 self.send_server_message(Self::resource_observe_error_message(
@@ -1575,31 +2029,23 @@ impl ResourceObserver {
         let start_sequence = Self::observation_start_sequence(&observation, request);
         let is_chat_observation = matches!(observation.resource, ObservedResource::ChatEvents);
         let exposes_client_event_cursor = observation.exposes_client_event_cursor();
-        let internal_cursor = if is_chat_observation {
-            Some(synctv_proto::client::EventCursor {
-                event_id: None,
-                sequence: start_sequence,
-            })
-        } else {
-            match observation.room_resource_cursor_types() {
-                Some(resource_types) if !resource_types.is_empty() => {
-                    Some(synctv_proto::client::EventCursor {
-                        event_id: None,
-                        sequence: start_sequence,
-                    })
-                }
-                _ => None,
-            }
-        };
-        observation.last_sent_event_sequence = internal_cursor
+        let has_requested_replay_sequence = Self::requested_replay_sequence(request).is_some();
+        let initial_cursor = self
+            .initial_event_cursor_for_observation(
+                &observation,
+                start_sequence,
+                exposes_client_event_cursor,
+                has_requested_replay_sequence,
+            )
+            .await?;
+        observation.last_sent_event_sequence = initial_cursor
             .as_ref()
             .map_or(start_sequence, |cursor| cursor.sequence);
-        let observed_cursor = internal_cursor
-            .clone()
-            .filter(|_| exposes_client_event_cursor);
+        let observed_cursor = initial_cursor.clone();
         match self.evaluate_observation(&mut observation).await {
             Ok(mut update) => {
                 if is_chat_observation {
+                    update.changed = false;
                     update.changed_message = None;
                 }
                 observation.consume_one_shot_options();
@@ -1625,7 +2071,7 @@ impl ResourceObserver {
                     changed.event_cursor = observed_cursor;
                     if let Err(error) = self.send_server_message(ServerMessage {
                         message: Some(
-                            synctv_proto::client::server_message::Message::ResourceChanged(changed),
+                            synctv_proto::client::server_message::Message::ResourceEvent(changed),
                         ),
                     }) {
                         self.remove_local_observation(&observe_id).await;
@@ -1702,11 +2148,11 @@ impl ResourceObserver {
                     }
                     self.send_server_message(ServerMessage {
                         message: Some(
-                            synctv_proto::client::server_message::Message::ResourceChanged(
-                                synctv_proto::client::ResourceChanged {
+                            synctv_proto::client::server_message::Message::ResourceEvent(
+                                synctv_proto::client::ResourceEvent {
                                     observe_id: observe_id.to_string(),
                                     payload: Some(
-                                        synctv_proto::client::resource_changed::Payload::ChatEvent(
+                                        synctv_proto::client::resource_event::Payload::ChatEvent(
                                             chat_message_event_to_proto(
                                                 event,
                                                 &self.public_id_codec,
@@ -1808,12 +2254,12 @@ impl ResourceObserver {
                     }
                     self.send_server_message(ServerMessage {
                         message: Some(
-                            synctv_proto::client::server_message::Message::ResourceChanged(
-                                synctv_proto::client::ResourceChanged {
+                            synctv_proto::client::server_message::Message::ResourceEvent(
+                                synctv_proto::client::ResourceEvent {
                                     observe_id: observe_id.to_string(),
                                     payload: Some(
-                                        synctv_proto::client::resource_changed::Payload::ChangedOnly(
-                                            synctv_proto::client::ResourceChangedOnly {},
+                                        synctv_proto::client::resource_event::Payload::ChangedOnly(
+                                            synctv_proto::client::ResourceEventOnly {},
                                         ),
                                     ),
                                     event_cursor: Some(cursor),
@@ -1842,6 +2288,35 @@ impl ResourceObserver {
                 if !Self::apply_event_cursor_to_observation(&mut observation, &cursor) {
                     continue;
                 }
+                if matches!(observation.resource, ObservedResource::RoomMemberEvents) {
+                    if !room_member_event_visible_to_observer(&realtime_event, &self.user_id) {
+                        self.replace_local_observation(observation.clone()).await;
+                        self.room_hub.register_observation(self, observation).await;
+                        continue;
+                    }
+                    if let Some(event) = room_member_event_to_proto(
+                        &realtime_event,
+                        &self.public_id_codec,
+                        logged.sequence,
+                    )? {
+                        self.send_server_message(ServerMessage {
+                            message: Some(
+                                synctv_proto::client::server_message::Message::ResourceEvent(
+                                    synctv_proto::client::ResourceEvent {
+                                        observe_id: observe_id.to_string(),
+                                        payload: Some(
+                                            synctv_proto::client::resource_event::Payload::RoomMemberEvent(event),
+                                        ),
+                                        event_cursor: Some(cursor),
+                                    },
+                                ),
+                            ),
+                        })?;
+                    }
+                    self.replace_local_observation(observation.clone()).await;
+                    self.room_hub.register_observation(self, observation).await;
+                    continue;
+                }
                 let mut update = self
                     .evaluate_observation_with_force(&mut observation, true)
                     .await?;
@@ -1849,7 +2324,7 @@ impl ResourceObserver {
                     changed.event_cursor = Some(cursor);
                     self.send_server_message(ServerMessage {
                         message: Some(
-                            synctv_proto::client::server_message::Message::ResourceChanged(
+                            synctv_proto::client::server_message::Message::ResourceEvent(
                                 changed.clone(),
                             ),
                         ),
@@ -1877,15 +2352,14 @@ impl ResourceObserver {
         Ok(())
     }
 
-    pub(super) async fn next_playback_refresh_deadline(&self) -> Option<tokio::time::Instant> {
+    pub(super) async fn next_expired_resource_refresh_deadline(
+        &self,
+    ) -> Option<tokio::time::Instant> {
         let state = self.state.lock().await;
         let expires_at = state
             .observations
             .values()
-            .filter_map(|observation| match &observation.resource {
-                ObservedResource::Playback { .. } => observation.expires_at,
-                _ => None,
-            })
+            .filter_map(|observation| observation.expires_at)
             .min()?;
         let now_wall = chrono::Utc::now().timestamp();
         let now_instant = tokio::time::Instant::now();
@@ -1900,10 +2374,39 @@ impl ResourceObserver {
         )
     }
 
-    pub(super) async fn refresh_expired_playback_observations(&self) -> Result<(), String> {
-        self.room_hub
-            .refresh_expired_playbacks(Some(&self.connection_id))
-            .await
+    pub(super) async fn refresh_expired_resource_observations(&self) -> Result<(), String> {
+        let observations = {
+            let state = self.state.lock().await;
+            let now = chrono::Utc::now().timestamp();
+            state
+                .observations
+                .values()
+                .filter(|observation| {
+                    observation
+                        .expires_at
+                        .is_some_and(|expires_at| now >= expires_at)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        if observations.is_empty() {
+            return Ok(());
+        }
+        for observation in observations {
+            let mut observation = observation;
+            let update = self
+                .evaluate_observation_with_force(&mut observation, false)
+                .await?;
+            if let Some(changed) = update.changed_message {
+                self.send_server_message(ServerMessage {
+                    message: Some(
+                        synctv_proto::client::server_message::Message::ResourceEvent(changed),
+                    ),
+                })?;
+            }
+            self.replace_local_observation(observation).await;
+        }
+        Ok(())
     }
 
     async fn current_playback_depends_on_provider_credential(
@@ -2027,11 +2530,21 @@ impl ResourceObserver {
                 ResourceInvalidation::PlaylistItems
                     | ResourceInvalidation::ProviderCredential { .. }
             ),
-            ObservedResource::RoomMembers { .. } => {
-                matches!(invalidation, ResourceInvalidation::RoomMembers)
+            ObservedResource::RoomMemberEvents => {
+                matches!(invalidation, ResourceInvalidation::RoomMemberEvents)
             }
+            ObservedResource::SelfRoomMember => matches!(
+                invalidation,
+                ResourceInvalidation::RoomMemberEvents | ResourceInvalidation::RoomSettings
+            ),
             ObservedResource::ChatEvents => {
                 matches!(invalidation, ResourceInvalidation::ChatEvents { .. })
+            }
+            ObservedResource::OnlineCount { .. } => {
+                matches!(invalidation, ResourceInvalidation::OnlineCount)
+            }
+            ObservedResource::OnlineEvent { .. } => {
+                matches!(invalidation, ResourceInvalidation::OnlineEvent)
             }
         }
     }
@@ -2041,6 +2554,38 @@ impl ResourceObserver {
         invalidation: &ResourceInvalidation,
     ) -> bool {
         matches!(invalidation, ResourceInvalidation::Playback(_))
+    }
+
+    fn online_event_matches_observation(
+        event: &RealtimeEvent,
+        resource: &ObservedResource,
+    ) -> bool {
+        let ObservedResource::OnlineEvent {
+            roles,
+            kinds,
+            user_ids,
+        } = resource
+        else {
+            return false;
+        };
+
+        let (user_id, role, kind) = match event {
+            RealtimeEvent::UserJoined { user_id, role, .. } => (
+                *user_id,
+                *role,
+                synctv_proto::client::OnlineEventKind::Joined as i32,
+            ),
+            RealtimeEvent::UserLeft { user_id, role, .. } => (
+                *user_id,
+                *role,
+                synctv_proto::client::OnlineEventKind::Left as i32,
+            ),
+            _ => return false,
+        };
+
+        (roles.is_empty() || roles.contains(&role))
+            && (kinds.is_empty() || kinds.contains(&kind))
+            && (user_ids.is_empty() || user_ids.contains(&user_id))
     }
 
     async fn evaluate_observation(
@@ -2058,7 +2603,12 @@ impl ResourceObserver {
     ) -> Result<ObservationUpdate, String> {
         let key = observation.evaluation_key();
         let evaluation = self
-            .load_resource_evaluation(key, &observation.resource, observation.delivery_mode)
+            .load_resource_evaluation(
+                key,
+                &observation.resource,
+                observation.delivery_mode,
+                !force,
+            )
             .await?;
         Ok(Self::apply_resource_evaluation(
             observation,
@@ -2072,6 +2622,7 @@ impl ResourceObserver {
         key: ObservationEvaluationKey,
         resource: &ObservedResource,
         delivery_mode: ResourceDeliveryMode,
+        allow_completed_reuse: bool,
     ) -> Result<ResourceEvaluation, String> {
         let service_identity = self.resource_evaluation_service_identity(resource);
         let shared_key = SharedObservationEvaluationKey {
@@ -2086,8 +2637,11 @@ impl ResourceObserver {
             let now = tokio::time::Instant::now();
             if let Some(entry) = in_flight.get(&shared_key) {
                 if entry.service.is_alive()
-                    && entry.resource_generation == resource_generation
-                    && (!entry.result.initialized() || entry.can_reuse_completed(now))
+                    && ((entry.resource_generation == resource_generation
+                        && !entry.result.initialized())
+                        || (allow_completed_reuse
+                            && entry.resource_generation == resource_generation
+                            && entry.can_reuse_completed(now)))
                 {
                     Arc::clone(entry)
                 } else {
@@ -2116,7 +2670,9 @@ impl ResourceObserver {
             })
             .await
             .clone();
-        entry.mark_completed(tokio::time::Instant::now());
+        if result.is_ok() {
+            entry.mark_completed(tokio::time::Instant::now());
+        }
 
         schedule_resource_evaluation_singleflight_cleanup(shared_key, Arc::clone(&entry));
 
@@ -2128,8 +2684,13 @@ impl ResourceObserver {
             ObservedResource::PlaybackState | ObservedResource::RoomSettings => None,
             ObservedResource::Playback { .. }
             | ObservedResource::PlaylistItems { .. }
-            | ObservedResource::RoomMembers { .. }
-            | ObservedResource::ChatEvents => Some(self.user_id),
+            | ObservedResource::RoomMemberEvents
+            | ObservedResource::SelfRoomMember
+            | ObservedResource::ChatEvents
+            | ObservedResource::OnlineEvent { .. } => Some(self.user_id),
+            ObservedResource::OnlineCount { roles, user_ids } => {
+                (!roles.is_empty() || !user_ids.is_empty()).then_some(self.user_id)
+            }
         }
     }
 
@@ -2138,14 +2699,15 @@ impl ResourceObserver {
         resource: &ObservedResource,
     ) -> SharedResourceServiceIdentity {
         match resource {
-            ObservedResource::PlaybackState | ObservedResource::ChatEvents => {
-                SharedResourceServiceIdentity {
-                    id: Arc::as_ptr(&self.room_service) as usize,
-                    weak: SharedResourceServiceWeak::RoomService(Arc::downgrade(
-                        &self.room_service,
-                    )),
-                }
-            }
+            ObservedResource::PlaybackState
+            | ObservedResource::ChatEvents
+            | ObservedResource::RoomMemberEvents
+            | ObservedResource::SelfRoomMember
+            | ObservedResource::OnlineCount { .. }
+            | ObservedResource::OnlineEvent { .. } => SharedResourceServiceIdentity {
+                id: Arc::as_ptr(&self.room_service) as usize,
+                weak: SharedResourceServiceWeak::RoomService(Arc::downgrade(&self.room_service)),
+            },
             ObservedResource::Playback { .. } => SharedResourceServiceIdentity {
                 id: Arc::as_ptr(&self.playback_service).cast::<()>() as usize,
                 weak: SharedResourceServiceWeak::Playback(Arc::downgrade(&self.playback_service)),
@@ -2165,12 +2727,6 @@ impl ResourceObserver {
                     &self.playlist_items_snapshot_service,
                 )),
             },
-            ObservedResource::RoomMembers { .. } => SharedResourceServiceIdentity {
-                id: Arc::as_ptr(&self.room_members_snapshot_service).cast::<()>() as usize,
-                weak: SharedResourceServiceWeak::RoomMembers(Arc::downgrade(
-                    &self.room_members_snapshot_service,
-                )),
-            },
         }
     }
 
@@ -2179,7 +2735,7 @@ impl ResourceObserver {
         resource: &ObservedResource,
         delivery_mode: ResourceDeliveryMode,
     ) -> Result<ResourceEvaluation, String> {
-        use synctv_proto::client::resource_changed::Payload;
+        use synctv_proto::client::resource_event::Payload;
 
         let (fingerprint, expires_at, payload) = match resource {
             ObservedResource::PlaybackState => {
@@ -2191,7 +2747,7 @@ impl ResourceObserver {
                 let version = state.version.to_string();
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly => {
-                        Payload::ChangedOnly(synctv_proto::client::ResourceChangedOnly {})
+                        Payload::ChangedOnly(synctv_proto::client::ResourceEventOnly {})
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
                         Payload::PlaybackState(
@@ -2223,7 +2779,7 @@ impl ResourceObserver {
                 let fingerprint = playback.encode_to_vec();
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly => {
-                        Payload::ChangedOnly(synctv_proto::client::ResourceChangedOnly {})
+                        Payload::ChangedOnly(synctv_proto::client::ResourceEventOnly {})
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
                         Payload::Playback(playback.clone())
@@ -2240,11 +2796,10 @@ impl ResourceObserver {
                 let version = snapshot.version.to_string();
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly => {
-                        Payload::ChangedOnly(synctv_proto::client::ResourceChangedOnly {})
+                        Payload::ChangedOnly(synctv_proto::client::ResourceEventOnly {})
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
-                        Payload::RoomSettings(synctv_proto::client::RoomSettingsChanged {
-                            room_id: self.public_room_id()?,
+                        Payload::RoomSettings(synctv_proto::client::GetRoomSettingsResponse {
                             settings: snapshot.settings,
                             version: snapshot.version,
                         })
@@ -2261,7 +2816,7 @@ impl ResourceObserver {
                     .map_err(|error| error.to_string())?;
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly => {
-                        Payload::ChangedOnly(synctv_proto::client::ResourceChangedOnly {})
+                        Payload::ChangedOnly(synctv_proto::client::ResourceEventOnly {})
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
                         Payload::PlaylistItems(snapshot.clone())
@@ -2269,22 +2824,29 @@ impl ResourceObserver {
                 };
                 (snapshot.version.clone(), None, payload)
             }
-            ObservedResource::RoomMembers { request } => {
-                let service = Arc::clone(&self.room_members_snapshot_service);
-                let actor = self.resource_actor().await?;
-                let snapshot = service
-                    .get_room_members_snapshot(&actor, request)
+            ObservedResource::RoomMemberEvents | ObservedResource::OnlineEvent { .. } => {
+                let version = chrono::Utc::now().timestamp_millis().to_string();
+                (
+                    version,
+                    None,
+                    Payload::ChangedOnly(synctv_proto::client::ResourceEventOnly {}),
+                )
+            }
+            ObservedResource::SelfRoomMember => {
+                let member = self
+                    .self_room_member_snapshot()
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| error.clone())?;
+                let fingerprint = member.encode_to_vec();
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly => {
-                        Payload::ChangedOnly(synctv_proto::client::ResourceChangedOnly {})
+                        Payload::ChangedOnly(synctv_proto::client::ResourceEventOnly {})
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
-                        Payload::RoomMembers(snapshot.clone())
+                        Payload::SelfRoomMember(member)
                     }
                 };
-                (snapshot.version.clone(), None, payload)
+                (hex::encode(fingerprint), None, payload)
             }
             ObservedResource::ChatEvents => {
                 let version = chrono::Utc::now().timestamp_millis().to_string();
@@ -2292,10 +2854,29 @@ impl ResourceObserver {
                     ResourceDeliveryMode::NotifyOnly
                     | ResourceDeliveryMode::Unspecified
                     | ResourceDeliveryMode::PushSnapshot => {
-                        Payload::ChangedOnly(synctv_proto::client::ResourceChangedOnly {})
+                        Payload::ChangedOnly(synctv_proto::client::ResourceEventOnly {})
                     }
                 };
                 (version, None, payload)
+            }
+            ObservedResource::OnlineCount { roles, user_ids } => {
+                let count = self
+                    .online_count_for_filters(roles, user_ids)
+                    .await
+                    .map_err(|error| error.clone())?;
+                let expires_at =
+                    Some(chrono::Utc::now().timestamp() + ONLINE_COUNT_REFRESH_INTERVAL_SECONDS);
+                let payload = match delivery_mode {
+                    ResourceDeliveryMode::NotifyOnly => {
+                        Payload::ChangedOnly(synctv_proto::client::ResourceEventOnly {})
+                    }
+                    ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
+                        Payload::OnlineCount(synctv_proto::client::OnlineCount {
+                            count: i32::try_from(count).unwrap_or(i32::MAX),
+                        })
+                    }
+                };
+                (count.to_string(), expires_at, payload)
             }
         };
 
@@ -2304,6 +2885,147 @@ impl ResourceObserver {
             expires_at,
             payload,
         })
+    }
+
+    async fn online_count_for_filters(
+        &self,
+        roles: &[i32],
+        user_ids: &[UserId],
+    ) -> Result<usize, String> {
+        if roles.is_empty() && user_ids.is_empty() {
+            return Ok(self
+                .presence_service
+                .room_stats(self.room_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .online_user_count);
+        }
+
+        let mut filtered_user_ids = user_ids.iter().copied().collect::<HashSet<_>>();
+        if !roles.is_empty() {
+            let mut role_user_ids = HashSet::new();
+            for role in roles {
+                let role = proto_role_filter_to_room_role(*role)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "online_count role filter is unspecified".to_string())?;
+                role_user_ids.extend(self.user_ids_for_room_role(role).await?);
+            }
+
+            if filtered_user_ids.is_empty() {
+                filtered_user_ids = role_user_ids;
+            } else {
+                filtered_user_ids.retain(|user_id| role_user_ids.contains(user_id));
+            }
+        }
+
+        if filtered_user_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut sorted_user_ids = filtered_user_ids.into_iter().collect::<Vec<_>>();
+        sorted_user_ids.sort_unstable();
+        self.presence_service
+            .room_online_user_ids(self.room_id, &sorted_user_ids)
+            .await
+            .map(|ids| ids.len())
+            .map_err(|error| error.to_string())
+    }
+
+    async fn user_ids_for_room_role(
+        &self,
+        role: synctv_core::models::RoomRole,
+    ) -> Result<HashSet<UserId>, String> {
+        const PAGE_SIZE: u32 = 500;
+
+        let mut page = 1_u32;
+        let mut user_ids = HashSet::new();
+        loop {
+            let query = synctv_core::models::RoomMemberListQuery {
+                pagination: synctv_core::models::PageParams {
+                    page,
+                    page_size: PAGE_SIZE,
+                },
+                search: None,
+                role: Some(role),
+                is_online: None,
+                sort_by: synctv_core::models::RoomMemberListSortBy::JoinedAt,
+                sort_direction: synctv_core::models::SortDirection::Asc,
+            };
+            let (members, total) = self
+                .room_service
+                .get_room_members_query(&self.room_id, query)
+                .await
+                .map_err(|error| error.to_string())?;
+            user_ids.extend(members.into_iter().map(|member| member.user_id));
+
+            if user_ids.len() >= usize::try_from(total).unwrap_or(usize::MAX) {
+                return Ok(user_ids);
+            }
+            page = page
+                .checked_add(1)
+                .ok_or_else(|| "online_count role filter pagination overflow".to_string())?;
+        }
+    }
+
+    async fn self_room_member_snapshot(&self) -> Result<synctv_proto::common::RoomMember, String> {
+        const PAGE_SIZE: u32 = 500;
+        let mut page = 1_u32;
+        let member = loop {
+            let (members, total) = self
+                .room_service
+                .get_room_members_query(
+                    &self.room_id,
+                    synctv_core::models::RoomMemberListQuery {
+                        pagination: synctv_core::models::PageParams {
+                            page,
+                            page_size: PAGE_SIZE,
+                        },
+                        search: None,
+                        role: None,
+                        is_online: None,
+                        sort_by: synctv_core::models::RoomMemberListSortBy::JoinedAt,
+                        sort_direction: synctv_core::models::SortDirection::Asc,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            if let Some(member) = members
+                .into_iter()
+                .find(|member| member.user_id == self.user_id)
+            {
+                break member;
+            }
+            let searched = usize::try_from(page)
+                .unwrap_or(usize::MAX)
+                .saturating_mul(usize::try_from(PAGE_SIZE).unwrap_or(usize::MAX));
+            if searched >= usize::try_from(total).unwrap_or(usize::MAX) {
+                return Err("Current user is not a room member".to_string());
+            }
+            page = page
+                .checked_add(1)
+                .ok_or_else(|| "self room member pagination overflow".to_string())?;
+        };
+        let room_settings = self
+            .room_service
+            .get_room_settings(&self.room_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let permissions = self
+            .room_service
+            .permission_service()
+            .effective_member_with_user_permissions(&member, &room_settings);
+        let mut proto =
+            try_room_member_to_proto_with_permissions(&member, permissions, &self.public_id_codec)
+                .map_err(|error| error.to_string())?;
+        let stats = self
+            .presence_service
+            .user_room_stats(self.user_id, self.room_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        proto.is_online = stats.is_online;
+        proto.connection_count = i32::try_from(stats.connection_count)
+            .map_err(|_| "self room member connection count exceeds i32 range".to_string())?;
+        Ok(proto)
     }
 
     fn apply_resource_evaluation(
@@ -2325,7 +3047,7 @@ impl ResourceObserver {
         observation.last_fingerprint.clone_from(&fingerprint);
         observation.expires_at = expires_at;
 
-        let changed_message = changed.then(|| synctv_proto::client::ResourceChanged {
+        let changed_message = changed.then(|| synctv_proto::client::ResourceEvent {
             observe_id: observation.observe_id.clone(),
             payload: Some(payload),
             event_cursor: None,
@@ -2377,10 +3099,10 @@ mod tests {
     }
 
     #[test]
-    fn playback_hides_client_event_cursor() {
+    fn playback_exposes_client_event_cursor() {
         let observation = playback_observation();
 
-        assert!(!observation.exposes_client_event_cursor());
+        assert!(observation.exposes_client_event_cursor());
     }
 
     #[test]
@@ -2404,7 +3126,66 @@ mod tests {
     }
 
     #[test]
-    fn playback_observation_starts_from_current_playback_without_client_event_cursor() {
+    fn online_event_observation_filters_role_kind_and_user_id() {
+        let user = UserId::expect_positive(42);
+        let other = UserId::expect_positive(43);
+        let resource = ObservedResource::OnlineEvent {
+            roles: vec![synctv_proto::common::RoomMemberRole::Admin as i32],
+            kinds: vec![synctv_proto::client::OnlineEventKind::Joined as i32],
+            user_ids: vec![user],
+        };
+        let matching = RealtimeEvent::UserJoined {
+            event_id: "online-match".to_string(),
+            room_id: RoomId::expect_positive(7),
+            user_id: user,
+            username: "admin".to_string(),
+            permissions: synctv_core::models::RoomPermissionSet::default_admin(),
+            role: synctv_proto::common::RoomMemberRole::Admin as i32,
+            added_permissions: synctv_core::models::RoomPermissionSet(0),
+            removed_permissions: synctv_core::models::RoomPermissionSet(0),
+            admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
+            admin_removed_permissions: synctv_core::models::RoomPermissionSet(0),
+            joined_at: chrono::Utc::now(),
+            timestamp: chrono::Utc::now(),
+        };
+        let wrong_user = RealtimeEvent::UserJoined {
+            event_id: "online-wrong-user".to_string(),
+            room_id: RoomId::expect_positive(7),
+            user_id: other,
+            username: "admin".to_string(),
+            permissions: synctv_core::models::RoomPermissionSet::default_admin(),
+            role: synctv_proto::common::RoomMemberRole::Admin as i32,
+            added_permissions: synctv_core::models::RoomPermissionSet(0),
+            removed_permissions: synctv_core::models::RoomPermissionSet(0),
+            admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
+            admin_removed_permissions: synctv_core::models::RoomPermissionSet(0),
+            joined_at: chrono::Utc::now(),
+            timestamp: chrono::Utc::now(),
+        };
+        let wrong_kind = RealtimeEvent::UserLeft {
+            event_id: "online-left".to_string(),
+            room_id: RoomId::expect_positive(7),
+            user_id: user,
+            username: "admin".to_string(),
+            role: synctv_proto::common::RoomMemberRole::Admin as i32,
+            timestamp: chrono::Utc::now(),
+        };
+
+        assert!(ResourceObserver::online_event_matches_observation(
+            &matching, &resource
+        ));
+        assert!(!ResourceObserver::online_event_matches_observation(
+            &wrong_user,
+            &resource
+        ));
+        assert!(!ResourceObserver::online_event_matches_observation(
+            &wrong_kind,
+            &resource
+        ));
+    }
+
+    #[test]
+    fn playback_observation_starts_from_current_playback_cursor() {
         let observation = playback_observation();
         let request = synctv_proto::client::ObserveResource {
             observe_id: "playback".to_string(),

@@ -50,6 +50,7 @@ fn make_versioned(
                 },
             )]),
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata: HashMap::new(),
         },
         expires_at: chrono::Utc::now().timestamp() + ttl_secs,
@@ -196,6 +197,7 @@ fn test_signed_alist_playback_rewrites_thumbnail_metadata() {
             },
         )]),
         default_mode: "direct".to_string(),
+        duration_seconds: None,
         metadata: HashMap::from([(
             "thumbnail".to_string(),
             serde_json::json!("https://alist.example.com/thumb/movie.jpg"),
@@ -286,6 +288,7 @@ async fn test_hls_modes_sign_and_resolve_to_their_own_m3u8_urls() {
             ),
         ]),
         default_mode: "transcoded_HD".to_string(),
+        duration_seconds: None,
         metadata: HashMap::new(),
     };
     let stored = VersionedPlayback {
@@ -451,6 +454,7 @@ async fn test_signed_subtitle_url_round_trips_for_matching_mode() {
             ),
         ]),
         default_mode: "direct".to_string(),
+        duration_seconds: None,
         metadata: HashMap::new(),
     };
     let stored = VersionedPlayback {

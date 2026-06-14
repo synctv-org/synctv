@@ -18,6 +18,14 @@ use crate::{
 };
 
 impl RoomService {
+    pub(super) const fn role_member_event_scope() -> bool {
+        true
+    }
+
+    pub(super) const fn permission_member_event_scope() -> bool {
+        false
+    }
+
     pub(super) async fn audit_log(
         &self,
         actor_id: &UserId,
@@ -114,6 +122,7 @@ impl RoomService {
         target_user_id: UserId,
         changed_by: UserId,
         member: Option<&RoomMember>,
+        role_changed: bool,
     ) -> Result<PermissionChangedOutboxSnapshot> {
         let target_username = Self::membership_snapshot_username_tx(tx, &target_user_id).await?;
         let changed_by_username = Self::membership_snapshot_username_tx(tx, &changed_by).await?;
@@ -156,6 +165,7 @@ impl RoomService {
             target_username,
             changed_by,
             changed_by_username,
+            role_changed,
             new_permissions,
             role,
             added_permissions,
@@ -170,10 +180,15 @@ impl RoomService {
         room_id: RoomId,
         user_id: UserId,
     ) -> Result<UserLeftOutboxSnapshot> {
+        let role = self.get_member(&room_id, &user_id).await?.map_or_else(
+            || i32::from(RoomRole::Member),
+            |member| i32::from(member.role),
+        );
         Ok(UserLeftOutboxSnapshot {
             room_id,
             user_id,
             username: self.membership_snapshot_username(&user_id).await?,
+            role,
         })
     }
 

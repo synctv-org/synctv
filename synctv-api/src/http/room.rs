@@ -9,6 +9,7 @@ mod objects;
 mod playback;
 mod playlists;
 mod query;
+mod report;
 mod settings;
 mod streams;
 mod types;
@@ -17,13 +18,15 @@ pub(crate) mod watch;
 pub(crate) use chat::{
     __path_clear_chat_reaction, __path_delete_chat_message, __path_edit_chat_message,
     __path_get_chat_history, __path_get_chat_message, __path_get_chat_message_context,
-    __path_get_chat_read_state, __path_list_chat_reaction_users, __path_mark_chat_read,
-    __path_send_chat_message, __path_set_chat_reaction,
+    __path_get_chat_message_read_receipts, __path_get_chat_read_state,
+    __path_list_chat_reaction_users, __path_mark_chat_read, __path_send_chat_message,
+    __path_set_chat_reaction,
 };
 pub use chat::{
     clear_chat_reaction, delete_chat_message, edit_chat_message, get_chat_history,
-    get_chat_message, get_chat_message_context, get_chat_playback_messages, get_chat_read_state,
-    list_chat_reaction_users, mark_chat_read, send_chat_message, set_chat_reaction,
+    get_chat_message, get_chat_message_context, get_chat_message_read_receipts,
+    get_chat_playback_messages, get_chat_read_state, list_chat_reaction_users, mark_chat_read,
+    send_chat_message, set_chat_reaction,
 };
 pub(crate) use execute::execute_room_actor_endpoint;
 use execute::request_metadata;
@@ -61,10 +64,10 @@ pub use objects::{
 };
 #[cfg(feature = "openapi")]
 pub(crate) use playback::{
-    __path_get_playback, __path_start_playback, __path_stop_playback, __path_update_playback,
+    __path_get_playback, __path_start_playback, __path_stop_playback, __path_update_playback_state,
 };
 pub use playback::{
-    get_playback, start_playback, stop_playback, update_playback, watch_playback,
+    get_playback, start_playback, stop_playback, update_playback_state, watch_playback,
     watch_playback_state,
 };
 #[cfg(feature = "openapi")]
@@ -82,6 +85,15 @@ pub(crate) use query::watch_after_event_sequence;
 #[cfg(test)]
 use query::{parse_optional_query_bool, parse_optional_query_i32};
 pub use query::{GetPlaybackQuery, WatchPlaybackQuery, WatchQuery};
+#[cfg(feature = "openapi")]
+pub(crate) use report::{
+    __path_get_room_content_report, __path_list_room_content_reports, __path_report_content,
+    __path_update_room_content_report_status,
+};
+pub use report::{
+    get_room_content_report, list_room_content_reports, report_content,
+    update_room_content_report_status,
+};
 #[cfg(feature = "openapi")]
 pub(crate) use settings::{
     __path_clear_room_password, __path_finish_room_password_login,
@@ -106,9 +118,7 @@ pub use types::{
 #[cfg(feature = "openapi")]
 pub(crate) use watch::__path_watch_chat_events;
 #[cfg(test)]
-use watch::{
-    sse_event_from_server_message, sse_event_id_from_resource_changed, CancelOnDropStream,
-};
+use watch::{sse_event_from_server_message, sse_event_id_from_resource_event, CancelOnDropStream};
 pub use watch::{watch_chat_events, watch_playlist_items, watch_room_members, watch_room_settings};
 
 #[cfg(test)]

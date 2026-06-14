@@ -649,6 +649,7 @@ async fn test_db_reload_seeds_missing_local_playback_fence() {
             invalidation_service: None,
             l2_cache: None,
             realtime_outbox: None,
+            source_metadata_repo: None,
         },
     );
     let domain = CacheDomain::Playback { room_id: room.id };

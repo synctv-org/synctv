@@ -2,6 +2,7 @@
 //!
 //! Provides reusable functions for proxying media streams and rewriting M3U8
 //! playlists.  Used by per-provider proxy routes in `synctv-api`.
+#![allow(clippy::missing_errors_doc)]
 
 #[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");

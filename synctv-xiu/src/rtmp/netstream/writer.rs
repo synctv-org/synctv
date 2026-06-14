@@ -237,8 +237,8 @@ mod tests {
                 reads: VecDeque::new(),
             })));
 
-        let mut writer = NetStreamWriter::new(io);
-        writer
+        let mut stream_writer = NetStreamWriter::new(io);
+        stream_writer
             .write_publish(
                 &3.0,
                 &"room-1/media-2?key=secret".to_string(),

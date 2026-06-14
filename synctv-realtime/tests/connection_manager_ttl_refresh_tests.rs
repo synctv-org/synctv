@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use redis::AsyncCommands;
+use std::sync::Arc;
 
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::SharedStateProfile;
@@ -42,15 +43,17 @@ fn distributed_manager(
     conn: redis::aio::ConnectionManager,
     key_prefix: &str,
 ) -> ConnectionManager {
-    build_connection_manager(
-        limits,
-        &SharedStateProfile::for_cluster_runtime(
-            Some(synctv_core::direct_runtime(conn)),
-            key_prefix,
-            true,
-        ),
-    )
-    .expect("shared realtime connection runtime should initialize")
+    let profile = SharedStateProfile::for_cluster_runtime(
+        Some(synctv_core::direct_runtime(conn)),
+        key_prefix,
+        true,
+    );
+    let presence_service = Arc::new(
+        synctv_core::service::OnlinePresenceService::from_shared_state_profile(&profile)
+            .expect("shared presence service should initialize"),
+    );
+    build_connection_manager(limits, &profile, presence_service, "ttl-test-node")
+        .expect("shared realtime connection runtime should initialize")
 }
 
 /// Test TTL refresh with a moderate number of connections (100).

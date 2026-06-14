@@ -11,10 +11,11 @@ use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
     ChatMessageEventResponse, ChatReadStateResponse, DeleteChatMessageRequest,
     EditChatMessageRequest, GetChatHistoryRequest, GetChatHistoryResponse,
-    GetChatMessageContextRequest, GetChatMessageContextResponse, GetChatMessageRequest,
-    GetChatMessageResponse, GetChatPlaybackMessagesRequest, GetChatPlaybackMessagesResponse,
-    GetChatReadStateRequest, ListChatReactionUsersRequest, ListChatReactionUsersResponse,
-    MarkChatReadRequest, SendChatMessageRequest, SetChatReactionRequest, SetChatReactionResponse,
+    GetChatMessageContextRequest, GetChatMessageContextResponse, GetChatMessageReadReceiptsRequest,
+    GetChatMessageReadReceiptsResponse, GetChatMessageRequest, GetChatMessageResponse,
+    GetChatPlaybackMessagesRequest, GetChatPlaybackMessagesResponse, GetChatReadStateRequest,
+    ListChatReactionUsersRequest, ListChatReactionUsersResponse, MarkChatReadRequest,
+    SendChatMessageRequest, SetChatReactionRequest, SetChatReactionResponse,
 };
 
 #[cfg_attr(
@@ -571,6 +572,54 @@ pub async fn get_chat_read_state(
         EndpointRateLimitScope::RoomChat,
         move |client_api, actor| async move {
             client_api.get_chat_read_state_for_actor(&actor, req).await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/chat/messages/{message_id}/read-receipts",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("message_id" = String, Path, description = "Chat message ID"),
+            ("page" = Option<i32>, Query, description = "Page number, defaults to 1"),
+            ("page_size" = Option<i32>, Query, description = "Page size, defaults to service limit")
+        ),
+        responses(
+            (status = 200, description = "Chat message read receipts", body = GetChatMessageReadReceiptsResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission and message ownership required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Message not found", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn get_chat_message_read_receipts(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<ChatMessagePath>,
+    ProtoQuery(mut req): ProtoQuery<GetChatMessageReadReceiptsRequest>,
+) -> AppResult<Json<GetChatMessageReadReceiptsResponse>> {
+    let room_id = path.room_id;
+    req.message_id = path.message_id;
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        room_id,
+        EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomChat,
+        move |client_api, actor| async move {
+            client_api
+                .get_chat_message_read_receipts_for_actor(&actor, req)
+                .await
         },
     )
     .await?;

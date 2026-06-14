@@ -1,0 +1,300 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                cr.id AS \"id!: ContentReportId\",\n                cr.reporter_user_id AS \"reporter_user_id!: UserId\",\n                COALESCE(reporter.username, '') AS \"reporter_username!\",\n                cr.room_id AS \"room_id?: RoomId\",\n                COALESCE(room_ctx.name, '') AS \"room_name!\",\n                cr.target_type AS \"target_type!: ContentReportTargetType\",\n                cr.target_room_id AS \"target_room_id?: RoomId\",\n                COALESCE(target_room.name, '') AS \"target_room_name!\",\n                cr.target_user_id AS \"target_user_id?: UserId\",\n                COALESCE(target_user.username, '') AS \"target_username!\",\n                cr.target_member_room_id AS \"target_member_room_id?: RoomId\",\n                COALESCE(target_member_room.name, '') AS \"target_member_room_name!\",\n                cr.target_member_user_id AS \"target_member_user_id?: UserId\",\n                COALESCE(target_member_user.username, '') AS \"target_member_username!\",\n                cr.target_chat_message_id,\n                cr.target_chat_message_created_at,\n                COALESCE(left(chat.content, 240), '') AS \"target_chat_message_preview!\",\n                cr.reason_code,\n                cr.reason,\n                cr.metadata,\n                cr.status AS \"status!: ContentReportStatus\",\n                cr.reviewed_by AS \"reviewed_by?: UserId\",\n                COALESCE(reviewer.username, '') AS \"reviewed_by_username!\",\n                cr.reviewed_at,\n                cr.resolution_note,\n                cr.created_at,\n                cr.updated_at\n            FROM content_reports cr\n            LEFT JOIN users reporter ON reporter.id = cr.reporter_user_id\n            LEFT JOIN users reviewer ON reviewer.id = cr.reviewed_by\n            LEFT JOIN rooms room_ctx ON room_ctx.id = cr.room_id\n            LEFT JOIN rooms target_room ON target_room.id = cr.target_room_id\n            LEFT JOIN users target_user ON target_user.id = cr.target_user_id\n            LEFT JOIN rooms target_member_room ON target_member_room.id = cr.target_member_room_id\n            LEFT JOIN users target_member_user ON target_member_user.id = cr.target_member_user_id\n            LEFT JOIN chat_messages chat\n              ON chat.room_id = cr.room_id\n             AND chat.id = cr.target_chat_message_id\n             AND chat.created_at = cr.target_chat_message_created_at\n            WHERE cr.id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: ContentReportId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "reporter_user_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "reporter_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "reporter_username!",
+        "type_info": "Varchar",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "room_id?: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "room_name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "target_type!: ContentReportTargetType",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_type"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "target_room_id?: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "target_room_name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "target_user_id?: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "target_username!",
+        "type_info": "Varchar",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "target_member_room_id?: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_member_room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "target_member_room_name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "target_member_user_id?: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_member_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "target_member_username!",
+        "type_info": "Varchar",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 14,
+        "name": "target_chat_message_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_chat_message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "target_chat_message_created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_chat_message_created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "target_chat_message_preview!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 17,
+        "name": "reason_code",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "reason_code"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "metadata",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "metadata"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "status!: ContentReportStatus",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
+        "name": "reviewed_by?: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "reviewed_by"
+          }
+        }
+      },
+      {
+        "ordinal": 22,
+        "name": "reviewed_by_username!",
+        "type_info": "Varchar",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 23,
+        "name": "reviewed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "reviewed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 24,
+        "name": "resolution_note",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "resolution_note"
+          }
+        }
+      },
+      {
+        "ordinal": 25,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 26,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      true,
+      null,
+      false,
+      true,
+      null,
+      true,
+      null,
+      true,
+      null,
+      true,
+      null,
+      true,
+      true,
+      null,
+      false,
+      false,
+      false,
+      false,
+      true,
+      null,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "60470aacaa2d6a87fcaba4004ea71a0e681939a83db5b6a1943c31eb81498f88"
+}

@@ -23,10 +23,10 @@ fn decode_header(bytes: &[u8]) -> anyhow::Result<FileEntryHeader> {
         .map_err(|e| anyhow::anyhow!("bincode decode: {e}"))
 }
 
-/// Magic bytes identifying a valid SyncTV cache file (version 1).
+/// Magic bytes identifying a valid `SyncTV` cache file (version 1).
 pub(super) const CACHE_FILE_MAGIC: &[u8; 4] = b"STV\x01";
 
-/// Minimum size of a valid cache file: 4 (magic) + 4 (header_len) = 8.
+/// Minimum size of a valid cache file: 4 (magic) + 4 (`header_len`) = 8.
 const MIN_FILE_SIZE: u64 = 8;
 
 /// Safety limit: reject cache files with attacker-sized headers.

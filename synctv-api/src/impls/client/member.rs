@@ -11,7 +11,7 @@ use synctv_core::service::{
 
 use super::convert::{
     proto_role_filter_to_room_role, proto_role_to_assignable_room_role, proto_role_to_room_role,
-    try_members_to_proto, try_room_member_to_proto_with_permissions,
+    room_presence_stats_to_proto, try_members_to_proto, try_room_member_to_proto_with_permissions,
 };
 use super::media::prepare_delete_entries_outbox_fanout;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
@@ -37,6 +37,7 @@ pub(crate) fn compute_room_members_response_version(
         hasher.update(member.admin_removed_permissions.to_le_bytes());
         hasher.update(member.joined_at.to_le_bytes());
         hasher.update([u8::from(member.is_online)]);
+        hasher.update(member.connection_count.to_le_bytes());
     }
     hex_encode(hasher.finalize())
 }
@@ -280,33 +281,60 @@ impl ClientApiImpl {
         let mut members = members;
         let member_user_ids: Vec<_> = members.iter().map(|member| member.user_id).collect();
         let online_user_ids: std::collections::HashSet<_> = self
-            .connection_service
-            .room_online_user_ids_distributed(&rid, &member_user_ids)
+            .presence_service
+            .room_online_user_ids(rid, &member_user_ids)
             .await
-            .map_err(ApiError::ServiceUnavailable)?
+            .map_err(ApiError::from)?
             .into_iter()
             .collect();
+        let mut member_connection_counts = std::collections::HashMap::new();
+        for user_id in &member_user_ids {
+            let stats = self
+                .presence_service
+                .user_room_stats(*user_id, rid)
+                .await
+                .map_err(ApiError::from)?;
+            member_connection_counts.insert(*user_id, stats.connection_count);
+        }
         for member in &mut members {
             member.is_online = online_user_ids.contains(&member.user_id);
         }
+        let room_presence = self
+            .presence_service
+            .room_stats(rid)
+            .await
+            .map_err(ApiError::from)?;
 
         let room_settings = self
             .room_service
             .get_room_settings(&rid)
             .await
             .map_err(ApiError::from)?;
-        let proto_members = try_members_to_proto(
+        let mut proto_members = try_members_to_proto(
             &members,
             &room_settings,
             self.room_service.permission_service(),
             &self.public_id_codec,
         )?;
+        for (member, proto_member) in members.iter().zip(proto_members.iter_mut()) {
+            proto_member.connection_count = member_connection_counts
+                .get(&member.user_id)
+                .copied()
+                .map(|count| {
+                    i32::try_from(count).map_err(|_| {
+                        ApiError::Internal("member connection count exceeds i32 range".to_string())
+                    })
+                })
+                .transpose()?
+                .unwrap_or_default();
+        }
 
         let mut response = synctv_proto::client::GetRoomMembersResponse {
             members: proto_members,
             total: i32::try_from(total)
                 .map_err(|_| ApiError::Internal("Member count exceeds i32 range".to_string()))?,
             version: String::new(),
+            presence: Some(room_presence_stats_to_proto(&room_presence)?),
         };
         response.version = compute_room_members_response_version(&response);
         Ok(response)
@@ -334,9 +362,19 @@ impl ClientApiImpl {
             proto_role_to_assignable_room_role(role)?
         };
 
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
         let prepared_membership_fanout = self
             .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(target_uid, uid);
+            .prepare_permission_changed_outbox_fanout(
+                target_uid,
+                uid,
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
         let member = self
             .room_service
             .add_member_with_outbox(
@@ -352,10 +390,6 @@ impl ClientApiImpl {
         prepared_membership_fanout.publish_after_outbox_commit();
 
         let username = required_member_username(self, &target_uid).await?;
-        let is_online = self
-            .connection_service
-            .get_connection_id(&rid, &target_uid)
-            .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
             room_id: member.room_id,
             user_id: member.user_id,
@@ -367,7 +401,7 @@ impl ClientApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
-            is_online,
+            is_online: target_presence.is_online,
             is_active: member.status.is_active(),
         };
         let room_settings = self
@@ -403,9 +437,25 @@ impl ClientApiImpl {
             .public_id_codec
             .decode_review_request_id(&req.request_id)
             .map_err(ApiError::InvalidInput)?;
+        let target_uid = self
+            .review_service
+            .load_room_join_in_room(request_id, rid)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("Room join review not found".to_string()))?
+            .user_id;
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
         let prepared_membership_fanout = self
             .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(UserId::MAX, uid);
+            .prepare_permission_changed_outbox_fanout(
+                target_uid,
+                uid,
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
         let member = self
             .room_service
             .approve_join_request_with_outbox(
@@ -416,14 +466,9 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        let target_uid = member.user_id;
         prepared_membership_fanout.publish_after_outbox_commit();
 
         let username = required_member_username(self, &target_uid).await?;
-        let is_online = self
-            .connection_service
-            .get_connection_id(&rid, &target_uid)
-            .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
             room_id: member.room_id,
             user_id: member.user_id,
@@ -435,7 +480,7 @@ impl ClientApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
-            is_online,
+            is_online: target_presence.is_online,
             is_active: member.status.is_active(),
         };
         let room_settings = self
@@ -474,11 +519,26 @@ impl ClientApiImpl {
             .map_err(ApiError::InvalidInput)?;
         let reason = (!req.reason.trim().is_empty()).then_some(req.reason.as_str());
 
+        let target_uid = self
+            .review_service
+            .load_room_join_in_room(request_id, rid)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("Room join review not found".to_string()))?
+            .user_id;
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
         let prepared_membership_fanout = self
             .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(UserId::MAX, uid);
-        let _target_uid = self
-            .room_service
+            .prepare_permission_changed_outbox_fanout(
+                target_uid,
+                uid,
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
+        self.room_service
             .reject_join_request_with_outbox(
                 rid,
                 uid,
@@ -573,9 +633,19 @@ impl ClientApiImpl {
             } else {
                 None
             };
+            let target_presence = self
+                .presence_service
+                .user_room_stats_fresh(target_uid, rid)
+                .await
+                .map_err(ApiError::from)?;
             let prepared_membership_fanout = self
                 .membership_event_fanout
-                .prepare_permission_changed_outbox_fanout(target_uid, uid);
+                .prepare_permission_changed_outbox_fanout(
+                    target_uid,
+                    uid,
+                    target_presence.is_online,
+                    target_presence.connection_count,
+                );
             self.room_service
                 .update_member_with_outbox(UpdateMemberWithOutboxRequest {
                     room_id: rid,
@@ -607,11 +677,11 @@ impl ClientApiImpl {
         // Fetch username for the target user
         let username = required_member_username(self, &target_uid).await?;
 
-        // Query ConnectionManager for actual online status instead of hardcoding false
-        let is_online = self
-            .connection_service
-            .get_connection_id(&rid, &target_uid)
-            .is_some();
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
 
         let member_with_user = synctv_core::models::RoomMemberWithUser {
             room_id: member.room_id,
@@ -624,7 +694,7 @@ impl ClientApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
-            is_online,
+            is_online: target_presence.is_online,
             is_active: true,
         };
 
@@ -664,9 +734,19 @@ impl ClientApiImpl {
         let target_uid =
             crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec)?;
 
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
         let prepared_membership_fanout = self
             .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(target_uid, uid);
+            .prepare_permission_changed_outbox_fanout(
+                target_uid,
+                uid,
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
         let actor_username = required_member_username(self, &uid).await?;
         let prepared_cleanup_fanout = prepare_delete_entries_outbox_fanout(
             self.media_fanout.clone(),

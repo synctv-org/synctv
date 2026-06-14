@@ -94,6 +94,7 @@ impl CacheLifecycleManager {
     ///
     /// Cancel this token to request a graceful shutdown of the
     /// background task.
+    #[must_use]
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancel.clone()
     }
@@ -103,6 +104,7 @@ impl CacheLifecycleManager {
     /// The task wakes up every `config.eviction_interval` and runs a
     /// single eviction cycle.  It exits when the cancellation token is
     /// cancelled.
+    #[must_use]
     pub fn start(self) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(self.config.eviction_interval);

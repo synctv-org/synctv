@@ -96,14 +96,16 @@ security:
   # opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
   opaque_server_setup_secret: ""
   # Global SSRF policy for server-side outbound requests.
-  # Private, loopback, link-local, reserved, and metadata targets are blocked by default.
+  # Disabled by default for self-hosted private media providers. Enable it for public deployments.
   # Prefer allowed_hosts / allowed_ip_ranges for known internal media endpoints.
   # Set allow_private_network_targets=true only in a trusted private deployment.
   # Environment variables:
+  #   SYNCTV_SECURITY_SSRF_ENABLED
   #   SYNCTV_SECURITY_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS
   #   SYNCTV_SECURITY_SSRF_ALLOWED_HOSTS
   #   SYNCTV_SECURITY_SSRF_ALLOWED_IP_RANGES
   ssrf:
+    enabled: false
     allow_private_network_targets: false
     allowed_hosts: []
     allowed_ip_ranges: []
@@ -507,7 +509,6 @@ bootstrap:
   # Whether to create root user on first startup
   create_root_user: true
   root_username: "root"
-  root_email: ""
   # REQUIRED for production: set a strong password (>= 12 chars, must contain
   # uppercase, lowercase, and digits). Do NOT use any default value in production.
   # Set via SYNCTV_BOOTSTRAP_ROOT_PASSWORD env var.

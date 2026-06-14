@@ -8,7 +8,7 @@ use crate::{
 };
 
 impl MediaService {
-    async fn get_dynamic_playlist_provider(
+    pub(super) async fn get_dynamic_playlist_provider(
         &self,
         playlist: &crate::models::Playlist,
     ) -> Result<(String, Arc<dyn crate::provider::MediaProvider>)> {

@@ -98,19 +98,21 @@ pub(crate) async fn get_provider_credentials(
     instance_name: Option<&str>,
 ) -> Result<Vec<UserProviderCredential>, ApiError> {
     let requested_instance_name = provider_instance_name_from_optional_value(instance_name)?;
-    let credentials = repo.get_by_user(*user_id).await.map_err(|error| {
-        tracing::error!(
-            user_id = %user_id,
-            provider_name,
-            error = %error,
-            "Failed to query provider credentials"
-        );
-        ApiError::ServiceUnavailable(PROVIDER_BINDS_UNAVAILABLE_MESSAGE.to_string())
-    })?;
+    let credentials = repo
+        .get_readable_by_provider(*user_id, provider_name)
+        .await
+        .map_err(|error| {
+            tracing::error!(
+                user_id = %user_id,
+                provider_name,
+                error = %error,
+                "Failed to query provider credentials"
+            );
+            ApiError::ServiceUnavailable(PROVIDER_BINDS_UNAVAILABLE_MESSAGE.to_string())
+        })?;
 
     Ok(credentials
         .into_iter()
-        .filter(|credential| credential.provider == provider_name)
         .filter(|credential| {
             requested_instance_name.is_none_or(|requested| {
                 normalize_provider_instance_name(credential.provider_instance_name.as_deref())

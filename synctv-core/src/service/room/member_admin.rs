@@ -168,6 +168,7 @@ impl RoomService {
                         target_user_id,
                         granter_id,
                         Some(&updated),
+                        Self::permission_member_event_scope(),
                     )
                     .await
                 {
@@ -291,6 +292,7 @@ impl RoomService {
                 target_user_id,
                 creator_id,
                 Some(&updated_member),
+                Self::role_member_event_scope(),
             )
             .await
         {
@@ -427,7 +429,14 @@ impl RoomService {
             }
         };
         let snapshot = match self
-            .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, kicker_id, None)
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                kicker_id,
+                None,
+                Self::role_member_event_scope(),
+            )
             .await
         {
             Ok(snapshot) => snapshot,
@@ -774,6 +783,7 @@ impl RoomService {
                 target_user_id,
                 actor_id,
                 Some(&updated),
+                role.is_some(),
             )
             .await
         {
@@ -1124,6 +1134,7 @@ impl RoomService {
                 target_user_id,
                 actor_id,
                 Some(&updated),
+                role.is_some(),
             )
             .await
         {
@@ -1242,7 +1253,14 @@ impl RoomService {
             }
         };
         let snapshot = match self
-            .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                actor_id,
+                None,
+                Self::role_member_event_scope(),
+            )
             .await
         {
             Ok(snapshot) => snapshot,

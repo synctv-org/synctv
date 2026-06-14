@@ -495,6 +495,7 @@ pub struct GrpcServerConfig<'a> {
     pub rate_limit_config: RateLimitConfig,
     pub content_filter: ContentFilter,
     pub connection_service: Arc<dyn ConnectionRuntime>,
+    pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub providers_manager: Option<Arc<ProvidersManager>>,
     pub provider_instance_manager: Arc<RemoteProviderManager>,
     pub user_provider_credential_repository:
@@ -541,6 +542,7 @@ struct FallbackHttpAppStateDeps {
     room_service: Arc<CoreRoomService>,
     event_service: Arc<dyn RealtimeEventService>,
     connection_service: Arc<dyn ConnectionRuntime>,
+    presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     config: Arc<Config>,
     content_filter: ContentFilter,
     publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
@@ -608,6 +610,7 @@ async fn build_fallback_http_app_state(
             providers,
             event_service: deps.event_service,
             connection_manager: deps.connection_service,
+            presence_service: deps.presence_service,
             jwt_service: deps.jwt_service,
             realtime_fanout_service: deps.realtime_fanout_service,
             oauth2_service: deps.oauth2_service,
@@ -654,6 +657,7 @@ async fn build_axum_router_with_health(
         rate_limit_config,
         content_filter,
         connection_service,
+        presence_service,
         providers_manager,
         provider_instance_manager,
         user_provider_credential_repository,
@@ -694,6 +698,7 @@ async fn build_axum_router_with_health(
             room_service: room_service.clone(),
             event_service: event_service.clone(),
             connection_service: connection_service.clone(),
+            presence_service: presence_service.clone(),
             config: Arc::new(config.clone()),
             content_filter: content_filter.clone(),
             publish_key_service: publish_key_service.clone(),
@@ -762,6 +767,7 @@ async fn build_axum_router_with_health(
         rate_limit_config: rate_limit_config.clone(),
         content_filter,
         connection_service: connection_service.clone(),
+        presence_service: presence_service.clone(),
         email_api,
         config: Arc::new(config.clone()),
         client_api: client_api.clone(),
@@ -1702,6 +1708,7 @@ mod tests {
             )?),
             event_service: event_service.clone(),
             connection_service: connection_service.clone(),
+            presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
             config: fallback_config.clone(),
             content_filter: content_filter.clone(),
             publish_key_service: None,
@@ -1918,6 +1925,7 @@ mod tests {
             rate_limit_config: RateLimitConfig::default(),
             content_filter: ContentFilter::new(),
             connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
+            presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
             email_api: None,
             config: Arc::new(synctv_core::Config::default()),
             client_api: client_api.clone(),
@@ -1999,8 +2007,10 @@ mod tests {
                 .map_err(|status| test_error(format!("{status:?}")))?;
             if let Some(event) = item.event.as_ref() {
                 match event {
-                    synctv_proto::client::watch_chat_events_event::Event::Changed(changed) => {
-                        if let Some(synctv_proto::client::resource_changed::Payload::ChatEvent(
+                    synctv_proto::client::watch_chat_events_event::Event::ResourceEvent(
+                        changed,
+                    ) => {
+                        if let Some(synctv_proto::client::resource_event::Payload::ChatEvent(
                             chat,
                         )) = changed.payload.as_ref()
                         {

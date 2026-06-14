@@ -1,6 +1,7 @@
 use super::*;
 use crate::test_helpers::{TestOptionExt, TestResultExt};
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
 use tempfile::tempdir;
 
 fn env_map(entries: &[(&str, &str)]) -> HashMap<String, String> {
@@ -27,6 +28,58 @@ fn test_large_public_service_capacity_defaults() {
     assert_eq!(cache.l1_capacity, 5000);
     assert_eq!(cache.username_cache_capacity, 10_000);
     assert_eq!(cache.permission_cache_capacity, 20_000);
+}
+
+#[test]
+fn test_ssrf_guard_is_disabled_by_default() {
+    let config = Config::default();
+    let guard = config.security.ssrf_guard();
+
+    assert!(!config.security.ssrf.enabled);
+    assert!(guard.acl().is_none());
+    assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+}
+
+#[test]
+fn test_ssrf_enabled_env_builds_strict_guard() {
+    let config =
+        Config::load_with_env_map(None, &env_map(&[("SYNCTV_SECURITY_SSRF_ENABLED", "true")]))
+            .checked("SSRF enabled env should load");
+    let guard = config.security.ssrf_guard();
+
+    assert!(config.security.ssrf.enabled);
+    assert!(guard.acl().is_some());
+    assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+    assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+}
+
+#[test]
+fn test_ssrf_env_supports_enabled_and_allowlists() {
+    let config = Config::load_with_env_map(
+        None,
+        &env_map(&[
+            ("SYNCTV_SECURITY_SSRF_ENABLED", "true"),
+            ("SYNCTV_SECURITY_SSRF_ALLOWED_HOSTS", "alist.internal"),
+            (
+                "SYNCTV_SECURITY_SSRF_ALLOWED_IP_RANGES",
+                "127.0.0.1/32,10.0.8.0/24",
+            ),
+        ]),
+    )
+    .checked("SSRF allowlist env should load");
+    let guard = config.security.ssrf_guard();
+
+    assert!(config.security.ssrf.enabled);
+    assert_eq!(
+        config.security.ssrf.allowed_hosts,
+        vec!["alist.internal".to_string()]
+    );
+    assert_eq!(
+        config.security.ssrf.allowed_ip_ranges,
+        vec!["127.0.0.1/32".to_string(), "10.0.8.0/24".to_string()]
+    );
+    assert!(!guard.is_host_blocked("alist.internal"));
+    assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
 }
 
 #[test]
@@ -566,7 +619,6 @@ fn valid_prod_config() -> Config {
         bootstrap: BootstrapConfig {
             create_root_user: true,
             root_username: "admin".to_string(),
-            root_email: "admin@example.com".to_string(),
             root_password: "StrongPwd12345!".to_string(),
         },
         cluster: ClusterChannelConfig {
@@ -918,7 +970,6 @@ security:
 bootstrap:
   create_root_user: true
   root_username: "admin"
-  root_email: "admin@example.com"
   root_password_file: "./root.password"
 "#,
     )
@@ -1125,8 +1176,11 @@ livestream:
     )
     .checked("config file should be written");
 
-    let config = Config::from_file(config_path.to_str().checked("utf-8 path"))
-        .checked("config file with data_dir should load");
+    let config = Config::load_with_env_map(
+        Some(config_path.to_str().checked("utf-8 path")),
+        &HashMap::new(),
+    )
+    .checked("config file with data_dir should load");
     let expected_data_dir = config_dir.join("state");
 
     assert_eq!(Path::new(&config.data_dir), expected_data_dir);
@@ -1495,21 +1549,6 @@ fn test_validate_root_password_for_creation_rejects_empty_password_once() {
     assert!(
         !errors.iter().any(|e| e.contains("digit")),
         "empty password should not duplicate into digit errors: {errors:?}"
-    );
-}
-
-#[test]
-fn test_validate_root_email_must_be_valid_when_provided() {
-    let mut config = valid_prod_config();
-    config.bootstrap.root_email = "not-an-email".to_string();
-
-    let errors = config.validate().failed("operation should fail");
-
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.contains("Root email must be a valid email address")),
-        "invalid bootstrap email should be rejected: {errors:?}"
     );
 }
 

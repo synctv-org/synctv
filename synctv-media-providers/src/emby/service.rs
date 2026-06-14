@@ -25,8 +25,8 @@ fn current_user_unavailable_for_token(error: &EmbyError) -> bool {
     )
 }
 
-fn username_matches(user_name: &str, username: &str) -> bool {
-    user_name == username || user_name.eq_ignore_ascii_case(username)
+fn username_matches(candidate_name: &str, requested_name: &str) -> bool {
+    candidate_name == requested_name || candidate_name.eq_ignore_ascii_case(requested_name)
 }
 
 fn select_user_by_username<'a>(

@@ -4,7 +4,7 @@ use synctv_core::models::{RoomPlaybackState, UserId};
 use synctv_core::service::playback::RealtimeOutboxPlaybackStateEventFactory;
 use synctv_realtime::sync::RealtimeEvent;
 
-use crate::realtime_fanout::{PreparedOutboxFanout, RealtimeFanoutService};
+use crate::realtime_fanout::RealtimeFanoutService;
 
 pub trait PlaybackFanoutService: Send + Sync {
     fn prepare_state_changed_outbox_fanout(
@@ -72,9 +72,9 @@ impl PlaybackFanoutService for DefaultPlaybackFanoutService {
             username: actor.username.to_string(),
         };
         PreparedPlaybackStateFanout {
-            prepared: PreparedOutboxFanout::new(self.realtime_fanout.clone(), move |state| {
-                playback_state_changed_event(actor.as_borrowed(), state)
-            }),
+            realtime_fanout: self.realtime_fanout.clone(),
+            actor,
+            event: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -103,17 +103,38 @@ impl OwnedPlaybackFanoutActor {
 
 #[derive(Clone)]
 pub struct PreparedPlaybackStateFanout {
-    prepared: PreparedOutboxFanout<RoomPlaybackState>,
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    actor: OwnedPlaybackFanoutActor,
+    event: Arc<Mutex<Option<RealtimeEvent>>>,
 }
 
 impl PreparedPlaybackStateFanout {
     #[must_use]
     pub fn outbox_factory(&self) -> RealtimeOutboxPlaybackStateEventFactory {
-        self.prepared.outbox_factory()
+        self.outbox_factory_with_source_changed(false)
+    }
+
+    #[must_use]
+    pub fn outbox_factory_with_source_changed(
+        &self,
+        source_changed: bool,
+    ) -> RealtimeOutboxPlaybackStateEventFactory {
+        let realtime_fanout = self.realtime_fanout.clone();
+        let actor = self.actor.clone();
+        let event_slot = self.event.clone();
+        Arc::new(move |state: &RoomPlaybackState| {
+            let event = playback_state_changed_event(actor.as_borrowed(), state, source_changed);
+            *event_slot.lock() = Some(event.clone());
+            realtime_fanout
+                .outbox_event(&event)
+                .map_err(synctv_core::Error::Internal)
+        })
     }
 
     pub fn publish_after_outbox_commit(&self) {
-        self.prepared.publish_after_outbox_commit();
+        if let Some(event) = self.event.lock().take() {
+            self.realtime_fanout.publish_after_outbox_commit(event);
+        }
     }
 }
 
@@ -138,11 +159,19 @@ impl PreparedPlaybackStateBatchFanout {
 
     #[must_use]
     pub fn outbox_factory(&self) -> RealtimeOutboxPlaybackStateEventFactory {
+        self.outbox_factory_with_source_changed(false)
+    }
+
+    #[must_use]
+    pub fn outbox_factory_with_source_changed(
+        &self,
+        source_changed: bool,
+    ) -> RealtimeOutboxPlaybackStateEventFactory {
         let realtime_fanout = self.realtime_fanout.clone();
         let actor = self.actor.clone();
         let events = self.events.clone();
         Arc::new(move |state: &RoomPlaybackState| {
-            let event = playback_state_changed_event(actor.as_borrowed(), state);
+            let event = playback_state_changed_event(actor.as_borrowed(), state, source_changed);
             events.lock().push(event.clone());
             realtime_fanout
                 .outbox_event(&event)
@@ -161,6 +190,7 @@ impl PreparedPlaybackStateBatchFanout {
 fn playback_state_changed_event(
     actor: PlaybackFanoutActor<'_>,
     state: &RoomPlaybackState,
+    source_changed: bool,
 ) -> RealtimeEvent {
     RealtimeEvent::PlaybackStateChanged {
         event_id: synctv_common::snanoid!(16),
@@ -168,6 +198,7 @@ fn playback_state_changed_event(
         user_id: actor.user_id,
         username: actor.username.to_string(),
         state: state.clone(),
+        source_changed,
         timestamp: chrono::Utc::now(),
     }
 }

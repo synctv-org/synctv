@@ -71,10 +71,10 @@ pub(super) async fn get_playback(
     Ok(Response::new(response))
 }
 
-pub(super) async fn update_playback(
+pub(super) async fn update_playback_state(
     service: &ClientServiceImpl,
-    request: Request<UpdatePlaybackRequest>,
-) -> Result<Response<GetPlaybackResponse>, Status> {
+    request: Request<UpdatePlaybackStateRequest>,
+) -> Result<Response<UpdatePlaybackStateResponse>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();
@@ -85,7 +85,7 @@ pub(super) async fn update_playback(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .update_playback(&authenticated.user_id, room_id.as_str(), req)
+                    .update_playback_state(&authenticated.user_id, room_id.as_str(), req)
                     .await
             },
         )

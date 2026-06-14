@@ -96,6 +96,13 @@ service AdminService {
   // Moderation Bans
   // =========================
   rpc ListBanRecords(ListBanRecordsRequest) returns (ListBanRecordsResponse);
+
+  // =========================
+  // Moderation Reports
+  // =========================
+  rpc ListContentReports(ListContentReportsRequest) returns (ListContentReportsResponse);
+  rpc GetContentReport(GetContentReportRequest) returns (GetContentReportResponse);
+  rpc UpdateContentReportStatus(UpdateContentReportStatusRequest) returns (UpdateContentReportStatusResponse);
 }
 
 // =========================
@@ -115,6 +122,7 @@ message AdminUser {
   string banned_by = 10;
   string banned_reason = 11;
   string avatar_url = 12;
+  synctv.common.UserPresenceStats presence = 13;
 }
 
 message AdminRoom {
@@ -131,6 +139,9 @@ message AdminRoom {
   bool is_banned = 11; // Ban flag set by global admin only
   synctv.common.UserStatus creator_status = 12;
   int64 version = 13; // Resource version from database
+  synctv.common.RoomPresenceStats presence = 14;
+  string creator_avatar_url = 15;
+  synctv.client.ResourceCover cover = 16;
 }
 
 message SettingsGroup {
@@ -142,6 +153,32 @@ enum BanTargetType {
   BAN_TARGET_TYPE_UNSPECIFIED = 0;
   BAN_TARGET_TYPE_USER = 1;
   BAN_TARGET_TYPE_ROOM = 2;
+}
+
+enum ContentReportTargetType {
+  CONTENT_REPORT_TARGET_TYPE_UNSPECIFIED = 0;
+  CONTENT_REPORT_TARGET_TYPE_ROOM = 1;
+  CONTENT_REPORT_TARGET_TYPE_USER = 2;
+  CONTENT_REPORT_TARGET_TYPE_ROOM_MEMBER = 3;
+  CONTENT_REPORT_TARGET_TYPE_CHAT_MESSAGE = 4;
+}
+
+enum ContentReportStatus {
+  CONTENT_REPORT_STATUS_UNSPECIFIED = 0;
+  CONTENT_REPORT_STATUS_OPEN = 1;
+  CONTENT_REPORT_STATUS_REVIEWING = 2;
+  CONTENT_REPORT_STATUS_RESOLVED = 3;
+  CONTENT_REPORT_STATUS_DISMISSED = 4;
+}
+
+enum ContentReportScope {
+  CONTENT_REPORT_SCOPE_UNSPECIFIED = 0;
+  CONTENT_REPORT_SCOPE_ANY_RELATED = 1;
+  CONTENT_REPORT_SCOPE_ROOM_CONTEXT = 2;
+  CONTENT_REPORT_SCOPE_TARGET_ROOM = 3;
+  CONTENT_REPORT_SCOPE_TARGET_USER = 4;
+  CONTENT_REPORT_SCOPE_TARGET_MEMBER = 5;
+  CONTENT_REPORT_SCOPE_TARGET_CHAT_MESSAGE = 6;
 }
 
 message UserRegistrationReview {
@@ -207,6 +244,36 @@ message BanRecord {
   int64 revoked_at = 12;
   string revoked_by = 13;
   bool is_active = 14;
+}
+
+message ContentReport {
+  string id = 1;
+  string reporter_user_id = 2;
+  string reporter_username = 3;
+  string room_id = 4;
+  string room_name = 5;
+  ContentReportTargetType target_type = 6;
+  string target_room_id = 7;
+  string target_room_name = 8;
+  string target_user_id = 9;
+  string target_username = 10;
+  string target_member_room_id = 11;
+  string target_member_room_name = 12;
+  string target_member_user_id = 13;
+  string target_member_username = 14;
+  int64 target_chat_message_id = 15;
+  int64 target_chat_message_created_at = 16;
+  string target_chat_message_preview = 17;
+  string reason_code = 18;
+  string reason = 19;
+  bytes metadata = 20;
+  ContentReportStatus status = 21;
+  string reviewed_by = 22;
+  string reviewed_by_username = 23;
+  int64 reviewed_at = 24;
+  string resolution_note = 25;
+  int64 created_at = 26;
+  int64 updated_at = 27;
 }
 
 // =========================
@@ -837,6 +904,7 @@ message GetRoomMembersRequest {
 message GetRoomMembersResponse {
   repeated synctv.common.RoomMember members = 1;
   int32 total = 2;
+  synctv.common.RoomPresenceStats presence = 3;
 }
 
 message AddMemberRequest {
@@ -968,6 +1036,7 @@ message GetSystemStatsResponse {
   int32 total_media = 7;
   int32 provider_instances = 8; // Total media provider instances
   bytes additional_stats = 9; // JSON for extensibility
+  synctv.common.PresenceOverview presence = 10;
 }
 
 // =========================
@@ -1133,6 +1202,85 @@ message ListBanRecordsRequest {
 message ListBanRecordsResponse {
   repeated BanRecord bans = 1;
   int32 total = 2;
+}
+
+message ListContentReportsRequest {
+  option (buf.validate.message).cel = {
+    id: "admin.list_content_reports.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "admin.list_content_reports.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  ContentReportStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+  ContentReportTargetType target_type = 4 [(buf.validate.field).enum.defined_only = true];
+  string reporter_user_id = 5 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+  string room_id = 6 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^room_[A-Za-z0-9]+$"
+  }];
+  string search = 7 [(buf.validate.field).string.max_len = 120];
+  string target_user_id = 8 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+  string target_member_user_id = 9 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+  int64 target_chat_message_id = 10 [(buf.validate.field).int64.gte = 0];
+  string target_room_id = 11 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^room_[A-Za-z0-9]+$"
+  }];
+  string target_member_room_id = 12 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^room_[A-Za-z0-9]+$"
+  }];
+  ContentReportScope scope = 13 [(buf.validate.field).enum.defined_only = true];
+}
+
+message ListContentReportsResponse {
+  repeated ContentReport reports = 1;
+  int32 total = 2;
+}
+
+message GetContentReportRequest {
+  string report_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^report_[A-Za-z0-9]+$"
+  }];
+}
+
+message GetContentReportResponse {
+  ContentReport report = 1;
+}
+
+message UpdateContentReportStatusRequest {
+  string report_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^report_[A-Za-z0-9]+$"
+  }];
+  ContentReportStatus status = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  string resolution_note = 3 [(buf.validate.field).string.max_len = 2000];
+}
+
+message UpdateContentReportStatusResponse {
+  ContentReport report = 1;
+  bool success = 2;
 }
 
 // Batch delete rooms request

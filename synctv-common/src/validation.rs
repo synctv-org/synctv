@@ -4,6 +4,7 @@
 //! attacks in user-supplied paths.  Catches literal `..`, URL-encoded dots,
 //! double-encoded dots, backslash variants, null bytes, and mixed-dot
 //! sequences.
+#![allow(clippy::missing_errors_doc)]
 
 use std::fmt;
 
@@ -99,9 +100,9 @@ pub fn validate_path_for_traversal(path: &str) -> Result<(), PathTraversalError>
                         }
                         // Triple encoding: %25 decodes to %, check next layer
                         if inner_val == 0x25 && i + 6 < bytes.len() {
-                            let inner2_hex = &path[i + 5..i + 7];
-                            if let Ok(inner2_val) = u8::from_str_radix(inner2_hex, 16) {
-                                if inner2_val == 0x2E {
+                            let nested_hex = &path[i + 5..i + 7];
+                            if let Ok(nested_val) = u8::from_str_radix(nested_hex, 16) {
+                                if nested_val == 0x2E {
                                     return Err(PathTraversalError {
                                         reason: "must not contain triple-encoded dot character"
                                             .to_string(),

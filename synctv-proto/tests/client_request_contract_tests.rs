@@ -12,7 +12,7 @@ use synctv_proto::client::{
     RoomJoinReviewPathRequest, RoomMediaTargetPathRequest, RoomMemberTargetPathRequest,
     RoomPathRequest, RoomPlaylistTargetPathRequest, RoomStreamListSortBy, SortDirection,
     StartPlaybackRequest, TransferRoomOwnershipRequest, UnlinkProviderRequest,
-    UpdatePlaybackRequest, UpdatePlaylistRequest, UploadUserAvatarObjectRequest,
+    UpdatePlaybackStateRequest, UpdatePlaylistRequest, UploadUserAvatarObjectRequest,
     WebSocketConnectRequest,
 };
 use synctv_proto::providers::common::{
@@ -945,8 +945,8 @@ fn test_move_media_request_rejects_invalid_anchor_media_id() {
 }
 
 #[test]
-fn test_update_playback_rejects_missing_type() {
-    let request = UpdatePlaybackRequest {
+fn test_update_playback_state_rejects_missing_type() {
+    let request = UpdatePlaybackStateRequest {
         r#type: synctv_proto::client::PlaybackUpdateType::Unspecified as i32,
         playing: None,
         position: Some(1.0),
@@ -962,14 +962,14 @@ fn test_update_playback_rejects_missing_type() {
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
     assert!(
-        message.contains("update_playback.type_required"),
+        message.contains("update_playback_state.type_required"),
         "{message}"
     );
 }
 
 #[test]
-fn test_update_playback_allows_full_seek_state() {
-    let request = UpdatePlaybackRequest {
+fn test_update_playback_state_allows_full_seek_state() {
+    let request = UpdatePlaybackStateRequest {
         r#type: synctv_proto::client::PlaybackUpdateType::Seek as i32,
         playing: Some(false),
         position: Some(42.5),

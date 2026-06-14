@@ -167,11 +167,12 @@ Only add proxy IPs or CIDRs that you control. If this list is empty, SyncTV uses
 
 ## SSRF Outbound Policy
 
-SyncTV uses the global `security.ssrf` policy for server-side outbound HTTP, proxy, provider, OAuth2, remote-provider, and livestream pull requests. The default policy blocks private, loopback, link-local, reserved, and cloud metadata network targets.
+SyncTV uses the global `security.ssrf` policy for server-side outbound HTTP, proxy, provider, OAuth2, remote-provider, and livestream pull requests. SSRF protection is disabled by default so self-hosted deployments can bind private media sources without extra setup. Public deployments should enable SSRF protection and configure the narrowest allowlist that covers trusted internal media endpoints.
 
 ```yaml
 security:
   ssrf:
+    enabled: true
     allow_private_network_targets: false
     allowed_hosts:
       - "alist.internal"
@@ -182,7 +183,9 @@ security:
 
 Field behavior:
 
-- `allow_private_network_targets=false`: default; block local, private, and metadata targets.
+- `enabled=false`: default; disable SSRF protection.
+- `enabled=true`: enable SSRF protection and block local, private, and metadata targets.
+- `allow_private_network_targets=false`: keep local, private, and metadata targets blocked when SSRF protection is enabled.
 - `allowed_hosts`: allow known internal services by hostname.
 - `allowed_ip_ranges`: allow known internal services or subnets by IP/CIDR.
 - `allow_private_network_targets=true`: allow all private/non-global targets; use only in trusted private deployments.
@@ -190,12 +193,13 @@ Field behavior:
 Environment variables:
 
 ```bash
+SYNCTV_SECURITY_SSRF_ENABLED=true
 SYNCTV_SECURITY_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS=false
 SYNCTV_SECURITY_SSRF_ALLOWED_HOSTS=nas.example.internal,alist.internal
 SYNCTV_SECURITY_SSRF_ALLOWED_IP_RANGES=192.168.1.10/32,10.0.8.0/24
 ```
 
-For public deployments, do not expose privileged internal admin endpoints as ordinary media sources for untrusted users. Prefer minimal allowlists over enabling `allow_private_network_targets`.
+For public deployments, enable SSRF protection before exposing provider endpoints to untrusted users. Prefer minimal allowlists.
 
 ## WebAuthn and 2FA
 

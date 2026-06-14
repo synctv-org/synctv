@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*) AS \"count!\"\n            FROM room_members rm\n            JOIN users u ON u.id = rm.user_id AND u.deleted_at IS NULL\n            LEFT JOIN chat_read_states crs\n              ON crs.room_id = rm.room_id\n             AND crs.user_id = rm.user_id\n            WHERE rm.room_id = $1\n              AND ($2::BIGINT IS NULL OR rm.user_id <> $2)\n              AND NOT (\n                    (crs.last_read_event_sequence IS NOT NULL\n                     AND $3::BIGINT IS NOT NULL\n                     AND crs.last_read_event_sequence >= $3)\n                 OR (crs.last_read_message_created_at IS NOT NULL\n                     AND crs.last_read_message_id IS NOT NULL\n                     AND (crs.last_read_message_created_at, crs.last_read_message_id)\n                         > ($4, $5))\n                 OR ($3::BIGINT IS NULL\n                     AND crs.last_read_message_created_at IS NOT NULL\n                     AND crs.last_read_message_id IS NOT NULL\n                     AND (crs.last_read_message_created_at, crs.last_read_message_id)\n                         = ($4, $5))\n              )\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "bdb4188bea09f06428f850337c58ad7e7f9066a0282f2f5ef95a0d7869436fcf"
+}

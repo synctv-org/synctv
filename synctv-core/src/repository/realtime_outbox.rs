@@ -522,7 +522,7 @@ fn room_resource_event_from_outbox_event(
         "user_joined" => {
             let user_id = required_json_i64(&event.payload, "user_id", &event.event_type)?;
             (
-                "room_members".to_string(),
+                "room_member_events".to_string(),
                 user_id.to_string(),
                 json_object(vec![
                     ("member_kind", opt(Some("user".to_string()))),
@@ -563,7 +563,7 @@ fn room_resource_event_from_outbox_event(
         "guest_joined" => {
             let guest_id = required_json_string(&event.payload, "guest_id", &event.event_type)?;
             (
-                "room_members".to_string(),
+                "room_member_events".to_string(),
                 guest_id.clone(),
                 json_object(vec![
                     ("member_kind", opt(Some("guest".to_string()))),
@@ -588,7 +588,7 @@ fn room_resource_event_from_outbox_event(
         "user_left" => {
             let user_id = required_json_i64(&event.payload, "user_id", &event.event_type)?;
             (
-                "room_members".to_string(),
+                "room_member_events".to_string(),
                 user_id.to_string(),
                 json_object(vec![
                     ("member_kind", opt(Some("user".to_string()))),
@@ -600,7 +600,7 @@ fn room_resource_event_from_outbox_event(
         "guest_left" => {
             let guest_id = required_json_string(&event.payload, "guest_id", &event.event_type)?;
             (
-                "room_members".to_string(),
+                "room_member_events".to_string(),
                 guest_id.clone(),
                 json_object(vec![
                     ("member_kind", opt(Some("guest".to_string()))),
@@ -613,7 +613,7 @@ fn room_resource_event_from_outbox_event(
             let target_user_id =
                 required_json_i64(&event.payload, "target_user_id", &event.event_type)?;
             (
-                "room_members".to_string(),
+                "room_member_events".to_string(),
                 target_user_id.to_string(),
                 json_object(vec![
                     ("target_user_id", opt(Some(target_user_id))),
@@ -622,6 +622,10 @@ fn room_resource_event_from_outbox_event(
                         opt(json_string(&event.payload, "target_username")),
                     ),
                     ("changed_by", opt(json_i64(&event.payload, "changed_by"))),
+                    (
+                        "role_changed",
+                        opt(json_bool(&event.payload, "role_changed")),
+                    ),
                     (
                         "changed_by_username",
                         opt(json_string(&event.payload, "changed_by_username")),
@@ -664,7 +668,7 @@ fn room_resource_event_from_outbox_event(
         "kick_user_from_room" => {
             let user_id = required_json_i64(&event.payload, "user_id", &event.event_type)?;
             (
-                "room_members".to_string(),
+                "room_member_events".to_string(),
                 user_id.to_string(),
                 json_object(vec![
                     ("user_id", opt(Some(user_id))),

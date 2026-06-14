@@ -7,7 +7,9 @@ pub enum ResourceInvalidation {
     Playback(PlaybackInvalidation),
     RoomSettings,
     PlaylistItems,
-    RoomMembers,
+    RoomMemberEvents,
+    OnlineCount,
+    OnlineEvent,
     ChatEvents {
         event: Box<ChatMessageEvent>,
     },
@@ -24,7 +26,9 @@ impl PartialEq for ResourceInvalidation {
             (Self::PlaybackState, Self::PlaybackState)
             | (Self::RoomSettings, Self::RoomSettings)
             | (Self::PlaylistItems, Self::PlaylistItems)
-            | (Self::RoomMembers, Self::RoomMembers) => true,
+            | (Self::RoomMemberEvents, Self::RoomMemberEvents)
+            | (Self::OnlineCount, Self::OnlineCount)
+            | (Self::OnlineEvent, Self::OnlineEvent) => true,
             (Self::Playback(left), Self::Playback(right)) => left == right,
             (Self::ChatEvents { event: left }, Self::ChatEvents { event: right }) => {
                 left.event_id == right.event_id
@@ -63,10 +67,15 @@ pub enum PlaybackInvalidation {
 
 pub fn resource_invalidations_for_room_event(event: &RealtimeEvent) -> Vec<ResourceInvalidation> {
     match event {
-        RealtimeEvent::PlaybackStateChanged { .. } => vec![
-            ResourceInvalidation::PlaybackState,
-            ResourceInvalidation::Playback(PlaybackInvalidation::PlaybackStateChanged),
-        ],
+        RealtimeEvent::PlaybackStateChanged { source_changed, .. } => {
+            let mut invalidations = vec![ResourceInvalidation::PlaybackState];
+            if *source_changed {
+                invalidations.push(ResourceInvalidation::Playback(
+                    PlaybackInvalidation::PlaybackStateChanged,
+                ));
+            }
+            invalidations
+        }
         RealtimeEvent::MediaUpdated { media_id, .. }
         | RealtimeEvent::MediaRemoved { media_id, .. } => vec![
             ResourceInvalidation::PlaylistItems,
@@ -96,16 +105,19 @@ pub fn resource_invalidations_for_room_event(event: &RealtimeEvent) -> Vec<Resou
         RealtimeEvent::MediaAdded { .. } | RealtimeEvent::PlaylistCreated { .. } => {
             vec![ResourceInvalidation::PlaylistItems]
         }
-        RealtimeEvent::RoomSettingsChanged { .. } => vec![
-            ResourceInvalidation::RoomSettings,
-            ResourceInvalidation::RoomMembers,
-        ],
+        RealtimeEvent::RoomSettingsChanged { .. } => vec![ResourceInvalidation::RoomSettings],
         RealtimeEvent::UserJoined { .. }
         | RealtimeEvent::GuestJoined { .. }
         | RealtimeEvent::UserLeft { .. }
-        | RealtimeEvent::GuestLeft { .. }
-        | RealtimeEvent::PermissionChanged { .. }
-        | RealtimeEvent::KickUserFromRoom { .. } => vec![ResourceInvalidation::RoomMembers],
+        | RealtimeEvent::GuestLeft { .. } => {
+            vec![
+                ResourceInvalidation::RoomMemberEvents,
+                ResourceInvalidation::OnlineEvent,
+            ]
+        }
+        RealtimeEvent::PermissionChanged { .. } | RealtimeEvent::KickUserFromRoom { .. } => {
+            vec![ResourceInvalidation::RoomMemberEvents]
+        }
         RealtimeEvent::ChatMessageEvent { event, .. } => {
             vec![ResourceInvalidation::ChatEvents {
                 event: Box::new(event.clone()),
@@ -145,17 +157,18 @@ pub fn resource_invalidations_for_cache_targets(
         );
         push_unique(&mut invalidations, ResourceInvalidation::RoomSettings);
         push_unique(&mut invalidations, ResourceInvalidation::PlaylistItems);
-        push_unique(&mut invalidations, ResourceInvalidation::RoomMembers);
+        push_unique(&mut invalidations, ResourceInvalidation::RoomMemberEvents);
+        push_unique(&mut invalidations, ResourceInvalidation::OnlineCount);
     }
     if refresh_user {
         push_unique(
             &mut invalidations,
             ResourceInvalidation::Playback(PlaybackInvalidation::Cache),
         );
-        push_unique(&mut invalidations, ResourceInvalidation::RoomMembers);
+        push_unique(&mut invalidations, ResourceInvalidation::RoomMemberEvents);
     }
     if refresh_username {
-        push_unique(&mut invalidations, ResourceInvalidation::RoomMembers);
+        push_unique(&mut invalidations, ResourceInvalidation::RoomMemberEvents);
     }
 
     invalidations
@@ -225,19 +238,39 @@ mod tests {
                 },
                 images: Vec::new(),
                 reactions: Vec::new(),
+                mentions: Vec::new(),
             },
             occurred_at: now,
         }
     }
 
     #[test]
-    fn playback_state_event_invalidates_state_and_playback() {
+    fn playback_state_event_invalidates_state_only() {
         let event = RealtimeEvent::PlaybackStateChanged {
             event_id: "evt".to_string(),
             room_id: room_id(),
             user_id: user_id(),
             username: "actor".to_string(),
             state: RoomPlaybackState::new(room_id()),
+            source_changed: false,
+            timestamp: Utc::now(),
+        };
+
+        assert_eq!(
+            resource_invalidations_for_room_event(&event),
+            vec![ResourceInvalidation::PlaybackState]
+        );
+    }
+
+    #[test]
+    fn playback_source_event_invalidates_state_and_playback() {
+        let event = RealtimeEvent::PlaybackStateChanged {
+            event_id: "evt".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "actor".to_string(),
+            state: RoomPlaybackState::new(room_id()),
+            source_changed: true,
             timestamp: Utc::now(),
         };
 
@@ -401,7 +434,8 @@ mod tests {
                 ResourceInvalidation::Playback(PlaybackInvalidation::Cache),
                 ResourceInvalidation::RoomSettings,
                 ResourceInvalidation::PlaylistItems,
-                ResourceInvalidation::RoomMembers,
+                ResourceInvalidation::RoomMemberEvents,
+                ResourceInvalidation::OnlineCount,
             ]
         );
 
@@ -416,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn username_cache_targets_refresh_member_lists_for_all_room_observers() {
+    fn username_cache_targets_refresh_member_events_for_all_room_observers() {
         assert_eq!(
             resource_invalidations_for_cache_targets(
                 &[CacheTarget::Username {
@@ -425,12 +459,12 @@ mod tests {
                 room_id(),
                 user_id(),
             ),
-            vec![ResourceInvalidation::RoomMembers]
+            vec![ResourceInvalidation::RoomMemberEvents]
         );
     }
 
     #[test]
-    fn membership_events_invalidate_room_members() {
+    fn membership_events_emit_online_events_without_eager_count_refresh() {
         let joined = RealtimeEvent::GuestJoined {
             event_id: "guest-joined".to_string(),
             room_id: room_id(),
@@ -455,18 +489,60 @@ mod tests {
             reason: "removed".to_string(),
             timestamp: Utc::now(),
         };
+        let user_joined = RealtimeEvent::UserJoined {
+            event_id: "user-joined".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "User".to_string(),
+            permissions: synctv_core::models::RoomPermissionSet::default_member(),
+            role: synctv_proto::common::RoomMemberRole::Member as i32,
+            added_permissions: synctv_core::models::RoomPermissionSet(0),
+            removed_permissions: synctv_core::models::RoomPermissionSet(0),
+            admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
+            admin_removed_permissions: synctv_core::models::RoomPermissionSet(0),
+            joined_at: Utc::now(),
+            timestamp: Utc::now(),
+        };
+        let user_left = RealtimeEvent::UserLeft {
+            event_id: "user-left".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "User".to_string(),
+            role: synctv_proto::common::RoomMemberRole::Member as i32,
+            timestamp: Utc::now(),
+        };
 
         assert_eq!(
             resource_invalidations_for_room_event(&joined),
-            vec![ResourceInvalidation::RoomMembers]
+            vec![
+                ResourceInvalidation::RoomMemberEvents,
+                ResourceInvalidation::OnlineEvent,
+            ]
         );
         assert_eq!(
             resource_invalidations_for_room_event(&left),
-            vec![ResourceInvalidation::RoomMembers]
+            vec![
+                ResourceInvalidation::RoomMemberEvents,
+                ResourceInvalidation::OnlineEvent,
+            ]
+        );
+        assert_eq!(
+            resource_invalidations_for_room_event(&user_joined),
+            vec![
+                ResourceInvalidation::RoomMemberEvents,
+                ResourceInvalidation::OnlineEvent,
+            ]
+        );
+        assert_eq!(
+            resource_invalidations_for_room_event(&user_left),
+            vec![
+                ResourceInvalidation::RoomMemberEvents,
+                ResourceInvalidation::OnlineEvent,
+            ]
         );
         assert_eq!(
             resource_invalidations_for_room_event(&kicked),
-            vec![ResourceInvalidation::RoomMembers]
+            vec![ResourceInvalidation::RoomMemberEvents]
         );
     }
 }

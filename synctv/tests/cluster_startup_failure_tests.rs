@@ -75,7 +75,6 @@ fn standalone_test_config() -> Config {
         bootstrap: BootstrapConfig {
             create_root_user: true,
             root_username: "admin".to_string(),
-            root_email: String::new(),
             root_password: "StrongPwd12345!".to_string(),
         },
         cluster: ClusterChannelConfig::default(), // cluster.enabled = false
@@ -145,7 +144,6 @@ fn cluster_test_config() -> Config {
         bootstrap: BootstrapConfig {
             create_root_user: true,
             root_username: "admin".to_string(),
-            root_email: String::new(),
             root_password: "StrongPwd12345!".to_string(),
         },
         cluster: ClusterChannelConfig {

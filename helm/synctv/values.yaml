@@ -349,10 +349,11 @@ config:
   ## SecurityConfig
   security:
     ## Global SSRF policy for server-side outbound requests.
-    ## Private, loopback, link-local, reserved, and metadata targets are blocked by default.
+    ## Disabled by default for self-hosted private media providers. Enable it for public deployments.
     ## Prefer allowedHosts / allowedIpRanges for known internal media endpoints.
     ## Set allowPrivateNetworkTargets=true only in a trusted private deployment.
     ssrf:
+      enabled: false
       allowPrivateNetworkTargets: false
       allowedHosts: []
       allowedIpRanges: []
@@ -556,7 +557,6 @@ config:
     ## the start when root user creation is handled out of band.
     createRootUser: true
     rootUsername: "root"
-    rootEmail: ""
 
   ## PasswordComplexityConfig
   passwordComplexity:

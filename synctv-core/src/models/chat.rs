@@ -221,6 +221,7 @@ pub struct ChatMessageWithImages {
     pub message: ChatMessage,
     pub images: Vec<ChatImage>,
     pub reactions: Vec<ChatReactionSummary>,
+    pub mentions: Vec<ChatMention>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +241,26 @@ pub struct SendChatMessage {
     pub reply_to_message_id: Option<i64>,
     pub metadata: JsonValue,
     pub images: Vec<super::file_storage::NewStoredFile>,
+    pub mentions: Vec<ChatMentionInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatMentionInput {
+    pub user_id: UserId,
+    pub start: i32,
+    pub length: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ChatMention {
+    pub room_id: RoomId,
+    pub message_id: i64,
+    pub message_created_at: DateTime<Utc>,
+    pub mentioned_user_id: UserId,
+    pub username: Option<String>,
+    pub start: i32,
+    pub length: i32,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -365,6 +386,25 @@ pub struct ChatReadState {
 pub struct ChatReadStateWithUnread {
     pub state: ChatReadState,
     pub unread_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessageReadReceiptUser {
+    pub user: crate::models::User,
+    pub read_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessageReadReceiptMember {
+    pub user: crate::models::User,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessageReadReceiptsPage {
+    pub readers: Vec<ChatMessageReadReceiptUser>,
+    pub unread_members: Vec<ChatMessageReadReceiptMember>,
+    pub reader_total: i64,
+    pub unread_total: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

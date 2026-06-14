@@ -648,33 +648,33 @@ mod tests {
         // Each annexb should have 2 NAL units, each with start code
         // Expected VPS: [start_code][VPS1][start_code][VPS2]
         // = [0x00,0x00,0x00,0x01,0x40,0x01,0x00,0x00,0x00,0x01,0x40,0x02]
-        let expected_vps: Vec<u8> = vec![
+        let vps_expected_bytes: Vec<u8> = vec![
             0x00, 0x00, 0x00, 0x01, 0x40, 0x01, // first VPS
             0x00, 0x00, 0x00, 0x01, 0x40, 0x02, // second VPS
         ];
         assert_eq!(
             &vps_annexb[..],
-            &expected_vps[..],
+            &vps_expected_bytes[..],
             "VPS Annex B should contain all VPS NAL units"
         );
 
-        let expected_sps: Vec<u8> = vec![
+        let sps_expected_bytes: Vec<u8> = vec![
             0x00, 0x00, 0x00, 0x01, 0x42, 0x01, // first SPS
             0x00, 0x00, 0x00, 0x01, 0x42, 0x02, // second SPS
         ];
         assert_eq!(
             &sps_annexb[..],
-            &expected_sps[..],
+            &sps_expected_bytes[..],
             "SPS Annex B should contain all SPS NAL units"
         );
 
-        let expected_pps: Vec<u8> = vec![
+        let pps_expected_bytes: Vec<u8> = vec![
             0x00, 0x00, 0x00, 0x01, 0x44, 0x01, // first PPS
             0x00, 0x00, 0x00, 0x01, 0x44, 0x02, // second PPS
         ];
         assert_eq!(
             &pps_annexb[..],
-            &expected_pps[..],
+            &pps_expected_bytes[..],
             "PPS Annex B should contain all PPS NAL units"
         );
     }

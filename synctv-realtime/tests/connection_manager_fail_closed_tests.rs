@@ -4,12 +4,13 @@
 
 mod integration_test_helpers;
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use integration_test_helpers::TestRedis;
 use redis::aio::{ConnectionManager as RedisConnectionManager, ConnectionManagerConfig};
 use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::service::OnlinePresenceService;
 use synctv_core::{RedisConnectionRuntime, SharedStateProfile};
 use synctv_core_testing::test_redis_key_prefix;
 use synctv_realtime::sync::{build_connection_manager, ConnectionLimits, ConnectionManager};
@@ -62,6 +63,7 @@ fn distributed_manager(
     conn: redis::aio::ConnectionManager,
     key_prefix: &str,
 ) -> ConnectionManager {
+    let presence_service = Arc::new(OnlinePresenceService::local());
     build_connection_manager(
         limits,
         &SharedStateProfile::for_cluster_runtime(
@@ -69,6 +71,8 @@ fn distributed_manager(
             key_prefix,
             true,
         ),
+        presence_service,
+        format!("{key_prefix}node"),
     )
     .expect("shared realtime connection runtime should initialize")
 }
@@ -87,6 +91,7 @@ impl RedisConnectionRuntime for HangingRedisRuntime {
 }
 
 fn manager_with_unavailable_redis(key_prefix: &str) -> ConnectionManager {
+    let presence_service = Arc::new(OnlinePresenceService::local());
     build_connection_manager(
         ConnectionLimits::default(),
         &SharedStateProfile::for_cluster_runtime(
@@ -94,6 +99,8 @@ fn manager_with_unavailable_redis(key_prefix: &str) -> ConnectionManager {
             key_prefix,
             true,
         ),
+        presence_service,
+        format!("{key_prefix}node"),
     )
     .expect("shared realtime connection runtime should initialize")
 }
@@ -136,24 +143,6 @@ async fn test_distributed_presence_queries_fail_closed_when_redis_snapshot_times
         .await
         .expect_err("Redis-backed room connection lookup must not fall back locally");
     assert!(room_error.contains("Distributed room connection lookup unavailable"));
-
-    let online_error = manager
-        .room_online_user_count_distributed(&rid("room_a"))
-        .await
-        .expect_err("Redis-backed online user count must not fall back locally");
-    assert!(online_error.contains("Distributed online user counts unavailable"));
-
-    let hot_error = manager
-        .hot_room_online_user_counts_distributed()
-        .await
-        .expect_err("Redis-backed hot-room query must not fall back locally");
-    assert!(hot_error.contains("Distributed hot-room online user counts unavailable"));
-
-    let same_user_error = manager
-        .has_other_connection_for_user_in_room_distributed(&uid("user1"), &rid("room_a"), "conn1")
-        .await
-        .expect_err("Redis-backed same-user presence lookup must not fall back locally");
-    assert!(same_user_error.contains("Distributed same-user room presence lookup unavailable"));
 }
 
 #[tokio::test]
@@ -309,12 +298,6 @@ async fn test_join_room_move_removes_old_room_from_distributed_index() {
         .await
         .expect("new room distributed lookup should succeed");
     assert_eq!(new_room_connections, vec!["conn1".to_string()]);
-
-    let online_counts = manager
-        .room_online_user_count_distributed_batch(&[&room_a, &room_b])
-        .await
-        .expect("distributed online user counts should succeed");
-    assert_eq!(online_counts, vec![0, 1]);
 }
 
 #[tokio::test]

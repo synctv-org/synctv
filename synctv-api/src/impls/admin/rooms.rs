@@ -4,14 +4,15 @@ use synctv_core::{
 };
 
 use super::{
-    i64_to_i32_api, load_creator_status_map, normalize_non_empty_filter,
+    i64_to_i32_api, load_creator_user_map, normalize_non_empty_filter,
     prepare_delete_entries_outbox_fanout, proto_admin_room_list_sort_by,
     proto_admin_room_member_list_sort_by, proto_admin_sort_direction, proto_room_status_filter,
-    required_room_settings, room_creator_status_from_map, try_admin_room_to_proto,
-    try_members_to_proto, AdminApiImpl, ApiError, RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    required_room_settings, try_admin_room_to_proto, try_members_to_proto, AdminApiImpl, ApiError,
+    RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 use crate::impls::client::{
-    proto_role_filter_to_room_role, proto_role_to_assignable_room_role, proto_role_to_room_role,
+    convert::room_presence_stats_to_proto, proto_role_filter_to_room_role,
+    proto_role_to_assignable_room_role, proto_role_to_room_role,
 };
 
 pub(in crate::impls::admin) fn username_from_loaded_user(
@@ -25,6 +26,18 @@ pub(in crate::impls::admin) fn username_from_loaded_user(
     }
 
     Ok(user.username)
+}
+
+fn creator_user_from_map<'a>(
+    users: &'a std::collections::HashMap<UserId, synctv_core::models::User>,
+    room: &synctv_core::models::Room,
+) -> Result<&'a synctv_core::models::User, ApiError> {
+    users.get(&room.created_by).ok_or_else(|| {
+        ApiError::Internal(format!(
+            "Missing creator user for admin room {} creator {}",
+            room.id, room.created_by
+        ))
+    })
 }
 
 impl AdminApiImpl {
@@ -81,12 +94,7 @@ impl AdminApiImpl {
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        let username_map = self
-            .user_service
-            .get_usernames(&creator_ids)
-            .await
-            .map_err(ApiError::from)?;
-        let creator_status_map = load_creator_status_map(&self.user_service, &creator_ids).await?;
+        let creator_user_map = load_creator_user_map(&self.user_service, &creator_ids).await?;
 
         let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
         let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
@@ -100,24 +108,37 @@ impl AdminApiImpl {
             .get_room_settings_batch(&room_ids)
             .await
             .map_err(ApiError::from)?;
+        let presence_stats = self
+            .presence_service
+            .room_stats_batch(&room_ids)
+            .await
+            .map_err(ApiError::from)?;
+        let presence_by_room: std::collections::HashMap<synctv_core::models::RoomId, _> =
+            presence_stats
+                .iter()
+                .map(|stats| (stats.room_id, stats))
+                .collect();
 
-        let room_list: Vec<_> = rooms
-            .into_iter()
-            .map(|r| {
-                let member_count = crate::impls::room_member_count_or_zero(&member_counts, &r.id);
-                let creator_username = username_map.get(&r.created_by).map(String::as_str);
-                let creator_status = room_creator_status_from_map(&creator_status_map, &r)?;
-                let settings = required_room_settings(&room_settings_map, &r.id)?;
-                try_admin_room_to_proto(
-                    &r,
-                    Some(settings),
-                    Some(member_count),
-                    creator_username,
-                    creator_status,
-                    &self.public_id_codec,
-                )
-            })
-            .collect::<Result<Vec<_>, ApiError>>()?;
+        let mut room_list = Vec::with_capacity(rooms.len());
+        for r in rooms {
+            let member_count = crate::impls::room_member_count_or_zero(&member_counts, &r.id);
+            let creator = creator_user_from_map(&creator_user_map, &r)?;
+            let creator_avatar_url = self.creator_avatar_url(creator).await?;
+            let cover = self.room_cover_for_admin(&r).await?;
+            let settings = required_room_settings(&room_settings_map, &r.id)?;
+            room_list.push(try_admin_room_to_proto(
+                &r,
+                Some(settings),
+                Some(member_count),
+                Some(creator.username.as_str()),
+                creator.status,
+                creator_avatar_url.as_deref(),
+                cover.as_ref().map(|(reference, _)| reference),
+                cover.as_ref().map(|(_, url)| url.as_str()),
+                presence_by_room.get(&r.id).copied(),
+                &self.public_id_codec,
+            )?);
+        }
 
         Ok(synctv_proto::admin::ListRoomsResponse {
             rooms: room_list,
@@ -249,9 +270,32 @@ impl AdminApiImpl {
             sort_by: proto_admin_room_member_list_sort_by(req.sort_by)?,
             sort_direction: proto_admin_sort_direction(req.sort_direction, CoreSortDirection::Asc)?,
         };
-        let (members, total) = self
+        let (mut members, total) = self
             .room_service
             .get_room_members_query(&rid, query)
+            .await
+            .map_err(ApiError::from)?;
+        let member_user_ids = members
+            .iter()
+            .map(|member| member.user_id)
+            .collect::<Vec<_>>();
+        let mut member_connection_counts = std::collections::HashMap::new();
+        for user_id in &member_user_ids {
+            let stats = self
+                .presence_service
+                .user_room_stats(*user_id, rid)
+                .await
+                .map_err(ApiError::from)?;
+            member_connection_counts.insert(*user_id, stats.connection_count);
+        }
+        for member in &mut members {
+            member.is_online = member_connection_counts
+                .get(&member.user_id)
+                .is_some_and(|count| *count > 0);
+        }
+        let room_presence = self
+            .presence_service
+            .room_stats(rid)
             .await
             .map_err(ApiError::from)?;
         let room_settings = self
@@ -260,16 +304,29 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let proto_members = try_members_to_proto(
+        let mut proto_members = try_members_to_proto(
             &members,
             &room_settings,
             self.room_service.permission_service(),
             &self.public_id_codec,
         )?;
+        for (member, proto_member) in members.iter().zip(proto_members.iter_mut()) {
+            proto_member.connection_count = member_connection_counts
+                .get(&member.user_id)
+                .copied()
+                .map(|count| {
+                    i32::try_from(count).map_err(|_| {
+                        ApiError::Internal("member connection count exceeds i32 range".to_string())
+                    })
+                })
+                .transpose()?
+                .unwrap_or_default();
+        }
 
         Ok(synctv_proto::admin::GetRoomMembersResponse {
             members: proto_members,
             total: i64_to_i32_api(total, "room member count")?,
+            presence: Some(room_presence_stats_to_proto(&room_presence)?),
         })
     }
 
@@ -294,9 +351,19 @@ impl AdminApiImpl {
         } else {
             proto_role_to_assignable_room_role(role)?
         };
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
         let prepared_membership_fanout = self
             .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
+            .prepare_permission_changed_outbox_fanout(
+                target_uid,
+                *admin_user_id,
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
         let member = self
             .room_service
             .admin_add_member_with_outbox(AdminAddMemberWithOutboxRequest {
@@ -313,10 +380,6 @@ impl AdminApiImpl {
         prepared_membership_fanout.publish_after_outbox_commit();
 
         let username = self.load_member_response_username(&target_uid).await?;
-        let is_online = self
-            .connection_service
-            .get_connection_id(&rid, &target_uid)
-            .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
             room_id: member.room_id,
             user_id: member.user_id,
@@ -328,7 +391,7 @@ impl AdminApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
-            is_online,
+            is_online: target_presence.is_online,
             is_active: member.status.is_active(),
         };
 
@@ -361,9 +424,25 @@ impl AdminApiImpl {
     ) -> Result<synctv_proto::common::RoomMember, ApiError> {
         let actor = self.require_admin_actor(admin_user_id).await?;
         let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
+        let target_uid = self
+            .review_service
+            .load_room_join_in_room(request_id, rid)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("Room join review not found".to_string()))?
+            .user_id;
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
         let prepared_membership_fanout = self
             .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(UserId::MAX, *admin_user_id);
+            .prepare_permission_changed_outbox_fanout(
+                target_uid,
+                *admin_user_id,
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
 
         let member = self
             .room_service
@@ -377,14 +456,9 @@ impl AdminApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        let target_uid = member.user_id;
         prepared_membership_fanout.publish_after_outbox_commit();
 
         let username = self.load_member_response_username(&target_uid).await?;
-        let is_online = self
-            .connection_service
-            .get_connection_id(&rid, &target_uid)
-            .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
             room_id: member.room_id,
             user_id: member.user_id,
@@ -396,7 +470,7 @@ impl AdminApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
-            is_online,
+            is_online: target_presence.is_online,
             is_active: member.status.is_active(),
         };
 
@@ -429,12 +503,27 @@ impl AdminApiImpl {
         let actor = self.require_admin_actor(admin_user_id).await?;
         let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
         let reason_for_service = (!reason.trim().is_empty()).then_some(reason);
+        let target_uid = self
+            .review_service
+            .load_room_join_in_room(request_id, rid)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("Room join review not found".to_string()))?
+            .user_id;
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
         let prepared_membership_fanout = self
             .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(UserId::MAX, *admin_user_id);
+            .prepare_permission_changed_outbox_fanout(
+                target_uid,
+                *admin_user_id,
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
 
-        let target_uid = self
-            .room_service
+        self.room_service
             .admin_reject_join_request_with_outbox(AdminRejectJoinRequestWithOutbox {
                 room_id: rid,
                 actor_id: *admin_user_id,
@@ -507,9 +596,19 @@ impl AdminApiImpl {
             .await
             .map_err(|_| ApiError::NotFound("User not found".to_string()))?
             .username;
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
         let prepared_membership_fanout = self
             .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
+            .prepare_permission_changed_outbox_fanout(
+                target_uid,
+                *admin_user_id,
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
         let updated_member = self
             .room_service
             .admin_update_member_with_outbox(
@@ -532,10 +631,6 @@ impl AdminApiImpl {
 
         let username = self.load_member_response_username(&target_uid).await?;
 
-        let is_online = self
-            .connection_service
-            .get_connection_id(&rid, &target_uid)
-            .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
             room_id: updated_member.room_id,
             user_id: updated_member.user_id,
@@ -547,7 +642,7 @@ impl AdminApiImpl {
             admin_added_permissions: updated_member.admin_added_permissions,
             admin_removed_permissions: updated_member.admin_removed_permissions,
             joined_at: updated_member.joined_at,
-            is_online,
+            is_online: target_presence.is_online,
             is_active: true,
         };
 
@@ -597,9 +692,19 @@ impl AdminApiImpl {
         let persisted_kicked_by =
             (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(*admin_user_id);
 
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
         let prepared_membership_fanout = self
             .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
+            .prepare_permission_changed_outbox_fanout(
+                target_uid,
+                *admin_user_id,
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
         let prepared_cleanup_fanout = prepare_delete_entries_outbox_fanout(
             self.media_fanout.clone(),
             self.playlist_fanout.clone(),
@@ -693,19 +798,13 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Batch-fetch creator usernames for all rooms in a single query.
         let creator_ids: Vec<synctv_core::models::UserId> = rooms
             .iter()
             .map(|r| r.created_by)
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        let username_map = self
-            .user_service
-            .get_usernames(&creator_ids)
-            .await
-            .map_err(ApiError::from)?;
-        let creator_status_map = load_creator_status_map(&self.user_service, &creator_ids).await?;
+        let creator_user_map = load_creator_user_map(&self.user_service, &creator_ids).await?;
 
         let room_id_refs: Vec<&synctv_core::models::RoomId> =
             rooms.iter().map(|room| &room.id).collect();
@@ -720,24 +819,36 @@ impl AdminApiImpl {
             .get_room_settings_batch(&room_ids)
             .await
             .map_err(ApiError::from)?;
-        let admin_rooms: Vec<synctv_proto::admin::AdminRoom> = rooms
-            .iter()
-            .map(|room| {
-                let creator_username = username_map.get(&room.created_by).map(String::as_str);
-                let creator_status = room_creator_status_from_map(&creator_status_map, room)?;
-                let settings = required_room_settings(&room_settings_map, &room.id)?;
-                let member_count =
-                    crate::impls::room_member_count_or_zero(&member_counts, &room.id);
-                try_admin_room_to_proto(
-                    room,
-                    Some(settings),
-                    Some(member_count),
-                    creator_username,
-                    creator_status,
-                    &self.public_id_codec,
-                )
-            })
-            .collect::<Result<Vec<_>, ApiError>>()?;
+        let presence_stats = self
+            .presence_service
+            .room_stats_batch(&room_ids)
+            .await
+            .map_err(ApiError::from)?;
+        let presence_by_room: std::collections::HashMap<synctv_core::models::RoomId, _> =
+            presence_stats
+                .iter()
+                .map(|stats| (stats.room_id, stats))
+                .collect();
+        let mut admin_rooms = Vec::with_capacity(rooms.len());
+        for room in &rooms {
+            let creator = creator_user_from_map(&creator_user_map, room)?;
+            let creator_avatar_url = self.creator_avatar_url(creator).await?;
+            let cover = self.room_cover_for_admin(room).await?;
+            let settings = required_room_settings(&room_settings_map, &room.id)?;
+            let member_count = crate::impls::room_member_count_or_zero(&member_counts, &room.id);
+            admin_rooms.push(try_admin_room_to_proto(
+                room,
+                Some(settings),
+                Some(member_count),
+                Some(creator.username.as_str()),
+                creator.status,
+                creator_avatar_url.as_deref(),
+                cover.as_ref().map(|(reference, _)| reference),
+                cover.as_ref().map(|(_, url)| url.as_str()),
+                presence_by_room.get(&room.id).copied(),
+                &self.public_id_codec,
+            )?);
+        }
 
         Ok(synctv_proto::admin::GetUserRoomsResponse {
             rooms: admin_rooms,

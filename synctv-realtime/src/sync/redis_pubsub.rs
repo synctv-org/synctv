@@ -1542,38 +1542,43 @@ impl RedisPubSub {
                                     .await
                                     {
                                         Ok(Ok(())) => {
-                                            // Snapshot the stream cursor AFTER subscribing
-                                            // to the PubSub channel. This ensures that on
-                                            // reconnect, catch-up reads start from a known
-                                            // position rather than "0" (which would replay
-                                            // the entire stream history). The deduplicator
-                                            // handles any overlap between live PubSub
-                                            // delivery and the snapshotted cursor.
                                             let sk = self.room_stream_key(room_id);
-                                            match self.get_latest_stream_id_for(&sk).await {
-                                                Ok(Some(id)) => {
+                                            let catchup_start = self.catchup_start_id();
+                                            match self
+                                                .read_missed_events_from(&sk, &catchup_start)
+                                                .await
+                                            {
+                                                Ok(events) => {
+                                                    let mut last_stream_id = None;
+                                                    let caught_up = events.len();
+                                                    for (stream_id, channel, event) in events {
+                                                        self.dispatch_event(&channel, event).await;
+                                                        last_stream_id = Some(stream_id);
+                                                    }
+                                                    let cursor = match last_stream_id {
+                                                        Some(stream_id) => stream_id,
+                                                        None => self
+                                                            .get_latest_stream_id_for(&sk)
+                                                            .await
+                                                            .ok()
+                                                            .flatten()
+                                                            .unwrap_or_else(|| "0".to_string()),
+                                                    };
                                                     debug!(
                                                         room_id = %room_id,
-                                                        stream_id = %id,
-                                                        "Dynamically subscribed to room channel, cursor snapshotted"
+                                                        stream_id = %cursor,
+                                                        caught_up = caught_up,
+                                                        "Dynamically subscribed to room channel and caught up stream"
                                                     );
-                                                    stream_cursors.insert(sk, id);
+                                                    stream_cursors.insert(sk, cursor);
                                                 }
-                                                Ok(None) => {
-                                                    debug!(
-                                                        room_id = %room_id,
-                                                        "Dynamically subscribed to room channel (empty stream)"
-                                                    );
-                                                    stream_cursors.insert(sk, "0".to_string());
-                                                }
-                                                Err(e) => {
+                                                Err(error) => {
                                                     warn!(
-                                                        error = %e,
+                                                        error = %error,
                                                         room_id = %room_id,
-                                                        "Dynamically subscribed but failed to snapshot cursor, using catchup_start_id"
+                                                        "Dynamically subscribed but failed to catch up stream, using catchup_start_id"
                                                     );
-                                                    stream_cursors
-                                                        .insert(sk, self.catchup_start_id());
+                                                    stream_cursors.insert(sk, catchup_start);
                                                 }
                                             }
                                         }

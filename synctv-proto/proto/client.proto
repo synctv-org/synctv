@@ -113,7 +113,7 @@ service RoomService {
   rpc WatchPlayback(WatchPlaybackRequest) returns (stream WatchPlaybackEvent);
   rpc WatchRoomSettings(WatchRoomSettingsRequest) returns (stream WatchRoomSettingsEvent);
   rpc WatchPlaylistItems(WatchPlaylistItemsRequest) returns (stream WatchPlaylistItemsEvent);
-  rpc WatchRoomMembers(WatchRoomMembersRequest) returns (stream WatchRoomMembersEvent);
+  rpc WatchRoomMemberEvents(WatchRoomMemberEventsRequest) returns (stream WatchRoomMemberEventsEvent);
   rpc WatchChatEvents(WatchChatEventsRequest) returns (stream WatchChatEventsEvent);
   rpc CreateChatImageUploadSession(CreateChatImageUploadSessionRequest) returns (CreateChatImageUploadSessionResponse);
   rpc UploadChatImageObject(UploadChatImageObjectRequest) returns (UploadChatImageObjectResponse);
@@ -134,6 +134,11 @@ service RoomService {
   rpc ListChatReactionUsers(ListChatReactionUsersRequest) returns (ListChatReactionUsersResponse);
   rpc MarkChatRead(MarkChatReadRequest) returns (ChatReadStateResponse);
   rpc GetChatReadState(GetChatReadStateRequest) returns (ChatReadStateResponse);
+  rpc GetChatMessageReadReceipts(GetChatMessageReadReceiptsRequest) returns (GetChatMessageReadReceiptsResponse);
+  rpc ReportContent(ReportContentRequest) returns (ReportContentResponse);
+  rpc ListRoomContentReports(ListRoomContentReportsRequest) returns (ListRoomContentReportsResponse);
+  rpc GetRoomContentReport(GetRoomContentReportRequest) returns (GetRoomContentReportResponse);
+  rpc UpdateRoomContentReportStatus(UpdateRoomContentReportStatusRequest) returns (UpdateRoomContentReportStatusResponse);
 
   // WebRTC ICE Servers Configuration
   rpc GetIceServers(GetIceServersRequest) returns (GetIceServersResponse);
@@ -176,7 +181,7 @@ service RoomService {
   rpc StartPlayback(StartPlaybackRequest) returns (StartPlaybackResponse); // Start playing a media or a dynamic-playlist item
   rpc StopPlayback(StopPlaybackRequest) returns (StopPlaybackResponse); // Stop current playback
   rpc GetPlayback(GetPlaybackRequest) returns (GetPlaybackResponse); // Get current playback state and info
-  rpc UpdatePlayback(UpdatePlaybackRequest) returns (GetPlaybackResponse); // Patch current playback state
+  rpc UpdatePlaybackState(UpdatePlaybackStateRequest) returns (UpdatePlaybackStateResponse); // Patch current playback state
 }
 
 // ==================== Public Service ====================
@@ -254,6 +259,8 @@ message Room {
   ResourceAvailability availability = 11; // Availability derived from creator state
   int64 version = 12; // Resource version from database
   ResourceCover cover = 13;
+  synctv.common.RoomPresenceStats presence = 14;
+  UserPublicView creator = 15;
 }
 
 message Media {
@@ -1251,6 +1258,7 @@ message GetRoomMembersResponse {
   repeated synctv.common.RoomMember members = 1;
   int32 total = 2;
   string version = 3; // Snapshot version for this member list result
+  synctv.common.RoomPresenceStats presence = 4;
 }
 
 // Room live streams
@@ -1636,6 +1644,33 @@ message StopPlaybackResponse {
   // Use GetPlayback to retrieve updated state
 }
 
+// Realtime API: update the current playback source. Empty media_id, playlist_id, and target clears playback.
+message UpdatePlaybackRequest {
+  option (buf.validate.message).cel = {
+    id: "update_playback.single_target"
+    message: "media_id and playlist_id cannot both be set"
+    expression: "!(this.media_id != '' && this.playlist_id != '')"
+  };
+  option (buf.validate.message).cel = {
+    id: "update_playback.clear_target"
+    message: "target must be empty when clearing playback"
+    expression: "(this.media_id != '' || this.playlist_id != '') || size(this.target) == 0"
+  };
+  option (buf.validate.message).cel = {
+    id: "update_playback.static_target"
+    message: "target must be empty when switching to a static media item"
+    expression: "this.media_id == '' || size(this.target) == 0"
+  };
+  option (buf.validate.message).cel = {
+    id: "update_playback.dynamic_target"
+    message: "target is required when switching to a dynamic playlist item"
+    expression: "this.playlist_id == '' || size(this.target) > 0"
+  };
+  string media_id = 1; // Static media ID. Mutually exclusive with playlist_id.
+  string playlist_id = 2; // Dynamic playlist ID. Requires target. Mutually exclusive with media_id.
+  bytes target = 3; // Provider-facing playback target payload. Empty for static media playback.
+}
+
 // Media Management Messages
 // Note: room_id extracted from x-room-id metadata
 
@@ -1910,7 +1945,7 @@ message AddMediaBatchResponse {
 // Note: room_id extracted from x-room-id metadata
 // Client -> Server: Real-time playback control commands sent over the room
 // realtime stream, either WebSocket or gRPC MessageStream.
-// Server broadcasts playback state changes to all room members via ServerMessage.PlaybackStateChanged
+// Server broadcasts playback state changes to observers via ResourceEvent(playback_state).
 
 enum PlaybackUpdateType {
   PLAYBACK_UPDATE_TYPE_UNSPECIFIED = 0;
@@ -1920,10 +1955,10 @@ enum PlaybackUpdateType {
   PLAYBACK_UPDATE_TYPE_SPEED = 4;
 }
 
-message UpdatePlaybackRequest {
+message UpdatePlaybackStateRequest {
   option (buf.validate.message).cel = {
-    id: "update_playback.type_required"
-    message: "playback update type is required"
+    id: "update_playback_state.type_required"
+    message: "playback state update type is required"
     expression: "this.type != 0"
   };
   PlaybackUpdateType type = 1 [(buf.validate.field).enum.defined_only = true];
@@ -1938,6 +1973,10 @@ message UpdatePlaybackRequest {
   optional string expected_playlist_id = 7;
   // SHA-256 hex of PlaybackState.target.
   optional string expected_target_hash = 8;
+}
+
+message UpdatePlaybackStateResponse {
+  PlaybackState playback_state = 1;
 }
 
 enum PlaybackDeliveryPreference {
@@ -2018,6 +2057,8 @@ message Playback {
   map<string, string> metadata = 8;
   // Earliest URL expiration across playback URLs, if any.
   optional int64 expires_at = 10;
+  // Backend-owned source duration in seconds, when available.
+  optional double duration_seconds = 11;
 }
 
 // Playback information for a single mode
@@ -2127,18 +2168,13 @@ message ClientMessage {
   oneof message {
     ChatMessageSend chat = 1;
     HeartbeatMessage heartbeat = 2;
-    // Playback progress heartbeat: client periodically reports playback position
-    PlaybackProgressReport playback_progress = 3;
-    // Playback state update command (real-time)
+    // Playback state update command (real-time).
+    UpdatePlaybackStateRequest playback_state_update = 3;
+    // Playback source update command (real-time). Empty target clears playback.
     UpdatePlaybackRequest playback_update = 4;
     ObserveResource observe_resource = 5;
     UnobserveResource unobserve_resource = 6;
-    // WebRTC signaling messages (P2P)
-    WebRTCOffer webrtc_offer = 7;
-    WebRTCAnswer webrtc_answer = 8;
-    WebRTCIceCandidate webrtc_ice_candidate = 9;
-    WebRTCJoin webrtc_join = 10;
-    WebRTCLeave webrtc_leave = 11;
+    WebRtcCommand webrtc = 7;
   }
 }
 
@@ -2159,8 +2195,11 @@ message ObserveResource {
     ObservePlayback playback = 5;
     ObserveRoomSettings room_settings = 6;
     ObservePlaylistItems playlist_items = 7;
-    ObserveRoomMembers room_members = 8;
+    ObserveRoomMemberEvents room_member_events = 8;
     ObserveChatEvents chat_events = 9;
+    ObserveOnlineCount online_count = 10;
+    ObserveOnlineEvent online_event = 11;
+    ObserveSelfRoomMember self_room_member = 12;
   }
 }
 
@@ -2193,10 +2232,46 @@ message ObservePlaylistItems {
   optional int64 after_event_sequence = 2;
 }
 
-message ObserveRoomMembers {
-  GetRoomMembersRequest request = 1;
-  // Unset starts from the current snapshot and live changes.
-  optional int64 after_event_sequence = 2;
+message ObserveRoomMemberEvents {
+  // Replays durable member events with a per-room resource sequence greater than this value.
+  // Unset starts from live member events; use GetRoomMembers for the current member list.
+  optional int64 after_event_sequence = 1;
+}
+
+message ObserveSelfRoomMember {
+  // Current signed-in user's room member and effective permission snapshot.
+  // Changes when the user's role, permission overrides, or room-level permission defaults change.
+  optional int64 after_event_sequence = 1;
+}
+
+message ObserveOnlineCount {
+  // Empty filters return the whole-room online user count.
+  // Use role filters or user_ids to reduce the aggregation scope for member list views.
+  repeated common.RoomMemberRole roles = 1 [(buf.validate.field).repeated = {
+    max_items: 4
+    items: { enum: { defined_only: true } }
+  }];
+  repeated string user_ids = 2 [(buf.validate.field).repeated = {
+    max_items: 500
+    items: { string: { min_len: 1 max_len: 64 } }
+  }];
+}
+
+message ObserveOnlineEvent {
+  // Live-only stream for member online/offline events.
+  // Use filters to reduce high-frequency updates for large rooms.
+  repeated common.RoomMemberRole roles = 1 [(buf.validate.field).repeated = {
+    max_items: 4
+    items: { enum: { defined_only: true } }
+  }];
+  repeated OnlineEventKind kinds = 2 [(buf.validate.field).repeated = {
+    max_items: 2
+    items: { enum: { defined_only: true } }
+  }];
+  repeated string user_ids = 3 [(buf.validate.field).repeated = {
+    max_items: 500
+    items: { string: { min_len: 1 max_len: 64 } }
+  }];
 }
 
 message ObserveChatEvents {
@@ -2226,9 +2301,9 @@ message WatchPlaylistItemsRequest {
   ObservePlaylistItems playlist_items = 2;
 }
 
-message WatchRoomMembersRequest {
+message WatchRoomMemberEventsRequest {
   ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
-  ObserveRoomMembers room_members = 2;
+  ObserveRoomMemberEvents room_member_events = 2;
 }
 
 message WatchChatEventsRequest {
@@ -2239,7 +2314,7 @@ message WatchChatEventsRequest {
 message WatchPlaybackStateEvent {
   oneof event {
     ResourceObserved observed = 1;
-    ResourceChanged changed = 2;
+    ResourceEvent resource_event = 2;
     ResourceObserveError error = 3;
   }
 }
@@ -2247,7 +2322,7 @@ message WatchPlaybackStateEvent {
 message WatchPlaybackEvent {
   oneof event {
     ResourceObserved observed = 1;
-    ResourceChanged changed = 2;
+    ResourceEvent resource_event = 2;
     ResourceObserveError error = 3;
   }
 }
@@ -2255,7 +2330,7 @@ message WatchPlaybackEvent {
 message WatchRoomSettingsEvent {
   oneof event {
     ResourceObserved observed = 1;
-    ResourceChanged changed = 2;
+    ResourceEvent resource_event = 2;
     ResourceObserveError error = 3;
   }
 }
@@ -2263,15 +2338,15 @@ message WatchRoomSettingsEvent {
 message WatchPlaylistItemsEvent {
   oneof event {
     ResourceObserved observed = 1;
-    ResourceChanged changed = 2;
+    ResourceEvent resource_event = 2;
     ResourceObserveError error = 3;
   }
 }
 
-message WatchRoomMembersEvent {
+message WatchRoomMemberEventsEvent {
   oneof event {
     ResourceObserved observed = 1;
-    ResourceChanged changed = 2;
+    ResourceEvent resource_event = 2;
     ResourceObserveError error = 3;
   }
 }
@@ -2279,59 +2354,19 @@ message WatchRoomMembersEvent {
 message WatchChatEventsEvent {
   oneof event {
     ResourceObserved observed = 1;
-    ResourceChanged changed = 2;
+    ResourceEvent resource_event = 2;
     ResourceObserveError error = 3;
   }
 }
 
-// Client -> Server: periodic playback progress heartbeat
-// Sent every few seconds by clients that are actively playing media.
-// The server uses these reports to track actual client playback positions,
-// detect drift between clients, and provide accurate positions to new joiners.
-message PlaybackProgressReport {
-  double position = 1; // Playback position in seconds
-  bool is_playing = 2; // Whether the client is currently playing
-  // Optional source guard. When any expected_* field is supplied, all expected_* fields are required.
-  // Empty string means the current source has no media id.
-  optional string expected_media_id = 3;
-  // Empty string means the current source has no playlist id.
-  optional string expected_playlist_id = 4;
-  // SHA-256 hex of PlaybackState.target.
-  optional string expected_target_hash = 5;
-}
-
 message ServerMessage {
   oneof message {
-    ChatMessageReceive chat = 1;
-    PlaybackStateChanged playback_state = 2;
-    UserJoinedRoom user_joined = 3;
-    UserLeftRoom user_left = 4;
-    RoomSettingsChanged room_settings = 5;
     HeartbeatAck heartbeat_ack = 6;
     ErrorMessage error = 7;
-    MediaAdded media_added = 8;
-    MediaRemoved media_removed = 9;
-    MediaRemovedBatch media_removed_batch = 10;
-    PermissionChanged permission_changed = 11;
-    PlaylistCreated playlist_created = 12;
-    PlaylistUpdated playlist_updated = 13;
-    PlaylistDeleted playlist_deleted = 14;
-    PlaylistReordered playlist_reordered = 15;
-    PlayingChanged playing_changed = 16;
-    // WebRTC signaling messages (forwarded from other peers)
-    WebRTCOffer webrtc_offer = 17;
-    WebRTCAnswer webrtc_answer = 18;
-    WebRTCIceCandidate webrtc_ice_candidate = 19;
-    WebRTCJoin webrtc_join = 20;
-    WebRTCLeave webrtc_leave = 21;
     // User notification push (replaces NOTIFICATION_PUSH error code abuse)
     UserNotification notification = 24;
-    MediaUpdated media_updated = 25;
-    PlaybackChanged playback = 26;
-    PlaylistItemsChanged playlist_items = 27;
-    RoomMembersChanged room_members = 28;
     ResourceObserved resource_observed = 29;
-    ResourceChanged resource_changed = 30;
+    ResourceEvent resource_event = 30;
     ResourceObserveError resource_observe_error = 31;
   }
 }
@@ -2342,35 +2377,29 @@ message ResourceObserved {
   EventCursor event_cursor = 4;
 }
 
-message ResourceChangedOnly {}
+message ResourceEventOnly {}
 
-message ResourceChanged {
+message ResourceEvent {
   string observe_id = 1;
   oneof payload {
-    ResourceChangedOnly changed_only = 3;
+    ResourceEventOnly changed_only = 3;
     PlaybackState playback_state = 4;
     Playback playback = 5;
-    RoomSettingsChanged room_settings = 6;
+    GetRoomSettingsResponse room_settings = 6;
     ListPlaylistItemsResponse playlist_items = 7;
-    GetRoomMembersResponse room_members = 8;
+    RoomMemberEvent room_member_event = 8;
     ChatMessageEvent chat_event = 9;
+    OnlineCount online_count = 10;
+    OnlineEvent online_event = 12;
+    WebRtcEvent webrtc_event = 13;
+    synctv.common.RoomMember self_room_member = 14;
   }
-  EventCursor event_cursor = 10;
+  EventCursor event_cursor = 11;
 }
 
 message ResourceObserveError {
   string observe_id = 1;
   ErrorMessage error = 2;
-}
-
-message PlaylistItemsChanged {
-  string room_id = 1;
-  ListPlaylistItemsResponse snapshot = 2;
-}
-
-message RoomMembersChanged {
-  string room_id = 1;
-  GetRoomMembersResponse snapshot = 2;
 }
 
 // Note: room_id extracted from x-room-id metadata in MessageStream context.
@@ -2381,6 +2410,25 @@ message ChatMessageSend {
   string client_message_id = 4; // Client-generated idempotency key for normal chat messages.
   repeated ChatImage images = 5; // Image-only payloads; generic file sending is intentionally unsupported.
   string reply_to_message_id = 6;
+  bytes metadata = 7; // JSON object.
+  repeated ChatMentionInput mentions = 8;
+}
+
+message ChatMentionInput {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  int32 start = 2 [(buf.validate.field).int32.gte = 0];
+  int32 length = 3 [(buf.validate.field).int32.gt = 0];
+}
+
+message ChatMention {
+  string user_id = 1;
+  string username = 2;
+  int32 start = 3;
+  int32 length = 4;
 }
 
 message ChatMessageReceive {
@@ -2408,6 +2456,8 @@ message ChatMessageReceive {
   optional double playback_position_seconds = 22;
   repeated ChatReactionSummary reactions = 23;
   int32 reaction_count = 24;
+  bytes metadata = 25; // JSON object.
+  repeated ChatMention mentions = 26;
 }
 
 message ChatReactionSummary {
@@ -2435,6 +2485,14 @@ enum ChatMessageEventKind {
   CHAT_MESSAGE_EVENT_KIND_EDITED = 2;
   CHAT_MESSAGE_EVENT_KIND_DELETED = 3;
   CHAT_MESSAGE_EVENT_KIND_REACTIONS_CHANGED = 4;
+}
+
+enum RoomMemberEventKind {
+  ROOM_MEMBER_EVENT_KIND_UNSPECIFIED = 0;
+  ROOM_MEMBER_EVENT_KIND_JOINED = 1;
+  ROOM_MEMBER_EVENT_KIND_LEFT = 2;
+  ROOM_MEMBER_EVENT_KIND_PERMISSION_CHANGED = 3;
+  ROOM_MEMBER_EVENT_KIND_KICKED = 4;
 }
 
 message ChatImage {
@@ -2814,38 +2872,46 @@ message ChatMessageEvent {
   int64 sequence = 6;
 }
 
+message RoomMemberEvent {
+  string event_id = 1;
+  string room_id = 2;
+  RoomMemberEventKind kind = 3;
+  synctv.common.RoomMember member = 4;
+  string user_id = 5;
+  string guest_id = 6;
+  string username = 7;
+  string actor_user_id = 8;
+  string reason = 9;
+  int64 occurred_at = 10;
+  int64 sequence = 11;
+}
+
 message HeartbeatMessage {
-  int64 timestamp = 1; // Unix timestamp (seconds)
+  int64 timestamp = 1; // Unix timestamp (milliseconds)
 }
 
 message HeartbeatAck {
-  int64 timestamp = 1; // Unix timestamp (seconds)
+  int64 timestamp = 1; // Unix timestamp (milliseconds)
 }
 
-message PlaybackStateChanged {
-  string room_id = 1;
-  PlaybackState state = 2;
+message OnlineCount {
+  int32 count = 1;
 }
 
-message PlaybackChanged {
-  string room_id = 1;
-  Playback playback = 2;
+enum OnlineEventKind {
+  ONLINE_EVENT_KIND_UNSPECIFIED = 0;
+  ONLINE_EVENT_KIND_JOINED = 1;
+  ONLINE_EVENT_KIND_LEFT = 2;
 }
 
-message UserJoinedRoom {
-  string room_id = 1;
-  synctv.common.RoomMember member = 2;
-}
-
-message UserLeftRoom {
-  string room_id = 1;
-  string user_id = 2;
-}
-
-message RoomSettingsChanged {
-  string room_id = 1;
-  bytes settings = 2; // JSON settings
-  int64 version = 3;
+message OnlineEvent {
+  string event_id = 1;
+  string room_id = 2;
+  string user_id = 3;
+  string username = 4;
+  common.RoomMemberRole role = 5 [(buf.validate.field).enum.defined_only = true];
+  OnlineEventKind kind = 6 [(buf.validate.field).enum.defined_only = true];
+  int64 occurred_at = 7;
 }
 
 message ErrorMessage {
@@ -2888,6 +2954,7 @@ message SendChatMessageRequest {
   bytes metadata = 5; // JSON object.
   string display_position = 6;
   string display_color = 7;
+  repeated ChatMentionInput mentions = 8;
 }
 
 message EditChatMessageRequest {
@@ -2916,6 +2983,148 @@ message SetChatReactionRequest {
 
 message SetChatReactionResponse {
   ChatMessageEvent event = 1;
+}
+
+message ReportRoomTarget {
+  string room_id = 1;
+}
+
+message ReportUserTarget {
+  string user_id = 1;
+}
+
+message ReportRoomMemberTarget {
+  string room_id = 1;
+  string user_id = 2;
+}
+
+message ReportChatMessageTarget {
+  string room_id = 1;
+  string message_id = 2;
+}
+
+message ReportContentRequest {
+  oneof target {
+    ReportRoomTarget room = 1;
+    ReportUserTarget user = 2;
+    ReportRoomMemberTarget room_member = 3;
+    ReportChatMessageTarget chat_message = 4;
+  }
+  string reason_code = 5 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  string reason = 6 [(buf.validate.field).string.max_len = 2000];
+  bytes metadata = 7; // JSON object.
+}
+
+message ReportContentResponse {
+  string report_id = 1;
+  int64 created_at = 2;
+}
+
+message ListRoomContentReportsRequest {
+  option (buf.validate.message).cel = {
+    id: "room.list_content_reports.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "room.list_content_reports.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  ContentReportStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+  ContentReportTargetType target_type = 4 [(buf.validate.field).enum.defined_only = true];
+  string target_member_user_id = 5 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+  int64 target_chat_message_id = 6 [(buf.validate.field).int64.gte = 0];
+  string search = 7 [(buf.validate.field).string.max_len = 120];
+}
+
+message ListRoomContentReportsResponse {
+  repeated ContentReport reports = 1;
+  int32 total = 2;
+}
+
+message GetRoomContentReportRequest {
+  string report_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^report_[A-Za-z0-9]+$"
+  }];
+}
+
+message GetRoomContentReportResponse {
+  ContentReport report = 1;
+}
+
+message UpdateRoomContentReportStatusRequest {
+  string report_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^report_[A-Za-z0-9]+$"
+  }];
+  ContentReportStatus status = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  string resolution_note = 3 [(buf.validate.field).string.max_len = 2000];
+}
+
+message UpdateRoomContentReportStatusResponse {
+  ContentReport report = 1;
+  bool success = 2;
+}
+
+enum ContentReportTargetType {
+  CONTENT_REPORT_TARGET_TYPE_UNSPECIFIED = 0;
+  CONTENT_REPORT_TARGET_TYPE_ROOM = 1;
+  CONTENT_REPORT_TARGET_TYPE_USER = 2;
+  CONTENT_REPORT_TARGET_TYPE_ROOM_MEMBER = 3;
+  CONTENT_REPORT_TARGET_TYPE_CHAT_MESSAGE = 4;
+}
+
+enum ContentReportStatus {
+  CONTENT_REPORT_STATUS_UNSPECIFIED = 0;
+  CONTENT_REPORT_STATUS_OPEN = 1;
+  CONTENT_REPORT_STATUS_REVIEWING = 2;
+  CONTENT_REPORT_STATUS_RESOLVED = 3;
+  CONTENT_REPORT_STATUS_DISMISSED = 4;
+}
+
+message ContentReport {
+  string id = 1;
+  string reporter_user_id = 2;
+  string reporter_username = 3;
+  string room_id = 4;
+  string room_name = 5;
+  ContentReportTargetType target_type = 6;
+  string target_room_id = 7;
+  string target_room_name = 8;
+  string target_user_id = 9;
+  string target_username = 10;
+  string target_member_room_id = 11;
+  string target_member_room_name = 12;
+  string target_member_user_id = 13;
+  string target_member_username = 14;
+  int64 target_chat_message_id = 15;
+  int64 target_chat_message_created_at = 16;
+  string target_chat_message_preview = 17;
+  string reason_code = 18;
+  string reason = 19;
+  bytes metadata = 20;
+  ContentReportStatus status = 21;
+  string reviewed_by = 22;
+  string reviewed_by_username = 23;
+  int64 reviewed_at = 24;
+  string resolution_note = 25;
+  int64 created_at = 26;
+  int64 updated_at = 27;
 }
 
 message ListChatReactionUsersRequest {
@@ -3020,6 +3229,28 @@ message GetChatReadStateRequest {}
 message ChatReadStateResponse {
   ChatReadState state = 1;
   int64 unread_count = 2;
+}
+
+message ChatMessageReadReceiptUser {
+  UserPublicView user = 1;
+  int64 read_at = 2;
+}
+
+message ChatMessageUnreadMember {
+  UserPublicView user = 1;
+}
+
+message GetChatMessageReadReceiptsRequest {
+  string message_id = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message GetChatMessageReadReceiptsResponse {
+  repeated ChatMessageReadReceiptUser readers = 1;
+  repeated ChatMessageUnreadMember unread_members = 2;
+  int64 reader_total = 3;
+  int64 unread_total = 4;
 }
 
 // User Profile Management
@@ -3318,80 +3549,7 @@ message ConfirmPasswordResetResponse {
 
 // ==================== Additional Server Messages ====================
 
-message MediaAdded {
-  string room_id = 1;
-  string media_id = 2;
-  string name = 3;
-  string creator_username = 4; // Username
-  string creator_id = 5; // User ID
-}
-
-message MediaRemoved {
-  string room_id = 1;
-  string media_id = 2;
-  string removed_by = 4; // Username
-  string removed_by_user_id = 5; // User ID
-}
-
-message MediaRemovedBatch {
-  string room_id = 1;
-  repeated string media_ids = 2;
-  string removed_by = 4; // Username
-  string removed_by_user_id = 5; // User ID
-}
-
-message MediaUpdated {
-  string room_id = 1;
-  string media_id = 2;
-  string name = 3;
-  string updated_by = 4; // Username
-  string updated_by_user_id = 5; // User ID
-}
-
-message PermissionChanged {
-  string room_id = 1;
-  string user_id = 2;
-  synctv.common.RoomMemberRole role = 3; // New role
-
-  // All permission fields for full state sync
-  uint64 effective_permissions = 4; // Calculated final permissions
-  uint64 added_permissions = 5;
-  uint64 removed_permissions = 6;
-  uint64 admin_added_permissions = 7;
-  uint64 admin_removed_permissions = 8;
-
-  string updated_by = 9; // Username of who made the change
-}
-
 // ==================== Playlist Events ====================
-
-message PlaylistCreated {
-  string room_id = 1;
-  Playlist playlist = 2;
-}
-
-message PlaylistUpdated {
-  string room_id = 1;
-  Playlist playlist = 2;
-}
-
-message PlaylistDeleted {
-  string room_id = 1;
-  string playlist_id = 2;
-}
-
-message PlaylistReordered {
-  string room_id = 1;
-  repeated string media_ids = 2;
-  string reordered_by = 3; // Username
-  string reordered_by_user_id = 4; // User ID
-}
-
-message PlayingChanged {
-  string room_id = 1;
-  Playlist playlist = 2;
-  Media playing_media = 3; // Optional: the media that started playing
-}
 
 // ==================== WebRTC Signaling Messages ====================
 
@@ -3432,6 +3590,26 @@ message WebRTCJoin {
 message WebRTCLeave {
   string user_id = 1; // Leaver's user ID
   string conn_id = 2; // Leaver's connection ID
+}
+
+message WebRtcCommand {
+  oneof command {
+    WebRTCOffer offer = 1;
+    WebRTCAnswer answer = 2;
+    WebRTCIceCandidate ice_candidate = 3;
+    WebRTCJoin join = 4;
+    WebRTCLeave leave = 5;
+  }
+}
+
+message WebRtcEvent {
+  oneof event {
+    WebRTCOffer offer = 1;
+    WebRTCAnswer answer = 2;
+    WebRTCIceCandidate ice_candidate = 3;
+    WebRTCJoin join = 4;
+    WebRTCLeave leave = 5;
+  }
 }
 
 // ICE Servers Configuration

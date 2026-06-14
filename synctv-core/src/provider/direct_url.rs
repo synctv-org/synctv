@@ -417,6 +417,7 @@ impl MediaProvider for DirectUrlProvider {
         let result = PlaybackResult {
             playback_infos,
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata,
         };
 
@@ -665,6 +666,7 @@ mod tests {
                 },
             )]),
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata: HashMap::new(),
         };
         store

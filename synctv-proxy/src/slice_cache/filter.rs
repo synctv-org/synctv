@@ -1,5 +1,7 @@
-//! Filter entry points: proxy_with_cache, stream_through_with_status,
-//! head_content_length.
+#![allow(clippy::missing_errors_doc, clippy::too_many_lines)]
+
+//! Filter entry points: `proxy_with_cache`, `stream_through_with_status`,
+//! `head_content_length`.
 //!
 //! These correspond to nginx's header/body filter chain -- the top-level
 //! request handling that decides whether to use slice caching or passthrough.

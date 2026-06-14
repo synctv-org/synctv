@@ -177,6 +177,109 @@ pub(super) async fn get_chat_read_state(
     Ok(Response::new(response))
 }
 
+pub(super) async fn get_chat_message_read_receipts(
+    service: &ClientServiceImpl,
+    request: Request<GetChatMessageReadReceiptsRequest>,
+) -> Result<Response<GetChatMessageReadReceiptsResponse>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .execute_room_actor_endpoint(
+            metadata,
+            room_id,
+            EndpointRateLimitCategory::Read,
+            move |client_api, actor| async move {
+                client_api
+                    .get_chat_message_read_receipts_for_actor(&actor, req)
+                    .await
+            },
+        )
+        .await?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn report_content(
+    service: &ClientServiceImpl,
+    request: Request<ReportContentRequest>,
+) -> Result<Response<ReportContentResponse>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .execute_room_actor_endpoint(
+            metadata,
+            room_id,
+            EndpointRateLimitCategory::Write,
+            move |client_api, actor| async move {
+                client_api.report_content_for_actor(&actor, req).await
+            },
+        )
+        .await?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn list_room_content_reports(
+    service: &ClientServiceImpl,
+    request: Request<ListRoomContentReportsRequest>,
+) -> Result<Response<ListRoomContentReportsResponse>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .execute_room_actor_endpoint(
+            metadata,
+            room_id,
+            EndpointRateLimitCategory::Read,
+            move |client_api, actor| async move {
+                client_api
+                    .list_room_content_reports_for_actor(&actor, req)
+                    .await
+            },
+        )
+        .await?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn get_room_content_report(
+    service: &ClientServiceImpl,
+    request: Request<GetRoomContentReportRequest>,
+) -> Result<Response<GetRoomContentReportResponse>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .execute_room_actor_endpoint(
+            metadata,
+            room_id,
+            EndpointRateLimitCategory::Read,
+            move |client_api, actor| async move {
+                client_api
+                    .get_room_content_report_for_actor(&actor, req)
+                    .await
+            },
+        )
+        .await?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn update_room_content_report_status(
+    service: &ClientServiceImpl,
+    request: Request<UpdateRoomContentReportStatusRequest>,
+) -> Result<Response<UpdateRoomContentReportStatusResponse>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .execute_room_actor_endpoint(
+            metadata,
+            room_id,
+            EndpointRateLimitCategory::Write,
+            move |client_api, actor| async move {
+                client_api
+                    .update_room_content_report_status_for_actor(&actor, req)
+                    .await
+            },
+        )
+        .await?;
+    Ok(Response::new(response))
+}
+
 pub(super) async fn send_chat_message(
     service: &ClientServiceImpl,
     request: Request<SendChatMessageRequest>,

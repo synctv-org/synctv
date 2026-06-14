@@ -2,7 +2,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::config::PublicIdsConfig;
-use crate::models::{BanRecordId, MediaId, PlaylistId, ReviewRequestId, RoomId, TypedId, UserId};
+use crate::models::{
+    BanRecordId, ContentReportId, MediaId, PlaylistId, ReviewRequestId, RoomId, TypedId, UserId,
+};
 
 const USER_ID_TAG: u64 = 1;
 const ROOM_ID_TAG: u64 = 2;
@@ -10,6 +12,7 @@ const MEDIA_ID_TAG: u64 = 3;
 const PLAYLIST_ID_TAG: u64 = 4;
 const REVIEW_REQUEST_ID_TAG: u64 = 5;
 const BAN_RECORD_ID_TAG: u64 = 6;
+const CONTENT_REPORT_ID_TAG: u64 = 7;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum PublicIdKind {
@@ -19,6 +22,7 @@ pub enum PublicIdKind {
     Playlist,
     ReviewRequest,
     BanRecord,
+    ContentReport,
 }
 
 impl PublicIdKind {
@@ -31,6 +35,7 @@ impl PublicIdKind {
             Self::Playlist => "PlaylistId",
             Self::ReviewRequest => "ReviewRequestId",
             Self::BanRecord => "BanRecordId",
+            Self::ContentReport => "ContentReportId",
         }
     }
 
@@ -43,6 +48,7 @@ impl PublicIdKind {
             Self::Playlist => PLAYLIST_ID_TAG,
             Self::ReviewRequest => REVIEW_REQUEST_ID_TAG,
             Self::BanRecord => BAN_RECORD_ID_TAG,
+            Self::ContentReport => CONTENT_REPORT_ID_TAG,
         }
     }
 
@@ -55,6 +61,7 @@ impl PublicIdKind {
             Self::Playlist => "pl_",
             Self::ReviewRequest => "rev_",
             Self::BanRecord => "ban_",
+            Self::ContentReport => "report_",
         }
     }
 }
@@ -91,6 +98,10 @@ impl PublicIdType for ReviewRequestId {
 
 impl PublicIdType for BanRecordId {
     const PUBLIC_ID_KIND: PublicIdKind = PublicIdKind::BanRecord;
+}
+
+impl PublicIdType for ContentReportId {
+    const PUBLIC_ID_KIND: PublicIdKind = PublicIdKind::ContentReport;
 }
 
 /// Shared encoder/decoder for externally visible resource identifiers.
@@ -186,6 +197,10 @@ impl PublicIdCodec {
         self.encode(id)
     }
 
+    pub fn encode_content_report_id(&self, id: ContentReportId) -> Result<String, String> {
+        self.encode(id)
+    }
+
     pub fn decode_user_id(&self, value: &str) -> Result<UserId, String> {
         self.decode(value)
     }
@@ -203,6 +218,10 @@ impl PublicIdCodec {
     }
 
     pub fn decode_review_request_id(&self, value: &str) -> Result<ReviewRequestId, String> {
+        self.decode(value)
+    }
+
+    pub fn decode_content_report_id(&self, value: &str) -> Result<ContentReportId, String> {
         self.decode(value)
     }
 

@@ -646,14 +646,18 @@ pub struct SecurityConfig {
     pub ssrf: SsrfConfig,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct SsrfConfig {
+    /// Enable SSRF protection for outbound server-side requests.
+    ///
+    /// Defaults to `false` so self-hosted deployments can bind private media
+    /// providers without extra configuration. Public deployments should enable
+    /// this and configure the narrowest allowlist that covers their providers.
+    pub enabled: bool,
     /// Allow outbound server-side requests to private, loopback, link-local,
     /// reserved, and metadata-network targets.
-    ///
-    /// Defaults to `false` so SSRF-sensitive paths are closed unless a trusted
-    /// private-network deployment explicitly opts in.
     pub allow_private_network_targets: bool,
     /// Additional hostnames allowed by the global SSRF policy.
     pub allowed_hosts: Vec<String>,
@@ -664,6 +668,10 @@ pub struct SsrfConfig {
 impl SecurityConfig {
     #[must_use]
     pub fn ssrf_guard(&self) -> synctv_common::ssrf::SsrfGuard {
+        if !self.ssrf.enabled {
+            return synctv_common::ssrf::SsrfGuard::disabled();
+        }
+
         let mut builder = synctv_common::ssrf::SsrfGuard::builder();
         if self.ssrf.allow_private_network_targets {
             builder = builder.allow_private_network_targets(true);
@@ -1804,8 +1812,6 @@ pub struct BootstrapConfig {
     pub create_root_user: bool,
     /// Root username (default: "root")
     pub root_username: String,
-    /// Optional email for the bootstrapped root user.
-    pub root_email: String,
     /// Root password (IMPORTANT: Change this in production!)
     pub root_password: String,
 }
@@ -1815,7 +1821,6 @@ impl Default for BootstrapConfig {
         Self {
             create_root_user: false,
             root_username: "root".to_string(),
-            root_email: String::new(),
             root_password: String::new(),
         }
     }

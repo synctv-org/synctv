@@ -111,6 +111,7 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `public_ids.sqids.min_length` | integer | `12` | Minimum sqids length |
 | `security.credential_encryption_key` | 64-character hex secret | `""` | Provider credential encryption key |
 | `security.opaque_server_setup_secret` | secret string | `""` | Stable OPAQUE server setup secret |
+| `security.ssrf.enabled` | boolean | `false` | Enable global SSRF protection for server-side outbound requests |
 | `security.ssrf.allow_private_network_targets` | boolean | `false` | Allow server-side outbound requests to private/loopback/link-local/reserved/metadata targets |
 | `security.ssrf.allowed_hosts` | string array | `[]` | Additional hostnames allowed by the global SSRF policy |
 | `security.ssrf.allowed_ip_ranges` | IP/CIDR string array | `[]` | Additional IPs or CIDR ranges allowed by the global SSRF policy |
@@ -336,7 +337,6 @@ file_storage:
 | `connection_limits.ws_message_rate_limit_per_second` | per-second count | `50` | WebSocket message rate per connection |
 | `bootstrap.create_root_user` | boolean | `false` | Create the initial root user automatically |
 | `bootstrap.root_username` | string | `root` | Initial root username |
-| `bootstrap.root_email` | email or empty | `""` | Initial root email |
 | `bootstrap.root_password` | secret string | `""` | Initial root password |
 | `cluster.enabled` | boolean | `false` | Enable cluster mode |
 | `cluster.secret` | secret string | `""` | Authentication secret for internal cluster gRPC |

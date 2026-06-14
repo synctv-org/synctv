@@ -812,9 +812,9 @@ pub enum RoomPlaybackSubcommand {
     /// Start playback for a static media item or dynamic playlist target
     Start(RoomPlaybackStartArgs),
     /// Resume playback for the room's current playback item
-    Play(RoomPlaybackUpdateArgs),
+    Play(RoomPlaybackStateUpdateArgs),
     /// Pause playback for the room's current playback item
-    Pause(RoomPlaybackUpdateArgs),
+    Pause(RoomPlaybackStateUpdateArgs),
     /// Seek the room's current playback item to a position
     Seek(RoomPlaybackSeekArgs),
     /// Change playback speed for the room's current playback item
@@ -2296,14 +2296,14 @@ pub struct RoomPlaybackStopArgs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CliPlaybackUpdateType {
+pub enum CliPlaybackStateUpdateType {
     Play,
     Pause,
     Seek,
     Speed,
 }
 
-impl CliPlaybackUpdateType {
+impl CliPlaybackStateUpdateType {
     const fn to_proto(self) -> i32 {
         match self {
             Self::Play => synctv_proto::client::PlaybackUpdateType::Play as i32,
@@ -2315,7 +2315,7 @@ impl CliPlaybackUpdateType {
 }
 
 #[derive(Debug, Args)]
-pub struct RoomPlaybackUpdateArgs {
+pub struct RoomPlaybackStateUpdateArgs {
     #[command(flatten)]
     pub room: RoomScopedRemoteArgs,
 
@@ -5126,9 +5126,9 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
             }
             RoomPlaybackSubcommand::Play(args) => {
                 let playing = Some(args.playing.unwrap_or(true));
-                execute_room_playback_update(
+                execute_room_playback_state_update(
                     args.room,
-                    CliPlaybackUpdateType::Play,
+                    CliPlaybackStateUpdateType::Play,
                     playing,
                     args.position,
                     args.speed,
@@ -5138,9 +5138,9 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
             }
             RoomPlaybackSubcommand::Pause(args) => {
                 let playing = Some(args.playing.unwrap_or(false));
-                execute_room_playback_update(
+                execute_room_playback_state_update(
                     args.room,
-                    CliPlaybackUpdateType::Pause,
+                    CliPlaybackStateUpdateType::Pause,
                     playing,
                     args.position,
                     args.speed,
@@ -5149,9 +5149,9 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                 .await
             }
             RoomPlaybackSubcommand::Seek(args) => {
-                execute_room_playback_update(
+                execute_room_playback_state_update(
                     args.room,
-                    CliPlaybackUpdateType::Seek,
+                    CliPlaybackStateUpdateType::Seek,
                     args.playing,
                     Some(args.position),
                     args.speed,
@@ -5160,9 +5160,9 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                 .await
             }
             RoomPlaybackSubcommand::Speed(args) => {
-                execute_room_playback_update(
+                execute_room_playback_state_update(
                     args.room,
-                    CliPlaybackUpdateType::Speed,
+                    CliPlaybackStateUpdateType::Speed,
                     args.playing,
                     args.position,
                     Some(args.speed),
@@ -5562,9 +5562,9 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
     }
 }
 
-async fn execute_room_playback_update(
+async fn execute_room_playback_state_update(
     room: RoomScopedRemoteArgs,
-    update_type: CliPlaybackUpdateType,
+    update_type: CliPlaybackStateUpdateType,
     playing: Option<bool>,
     position: Option<f64>,
     speed: Option<f64>,
@@ -5573,11 +5573,11 @@ async fn execute_room_playback_update(
     let session = connect_remote_access(&room.remote).await?;
     let response = management_unary_call!(
         session,
-        "update room playback",
-        update_playback,
-        management_proto::UpdatePlaybackRequest {
+        "update room playback state",
+        update_playback_state,
+        management_proto::UpdatePlaybackStateRequest {
             room_id: room.room_id,
-            update: Some(synctv_proto::client::UpdatePlaybackRequest {
+            update: Some(synctv_proto::client::UpdatePlaybackStateRequest {
                 r#type: update_type.to_proto(),
                 playing,
                 position,
@@ -5589,8 +5589,7 @@ async fn execute_room_playback_update(
             }),
         }
     )?;
-    let output = build_get_playback_cli_output(response, &room.remote.global);
-    room.remote.print_output(&output)
+    room.remote.print_output(&response)
 }
 
 async fn execute_provider(provider_command: ProviderCommand) -> Result<()> {
@@ -7111,6 +7110,7 @@ struct HumanRoomMember {
     admin_removed_permission_names: Vec<String>,
     joined_at: String,
     is_online: bool,
+    connection_count: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -7433,6 +7433,11 @@ struct HumanGetPlaybackResponse<T> {
     flv_pull_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     flv_absolute_pull_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HumanUpdatePlaybackStateResponse<T> {
+    playback_state: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -7928,6 +7933,7 @@ impl ToHuman for synctv_proto::common::RoomMember {
             ),
             joined_at: humanize_timestamp(self.joined_at),
             is_online: self.is_online,
+            connection_count: self.connection_count,
         }
     }
 }
@@ -8621,6 +8627,16 @@ impl ToHuman for GetPlaybackCliOutput {
             hls_absolute_pull_url: self.hls_absolute_pull_url.clone(),
             flv_pull_url: self.flv_pull_url.clone(),
             flv_absolute_pull_url: self.flv_absolute_pull_url.clone(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::client::UpdatePlaybackStateResponse {
+    type Human = HumanUpdatePlaybackStateResponse<HumanPlaybackState>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanUpdatePlaybackStateResponse {
+            playback_state: self.playback_state.to_human(),
         }
     }
 }
@@ -13369,6 +13385,7 @@ mod tests {
                 banned_by: "admin-1".into(),
                 banned_reason: "test".into(),
                 avatar_url: String::new(),
+                presence: None,
             }),
         })
         .expect("human output should render");
@@ -13404,6 +13421,8 @@ mod tests {
                 availability: synctv_proto::client::ResourceAvailability::CreatorInactive as i32,
                 version: 78,
                 cover: None,
+                presence: None,
+                creator: None,
             }),
             playback_state: None,
             membership_status: synctv_proto::common::MemberStatus::Active as i32,
@@ -13421,6 +13440,7 @@ mod tests {
                 admin_removed_permissions: RoomAdminPermissionBits::KICK_MEMBER,
                 joined_at: 1_775_291_657_i64,
                 is_online: true,
+                connection_count: 1,
             }],
         })
         .expect("human output should render");
@@ -13494,6 +13514,9 @@ mod tests {
                 description: "main room".into(),
                 is_banned: false,
                 version: 56,
+                creator_avatar_url: String::new(),
+                presence: None,
+                cover: None,
             }],
             total: 1,
         })
@@ -13623,9 +13646,11 @@ mod tests {
                 admin_removed_permissions: 0,
                 joined_at: 123,
                 is_online: true,
+                connection_count: 1,
             }],
             total: 1,
             version: "members-v7".into(),
+            presence: None,
         })
         .expect("room members human output should render");
 
@@ -13665,6 +13690,7 @@ mod tests {
                     default_mode: "direct".into(),
                     metadata: std::collections::HashMap::new(),
                     expires_at: None,
+                    duration_seconds: None,
                 }),
             },
             &GlobalConfigArgs {

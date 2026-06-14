@@ -14,7 +14,8 @@ use crate::{
         UserId,
     },
     provider::{
-        provider_requires_credential_repo, ProviderAccessService, ProviderContext, SourceConfig,
+        provider_requires_credential_repo, PlaybackResult, ProviderAccessService, ProviderContext,
+        SourceConfig,
     },
     repository::{realtime_outbox::NewRealtimeOutboxEvent, UserProviderCredentialRepository},
     repository::{MediaRepository, PlaylistRepository, UserRepository},
@@ -97,6 +98,13 @@ struct PreparedMediaSource {
     provider_name: String,
     provider_instance_name: Option<String>,
     source_config: JsonValue,
+}
+
+pub struct BackendPlaybackRequest<'a> {
+    pub room_id: RoomId,
+    pub media_id: Option<MediaId>,
+    pub playlist_id: Option<PlaylistId>,
+    pub target: &'a [u8],
 }
 
 /// Media management service
@@ -921,6 +929,73 @@ impl MediaService {
     /// Get multiple media items by IDs in a single query
     pub async fn get_media_batch(&self, media_ids: &[MediaId]) -> Result<Vec<Media>> {
         self.media_repo.get_by_ids(media_ids).await
+    }
+
+    pub async fn generate_backend_playback_for_source(
+        &self,
+        request: BackendPlaybackRequest<'_>,
+    ) -> Result<Option<PlaybackResult>> {
+        match (request.media_id, request.playlist_id) {
+            (Some(media_id), None) => {
+                let Some(media) = self.get_room_media(&request.room_id, &media_id).await? else {
+                    return Ok(None);
+                };
+                let provider = self
+                    .resolve_media_provider(
+                        &media.source_provider,
+                        media.provider_instance_name.as_deref(),
+                    )
+                    .await?;
+                let ctx = self.build_provider_context(
+                    None,
+                    &request.room_id,
+                    media.creator_id.as_ref(),
+                    media.provider_instance_name.as_deref(),
+                );
+                let result = provider
+                    .generate_playback(&ctx, &media.source_config)
+                    .await?;
+                Ok(Some(result))
+            }
+            (None, Some(playlist_id)) => {
+                let playlist = self
+                    .playlist_repo
+                    .get_by_room_and_id(&request.room_id, &playlist_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+                if !playlist.is_dynamic() {
+                    return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
+                }
+
+                let (provider_name, provider) =
+                    self.get_dynamic_playlist_provider(&playlist).await?;
+                self.ensure_provider_credential_repo(&provider_name)?;
+                let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
+                    Error::InvalidInput(format!(
+                        "Provider {provider_name} does not support dynamic folders"
+                    ))
+                })?;
+                let ctx = self.build_provider_context(
+                    None,
+                    &request.room_id,
+                    playlist.creator_id.as_ref(),
+                    playlist.provider_instance_name.as_deref(),
+                );
+                let Some(item) = dynamic_folder
+                    .resolve_item(&ctx, &playlist, request.target)
+                    .await?
+                else {
+                    return Ok(None);
+                };
+                let result = provider
+                    .generate_playback(&ctx, &item.source_config)
+                    .await?;
+                Ok(Some(result))
+            }
+            _ => Err(Error::InvalidInput(
+                "playback source must reference exactly one media or playlist".to_string(),
+            )),
+        }
     }
 
     /// Get multiple media items by IDs, scoped to a room.

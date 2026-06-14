@@ -84,6 +84,7 @@ pub struct Services {
     pub rate_limit_config: synctv_core::service::RateLimitConfig,
     pub content_filter: synctv_core::service::ContentFilter,
     pub realtime_connection_service: Arc<dyn ConnectionRuntime>,
+    pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub realtime_event_service: Arc<dyn RealtimeEventService>,
     pub providers_manager: Arc<synctv_core::service::ProvidersManager>,
     pub provider_instance_manager: Arc<synctv_core::service::RemoteProviderManager>,
@@ -1559,6 +1560,7 @@ impl SyncTvServer {
             rate_limit_config: self.services.rate_limit_config.clone(),
             content_filter: self.services.content_filter.clone(),
             connection_service: self.services.realtime_connection_service.clone(),
+            presence_service: self.services.presence_service.clone(),
             providers_manager: Some(self.services.providers_manager.clone()),
             provider_instance_manager: self.services.provider_instance_manager.clone(),
             user_provider_credential_repository: self
@@ -1616,6 +1618,7 @@ impl SyncTvServer {
                 providers: self.services.providers.clone(),
                 event_service: self.services.realtime_event_service.clone(),
                 connection_manager: self.services.realtime_connection_service.clone(),
+                presence_service: self.services.presence_service.clone(),
                 jwt_service: self.services.jwt_service.clone(),
                 realtime_fanout_service: self.services.realtime_fanout_service.clone(),
                 oauth2_service: self.services.oauth2_service.clone(),
@@ -2060,6 +2063,7 @@ mod tests {
                 providers,
                 event_service: Arc::new(synctv_api::runtime::LocalNoopRealtimeEventService::new()),
                 connection_manager: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
+                presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
                 jwt_service: JwtService::new("test-jwt-secret-key-for-testing-minimum-length")
                     .expect("jwt"),
                 realtime_fanout_service:

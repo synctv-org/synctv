@@ -222,6 +222,54 @@ async fn test_direct_password_registration_stores_opaque_credential() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_set_direct_password_allows_opaque_login() {
+    let (_container, pool) = create_test_pool().await;
+    let opaque_password_service = Arc::new(OpaquePasswordService::derive_from_secret(
+        b"set-direct-password-opaque-login-test",
+    ));
+    let service = create_user_service_with_runtime(
+        &pool,
+        UserServiceRuntimeOptions {
+            opaque_password_service,
+            ..UserServiceRuntimeOptions::test_defaults()
+        },
+    );
+
+    let username = format!("reset_password_{}", synctv_common::snanoid!(8));
+    let old_password = "StrongPass1";
+    let new_password = "StrongerPass2";
+    let (user, _, _) = opaque_register_user(&service, username.clone(), None, old_password)
+        .await
+        .checked("initial OPAQUE registration should succeed");
+    let target_user_id = user.id;
+
+    service
+        .set_direct_password(&user.id, new_password)
+        .await
+        .checked("direct password reset should succeed");
+
+    let login = opaque_login_user(&service, username, new_password)
+        .await
+        .checked("OPAQUE login should accept reset password");
+    match login {
+        AuthenticatedLogin::Complete {
+            user,
+            access_token,
+            refresh_token,
+            ..
+        } => {
+            assert_eq!(user.id, target_user_id);
+            assert!(!access_token.is_empty());
+            assert!(!refresh_token.is_empty());
+        }
+        AuthenticatedLogin::MfaRequired { .. } => {
+            std::panic::panic_any("fresh reset-password user should not require MFA")
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_email_registration_confirmation_stores_opaque_credential() {
     let (_container, pool) = create_test_pool().await;
     let opaque_password_service = Arc::new(OpaquePasswordService::derive_from_secret(

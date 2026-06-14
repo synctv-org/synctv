@@ -243,17 +243,9 @@ impl ExternalStreamPuller {
                 // Hostname - resolve and check all IPs
                 let addrs = resolver(host.to_string(), port).await?;
 
-                // RTMP uses a raw TCP path, so hostname allowlists must not
-                // unlock private DNS answers. HTTP-FLV uses the reqwest
-                // resolver path and keeps hostname-aware policy semantics.
                 let safe_addrs: Vec<std::net::SocketAddr> = addrs
                     .into_iter()
-                    .filter(|addr| match source_type {
-                        ExternalSourceType::Rtmp => !ssrf_guard.is_ip_blocked(&addr.ip()),
-                        ExternalSourceType::HttpFlv => {
-                            !ssrf_guard.is_ip_blocked_for_host(host, &addr.ip())
-                        }
-                    })
+                    .filter(|addr| !ssrf_guard.is_ip_blocked_for_host(host, &addr.ip()))
                     .collect();
 
                 if safe_addrs.is_empty() {

@@ -15,7 +15,6 @@ description: bootstrap 配置控制首次启动时是否自动创建 root 用户
 bootstrap:
   create_root_user: true
   root_username: "root"
-  root_email: "admin@example.com"
   root_password_file: "/run/secrets/root_password"
 ```
 
@@ -56,29 +55,6 @@ bootstrap:
 
 用户名不是 secret，但会出现在审计、管理界面或日志上下文中。建议不要使用个人真实姓名。
 
-## `bootstrap.root_email`
-
-类型：字符串。
-
-默认值：空字符串。
-
-作用：初始 root 用户邮箱。
-
-示例：
-
-```yaml
-bootstrap:
-  root_email: "admin@example.com"
-```
-
-建议在以下场景填写：
-
-- 启用了邮箱验证、密码找回或邮箱 2FA。
-- 希望 root 账号能接收系统邮件。
-- 运维流程要求管理员账号有可追踪邮箱。
-
-如果没有 SMTP 配置，可以先留空，后续在用户资料中补充。
-
 ## `bootstrap.root_password`
 
 类型：字符串 secret。
@@ -109,7 +85,6 @@ SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE=/run/secrets/root_password
 | --- | --- |
 | `SYNCTV_BOOTSTRAP_CREATE_ROOT_USER` | `bootstrap.create_root_user` |
 | `SYNCTV_BOOTSTRAP_ROOT_USERNAME` | `bootstrap.root_username` |
-| `SYNCTV_BOOTSTRAP_ROOT_EMAIL` | `bootstrap.root_email` |
 | `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | `bootstrap.root_password` |
 | `SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE` | `bootstrap.root_password` 文件 |
 

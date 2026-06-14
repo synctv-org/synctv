@@ -1,15 +1,16 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use sqlx::{Executor, PgPool, Postgres, Transaction};
+use sqlx::{Executor, PgPool, Postgres, Row as _, Transaction};
 
 use crate::{
     models::{
-        ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatImage, ChatMessage,
-        ChatMessageContext, ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus,
-        ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReactionSummary,
-        ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState,
-        EventCursor, NewStoredFile, RoomId, SetChatReaction, UserId,
+        ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatImage, ChatMention,
+        ChatMentionInput, ChatMessage, ChatMessageContext, ChatMessageEvent, ChatMessageEventLog,
+        ChatMessageReadReceiptMember, ChatMessageReadReceiptUser, ChatMessageReadReceiptsPage,
+        ChatMessageStatus, ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery,
+        ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage,
+        ChatReadState, EventCursor, NewStoredFile, RoomId, SetChatReaction, User, UserId,
     },
     repository::FileStorageRepository,
     Error, Result,
@@ -90,6 +91,7 @@ impl ChatRepository {
         &self,
         message: &ChatMessage,
         images: &[NewStoredFile],
+        mentions: &[ChatMentionInput],
         request_hash: &str,
         event_id: &str,
         occurred_at: DateTime<Utc>,
@@ -153,6 +155,9 @@ impl ChatRepository {
 
         let inserted = self.insert_message_in_tx(&mut tx, message).await?;
         let inserted_images = self.insert_images_in_tx(&mut tx, &inserted, images).await?;
+        let inserted_mentions = self
+            .insert_mentions_in_tx(&mut tx, &inserted, mentions)
+            .await?;
         let event = ChatMessageEvent {
             event_id: event_id.to_string(),
             sequence: 0,
@@ -163,6 +168,7 @@ impl ChatRepository {
                 message: inserted,
                 images: inserted_images,
                 reactions: Vec::new(),
+                mentions: inserted_mentions,
             },
             occurred_at,
         };
@@ -297,6 +303,11 @@ impl ChatRepository {
                 .cmp(&left.count)
                 .then_with(|| left.key.cmp(&right.key))
         });
+        let mentions = self
+            .mentions_for_messages(std::slice::from_ref(&message))
+            .await?
+            .remove(&chat_message_key(&message))
+            .unwrap_or_default();
         let event = ChatMessageEvent {
             event_id: event_id.to_string(),
             sequence: 0,
@@ -307,6 +318,7 @@ impl ChatRepository {
                 message,
                 images,
                 reactions,
+                mentions,
             },
             occurred_at,
         };
@@ -909,6 +921,272 @@ impl ChatRepository {
         Ok(count)
     }
 
+    pub async fn message_read_receipts(
+        &self,
+        room_id: &RoomId,
+        message: &ChatMessage,
+        event: Option<&ChatMessageEventLog>,
+        page: i32,
+        page_size: i32,
+    ) -> Result<ChatMessageReadReceiptsPage> {
+        let page = page.max(1);
+        let limit = page_size.clamp(1, 100);
+        let offset = i64::from(page - 1) * i64::from(limit);
+        let sender_user_id = message.user_id.map(|id| id.as_i64());
+        let event_sequence = event.map(|event| event.sequence);
+
+        let reader_total = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) AS "count!"
+            FROM room_members rm
+            JOIN users u ON u.id = rm.user_id AND u.deleted_at IS NULL
+            JOIN chat_read_states crs
+              ON crs.room_id = rm.room_id
+             AND crs.user_id = rm.user_id
+            WHERE rm.room_id = $1
+              AND ($2::BIGINT IS NULL OR rm.user_id <> $2)
+              AND (
+                    (crs.last_read_event_sequence IS NOT NULL
+                     AND $3::BIGINT IS NOT NULL
+                     AND crs.last_read_event_sequence >= $3)
+                 OR (crs.last_read_message_created_at IS NOT NULL
+                     AND crs.last_read_message_id IS NOT NULL
+                     AND (crs.last_read_message_created_at, crs.last_read_message_id)
+                         > ($4, $5))
+                 OR ($3::BIGINT IS NULL
+                     AND crs.last_read_message_created_at IS NOT NULL
+                     AND crs.last_read_message_id IS NOT NULL
+                     AND (crs.last_read_message_created_at, crs.last_read_message_id)
+                         = ($4, $5))
+              )
+            "#,
+            room_id.as_i64(),
+            sender_user_id,
+            event_sequence,
+            message.created_at,
+            message.id
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        let unread_total = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*) AS "count!"
+            FROM room_members rm
+            JOIN users u ON u.id = rm.user_id AND u.deleted_at IS NULL
+            LEFT JOIN chat_read_states crs
+              ON crs.room_id = rm.room_id
+             AND crs.user_id = rm.user_id
+            WHERE rm.room_id = $1
+              AND ($2::BIGINT IS NULL OR rm.user_id <> $2)
+              AND NOT COALESCE((
+                    (crs.last_read_event_sequence IS NOT NULL
+                     AND $3::BIGINT IS NOT NULL
+                     AND crs.last_read_event_sequence >= $3)
+                 OR (crs.last_read_message_created_at IS NOT NULL
+                     AND crs.last_read_message_id IS NOT NULL
+                     AND (crs.last_read_message_created_at, crs.last_read_message_id)
+                         > ($4, $5))
+                 OR ($3::BIGINT IS NULL
+                     AND crs.last_read_message_created_at IS NOT NULL
+                     AND crs.last_read_message_id IS NOT NULL
+                     AND (crs.last_read_message_created_at, crs.last_read_message_id)
+                         = ($4, $5))
+              ), FALSE)
+            "#,
+        )
+        .bind(room_id.as_i64())
+        .bind(sender_user_id)
+        .bind(event_sequence)
+        .bind(message.created_at)
+        .bind(message.id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let reader_rows = sqlx::query!(
+            r#"
+            SELECT u.id AS "id!: UserId",
+                   u.username AS "username!",
+                   u.role AS "role!: crate::models::UserRole",
+                   u.avatar_file_reference_id,
+                   CASE
+                       WHEN active_ban.user_id IS NULL THEN 1::SMALLINT
+                       ELSE 2::SMALLINT
+                   END AS "status!: crate::models::UserStatus",
+                   (active_ban.user_id IS NOT NULL) AS "is_banned!",
+                   active_ban.starts_at AS "banned_at?",
+                   active_ban.banned_by AS "banned_by?: UserId",
+                   active_ban.reason AS banned_reason,
+                   u.signup_method AS "signup_method!: crate::models::SignupMethod",
+                   u.created_at AS "created_at!",
+                   u.updated_at AS "updated_at!",
+                   u.version AS "version!",
+                   u.deleted_at,
+                   crs.updated_at AS "read_at!"
+            FROM room_members rm
+            JOIN users u ON u.id = rm.user_id AND u.deleted_at IS NULL
+            LEFT JOIN LATERAL (
+                SELECT ub.user_id,
+                       ub.starts_at,
+                       ub.banned_by,
+                       ub.reason
+                FROM user_bans ub
+                WHERE ub.user_id = u.id
+                  AND ub.revoked_at IS NULL
+                  AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                ORDER BY ub.starts_at DESC
+                LIMIT 1
+            ) active_ban ON TRUE
+            JOIN chat_read_states crs
+              ON crs.room_id = rm.room_id
+             AND crs.user_id = rm.user_id
+            WHERE rm.room_id = $1
+              AND ($2::BIGINT IS NULL OR rm.user_id <> $2)
+              AND (
+                    (crs.last_read_event_sequence IS NOT NULL
+                     AND $3::BIGINT IS NOT NULL
+                     AND crs.last_read_event_sequence >= $3)
+                 OR (crs.last_read_message_created_at IS NOT NULL
+                     AND crs.last_read_message_id IS NOT NULL
+                     AND (crs.last_read_message_created_at, crs.last_read_message_id)
+                         > ($4, $5))
+                 OR ($3::BIGINT IS NULL
+                     AND crs.last_read_message_created_at IS NOT NULL
+                     AND crs.last_read_message_id IS NOT NULL
+                     AND (crs.last_read_message_created_at, crs.last_read_message_id)
+                         = ($4, $5))
+              )
+            ORDER BY crs.updated_at ASC, u.username ASC, u.id ASC
+            LIMIT $6 OFFSET $7
+            "#,
+            room_id.as_i64(),
+            sender_user_id,
+            event_sequence,
+            message.created_at,
+            message.id,
+            i64::from(limit),
+            offset
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let readers = reader_rows
+            .into_iter()
+            .map(|row| ChatMessageReadReceiptUser {
+                user: User {
+                    id: row.id,
+                    username: row.username,
+                    role: row.role,
+                    avatar_file_reference_id: row.avatar_file_reference_id,
+                    status: row.status,
+                    is_banned: row.is_banned,
+                    banned_at: row.banned_at,
+                    banned_by: row.banned_by,
+                    banned_reason: row.banned_reason,
+                    signup_method: row.signup_method,
+                    created_at: row.created_at,
+                    updated_at: row.updated_at,
+                    version: row.version,
+                    deleted_at: row.deleted_at,
+                },
+                read_at: row.read_at,
+            })
+            .collect();
+
+        let unread_rows = sqlx::query(
+            r"
+            SELECT u.id,
+                   u.username,
+                   u.role,
+                   u.avatar_file_reference_id,
+                   CASE
+                       WHEN active_ban.user_id IS NULL THEN 1::SMALLINT
+                       ELSE 2::SMALLINT
+                   END AS status,
+                   (active_ban.user_id IS NOT NULL) AS is_banned,
+                   active_ban.starts_at AS banned_at,
+                   active_ban.banned_by AS banned_by,
+                   active_ban.reason AS banned_reason,
+                   u.signup_method,
+                   u.created_at,
+                   u.updated_at,
+                   u.version,
+                   u.deleted_at
+            FROM room_members rm
+            JOIN users u ON u.id = rm.user_id AND u.deleted_at IS NULL
+            LEFT JOIN LATERAL (
+                SELECT ub.user_id,
+                       ub.starts_at,
+                       ub.banned_by,
+                       ub.reason
+                FROM user_bans ub
+                WHERE ub.user_id = u.id
+                  AND ub.revoked_at IS NULL
+                  AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                ORDER BY ub.starts_at DESC
+                LIMIT 1
+            ) active_ban ON TRUE
+            LEFT JOIN chat_read_states crs
+              ON crs.room_id = rm.room_id
+             AND crs.user_id = rm.user_id
+            WHERE rm.room_id = $1
+              AND ($2::BIGINT IS NULL OR rm.user_id <> $2)
+              AND NOT COALESCE((
+                    (crs.last_read_event_sequence IS NOT NULL
+                     AND $3::BIGINT IS NOT NULL
+                     AND crs.last_read_event_sequence >= $3)
+                 OR (crs.last_read_message_created_at IS NOT NULL
+                     AND crs.last_read_message_id IS NOT NULL
+                     AND (crs.last_read_message_created_at, crs.last_read_message_id)
+                         > ($4, $5))
+                 OR ($3::BIGINT IS NULL
+                     AND crs.last_read_message_created_at IS NOT NULL
+                     AND crs.last_read_message_id IS NOT NULL
+                     AND (crs.last_read_message_created_at, crs.last_read_message_id)
+                         = ($4, $5))
+              ), FALSE)
+            ORDER BY u.username ASC, u.id ASC
+            LIMIT $6 OFFSET $7
+            ",
+        )
+        .bind(room_id.as_i64())
+        .bind(sender_user_id)
+        .bind(event_sequence)
+        .bind(message.created_at)
+        .bind(message.id)
+        .bind(i64::from(limit))
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        let unread_members = unread_rows
+            .into_iter()
+            .map(|row| ChatMessageReadReceiptMember {
+                user: User {
+                    id: row.get("id"),
+                    username: row.get("username"),
+                    role: row.get("role"),
+                    avatar_file_reference_id: row.get("avatar_file_reference_id"),
+                    status: row.get("status"),
+                    is_banned: row.get("is_banned"),
+                    banned_at: row.get("banned_at"),
+                    banned_by: row.get("banned_by"),
+                    banned_reason: row.get("banned_reason"),
+                    signup_method: row.get("signup_method"),
+                    created_at: row.get("created_at"),
+                    updated_at: row.get("updated_at"),
+                    version: row.get("version"),
+                    deleted_at: row.get("deleted_at"),
+                },
+            })
+            .collect();
+
+        Ok(ChatMessageReadReceiptsPage {
+            readers,
+            unread_members,
+            reader_total,
+            unread_total,
+        })
+    }
+
     async fn count_unread_after_event_sequence(
         &self,
         room_id: &RoomId,
@@ -1399,10 +1677,16 @@ impl ChatRepository {
             .await?
             .remove(&chat_message_key(&message))
             .unwrap_or_default();
+        let mentions = self
+            .mentions_for_messages(std::slice::from_ref(&message))
+            .await?
+            .remove(&chat_message_key(&message))
+            .unwrap_or_default();
         Ok(Some(ChatMessageWithImages {
             message,
             images,
             reactions,
+            mentions,
         }))
     }
 
@@ -1455,10 +1739,16 @@ impl ChatRepository {
         let images = self
             .images_for_message(message.id, message.created_at)
             .await?;
+        let mentions = self
+            .mentions_for_messages(std::slice::from_ref(&message))
+            .await?
+            .remove(&chat_message_key(&message))
+            .unwrap_or_default();
         Ok(Some(ChatMessageWithImages {
             message,
             images,
             reactions: Vec::new(),
+            mentions,
         }))
     }
 
@@ -1537,6 +1827,9 @@ impl ChatRepository {
         let images = self
             .images_for_message_in_tx(&mut tx, message.id, message.created_at)
             .await?;
+        let mentions = self
+            .mentions_for_message_in_tx(&mut tx, message.id, message.created_at)
+            .await?;
         let event = ChatMessageEvent {
             event_id: request.event_id.to_string(),
             sequence: 0,
@@ -1547,6 +1840,7 @@ impl ChatRepository {
                 message,
                 images,
                 reactions: Vec::new(),
+                mentions,
             },
             occurred_at: request.occurred_at,
         };
@@ -1611,10 +1905,16 @@ impl ChatRepository {
         let Some(message) = message else {
             return Ok(None);
         };
+        let mentions = self
+            .mentions_for_messages(std::slice::from_ref(&message))
+            .await?
+            .remove(&chat_message_key(&message))
+            .unwrap_or_default();
         Ok(Some(ChatMessageWithImages {
             message,
             images: Vec::new(),
             reactions: Vec::new(),
+            mentions,
         }))
     }
 
@@ -1687,6 +1987,9 @@ impl ChatRepository {
             tx.commit().await?;
             return Ok(None);
         };
+        let mentions = self
+            .mentions_for_message_in_tx(&mut tx, message.id, message.created_at)
+            .await?;
         let event = ChatMessageEvent {
             event_id: request.event_id.to_string(),
             sequence: 0,
@@ -1697,6 +2000,7 @@ impl ChatRepository {
                 message,
                 images: Vec::new(),
                 reactions: Vec::new(),
+                mentions,
             },
             occurred_at: request.occurred_at,
         };
@@ -1945,6 +2249,47 @@ impl ChatRepository {
             .fetch_one(&mut **tx)
             .await?;
             self.insert_file_reference_for_image_in_tx(tx, &row).await?;
+            inserted.push(row);
+        }
+        Ok(inserted)
+    }
+
+    async fn insert_mentions_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        message: &ChatMessage,
+        mentions: &[ChatMentionInput],
+    ) -> Result<Vec<ChatMention>> {
+        let mut inserted = Vec::with_capacity(mentions.len());
+        for mention in mentions {
+            let row = sqlx::query_as!(
+                ChatMention,
+                r#"
+                INSERT INTO chat_message_mentions (
+                    room_id, message_id, message_created_at, mentioned_user_id,
+                    start_char, length_chars
+                )
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (room_id, message_id, message_created_at, start_char, mentioned_user_id)
+                DO UPDATE SET created_at = chat_message_mentions.created_at
+                RETURNING room_id AS "room_id!: RoomId",
+                          message_id AS "message_id!",
+                          message_created_at AS "message_created_at!",
+                          mentioned_user_id AS "mentioned_user_id!: UserId",
+                          NULL::TEXT AS "username?",
+                          start_char AS "start!",
+                          length_chars AS "length!",
+                          created_at AS "created_at!"
+                "#,
+                message.room_id.as_i64(),
+                message.id,
+                message.created_at,
+                mention.user_id.as_i64(),
+                mention.start,
+                mention.length
+            )
+            .fetch_one(&mut **tx)
+            .await?;
             inserted.push(row);
         }
         Ok(inserted)
@@ -2228,11 +2573,15 @@ impl ChatRepository {
         let images = self
             .images_for_message_in_tx(tx, message.id, message.created_at)
             .await?;
+        let mentions = self
+            .mentions_for_message_in_tx(tx, message.id, message.created_at)
+            .await?;
 
         Ok(Some(ChatMessageWithImages {
             message,
             images,
             reactions: Vec::new(),
+            mentions,
         }))
     }
 
@@ -2268,6 +2617,36 @@ impl ChatRepository {
         .fetch_all(&mut **tx)
         .await?;
         Ok(images)
+    }
+
+    async fn mentions_for_message_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        message_id: i64,
+        message_created_at: DateTime<Utc>,
+    ) -> Result<Vec<ChatMention>> {
+        let mentions = sqlx::query_as!(
+            ChatMention,
+            r#"
+            SELECT m.room_id AS "room_id!: RoomId",
+                   m.message_id AS "message_id!",
+                   m.message_created_at AS "message_created_at!",
+                   m.mentioned_user_id AS "mentioned_user_id!: UserId",
+                   u.username AS "username?",
+                   m.start_char AS "start!",
+                   m.length_chars AS "length!",
+                   m.created_at AS "created_at!"
+            FROM chat_message_mentions m
+            LEFT JOIN users u ON u.id = m.mentioned_user_id
+            WHERE m.message_id = $1 AND m.message_created_at = $2
+            ORDER BY m.start_char ASC, m.mentioned_user_id ASC
+            "#,
+            message_id,
+            message_created_at
+        )
+        .fetch_all(&mut **tx)
+        .await?;
+        Ok(mentions)
     }
 
     async fn insert_event_in_tx(
@@ -2435,6 +2814,7 @@ impl ChatRepository {
         let mut reaction_grouped = self
             .reaction_summaries_for_messages(&messages, viewer_user_id)
             .await?;
+        let mut mention_grouped = self.mentions_for_messages(&messages).await?;
 
         Ok(messages
             .drain(..)
@@ -2442,13 +2822,63 @@ impl ChatRepository {
                 let key = chat_message_key(&message);
                 let images = grouped.remove(&key).unwrap_or_default();
                 let reactions = reaction_grouped.remove(&key).unwrap_or_default();
+                let mentions = mention_grouped.remove(&key).unwrap_or_default();
                 ChatMessageWithImages {
                     message,
                     images,
                     reactions,
+                    mentions,
                 }
             })
             .collect())
+    }
+
+    async fn mentions_for_messages(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Result<HashMap<ChatMessageKey, Vec<ChatMention>>> {
+        if messages.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let message_ids = messages
+            .iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        let message_created_at = messages
+            .iter()
+            .map(|message| message.created_at)
+            .collect::<Vec<_>>();
+        let mentions = sqlx::query_as!(
+            ChatMention,
+            r#"
+            SELECT m.room_id AS "room_id!: RoomId",
+                   m.message_id AS "message_id!",
+                   m.message_created_at AS "message_created_at!",
+                   m.mentioned_user_id AS "mentioned_user_id!: UserId",
+                   u.username AS "username?",
+                   m.start_char AS "start!",
+                   m.length_chars AS "length!",
+                   m.created_at AS "created_at!"
+            FROM chat_message_mentions m
+            LEFT JOIN users u ON u.id = m.mentioned_user_id
+            WHERE (m.message_id, m.message_created_at) IN (
+                SELECT * FROM UNNEST($1::BIGINT[], $2::TIMESTAMPTZ[])
+            )
+            ORDER BY m.message_created_at ASC, m.message_id ASC, m.start_char ASC, m.mentioned_user_id ASC
+            "#,
+            &message_ids,
+            &message_created_at
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut grouped = HashMap::<ChatMessageKey, Vec<ChatMention>>::new();
+        for mention in mentions {
+            grouped
+                .entry((mention.message_id, mention.message_created_at))
+                .or_default()
+                .push(mention);
+        }
+        Ok(grouped)
     }
 
     async fn reaction_summaries_for_messages(

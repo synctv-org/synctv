@@ -851,6 +851,7 @@ impl RoomService {
                 current_owner_id,
                 current_owner_id,
                 Some(&updated_current_owner),
+                Self::role_member_event_scope(),
             )
             .await
         {
@@ -880,6 +881,7 @@ impl RoomService {
                 new_owner_id,
                 current_owner_id,
                 Some(&updated_new_owner),
+                Self::role_member_event_scope(),
             )
             .await
         {

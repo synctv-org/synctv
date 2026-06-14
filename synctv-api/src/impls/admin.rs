@@ -3,8 +3,8 @@
 use std::sync::Arc;
 use synctv_core::models::UserId;
 use synctv_core::service::{
-    AuditService, BanRecordService, EmailService, RemoteProviderManager, ReviewService,
-    RoomService, SettingsRegistry, SettingsService, UserService,
+    AuditService, BanRecordService, ContentReportService, EmailService, RemoteProviderManager,
+    ReviewService, RoomService, SettingsRegistry, SettingsService, UserService,
 };
 use synctv_livestream::LiveStreamingInfrastructure;
 
@@ -53,6 +53,7 @@ mod mapping;
 mod media;
 mod playback;
 mod query;
+mod reports;
 mod response;
 mod reviews;
 mod rooms;
@@ -98,6 +99,7 @@ pub struct AdminApiRuntime {
     pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     pub signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
+    pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub request_executor: Arc<RequestExecutor>,
 }
 
@@ -117,6 +119,7 @@ impl AdminApiRuntime {
             provider_stores,
             provider_access_service: crate::impls::disabled_provider_access_service(),
             signing_key,
+            presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
             request_executor,
         }
     }
@@ -129,10 +132,12 @@ pub struct AdminApiImpl {
     pub user_service: Arc<UserService>,
     pub review_service: Arc<ReviewService>,
     pub ban_record_service: Arc<BanRecordService>,
+    pub content_report_service: Arc<ContentReportService>,
     pub settings_service: Arc<SettingsService>,
     pub settings_registry: Option<Arc<SettingsRegistry>>,
     pub email_service: Arc<EmailService>,
     pub connection_service: Arc<dyn ConnectionRuntime>,
+    pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub provider_instance_manager: Arc<RemoteProviderManager>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
@@ -175,6 +180,8 @@ impl AdminApiImpl {
 
         let review_service = Arc::new(ReviewService::new(user_service.pool().clone()));
         let ban_record_service = Arc::new(BanRecordService::new(user_service.pool().clone()));
+        let content_report_service =
+            Arc::new(ContentReportService::new(user_service.pool().clone()));
         let realtime_fanout = runtime.realtime_fanout;
         let realtime_event_service = runtime.realtime_event_service;
         let room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());
@@ -200,10 +207,12 @@ impl AdminApiImpl {
             user_service,
             review_service,
             ban_record_service,
+            content_report_service,
             settings_service,
             settings_registry,
             email_service,
             connection_service,
+            presence_service: runtime.presence_service,
             provider_instance_manager,
             live_streaming_infrastructure,
             publish_key_service,

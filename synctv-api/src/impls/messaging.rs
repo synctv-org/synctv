@@ -16,11 +16,12 @@ use synctv_common::ExecutionControl;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
     models::{
-        ChatMessageType, RoomId, RoomPermission, RoomPermissionSet, RoomStatus, SendChatMessage,
-        UserId, UserStatus,
+        ChatMentionInput, ChatMessageType, RoomId, RoomPermission, RoomPermissionSet, RoomStatus,
+        SendChatMessage, UserId, UserStatus,
     },
     service::{
-        ChatService, ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService,
+        ChatService, ContentFilter, OnlinePresenceService, RateLimitConfig,
+        RequestRateLimiterService, RoomService,
     },
 };
 use synctv_realtime::sync::ConnectionId;
@@ -81,7 +82,7 @@ pub(crate) use playback::should_persist_playback_progress;
 mod resource_watch;
 pub use resource_watch::{
     watch_chat_events_observe, watch_playback_observe, watch_playback_state_observe,
-    watch_playlist_items_observe, watch_room_members_observe, watch_room_settings_observe,
+    watch_playlist_items_observe, watch_room_member_events_observe, watch_room_settings_observe,
     PreparedResourceWatchSession, ResourceWatchSession, ResourceWatchSessionConfig,
     WatchResourceKind,
 };
@@ -92,7 +93,8 @@ pub use codec::ProtoCodec;
 pub(crate) use codec::{
     chat_display_color_from_metadata, chat_display_position_from_metadata,
     chat_event_kind_to_proto, chat_message_event_to_proto, chat_metadata_for_send,
-    chat_playback_metadata_from_metadata, core_chat_image_to_proto, proto_chat_image_to_core,
+    chat_playback_metadata_from_metadata, core_chat_image_to_proto, online_event_to_proto,
+    proto_chat_image_to_core, room_member_event_to_proto,
 };
 #[cfg(test)]
 pub(crate) use codec::{
@@ -185,6 +187,7 @@ pub struct StreamMessageHandler {
     /// without depending on the gRPC notification-to-realtime bridge.
     notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     connection_service: Arc<dyn ConnectionRuntime>,
+    presence_service: Arc<OnlinePresenceService>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
@@ -208,6 +211,11 @@ pub struct StreamMessageHandler {
     ///   `UserLeft` would create a ghost offline event for a user that was never
     ///   actually announced as online
     skip_cleanup_user_left: Arc<std::sync::atomic::AtomicBool>,
+    /// Last known room role for this connection's actor.
+    ///
+    /// Cleanup uses this cached value so disconnect paths do not depend on a
+    /// fresh database read while the transport is already failing.
+    current_room_role: Arc<std::sync::atomic::AtomicI32>,
     /// Cached membership status for heartbeat validation.
     /// Uses TTL-based expiration (30 seconds) to reduce database load while
     /// maintaining reasonable responsiveness to membership changes.
@@ -255,6 +263,7 @@ pub struct StreamMessageHandlerRuntime {
     pub room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
     pub playback_fanout: Arc<dyn PlaybackFanoutService>,
     pub chat_event_dispatcher: Arc<dyn ChatEventDispatcher>,
+    pub presence_service: Arc<OnlinePresenceService>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub ws_message_rate_limit: u32,
     pub heartbeat_schedule: HeartbeatSchedule,
@@ -280,6 +289,7 @@ impl StreamMessageHandlerRuntime {
             chat_event_dispatcher: crate::chat_event_dispatcher::default_chat_event_dispatcher(
                 event_service.clone(),
             ),
+            presence_service: Arc::new(OnlinePresenceService::local()),
             notification_service: None,
             ws_message_rate_limit: 50,
             heartbeat_schedule: HeartbeatSchedule::production(),
@@ -303,6 +313,7 @@ impl Clone for StreamMessageHandler {
             chat_event_dispatcher: Arc::clone(&self.chat_event_dispatcher),
             notification_service: self.notification_service.clone(),
             connection_service: Arc::clone(&self.connection_service),
+            presence_service: Arc::clone(&self.presence_service),
             rate_limiter: Arc::clone(&self.rate_limiter),
             rate_limit_config: Arc::clone(&self.rate_limit_config),
             content_filter: Arc::clone(&self.content_filter),
@@ -316,6 +327,7 @@ impl Clone for StreamMessageHandler {
             ws_message_rate_limit: self.ws_message_rate_limit,
             has_webrtc_session: Arc::clone(&self.has_webrtc_session),
             skip_cleanup_user_left: Arc::clone(&self.skip_cleanup_user_left),
+            current_room_role: Arc::clone(&self.current_room_role),
             membership_cache: Arc::clone(&self.membership_cache),
             pending_room_event_rx: Arc::clone(&self.pending_room_event_rx),
             pending_initial_join_state: Arc::clone(&self.pending_initial_join_state),
@@ -381,17 +393,18 @@ impl StreamMessageHandler {
         let room_actor = principal.room_actor(room_id);
         let chat_event_dispatcher = runtime.chat_event_dispatcher;
         let playback_fanout = runtime.playback_fanout;
+        let presence_service = runtime.presence_service;
         let resource_observer = Arc::new(ResourceObserver::new(ResourceObserverParams {
             room_id,
             user_id,
             actor: room_actor,
             connection_id: connection_id.as_str().to_string(),
             room_service: Arc::clone(&room_service),
+            presence_service: Arc::clone(&presence_service),
             public_id_codec: Arc::clone(&public_id_codec),
             sender: Arc::clone(&sender),
             playback_service: Arc::clone(&runtime.playback_service),
             playlist_items_snapshot_service: Arc::clone(&runtime.playlist_items_snapshot_service),
-            room_members_snapshot_service: Arc::clone(&runtime.room_members_snapshot_service),
             room_settings_snapshot_service: Arc::clone(&room_settings_snapshot_service),
         }));
 
@@ -408,6 +421,7 @@ impl StreamMessageHandler {
             chat_event_dispatcher,
             notification_service: runtime.notification_service,
             connection_service,
+            presence_service,
             rate_limiter,
             rate_limit_config,
             content_filter,
@@ -421,6 +435,9 @@ impl StreamMessageHandler {
             ws_message_rate_limit: runtime.ws_message_rate_limit,
             has_webrtc_session: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             skip_cleanup_user_left: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            current_room_role: Arc::new(std::sync::atomic::AtomicI32::new(
+                synctv_proto::common::RoomMemberRole::Member as i32,
+            )),
             membership_cache,
             pending_room_event_rx: Arc::new(tokio::sync::Mutex::new(None)),
             pending_initial_join_state: Arc::new(tokio::sync::Mutex::new(None)),
@@ -456,15 +473,109 @@ impl StreamMessageHandler {
         self.principal.public_actor_id(&self.public_id_codec)
     }
 
-    fn is_own_join_event(&self, event: &RealtimeEvent, public_actor_id: &str) -> bool {
-        match event {
-            RealtimeEvent::UserJoined { user_id, .. } => {
-                !self.principal.is_guest() && *user_id == self.user_id
+    fn webrtc_event_server_message_for_current_connection(
+        &self,
+        event: &RealtimeEvent,
+    ) -> Result<Option<ServerMessage>, String> {
+        use synctv_proto::client::resource_event::Payload;
+        use synctv_proto::client::server_message::Message;
+        use synctv_proto::client::web_rtc_event::Event;
+        use synctv_proto::client::{
+            ResourceEvent, ServerMessage, WebRtcAnswer, WebRtcEvent, WebRtcIceCandidate,
+            WebRtcJoin, WebRtcLeave, WebRtcOffer,
+        };
+        use synctv_realtime::sync::WebRTCSignalKind;
+
+        let payload = match event {
+            RealtimeEvent::WebRTCSignaling {
+                message_type,
+                from,
+                to,
+                data,
+                ..
+            } => {
+                let Some((actor_id, conn_id)) = to.rsplit_once(':') else {
+                    return Ok(None);
+                };
+                if conn_id != self.connection_id.as_str() || actor_id != self.public_actor_id()? {
+                    return Ok(None);
+                }
+                match message_type {
+                    WebRTCSignalKind::Offer => Event::Offer(WebRtcOffer {
+                        from: from.clone(),
+                        to: to.clone(),
+                        data: data.clone(),
+                    }),
+                    WebRTCSignalKind::Answer => Event::Answer(WebRtcAnswer {
+                        from: from.clone(),
+                        to: to.clone(),
+                        data: data.clone(),
+                    }),
+                    WebRTCSignalKind::IceCandidate => Event::IceCandidate(WebRtcIceCandidate {
+                        from: from.clone(),
+                        to: to.clone(),
+                        data: data.clone(),
+                    }),
+                }
             }
-            RealtimeEvent::GuestJoined { guest_id, .. } => {
-                self.principal.is_guest() && guest_id == public_actor_id
+            RealtimeEvent::WebRTCJoin {
+                actor_id,
+                conn_id,
+                username,
+                ..
+            } => {
+                if conn_id == self.connection_id.as_str() || !self.current_connection_rtc_joined() {
+                    return Ok(None);
+                }
+                Event::Join(WebRtcJoin {
+                    user_id: actor_id.clone(),
+                    conn_id: conn_id.clone(),
+                    username: username.clone(),
+                })
             }
-            _ => false,
+            RealtimeEvent::WebRTCLeave {
+                actor_id, conn_id, ..
+            } => {
+                if conn_id == self.connection_id.as_str() || !self.current_connection_rtc_joined() {
+                    return Ok(None);
+                }
+                Event::Leave(WebRtcLeave {
+                    user_id: actor_id.clone(),
+                    conn_id: conn_id.clone(),
+                })
+            }
+            _ => return Ok(None),
+        };
+
+        Ok(Some(ServerMessage {
+            message: Some(Message::ResourceEvent(ResourceEvent {
+                observe_id: "webrtc".to_string(),
+                payload: Some(Payload::WebrtcEvent(WebRtcEvent {
+                    event: Some(payload),
+                })),
+                event_cursor: None,
+            })),
+        }))
+    }
+
+    fn current_connection_rtc_joined(&self) -> bool {
+        self.connection_service
+            .get_connection(self.connection_id.as_str())
+            .is_some_and(|connection| connection.rtc_joined)
+    }
+
+    fn apply_connection_state_from_room_event(&self, event: &RealtimeEvent) {
+        if let RealtimeEvent::PermissionChanged {
+            target_user_id,
+            role_changed,
+            role,
+            ..
+        } = event
+        {
+            if *target_user_id == self.user_id && *role_changed {
+                self.current_room_role
+                    .store(*role, std::sync::atomic::Ordering::Relaxed);
+            }
         }
     }
 
@@ -502,7 +613,8 @@ impl StreamMessageHandler {
 
         match resource {
             synctv_proto::client::observe_resource::Resource::PlaybackState(_)
-            | synctv_proto::client::observe_resource::Resource::RoomSettings(_) => {
+            | synctv_proto::client::observe_resource::Resource::RoomSettings(_)
+            | synctv_proto::client::observe_resource::Resource::OnlineCount(_) => {
                 if self.principal.is_guest() {
                     self.ensure_guest_admission_for_action().await?;
                 }
@@ -515,13 +627,20 @@ impl StreamMessageHandler {
                     Ok(())
                 }
             }
-            synctv_proto::client::observe_resource::Resource::RoomMembers(_) => {
+            synctv_proto::client::observe_resource::Resource::RoomMemberEvents(_)
+            | synctv_proto::client::observe_resource::Resource::OnlineEvent(_) => {
                 if self.principal.is_guest() {
                     self.ensure_guest_admission_for_action().await?;
                 }
                 self.check_realtime_permission(RoomPermission::VIEW_MEMBER_LIST)
                     .await
                     .map_err(|e| e.to_string())
+            }
+            synctv_proto::client::observe_resource::Resource::SelfRoomMember(_) => {
+                if self.principal.is_guest() {
+                    return Err("Guests do not have a room member permission snapshot".to_string());
+                }
+                Ok(())
             }
             synctv_proto::client::observe_resource::Resource::ChatEvents(_) => {
                 if self.principal.is_guest() {
@@ -824,8 +943,6 @@ impl StreamMessageHandler {
         // Pre-join caches the room subscription so there is no gap between
         // admission success and the transport starting its receive loop.
         let mut event_rx = self.take_room_event_subscription().await?;
-        let event_actor_id = self.public_actor_id()?;
-
         // Subscribe to disconnect signals
         let mut disconnect_rx = self.connection_service.subscribe_disconnect();
 
@@ -847,26 +964,12 @@ impl StreamMessageHandler {
         // outbound permission snapshots cannot silently fall back to role-only
         // defaults when a read fails.
         let initial_join = self.take_initial_realtime_join_state(&room_id_str).await?;
-
-        // Send initial user joined notification.
-        // If the transport is already gone here, we still need to run cleanup()
-        // because pre_join() already registered the connection and subscribed state
-        // will be established below.
-        if let Err(error) = stream.send(self.create_user_joined_message(
-            &room_id_str,
-            initial_join.member.as_ref(),
-            initial_join.room_settings.as_ref(),
-        )?) {
-            tracing::error!(
-                "Failed to send initial UserJoined message in run_after_join(): {error}"
-            );
-            self.skip_cleanup_user_left
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.cleanup(&room_id_str).await;
-            return Ok(());
+        if let Some(member) = initial_join.member.as_ref() {
+            self.current_room_role
+                .store(i32::from(member.role), std::sync::atomic::Ordering::Relaxed);
         }
 
-        // Broadcast UserJoined event to other replicas
+        // Broadcast UserJoined event to observers and other replicas.
         self.broadcast_user_joined(
             initial_join.member.as_ref(),
             initial_join.room_settings.as_ref(),
@@ -974,17 +1077,25 @@ impl StreamMessageHandler {
                 // Realtime event (broadcast to client)
                 event = event_rx.recv() => {
                     if let Some(event) = event {
-                        // Filter WebRTC signaling: only deliver to the intended recipient.
-                        // SDP data contains IP addresses, so broadcasting to all room
-                        // members is both a privacy leak and causes incorrect WebRTC behavior.
-                                if let RealtimeEvent::WebRTCSignaling { ref to, .. } = event {
-                                    if !self.current_connection_matches_webrtc_recipient(to) {
-                                        continue;
-                                    }
+                        self.apply_connection_state_from_room_event(&event);
+                        match self.webrtc_event_server_message_for_current_connection(&event) {
+                            Ok(Some(message)) => {
+                                if let Err(error) = stream.send(message) {
+                                    tracing::error!("Failed to send WebRTC server message: {}", error);
+                                    break;
                                 }
-                                if self.is_own_join_event(&event, &event_actor_id) {
-                                    continue;
-                                }
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                tracing::error!(
+                                    room_id = %self.room_id,
+                                    event_id = %event.event_id(),
+                                    error = %error,
+                                    "Failed to convert WebRTC event to server message"
+                                );
+                                break;
+                            }
+                        }
                         if !matches!(event, RealtimeEvent::ChatMessageEvent { .. }) {
                             let mut send_failed = false;
                             let messages = match realtime_event_to_server_messages(
@@ -1041,18 +1152,22 @@ impl StreamMessageHandler {
                 }
 
                 () = async {
-                    match self.resource_observer.next_playback_refresh_deadline().await {
+                    match self
+                        .resource_observer
+                        .next_expired_resource_refresh_deadline()
+                        .await
+                    {
                         Some(deadline) => tokio::time::sleep_until(deadline).await,
                         None => std::future::pending::<()>().await,
                     }
                 } => {
                     if let Err(error) = self
                         .resource_observer
-                        .refresh_expired_playback_observations()
+                        .refresh_expired_resource_observations()
                         .await
                     {
                         tracing::error!(
-                            "Failed to refresh observed playback after expiration: {}",
+                            "Failed to refresh observed resources after expiration: {}",
                             error
                         );
                         break;
@@ -1457,89 +1572,6 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    /// Create the initial `UserJoined` server message.
-    fn create_user_joined_message(
-        &self,
-        room_id: &str,
-        member: Option<&synctv_core::models::RoomMember>,
-        room_settings: Option<&synctv_core::models::RoomSettings>,
-    ) -> Result<ServerMessage, String> {
-        use synctv_proto::client::server_message::Message;
-        use synctv_proto::client::UserJoinedRoom;
-        use synctv_proto::common::RoomMember as ProtoRoomMember;
-
-        let (role_proto, permissions, added, removed, admin_added, admin_removed) =
-            if self.principal.is_guest() {
-                let permissions = self
-                    .principal
-                    .guest_identity()
-                    .map_or(RoomPermissionSet::default_guest().0, |identity| {
-                        identity.permissions.0
-                    });
-                (
-                    synctv_proto::common::RoomMemberRole::Guest as i32,
-                    permissions,
-                    0,
-                    0,
-                    0,
-                    0,
-                )
-            } else {
-                match member {
-                    Some(member) => {
-                        let settings = room_settings.ok_or_else(|| {
-                        "authenticated UserJoined payload requires room settings for permissions"
-                            .to_string()
-                    })?;
-                        let effective = self
-                            .room_service
-                            .permission_service()
-                            .effective_member_permissions(member, settings);
-                        let role = room_role_to_proto(member.role);
-                        (
-                            role,
-                            effective.0,
-                            member.added_permissions,
-                            member.removed_permissions,
-                            member.admin_added_permissions,
-                            member.admin_removed_permissions,
-                        )
-                    }
-                    None => {
-                        // Fallback: if we can't fetch membership, use Member defaults
-                        (
-                            synctv_proto::common::RoomMemberRole::Member as i32,
-                            synctv_core::models::RoomPermissionSet::default_member().0,
-                            0,
-                            0,
-                            0,
-                            0,
-                        )
-                    }
-                }
-            };
-        let user_id = self.public_actor_id()?;
-
-        Ok(ServerMessage {
-            message: Some(Message::UserJoined(UserJoinedRoom {
-                room_id: room_id.to_string(),
-                member: Some(ProtoRoomMember {
-                    room_id: room_id.to_string(),
-                    user_id,
-                    username: self.username.clone(),
-                    role: role_proto,
-                    permissions,
-                    added_permissions: added,
-                    removed_permissions: removed,
-                    admin_added_permissions: admin_added,
-                    admin_removed_permissions: admin_removed,
-                    joined_at: chrono::Utc::now().timestamp(),
-                    is_online: true,
-                }),
-            })),
-        })
-    }
-
     /// Broadcast `UserJoined` event to cluster replicas.
     async fn broadcast_user_joined(
         &self,
@@ -1547,10 +1579,10 @@ impl StreamMessageHandler {
         room_settings: Option<&synctv_core::models::RoomSettings>,
     ) {
         match self
-            .connection_service
-            .has_existing_presence_for_user_in_room_distributed(
-                &self.user_id,
-                &self.room_id,
+            .presence_service
+            .user_has_other_connection_in_room(
+                self.user_id,
+                self.room_id,
                 self.connection_id.as_str(),
             )
             .await
@@ -1797,10 +1829,10 @@ impl StreamMessageHandler {
             });
 
         let should_broadcast_left = match self
-            .connection_service
-            .has_other_connection_for_user_in_room_distributed(
-                &self.user_id,
-                &self.room_id,
+            .presence_service
+            .user_has_other_connection_in_room(
+                self.user_id,
+                self.room_id,
                 self.connection_id.as_str(),
             )
             .await
@@ -1850,11 +1882,15 @@ impl StreamMessageHandler {
                 timestamp: chrono::Utc::now(),
             }
         } else {
+            let role = self
+                .current_room_role
+                .load(std::sync::atomic::Ordering::Relaxed);
             RealtimeEvent::UserLeft {
                 event_id: synctv_common::snanoid!(16),
                 room_id: self.room_id,
                 user_id: self.user_id,
                 username: self.username.clone(),
+                role,
                 timestamp: chrono::Utc::now(),
             }
         };
@@ -1938,36 +1974,22 @@ impl StreamMessageHandler {
         // outbound permission snapshots cannot silently fall back to role-only
         // defaults when a read fails.
         let initial_join = self.take_initial_realtime_join_state(&room_id_str).await?;
+        if let Some(member) = initial_join.member.as_ref() {
+            self.current_room_role
+                .store(i32::from(member.role), std::sync::atomic::Ordering::Relaxed);
+        }
 
-        // Send initial UserJoined message to the client (mirrors run() behavior)
-        let initial_msg = self.create_user_joined_message(
-            &room_id_str,
+        self.broadcast_user_joined(
             initial_join.member.as_ref(),
             initial_join.room_settings.as_ref(),
-        )?;
-        if let Err(e) = self.sender.send(initial_msg) {
-            tracing::error!("Failed to send initial UserJoined message in start(): {e}");
-            self.skip_cleanup_user_left
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            cancel_token.cancel();
-        } else {
-            // Broadcast UserJoined event to other replicas only after the
-            // connection has observed the initial join payload locally.
-            // Otherwise we can create a transient ghost-presence event for a
-            // connection that never became usable.
-            self.broadcast_user_joined(
-                initial_join.member.as_ref(),
-                initial_join.room_settings.as_ref(),
-            )
-            .await;
-        }
+        )
+        .await;
 
         // Use bounded channel to prevent memory exhaustion from fast clients
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ClientMessage>(256);
 
         let room_id_str = self.public_room_id()?;
         let event_connection_id = self.connection_id.as_str().to_string();
-        let event_actor_id = self.public_actor_id()?;
         let mut rx_events = match self.take_room_event_subscription().await {
             Ok(rx_events) => rx_events,
             Err(error) => {
@@ -1978,7 +2000,6 @@ impl StreamMessageHandler {
         let sender = self.sender.clone();
         let event_handler = self.clone();
         let public_id_codec = self.public_id_codec.clone();
-
         let event_token = cancel_token.clone();
         spawn_monitored("messaging_event_dispatch", async move {
             loop {
@@ -1987,31 +2008,39 @@ impl StreamMessageHandler {
                     event = rx_events.recv() => {
                         match event {
                             Some(event) => {
-                                // Filter WebRTC signaling: only deliver to the intended
-                                // recipient (same logic as run()). SDP data contains IP
-                                // addresses, so broadcasting to all room members is both
-                                // a privacy leak and causes incorrect WebRTC behavior.
-                                if let RealtimeEvent::WebRTCSignaling { ref to, .. } = event {
-                                    let is_target = to.rsplit_once(':').is_some_and(
-                                        |(actor_id, conn)| {
-                                            actor_id == event_actor_id
-                                                && conn == event_connection_id
-                                        },
-                                    );
-                                    if !is_target {
-                                        continue;
-                                    }
-                                }
-                                if event_handler.is_own_join_event(&event, &event_actor_id) {
-                                    continue;
-                                }
-
+                                event_handler.apply_connection_state_from_room_event(&event);
                                 let is_room_shutdown = matches!(
                                     event,
                                     RealtimeEvent::RoomDeleted { .. }
                                         | RealtimeEvent::RoomBanned { .. }
                                         | RealtimeEvent::RoomOwnerInactive { .. }
                                 );
+
+                                match event_handler
+                                    .webrtc_event_server_message_for_current_connection(&event)
+                                {
+                                    Ok(Some(message)) => {
+                                        if let Err(error) = sender.send(message) {
+                                            tracing::error!(
+                                                "Failed to send WebRTC server message: {}",
+                                                error
+                                            );
+                                            event_token.cancel();
+                                            break;
+                                        }
+                                    }
+                                    Ok(None) => {}
+                                    Err(error) => {
+                                        tracing::error!(
+                                            room_id = %event_handler.room_id,
+                                            event_id = %event.event_id(),
+                                            error = %error,
+                                            "Failed to convert WebRTC event to server message"
+                                        );
+                                        event_token.cancel();
+                                        break;
+                                    }
+                                }
 
                                 if !matches!(event, RealtimeEvent::ChatMessageEvent { .. }) {
                                     let messages = match realtime_event_to_server_messages(
@@ -2073,7 +2102,7 @@ impl StreamMessageHandler {
                     () = async {
                         match event_handler
                             .resource_observer
-                            .next_playback_refresh_deadline()
+                            .next_expired_resource_refresh_deadline()
                             .await {
                             Some(deadline) => tokio::time::sleep_until(deadline).await,
                             None => std::future::pending::<()>().await,
@@ -2081,11 +2110,11 @@ impl StreamMessageHandler {
                     } => {
                         if let Err(error) = event_handler
                             .resource_observer
-                            .refresh_expired_playback_observations()
+                            .refresh_expired_resource_observations()
                             .await
                         {
                             tracing::error!(
-                                "Failed to refresh observed playback in start(): {}",
+                                "Failed to refresh observed resources in start(): {}",
                                 error
                             );
                             event_token.cancel();
@@ -2521,26 +2550,14 @@ impl StreamMessageHandler {
                 // This completes the heartbeat request-response cycle
                 self.send_heartbeat_ack()?;
             }
-            Some(Message::WebrtcOffer(offer)) => {
-                self.handle_webrtc_offer(offer).await?;
-            }
-            Some(Message::WebrtcAnswer(answer)) => {
-                self.handle_webrtc_answer(answer).await?;
-            }
-            Some(Message::WebrtcIceCandidate(candidate)) => {
-                self.handle_webrtc_ice_candidate(candidate).await?;
-            }
-            Some(Message::WebrtcJoin(join)) => {
-                self.handle_webrtc_join(join).await?;
-            }
-            Some(Message::WebrtcLeave(leave)) => {
-                self.handle_webrtc_leave(leave)?;
-            }
-            Some(Message::PlaybackProgress(report)) => {
-                self.handle_playback_progress(report).await?;
+            Some(Message::Webrtc(command)) => {
+                self.handle_webrtc_command(command).await?;
             }
             Some(Message::PlaybackUpdate(update)) => {
-                self.handle_playback_update(update).await?;
+                self.handle_playback_source_update(update).await?;
+            }
+            Some(Message::PlaybackStateUpdate(update)) => {
+                self.handle_playback_state_update(update).await?;
             }
             Some(Message::ObserveResource(observe)) => {
                 self.ensure_observe_resource_allowed(observe).await?;
@@ -2614,6 +2631,10 @@ impl StreamMessageHandler {
                     reply_to_message_id,
                     metadata,
                     images,
+                    mentions: proto_chat_mentions_to_core(
+                        &chat_msg.mentions,
+                        &self.public_id_codec,
+                    )?,
                 },
                 control,
             )
@@ -2753,6 +2774,25 @@ fn parse_optional_chat_message_id(raw: &str) -> Result<Option<i64>, String> {
         .parse::<i64>()
         .map(Some)
         .map_err(|_| "Invalid chat message id".to_string())
+}
+
+fn proto_chat_mentions_to_core(
+    mentions: &[synctv_proto::client::ChatMentionInput],
+    public_id_codec: &synctv_core::PublicIdCodec,
+) -> Result<Vec<ChatMentionInput>, String> {
+    mentions
+        .iter()
+        .map(|mention| {
+            let user_id = public_id_codec
+                .decode_user_id(&mention.user_id)
+                .map_err(|error| format!("Invalid mention user_id: {error}"))?;
+            Ok(ChatMentionInput {
+                user_id,
+                start: mention.start,
+                length: mention.length,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

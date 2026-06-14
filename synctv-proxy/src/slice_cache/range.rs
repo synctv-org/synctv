@@ -1,3 +1,5 @@
+#![allow(clippy::missing_errors_doc)]
+
 //! Range header parsing, Content-Range response parsing, and slice alignment.
 //!
 //! Mirrors nginx's slice module approach:

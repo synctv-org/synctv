@@ -228,8 +228,14 @@ async fn test_update_concurrent_tasks_one_gets_conflict() {
         repo2.update(&s).await
     });
 
-    let r1 = ok(handle1.await, "first playback update task should complete");
-    let r2 = ok(handle2.await, "second playback update task should complete");
+    let r1 = ok(
+        handle1.await,
+        "first playback state update task should complete",
+    );
+    let r2 = ok(
+        handle2.await,
+        "second playback state update task should complete",
+    );
 
     // Exactly one should succeed and one should fail
     let (successes, failures) = match (&r1, &r2) {
@@ -346,16 +352,16 @@ async fn test_find_playback_for_creator_locks_rows_until_transaction_commit() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert!(
         !update_handle.is_finished(),
-        "FOR UPDATE lock should block concurrent playback updates until commit"
+        "FOR UPDATE lock should block concurrent playback state updates until commit"
     );
 
     ok(tx.commit().await, "transaction should commit");
     let updated = ok(
         ok(
             update_handle.await,
-            "concurrent playback update task should complete",
+            "concurrent playback state update task should complete",
         ),
-        "concurrent playback update should succeed",
+        "concurrent playback state update should succeed",
     );
     assert_f64_eq(updated.position, 99.0);
 }

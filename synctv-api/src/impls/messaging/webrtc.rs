@@ -1,4 +1,5 @@
 use synctv_core::models::RoomPermission;
+use synctv_proto::client::web_rtc_command::Command;
 use synctv_realtime::sync::{RealtimeEvent, WebRTCSignalKind};
 
 use super::{
@@ -8,6 +9,34 @@ use super::{
 use crate::runtime::RealtimeDeliveryRequirement;
 
 impl StreamMessageHandler {
+    pub(crate) async fn handle_webrtc_command(
+        &self,
+        command: &synctv_proto::client::WebRtcCommand,
+    ) -> Result<(), String> {
+        self.ensure_webrtc_command_allowed().await?;
+
+        match command.command.as_ref() {
+            Some(Command::Offer(offer)) => self.handle_webrtc_offer(offer),
+            Some(Command::Answer(answer)) => self.handle_webrtc_answer(answer),
+            Some(Command::IceCandidate(candidate)) => self.handle_webrtc_ice_candidate(candidate),
+            Some(Command::Join(join)) => self.handle_webrtc_join(join),
+            Some(Command::Leave(_leave)) => self.leave_webrtc_session(),
+            None => Err("Empty WebRTC command".to_string()),
+        }
+    }
+
+    async fn ensure_webrtc_command_allowed(&self) -> Result<(), String> {
+        if self.principal.is_guest() {
+            self.ensure_guest_admission_for_action().await?;
+        }
+
+        self.check_realtime_permission(RoomPermission::USE_WEBRTC)
+            .await
+            .map_err(|e| format!("WebRTC permission denied: {e}"))?;
+
+        Ok(())
+    }
+
     pub(crate) fn validate_webrtc_recipient(&self, recipient: &str) -> Result<(), String> {
         let Some((target_actor_id, target_conn_id)) = recipient.rsplit_once(':') else {
             return Err(
@@ -39,27 +68,6 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    pub(crate) fn current_connection_matches_webrtc_recipient(&self, recipient: &str) -> bool {
-        let Some((target_actor_id, target_conn_id)) = recipient.rsplit_once(':') else {
-            return false;
-        };
-
-        if target_conn_id != self.connection_id.as_str() {
-            return false;
-        }
-
-        let Some(current) = self
-            .connection_service
-            .get_connection(self.connection_id.as_str())
-        else {
-            return false;
-        };
-
-        current.actor_id == target_actor_id
-            && current.room_id.as_ref() == Some(&self.room_id)
-            && current.rtc_joined
-    }
-
     pub(crate) fn ice_candidate_contains_private_ip(candidate: &str) -> bool {
         candidate
             .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '[' | ']'))
@@ -67,7 +75,7 @@ impl StreamMessageHandler {
             .any(is_private_ice_candidate_ip)
     }
 
-    pub(crate) async fn handle_webrtc_offer(
+    pub(crate) fn handle_webrtc_offer(
         &self,
         offer: &synctv_proto::client::WebRtcOffer,
     ) -> Result<(), String> {
@@ -78,15 +86,6 @@ impl StreamMessageHandler {
                 offer.data.len()
             ));
         }
-
-        if self.principal.is_guest() {
-            self.ensure_guest_admission_for_action().await?;
-        }
-
-        // Check permission
-        self.check_realtime_permission(RoomPermission::USE_WEBRTC)
-            .await
-            .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
         let conn_id = self.connection_id.clone();
 
@@ -100,7 +99,7 @@ impl StreamMessageHandler {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
             message_type: WebRTCSignalKind::Offer,
-            from: format!("{}|{}", self.public_actor_id()?, conn_id),
+            from: format!("{}:{}", self.public_actor_id()?, conn_id),
             to: offer.to.clone(),
             data: offer.data.clone(),
             timestamp: chrono::Utc::now(),
@@ -125,7 +124,7 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    pub(crate) async fn handle_webrtc_answer(
+    pub(crate) fn handle_webrtc_answer(
         &self,
         answer: &synctv_proto::client::WebRtcAnswer,
     ) -> Result<(), String> {
@@ -136,15 +135,6 @@ impl StreamMessageHandler {
                 answer.data.len()
             ));
         }
-
-        if self.principal.is_guest() {
-            self.ensure_guest_admission_for_action().await?;
-        }
-
-        // Check permission
-        self.check_realtime_permission(RoomPermission::USE_WEBRTC)
-            .await
-            .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
         let conn_id = self.connection_id.clone();
 
@@ -158,7 +148,7 @@ impl StreamMessageHandler {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
             message_type: WebRTCSignalKind::Answer,
-            from: format!("{}|{}", self.public_actor_id()?, conn_id),
+            from: format!("{}:{}", self.public_actor_id()?, conn_id),
             to: answer.to.clone(),
             data: answer.data.clone(),
             timestamp: chrono::Utc::now(),
@@ -183,7 +173,7 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    pub(crate) async fn handle_webrtc_ice_candidate(
+    pub(crate) fn handle_webrtc_ice_candidate(
         &self,
         candidate: &synctv_proto::client::WebRtcIceCandidate,
     ) -> Result<(), String> {
@@ -200,15 +190,6 @@ impl StreamMessageHandler {
             return Err("WebRTC ICE candidate contains a private or local address".to_string());
         }
 
-        if self.principal.is_guest() {
-            self.ensure_guest_admission_for_action().await?;
-        }
-
-        // Check permission
-        self.check_realtime_permission(RoomPermission::USE_WEBRTC)
-            .await
-            .map_err(|e| format!("WebRTC permission denied: {e}"))?;
-
         let conn_id = self.connection_id.clone();
 
         if self.connection_service.get_connection(&conn_id).is_none() {
@@ -221,7 +202,7 @@ impl StreamMessageHandler {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
             message_type: WebRTCSignalKind::IceCandidate,
-            from: format!("{}|{}", self.public_actor_id()?, conn_id),
+            from: format!("{}:{}", self.public_actor_id()?, conn_id),
             to: candidate.to.clone(),
             data: candidate.data.clone(),
             timestamp: chrono::Utc::now(),
@@ -246,19 +227,10 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    pub(crate) async fn handle_webrtc_join(
+    pub(crate) fn handle_webrtc_join(
         &self,
         _join: &synctv_proto::client::WebRtcJoin,
     ) -> Result<(), String> {
-        if self.principal.is_guest() {
-            self.ensure_guest_admission_for_action().await?;
-        }
-
-        // Check permission
-        self.check_realtime_permission(RoomPermission::USE_WEBRTC)
-            .await
-            .map_err(|e| format!("WebRTC permission denied: {e}"))?;
-
         let conn_id = self.connection_id.clone();
 
         let should_join = should_transition_webrtc_membership(
@@ -314,10 +286,7 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    pub(crate) fn handle_webrtc_leave(
-        &self,
-        _leave: &synctv_proto::client::WebRtcLeave,
-    ) -> Result<(), String> {
+    pub(crate) fn leave_webrtc_session(&self) -> Result<(), String> {
         let conn_id = self.connection_id.clone();
 
         let should_leave = should_transition_webrtc_membership(

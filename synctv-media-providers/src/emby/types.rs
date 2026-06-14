@@ -1,4 +1,5 @@
 //! Emby/Jellyfin API Data Structures
+#![allow(clippy::struct_excessive_bools, clippy::too_many_lines)]
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -449,6 +450,15 @@ impl From<MediaSource> for crate::grpc::emby::MediaSourceInfo {
     }
 }
 
+#[allow(clippy::cast_precision_loss)]
+fn runtime_ticks_to_seconds(ticks: u64) -> Option<f64> {
+    let duration = ticks as f64 / 10_000_000.0;
+    duration
+        .is_finite()
+        .then_some(duration)
+        .filter(|duration| *duration > 0.0)
+}
+
 impl From<Item> for crate::grpc::emby::Item {
     fn from(item: Item) -> Self {
         Self {
@@ -473,6 +483,7 @@ impl From<Item> for crate::grpc::emby::Item {
                 .collect(),
             collection_type: item.collection_type.unwrap_or_default(),
             has_thumbnail: item.image_tags.is_some_and(|tags| tags.has_any()),
+            duration_seconds: item.run_time_ticks.and_then(runtime_ticks_to_seconds),
         }
     }
 }

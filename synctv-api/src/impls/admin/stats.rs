@@ -44,6 +44,7 @@ impl AdminApiImpl {
             banned_rooms_res,
             provider_count_res,
             total_media_res,
+            presence_res,
         ) = tokio::join!(
             self.user_service.list_users(&query_all),
             self.user_service.list_users(&query_active),
@@ -53,6 +54,7 @@ impl AdminApiImpl {
             self.room_service.list_rooms(&room_query_banned),
             self.provider_instance_manager.get_all_instances(),
             self.room_service.media_service().count_all_media(),
+            self.presence_service.overview(),
         );
 
         let (_, total_users) = total_users_res.map_err(ApiError::from)?;
@@ -66,6 +68,9 @@ impl AdminApiImpl {
             "provider instance count",
         )?;
         let total_media = i64_to_i32_api(total_media_res.map_err(ApiError::from)?, "media total")?;
+        let presence = crate::impls::client::convert::presence_overview_to_proto(
+            &presence_res.map_err(ApiError::from)?,
+        )?;
 
         Ok(synctv_proto::admin::GetSystemStatsResponse {
             total_users: i64_to_i32_api(total_users, "user total")?,
@@ -77,6 +82,7 @@ impl AdminApiImpl {
             total_media,
             provider_instances: provider_count,
             additional_stats: vec![],
+            presence: Some(presence),
         })
     }
 }

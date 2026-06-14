@@ -1,6 +1,6 @@
 use super::{
-    build_start_playback_request, build_update_playback, static_media_source_provider,
-    PlaybackUpdateCommand,
+    build_playback_state_update, build_start_playback_request, static_media_source_provider,
+    PlaybackStateUpdateCommand,
 };
 use chrono::Utc;
 use synctv_core::models::{Media, MediaId, PlaylistId, RoomId};
@@ -66,26 +66,26 @@ fn test_build_start_playback_request_parses_dynamic_target() -> TestResult {
 }
 
 #[test]
-fn test_build_update_playback_rejects_missing_type() -> TestResult {
+fn test_build_playback_state_update_rejects_missing_type() -> TestResult {
     let codec = synctv_core::PublicIdCodec::plain();
-    let err = api_err(build_update_playback(
-        synctv_proto::client::UpdatePlaybackRequest::default(),
+    let err = api_err(build_playback_state_update(
+        synctv_proto::client::UpdatePlaybackStateRequest::default(),
         &codec,
     ))?;
 
     let message = err.to_string();
     assert!(
-        message.contains("update_playback.type_required") || message.contains("type"),
+        message.contains("update_playback_state.type_required") || message.contains("type"),
         "{message}"
     );
     Ok(())
 }
 
 #[test]
-fn test_build_update_playback_rejects_unknown_type() -> TestResult {
+fn test_build_playback_state_update_rejects_unknown_type() -> TestResult {
     let codec = synctv_core::PublicIdCodec::plain();
-    let err = api_err(build_update_playback(
-        synctv_proto::client::UpdatePlaybackRequest {
+    let err = api_err(build_playback_state_update(
+        synctv_proto::client::UpdatePlaybackStateRequest {
             r#type: 99,
             playing: None,
             position: None,
@@ -103,10 +103,10 @@ fn test_build_update_playback_rejects_unknown_type() -> TestResult {
 }
 
 #[test]
-fn test_build_update_playback_rejects_playing_false_for_play() -> TestResult {
+fn test_build_playback_state_update_rejects_playing_false_for_play() -> TestResult {
     let codec = synctv_core::PublicIdCodec::plain();
-    let err = api_err(build_update_playback(
-        synctv_proto::client::UpdatePlaybackRequest {
+    let err = api_err(build_playback_state_update(
+        synctv_proto::client::UpdatePlaybackStateRequest {
             r#type: synctv_proto::client::PlaybackUpdateType::Play as i32,
             playing: Some(false),
             position: None,
@@ -124,10 +124,10 @@ fn test_build_update_playback_rejects_playing_false_for_play() -> TestResult {
 }
 
 #[test]
-fn test_build_update_playback_play_defaults_to_playing() -> TestResult {
+fn test_build_playback_state_update_play_defaults_to_playing() -> TestResult {
     let codec = synctv_core::PublicIdCodec::plain();
-    let parsed = api_ok(build_update_playback(
-        synctv_proto::client::UpdatePlaybackRequest {
+    let parsed = api_ok(build_playback_state_update(
+        synctv_proto::client::UpdatePlaybackStateRequest {
             r#type: synctv_proto::client::PlaybackUpdateType::Play as i32,
             playing: None,
             position: None,
@@ -141,7 +141,7 @@ fn test_build_update_playback_play_defaults_to_playing() -> TestResult {
     ))?;
 
     match parsed {
-        PlaybackUpdateCommand::Patch {
+        PlaybackStateUpdateCommand::Patch {
             playing,
             position,
             speed,
@@ -159,10 +159,10 @@ fn test_build_update_playback_play_defaults_to_playing() -> TestResult {
 }
 
 #[test]
-fn test_build_update_playback_pause_defaults_to_paused() -> TestResult {
+fn test_build_playback_state_update_pause_defaults_to_paused() -> TestResult {
     let codec = synctv_core::PublicIdCodec::plain();
-    let parsed = api_ok(build_update_playback(
-        synctv_proto::client::UpdatePlaybackRequest {
+    let parsed = api_ok(build_playback_state_update(
+        synctv_proto::client::UpdatePlaybackStateRequest {
             r#type: synctv_proto::client::PlaybackUpdateType::Pause as i32,
             playing: None,
             position: None,
@@ -176,7 +176,7 @@ fn test_build_update_playback_pause_defaults_to_paused() -> TestResult {
     ))?;
 
     match parsed {
-        PlaybackUpdateCommand::Patch {
+        PlaybackStateUpdateCommand::Patch {
             playing,
             position,
             speed,
@@ -194,10 +194,10 @@ fn test_build_update_playback_pause_defaults_to_paused() -> TestResult {
 }
 
 #[test]
-fn test_build_update_playback_seek_requires_position() -> TestResult {
+fn test_build_playback_state_update_seek_requires_position() -> TestResult {
     let codec = synctv_core::PublicIdCodec::plain();
-    let err = api_err(build_update_playback(
-        synctv_proto::client::UpdatePlaybackRequest {
+    let err = api_err(build_playback_state_update(
+        synctv_proto::client::UpdatePlaybackStateRequest {
             r#type: synctv_proto::client::PlaybackUpdateType::Seek as i32,
             playing: None,
             position: None,
@@ -215,10 +215,10 @@ fn test_build_update_playback_seek_requires_position() -> TestResult {
 }
 
 #[test]
-fn test_build_update_playback_speed_requires_speed() -> TestResult {
+fn test_build_playback_state_update_speed_requires_speed() -> TestResult {
     let codec = synctv_core::PublicIdCodec::plain();
-    let err = api_err(build_update_playback(
-        synctv_proto::client::UpdatePlaybackRequest {
+    let err = api_err(build_playback_state_update(
+        synctv_proto::client::UpdatePlaybackStateRequest {
             r#type: synctv_proto::client::PlaybackUpdateType::Speed as i32,
             playing: Some(true),
             position: Some(5.0),
@@ -236,12 +236,12 @@ fn test_build_update_playback_speed_requires_speed() -> TestResult {
 }
 
 #[test]
-fn test_build_update_playback_seek_parses_full_state() -> TestResult {
+fn test_build_playback_state_update_seek_parses_full_state() -> TestResult {
     let codec = synctv_core::PublicIdCodec::plain();
     let media_id = MediaId::expect_positive(55);
     let media_public_id = codec_ok(codec.encode_media_id(media_id))?;
-    let parsed = api_ok(build_update_playback(
-        synctv_proto::client::UpdatePlaybackRequest {
+    let parsed = api_ok(build_playback_state_update(
+        synctv_proto::client::UpdatePlaybackStateRequest {
             r#type: synctv_proto::client::PlaybackUpdateType::Seek as i32,
             playing: Some(false),
             position: Some(42.5),
@@ -255,7 +255,7 @@ fn test_build_update_playback_seek_parses_full_state() -> TestResult {
     ))?;
 
     match parsed {
-        PlaybackUpdateCommand::Patch {
+        PlaybackStateUpdateCommand::Patch {
             playing,
             position,
             speed,

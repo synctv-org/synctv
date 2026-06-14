@@ -3,9 +3,10 @@
 use crate::impls::ApiError;
 use std::collections::HashMap;
 use synctv_core::models::{
-    ChatMessageEvent, ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery,
-    CreateChatImageUploadSession, MarkChatRead, PageParams, RoomListQuery, RoomListSortBy,
-    RoomStatus, SendChatMessage, SetChatReaction, SortDirection, UserId,
+    ChatMentionInput, ChatMessageEvent, ChatMessageType, ChatMessageWithImages,
+    ChatPlaybackMessagesQuery, CreateChatImageUploadSession, MarkChatRead, PageParams,
+    RoomListQuery, RoomListSortBy, RoomStatus, SendChatMessage, SetChatReaction, SortDirection,
+    UserId,
 };
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::room::ClientResourceAvailability;
@@ -36,6 +37,43 @@ fn required_room_availability(
 }
 
 impl ClientApiImpl {
+    async fn load_room_creator_public_views(
+        &self,
+        rooms: &[synctv_core::models::Room],
+    ) -> Result<HashMap<UserId, synctv_proto::client::UserPublicView>, ApiError> {
+        let creator_ids: Vec<UserId> = rooms
+            .iter()
+            .map(|room| room.created_by)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let creators = self
+            .user_service
+            .get_users_by_ids(&creator_ids)
+            .await
+            .map_err(ApiError::from)?;
+        let mut map = HashMap::with_capacity(creators.len());
+        for creator in creators {
+            map.insert(
+                creator.id,
+                self.user_public_view_with_loaded_avatar(&creator).await?,
+            );
+        }
+        Ok(map)
+    }
+
+    fn required_creator_public_view(
+        map: &HashMap<UserId, synctv_proto::client::UserPublicView>,
+        room: &synctv_core::models::Room,
+    ) -> Result<synctv_proto::client::UserPublicView, ApiError> {
+        map.get(&room.created_by).cloned().ok_or_else(|| {
+            ApiError::Internal(format!(
+                "Missing creator public view for room {} creator {}",
+                room.id, room.created_by
+            ))
+        })
+    }
+
     async fn load_room_member_count(
         &self,
         room_id: &synctv_core::models::RoomId,
@@ -126,6 +164,16 @@ impl ClientApiImpl {
             .get_room_settings_batch(&room_ids)
             .await
             .map_err(ApiError::from)?;
+        let presence_stats = self
+            .presence_service
+            .room_stats_batch(&room_ids)
+            .await
+            .map_err(ApiError::from)?;
+        let presence_by_room: HashMap<synctv_core::models::RoomId, _> = presence_stats
+            .iter()
+            .map(|stats| (stats.room_id, stats))
+            .collect();
+        let creator_views = self.load_room_creator_public_views(&rooms).await?;
 
         let mut room_list = Vec::with_capacity(rooms.len());
         for r in &rooms {
@@ -133,11 +181,13 @@ impl ClientApiImpl {
             let availability = required_room_availability(&availability_map, &r.id)?;
             let settings = required_room_settings(&room_settings_map, &r.id)?;
             room_list.push(
-                self.room_to_proto_with_availability_and_loaded_cover(
+                self.room_to_proto_with_availability_presence_and_loaded_cover(
                     r,
                     Some(settings),
                     Some(member_count),
                     availability,
+                    presence_by_room.get(&r.id).copied(),
+                    Some(Self::required_creator_public_view(&creator_views, r)?),
                 )
                 .await?,
             );
@@ -170,6 +220,18 @@ impl ClientApiImpl {
             .get_room_settings_batch(&room_ids)
             .await
             .map_err(ApiError::from)?;
+        let presence_stats = self
+            .presence_service
+            .room_stats_batch(&room_ids)
+            .await
+            .map_err(ApiError::from)?;
+        let presence_by_room: HashMap<synctv_core::models::RoomId, _> = presence_stats
+            .iter()
+            .map(|stats| (stats.room_id, stats))
+            .collect();
+        let room_models: Vec<synctv_core::models::Room> =
+            rooms.iter().map(|(room, _, _, _)| room.clone()).collect();
+        let creator_views = self.load_room_creator_public_views(&room_models).await?;
 
         let mut room_list = Vec::with_capacity(rooms.len());
         for (room, role, _status, member_count) in &rooms {
@@ -190,10 +252,13 @@ impl ClientApiImpl {
             };
             room_list.push(synctv_proto::client::MyRoom {
                 room: Some(
-                    self.room_to_proto_basic_with_loaded_cover(
+                    self.room_to_proto_with_availability_presence_and_loaded_cover(
                         room,
                         Some(settings),
                         Some(*member_count),
+                        synctv_core::service::room::ClientResourceAvailability::Available,
+                        presence_by_room.get(&room.id).copied(),
+                        Some(Self::required_creator_public_view(&creator_views, room)?),
                     )
                     .await?,
                 ),
@@ -298,13 +363,21 @@ impl ClientApiImpl {
             .get_room_settings(&rid)
             .await
             .map_err(ApiError::from)?;
+        let presence = self
+            .presence_service
+            .room_stats(rid)
+            .await
+            .map_err(ApiError::from)?;
 
         Ok(synctv_proto::client::GetRoomResponse {
             room: Some(
-                self.room_to_proto_basic_with_loaded_cover(
+                self.room_to_proto_with_availability_presence_and_loaded_cover(
                     &room,
                     Some(&settings),
                     self.load_room_member_count(&rid).await?,
+                    synctv_core::service::room::ClientResourceAvailability::Available,
+                    Some(&presence),
+                    None,
                 )
                 .await?,
             ),
@@ -505,9 +578,19 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(uid, rid)
+            .await
+            .map_err(ApiError::from)?;
         let prepared_membership_fanout = self
             .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(uid, uid);
+            .prepare_permission_changed_outbox_fanout(
+                uid,
+                uid,
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
         let (_room, member, members) = self
             .room_service
             .join_room_with_outbox(
@@ -593,9 +676,28 @@ impl ClientApiImpl {
             .map(|room_id| self.parse_room_id(room_id))
             .transpose()?;
         let parsed_client_ip = parse_optional_client_ip(client_ip)?;
+        let target_presence = if let Some(room_id) = expected_room_id {
+            Some(
+                self.presence_service
+                    .user_room_stats_fresh(uid, room_id)
+                    .await
+                    .map_err(ApiError::from)?,
+            )
+        } else {
+            None
+        };
         let prepared_membership_fanout = self
             .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(uid, uid);
+            .prepare_permission_changed_outbox_fanout(
+                uid,
+                uid,
+                target_presence
+                    .as_ref()
+                    .is_some_and(|presence| presence.is_online),
+                target_presence
+                    .as_ref()
+                    .map_or(0, |presence| presence.connection_count),
+            );
         let (room, member, members) = self
             .room_service
             .finish_room_opaque_password_login_with_outbox(
@@ -687,7 +789,7 @@ impl ClientApiImpl {
         let public_room_id = self
             .public_id_codec
             .encode_room_id(room_id)
-            .map_err(ApiError::Internal)?;
+            .map_err(ApiError::from)?;
 
         Ok(synctv_proto::client::CreateWebSocketTicketResponse {
             ticket,
@@ -1083,9 +1185,19 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
         let new_owner_id = build_transfer_room_ownership_request(req, &self.public_id_codec)?;
 
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(current_owner_id, rid)
+            .await
+            .map_err(ApiError::from)?;
         let prepared_membership_fanout = self
             .membership_event_fanout
-            .prepare_permission_changed_outbox_fanout(current_owner_id, current_owner_id);
+            .prepare_permission_changed_outbox_fanout(
+                current_owner_id,
+                current_owner_id,
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
         let room = self
             .room_service
             .transfer_room_ownership_with_outbox(
@@ -1224,13 +1336,13 @@ impl ClientApiImpl {
             positive_i64_to_usize(limit, DEFAULT_HOT_ROOM_LIMIT_USIZE, "hot room limit")?;
 
         let room_online_counts = self
-            .connection_service
-            .hot_room_online_user_counts_distributed()
+            .presence_service
+            .hot_room_stats()
             .await
-            .map_err(ApiError::Internal)?;
+            .map_err(ApiError::from)?;
         let room_ids: Vec<synctv_core::models::RoomId> = room_online_counts
             .iter()
-            .map(|(room_id, _)| *room_id)
+            .map(|stats| stats.room_id)
             .collect();
         let rooms = self
             .room_service
@@ -1238,8 +1350,10 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let mut online_by_room: HashMap<synctv_core::models::RoomId, usize> =
-            room_online_counts.into_iter().collect();
+        let mut online_by_room: HashMap<synctv_core::models::RoomId, usize> = room_online_counts
+            .into_iter()
+            .map(|stats| (stats.room_id, stats.online_user_count))
+            .collect();
         let mut top_rooms = Vec::with_capacity(rooms.len());
         for room in rooms {
             let count = online_by_room.remove(&room.id).ok_or_else(|| {
@@ -1304,6 +1418,17 @@ impl ClientApiImpl {
             .get_room_settings_batch(&room_ids)
             .await
             .map_err(ApiError::from)?;
+        let selected_presence_stats = self
+            .presence_service
+            .room_stats_batch(&room_ids)
+            .await
+            .map_err(ApiError::from)?;
+        let selected_presence_by_room: HashMap<synctv_core::models::RoomId, _> =
+            selected_presence_stats
+                .iter()
+                .map(|stats| (stats.room_id, stats))
+                .collect();
+        let creator_views = self.load_room_creator_public_views(&selected_rooms).await?;
 
         let mut hot_rooms = Vec::with_capacity(top_rooms.len());
         for (room, online_count) in top_rooms {
@@ -1313,11 +1438,13 @@ impl ClientApiImpl {
 
             hot_rooms.push(synctv_proto::client::RoomWithStats {
                 room: Some(
-                    self.room_to_proto_with_availability_and_loaded_cover(
+                    self.room_to_proto_with_availability_presence_and_loaded_cover(
                         &room,
                         Some(settings),
                         Some(total_members),
                         availability,
+                        selected_presence_by_room.get(&room.id).copied(),
+                        Some(Self::required_creator_public_view(&creator_views, &room)?),
                     )
                     .await?,
                 ),
@@ -1466,6 +1593,7 @@ impl ClientApiImpl {
                 },
                 metadata,
                 images,
+                mentions: self.parse_proto_chat_mentions(req.mentions)?,
             })
             .await
             .map_err(ApiError::from)?;
@@ -1756,6 +1884,29 @@ impl ClientApiImpl {
         chat_read_state_to_proto(self, state)
     }
 
+    pub async fn get_chat_message_read_receipts_for_actor(
+        &self,
+        actor: &RoomActor,
+        req: synctv_proto::client::GetChatMessageReadReceiptsRequest,
+    ) -> Result<synctv_proto::client::GetChatMessageReadReceiptsResponse, ApiError> {
+        let user_id = actor.require_user_id()?;
+        let chat_service = self
+            .chat_service
+            .as_ref()
+            .ok_or_else(chat_service_unavailable_error)?;
+        let page = chat_service
+            .get_message_read_receipts(
+                &actor.room_id(),
+                &user_id,
+                parse_chat_message_id(&req.message_id)?,
+                req.page,
+                req.page_size,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        chat_message_read_receipts_to_proto(self, page).await
+    }
+
     fn broadcast_chat_event(&self, event: &ChatMessageEvent) {
         self.chat_event_dispatcher.dispatch(event);
     }
@@ -1924,6 +2075,27 @@ impl ClientApiImpl {
             converted.push(chat_message_to_proto(self, message, username)?);
         }
         Ok(converted)
+    }
+
+    pub(crate) fn parse_proto_chat_mentions(
+        &self,
+        mentions: Vec<synctv_proto::client::ChatMentionInput>,
+    ) -> Result<Vec<ChatMentionInput>, ApiError> {
+        mentions
+            .into_iter()
+            .map(|mention| {
+                let user_id = crate::impls::parse_user_id_param(
+                    &mention.user_id,
+                    "mention.user_id",
+                    &self.public_id_codec,
+                )?;
+                Ok(ChatMentionInput {
+                    user_id,
+                    start: mention.start,
+                    length: mention.length,
+                })
+            })
+            .collect()
     }
 }
 

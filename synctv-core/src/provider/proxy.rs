@@ -531,6 +531,7 @@ mod tests {
             result: PlaybackResult {
                 playback_infos: HashMap::new(),
                 default_mode: "direct".to_string(),
+                duration_seconds: None,
                 metadata: HashMap::new(),
             },
             expires_at: 0, // Already expired
@@ -555,6 +556,7 @@ mod tests {
             result: PlaybackResult {
                 playback_infos: HashMap::new(),
                 default_mode: "direct".to_string(),
+                duration_seconds: None,
                 metadata: HashMap::new(),
             },
             expires_at: chrono::Utc::now().timestamp() + 3600,
@@ -600,6 +602,7 @@ mod tests {
             result: PlaybackResult {
                 playback_infos: HashMap::new(),
                 default_mode: "direct".to_string(),
+                duration_seconds: None,
                 metadata: HashMap::new(),
             },
             expires_at: chrono::Utc::now().timestamp() + 60,

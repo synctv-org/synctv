@@ -2,6 +2,7 @@
 //!
 //! Callers pass a [`crate::ssrf::SsrfGuard`] that was built from their startup
 //! configuration. Automatic redirects are always disabled.
+#![allow(clippy::missing_errors_doc)]
 
 use std::time::Duration;
 

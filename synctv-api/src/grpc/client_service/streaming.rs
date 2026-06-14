@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::impls::messaging::{MessageSender, StreamMessage};
 use synctv_proto::client::{
     ClientMessage, ServerMessage, WatchChatEventsEvent, WatchPlaybackEvent,
-    WatchPlaybackStateEvent, WatchPlaylistItemsEvent, WatchRoomMembersEvent,
+    WatchPlaybackStateEvent, WatchPlaylistItemsEvent, WatchRoomMemberEventsEvent,
     WatchRoomSettingsEvent,
 };
 
@@ -64,7 +64,7 @@ impl MessageSender for GrpcMessageSender {
 
 pub(super) enum GrpcWatchEvent {
     Observed(synctv_proto::client::ResourceObserved),
-    Changed(Box<synctv_proto::client::ResourceChanged>),
+    Changed(Box<synctv_proto::client::ResourceEvent>),
     Error(synctv_proto::client::ResourceObserveError),
 }
 
@@ -76,7 +76,7 @@ where
 
     let event = match message.message? {
         Message::ResourceObserved(observed) => GrpcWatchEvent::Observed(observed),
-        Message::ResourceChanged(changed) => GrpcWatchEvent::Changed(Box::new(changed)),
+        Message::ResourceEvent(changed) => GrpcWatchEvent::Changed(Box::new(changed)),
         Message::ResourceObserveError(error) => GrpcWatchEvent::Error(error),
         _ => return None,
     };
@@ -90,7 +90,7 @@ pub(super) fn watch_playback_state_event(
     watch_event_from_server_message(message, |event| WatchPlaybackStateEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::Changed(*value),
+            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
             GrpcWatchEvent::Error(value) => Event::Error(value),
         }),
     })
@@ -101,7 +101,7 @@ pub(super) fn watch_playback_event(message: ServerMessage) -> Option<WatchPlayba
     watch_event_from_server_message(message, |event| WatchPlaybackEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::Changed(*value),
+            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
             GrpcWatchEvent::Error(value) => Event::Error(value),
         }),
     })
@@ -112,7 +112,7 @@ pub(super) fn watch_room_settings_event(message: ServerMessage) -> Option<WatchR
     watch_event_from_server_message(message, |event| WatchRoomSettingsEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::Changed(*value),
+            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
             GrpcWatchEvent::Error(value) => Event::Error(value),
         }),
     })
@@ -125,18 +125,20 @@ pub(super) fn watch_playlist_items_event(
     watch_event_from_server_message(message, |event| WatchPlaylistItemsEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::Changed(*value),
+            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
             GrpcWatchEvent::Error(value) => Event::Error(value),
         }),
     })
 }
 
-pub(super) fn watch_room_members_event(message: ServerMessage) -> Option<WatchRoomMembersEvent> {
-    use synctv_proto::client::watch_room_members_event::Event;
-    watch_event_from_server_message(message, |event| WatchRoomMembersEvent {
+pub(super) fn watch_room_member_events_event(
+    message: ServerMessage,
+) -> Option<WatchRoomMemberEventsEvent> {
+    use synctv_proto::client::watch_room_member_events_event::Event;
+    watch_event_from_server_message(message, |event| WatchRoomMemberEventsEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::Changed(*value),
+            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
             GrpcWatchEvent::Error(value) => Event::Error(value),
         }),
     })
@@ -147,7 +149,7 @@ pub(super) fn watch_chat_events_event(message: ServerMessage) -> Option<WatchCha
     watch_event_from_server_message(message, |event| WatchChatEventsEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::Changed(*value),
+            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
             GrpcWatchEvent::Error(value) => Event::Error(value),
         }),
     })

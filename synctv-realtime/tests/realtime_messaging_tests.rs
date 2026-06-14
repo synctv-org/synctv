@@ -264,6 +264,7 @@ async fn test_dedup_with_different_events() {
         room_id: room,
         user_id: user,
         username: "test".to_string(),
+        role: 2,
         timestamp: chrono::Utc::now(),
     };
 
@@ -582,12 +583,15 @@ async fn test_critical_event_classification() {
         target_username: "test".to_string(),
         changed_by: uid("u2"),
         changed_by_username: "admin".to_string(),
+        role_changed: false,
         new_permissions: synctv_core::models::RoomPermissionSet(0),
         role: 2,
         added_permissions: synctv_core::models::RoomPermissionSet(0),
         removed_permissions: synctv_core::models::RoomPermissionSet(0),
         admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
         admin_removed_permissions: synctv_core::models::RoomPermissionSet(0),
+        target_is_online: true,
+        target_connection_count: 1,
         timestamp: chrono::Utc::now(),
     }
     .is_critical());
@@ -605,6 +609,7 @@ async fn test_critical_event_classification() {
         room_id: rid("r1"),
         user_id: uid("u1"),
         username: "test".to_string(),
+        role: 2,
         timestamp: chrono::Utc::now(),
     }
     .is_critical());

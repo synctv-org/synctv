@@ -281,12 +281,12 @@ impl Resolve for SsrfDnsResolver {
             return Box::pin(std::future::ready(Err(err)));
         }
 
-        let resolver = self.inner.clone();
+        let dns_client = self.inner.clone();
         let policy = self.policy.clone();
 
         Box::pin(async move {
-            let resolved = resolver.resolve(name).await?;
-            let addresses = resolved.collect::<Vec<SocketAddr>>();
+            let resolved_addrs = dns_client.resolve(name).await?;
+            let addresses = resolved_addrs.collect::<Vec<SocketAddr>>();
             let filtered = addresses
                 .iter()
                 .copied()
@@ -825,15 +825,19 @@ mod tests {
         let guard = SsrfGuard::builder()
             .extra_allowed_host("internal.example".to_string())
             .build();
-        let resolver = resolver_for_test(&guard, vec![SocketAddr::from(([10, 0, 0, 42], 443))])?;
+        let dns_resolver =
+            resolver_for_test(&guard, vec![SocketAddr::from(([10, 0, 0, 42], 443))])?;
 
-        let resolved = resolver
+        let resolved_addrs = dns_resolver
             .resolve(parse_test_dns_name("internal.example")?)
             .await
             .map_err(|error| format!("DNS resolution should succeed: {error}"))?
             .collect::<Vec<_>>();
 
-        assert_eq!(resolved, vec![SocketAddr::from(([10, 0, 0, 42], 443))]);
+        assert_eq!(
+            resolved_addrs,
+            vec![SocketAddr::from(([10, 0, 0, 42], 443))]
+        );
         assert!(
             guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42))),
             "host-specific allowlist must not globally allow private IPs"
@@ -853,9 +857,9 @@ mod tests {
     #[tokio::test]
     async fn test_dns_resolver_allows_public_ip_with_zero_port() -> TestResult {
         let guard = SsrfGuard::strict_policy();
-        let resolver = resolver_for_test(&guard, vec![SocketAddr::from(([8, 8, 8, 8], 0))])?;
+        let dns_resolver = resolver_for_test(&guard, vec![SocketAddr::from(([8, 8, 8, 8], 0))])?;
 
-        let resolved = resolver
+        let resolved_addrs = dns_resolver
             .resolve(parse_test_dns_name("example.com")?)
             .await
             .map_err(|error| {
@@ -863,7 +867,7 @@ mod tests {
             })?
             .collect::<Vec<_>>();
 
-        assert_eq!(resolved, vec![SocketAddr::from(([8, 8, 8, 8], 0))]);
+        assert_eq!(resolved_addrs, vec![SocketAddr::from(([8, 8, 8, 8], 0))]);
         Ok(())
     }
 

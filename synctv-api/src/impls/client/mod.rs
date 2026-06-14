@@ -22,14 +22,14 @@ pub(crate) mod passkey;
 mod playback;
 pub(crate) mod playback_lifecycle;
 pub(crate) mod playlist;
+mod report;
 mod room;
 pub(crate) use room::{chat_reaction_count, chat_reaction_summary_to_proto};
 pub(crate) mod stream;
 mod user;
 mod webrtc;
 pub(crate) use playback::{
-    build_playback_source_expectation, build_start_playback_request, build_update_playback,
-    PlaybackUpdateCommand,
+    build_playback_state_update, build_start_playback_request, PlaybackStateUpdateCommand,
 };
 pub(crate) use user::{
     token_auth_context_from_claims, user_notification_preferences_to_proto,
@@ -46,7 +46,9 @@ use futures::future::BoxFuture;
 use std::sync::Arc;
 use synctv_core::models::{RoomId, RoomPermissionSet, RoomStatus};
 use synctv_core::service::auth::{GuestTokenValidator, JwtValidator, TokenType};
-use synctv_core::service::{ChatService, ReviewService, RoomService, UserService};
+use synctv_core::service::{
+    ChatService, ContentReportService, ReviewService, RoomService, UserService,
+};
 use synctv_core::RedisConnectionRuntime;
 
 // Re-export conversion helpers within the crate.
@@ -104,6 +106,7 @@ pub struct ClientApiRuntime {
     pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     pub signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
+    pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub request_executor: Arc<RequestExecutor>,
     pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
 }
@@ -126,6 +129,7 @@ impl ClientApiRuntime {
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             provider_access_service: crate::impls::disabled_provider_access_service(),
             signing_key,
+            presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
             request_executor,
             ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
         }
@@ -183,7 +187,9 @@ pub struct ClientApiImpl {
     pub room_service: Arc<RoomService>,
     pub chat_service: Option<Arc<ChatService>>,
     pub review_service: Arc<ReviewService>,
+    pub content_report_service: Arc<ContentReportService>,
     pub connection_service: Arc<dyn ConnectionRuntime>,
+    pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub config: Arc<synctv_core::Config>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
@@ -264,6 +270,38 @@ impl ClientApiImpl {
             .map_err(ApiError::from)
     }
 
+    pub(crate) async fn user_public_view_with_loaded_avatar(
+        &self,
+        user: &synctv_core::models::User,
+    ) -> Result<synctv_proto::client::UserPublicView, ApiError> {
+        let avatar = self
+            .load_stored_file_reference(user.avatar_file_reference_id)
+            .await?;
+        let avatar_url = avatar
+            .as_ref()
+            .map(|file| {
+                self.stored_file_reference_url(
+                    file,
+                    &synctv_core::service::user_avatar_upload_policy(),
+                )
+            })
+            .transpose()?
+            .flatten();
+        convert::try_user_public_view_to_proto(user, avatar_url.as_deref(), &self.public_id_codec)
+    }
+
+    pub(crate) async fn room_creator_public_view(
+        &self,
+        room: &synctv_core::models::Room,
+    ) -> Result<synctv_proto::client::UserPublicView, ApiError> {
+        let creator = self
+            .user_service
+            .get_user(&room.created_by)
+            .await
+            .map_err(ApiError::from)?;
+        self.user_public_view_with_loaded_avatar(&creator).await
+    }
+
     pub(crate) async fn room_to_proto_basic_with_loaded_cover(
         &self,
         room: &synctv_core::models::Room,
@@ -283,22 +321,26 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
+        let creator = Some(self.room_creator_public_view(room).await?);
         convert::try_room_to_proto_basic_with_cover(
             room,
             settings,
             member_count,
+            creator,
             cover.as_ref(),
             cover_url.as_deref(),
             &self.public_id_codec,
         )
     }
 
-    pub(crate) async fn room_to_proto_with_availability_and_loaded_cover(
+    pub(crate) async fn room_to_proto_with_availability_presence_and_loaded_cover(
         &self,
         room: &synctv_core::models::Room,
         settings: Option<&synctv_core::models::RoomSettings>,
         member_count: Option<i32>,
         availability: synctv_core::service::room::ClientResourceAvailability,
+        presence: Option<&synctv_core::service::OnlineRoomStats>,
+        creator: Option<synctv_proto::client::UserPublicView>,
     ) -> Result<synctv_proto::client::Room, ApiError> {
         let cover = self
             .load_stored_file_reference(room.cover_file_reference_id)
@@ -313,11 +355,17 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        convert::try_room_to_proto_with_availability_and_cover(
+        let creator = match creator {
+            Some(creator) => Some(creator),
+            None => Some(self.room_creator_public_view(room).await?),
+        };
+        convert::try_room_to_proto_with_availability_presence_and_cover(
             room,
             settings,
             member_count,
             availability,
+            presence,
+            creator,
             cover.as_ref(),
             cover_url.as_deref(),
             &self.public_id_codec,
@@ -584,6 +632,9 @@ impl ClientApiImpl {
     #[must_use]
     pub fn new_with_runtime(config: ClientApiConfig, runtime: ClientApiRuntime) -> Self {
         let review_service = Arc::new(ReviewService::new(config.user_service.pool().clone()));
+        let content_report_service = Arc::new(ContentReportService::new(
+            config.user_service.pool().clone(),
+        ));
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             config.jwt_service.clone(),
         )));
@@ -612,8 +663,10 @@ impl ClientApiImpl {
             user_service: config.user_service,
             room_service: config.room_service,
             chat_service: config.chat_service,
+            content_report_service,
             review_service,
             connection_service: config.connection_service,
+            presence_service: runtime.presence_service,
             config: config.config,
             publish_key_service: config.publish_key_service,
             jwt_service: config.jwt_service,

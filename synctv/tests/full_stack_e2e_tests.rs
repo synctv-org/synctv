@@ -143,6 +143,25 @@ fn observe_playback_message(observe_id: &str) -> synctv_proto::client::ClientMes
     }
 }
 
+fn observe_playback_state_message(observe_id: &str) -> synctv_proto::client::ClientMessage {
+    use synctv_proto::client::{
+        client_message, observe_resource, ObservePlaybackState, ObserveResource,
+        ResourceDeliveryMode,
+    };
+
+    synctv_proto::client::ClientMessage {
+        message: Some(client_message::Message::ObserveResource(ObserveResource {
+            observe_id: observe_id.to_string(),
+            delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
+            resource: Some(observe_resource::Resource::PlaybackState(
+                ObservePlaybackState {
+                    after_event_sequence: None,
+                },
+            )),
+        })),
+    }
+}
+
 fn observe_room_settings_message(
     observe_id: &str,
     after_event_sequence: impl Into<String>,
@@ -192,19 +211,19 @@ fn observe_playlist_items_message(
 fn observe_room_members_message(
     observe_id: &str,
     after_event_sequence: impl Into<String>,
-    request: synctv_proto::client::GetRoomMembersRequest,
+    _request: synctv_proto::client::GetRoomMembersRequest,
 ) -> synctv_proto::client::ClientMessage {
     use synctv_proto::client::{
-        client_message, observe_resource, ObserveResource, ObserveRoomMembers, ResourceDeliveryMode,
+        client_message, observe_resource, ObserveResource, ObserveRoomMemberEvents,
+        ResourceDeliveryMode,
     };
 
     synctv_proto::client::ClientMessage {
         message: Some(client_message::Message::ObserveResource(ObserveResource {
             observe_id: observe_id.to_string(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
-            resource: Some(observe_resource::Resource::RoomMembers(
-                ObserveRoomMembers {
-                    request: Some(request),
+            resource: Some(observe_resource::Resource::RoomMemberEvents(
+                ObserveRoomMemberEvents {
                     after_event_sequence: optional_event_sequence(after_event_sequence),
                 },
             )),
@@ -214,9 +233,23 @@ fn observe_room_members_message(
 
 fn resource_playback(message: &ServerMessage) -> Option<&synctv_proto::client::Playback> {
     match &message.message {
-        Some(server_message::Message::ResourceChanged(changed)) => match changed.payload.as_ref() {
-            Some(synctv_proto::client::resource_changed::Payload::Playback(snapshot)) => {
+        Some(server_message::Message::ResourceEvent(event)) => match event.payload.as_ref() {
+            Some(synctv_proto::client::resource_event::Payload::Playback(snapshot)) => {
                 Some(snapshot)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn resource_playback_state(
+    message: &ServerMessage,
+) -> Option<&synctv_proto::client::PlaybackState> {
+    match &message.message {
+        Some(server_message::Message::ResourceEvent(event)) => match event.payload.as_ref() {
+            Some(synctv_proto::client::resource_event::Payload::PlaybackState(state)) => {
+                Some(state)
             }
             _ => None,
         },
@@ -226,10 +259,10 @@ fn resource_playback(message: &ServerMessage) -> Option<&synctv_proto::client::P
 
 fn resource_room_settings(
     message: &ServerMessage,
-) -> Option<&synctv_proto::client::RoomSettingsChanged> {
+) -> Option<&synctv_proto::client::GetRoomSettingsResponse> {
     match &message.message {
-        Some(server_message::Message::ResourceChanged(changed)) => match changed.payload.as_ref() {
-            Some(synctv_proto::client::resource_changed::Payload::RoomSettings(settings)) => {
+        Some(server_message::Message::ResourceEvent(event)) => match event.payload.as_ref() {
+            Some(synctv_proto::client::resource_event::Payload::RoomSettings(settings)) => {
                 Some(settings)
             }
             _ => None,
@@ -242,8 +275,8 @@ fn resource_playlist_items(
     message: &ServerMessage,
 ) -> Option<&synctv_proto::client::ListPlaylistItemsResponse> {
     match &message.message {
-        Some(server_message::Message::ResourceChanged(changed)) => match changed.payload.as_ref() {
-            Some(synctv_proto::client::resource_changed::Payload::PlaylistItems(snapshot)) => {
+        Some(server_message::Message::ResourceEvent(event)) => match event.payload.as_ref() {
+            Some(synctv_proto::client::resource_event::Payload::PlaylistItems(snapshot)) => {
                 Some(snapshot)
             }
             _ => None,
@@ -252,18 +285,34 @@ fn resource_playlist_items(
     }
 }
 
-fn resource_room_members(
+fn resource_room_member_event(
     message: &ServerMessage,
-) -> Option<&synctv_proto::client::GetRoomMembersResponse> {
+) -> Option<&synctv_proto::client::RoomMemberEvent> {
     match &message.message {
-        Some(server_message::Message::ResourceChanged(changed)) => match changed.payload.as_ref() {
-            Some(synctv_proto::client::resource_changed::Payload::RoomMembers(snapshot)) => {
-                Some(snapshot)
+        Some(server_message::Message::ResourceEvent(resource_event)) => {
+            match resource_event.payload.as_ref() {
+                Some(synctv_proto::client::resource_event::Payload::RoomMemberEvent(event)) => {
+                    Some(event)
+                }
+                _ => None,
             }
-            _ => None,
-        },
+        }
         _ => None,
     }
+}
+
+fn resource_room_member_joined(
+    message: &ServerMessage,
+) -> Option<&synctv_proto::client::RoomMemberEvent> {
+    resource_room_member_event(message)
+        .filter(|event| event.kind == synctv_proto::client::RoomMemberEventKind::Joined as i32)
+}
+
+fn resource_room_member_left(
+    message: &ServerMessage,
+) -> Option<&synctv_proto::client::RoomMemberEvent> {
+    resource_room_member_event(message)
+        .filter(|event| event.kind == synctv_proto::client::RoomMemberEventKind::Left as i32)
 }
 
 fn test_config(
@@ -2101,10 +2150,14 @@ fn observe_chat_events_message(observe_id: &str) -> synctv_proto::client::Client
 
 fn resource_chat_event(message: &ServerMessage) -> Option<&synctv_proto::client::ChatMessageEvent> {
     match &message.message {
-        Some(server_message::Message::ResourceChanged(changed)) => match changed.payload.as_ref() {
-            Some(synctv_proto::client::resource_changed::Payload::ChatEvent(event)) => Some(event),
-            _ => None,
-        },
+        Some(server_message::Message::ResourceEvent(resource_event)) => {
+            match resource_event.payload.as_ref() {
+                Some(synctv_proto::client::resource_event::Payload::ChatEvent(event)) => {
+                    Some(event)
+                }
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -2233,23 +2286,6 @@ async fn recv_grpc_server_message(
     match stream.message().await {
         Ok(message) => message,
         Err(error) => panic!("gRPC stream read failed: {error}"),
-    }
-}
-
-async fn recv_grpc_server_message_skip_membership(
-    stream: &mut tonic::codec::Streaming<synctv_proto::client::ServerMessage>,
-) -> Option<synctv_proto::client::ServerMessage> {
-    loop {
-        let message = recv_grpc_server_message(stream).await?;
-        if !matches!(
-            &message.message,
-            Some(
-                synctv_proto::client::server_message::Message::UserJoined(_)
-                    | synctv_proto::client::server_message::Message::UserLeft(_),
-            )
-        ) {
-            return Some(message);
-        }
     }
 }
 
@@ -6596,6 +6632,8 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
+    use synctv_proto::client::{client_message, HeartbeatMessage};
+
     let server = start_test_server().await;
     let client = test_http_client();
 
@@ -6656,16 +6694,37 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
         tungstenite::http::StatusCode::SWITCHING_PROTOCOLS
     );
 
-    let initial = tokio::time::timeout(Duration::from_secs(5), recv_server_message(&mut ws))
-        .await
-        .expect("timed out waiting for websocket welcome message")
-        .expect("websocket closed before first message");
+    let heartbeat_timestamp = chrono::Utc::now().timestamp_millis();
+    send_client_message(
+        &mut ws,
+        synctv_proto::client::ClientMessage {
+            message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
+                timestamp: heartbeat_timestamp,
+            })),
+        },
+    )
+    .await;
+    let ack = recv_matching_server_message(
+        &mut ws,
+        Duration::from_secs(5),
+        |message| {
+            matches!(
+                &message.message,
+                Some(synctv_proto::client::server_message::Message::HeartbeatAck(heartbeat_ack))
+                    if heartbeat_ack.timestamp >= heartbeat_timestamp
+            )
+        },
+        "websocket heartbeat ack after ticket-authenticated upgrade",
+    )
+    .await;
     assert!(
         matches!(
-            initial.message,
-            Some(server_message::Message::UserJoined(_))
+            ack.message,
+            Some(synctv_proto::client::server_message::Message::HeartbeatAck(
+                _
+            ))
         ),
-        "expected initial UserJoined after ticket-authenticated upgrade, got: {initial:?}"
+        "ticket-authenticated websocket should acknowledge heartbeat"
     );
 
     ws.close(None).await.expect("close websocket");
@@ -7039,28 +7098,19 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         .expect("message_stream should establish")
         .into_inner();
 
-    let initial = tokio::time::timeout(
+    let ack = recv_matching_grpc_server_message(
+        &mut inbound,
         Duration::from_secs(5),
-        recv_grpc_server_message(&mut inbound),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::HeartbeatAck(heartbeat_ack))
+                    if heartbeat_ack.timestamp >= heartbeat_timestamp
+            )
+        },
+        "grpc heartbeat ack",
     )
-    .await
-    .expect("timed out waiting for initial grpc stream message")
-    .expect("grpc stream ended before initial message");
-    assert!(
-        matches!(
-            initial.message,
-            Some(server_message::Message::UserJoined(_))
-        ),
-        "expected initial UserJoined message, got: {initial:?}"
-    );
-
-    let ack = tokio::time::timeout(
-        Duration::from_secs(5),
-        recv_grpc_server_message_skip_membership(&mut inbound),
-    )
-    .await
-    .expect("timed out waiting for grpc heartbeat ack")
-    .expect("grpc stream ended before heartbeat ack");
+    .await;
     match ack.message {
         Some(server_message::Message::HeartbeatAck(heartbeat_ack)) => {
             assert!(
@@ -7484,7 +7534,7 @@ async fn full_stack_grpc_message_stream_watch_room_members_receives_initial_and_
         .send(observe_room_members_message(
             "grpc-room-members",
             String::new(),
-            GetRoomMembersRequest {
+            synctv_proto::client::GetRoomMembersRequest {
                 page: 1,
                 page_size: 20,
                 search: String::new(),
@@ -7509,26 +7559,44 @@ async fn full_stack_grpc_message_stream_watch_room_members_receives_initial_and_
         .expect("message_stream should establish")
         .into_inner();
 
-    let initial_members = recv_matching_grpc_server_message(
+    let _initial_observed = recv_matching_grpc_server_message(
         &mut inbound,
         Duration::from_secs(10),
         |message| {
-            resource_room_members(message)
-                .is_some_and(|snapshot| snapshot.total == 2 && !snapshot.version.is_empty())
+            matches!(
+                &message.message,
+                Some(synctv_proto::client::server_message::Message::ResourceObserved(_))
+            )
         },
-        "initial grpc room members snapshot",
+        "initial grpc room member events observation",
     )
     .await;
-    let snapshot =
-        resource_room_members(&initial_members).expect("room members snapshot should be present");
+    let mut get_members_request = tonic::Request::new(GetRoomMembersRequest {
+        page: 1,
+        page_size: 20,
+        search: String::new(),
+        role: None,
+        sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+    });
+    get_members_request
+        .metadata_mut()
+        .insert("authorization", bearer_metadata(&member_token));
+    get_members_request
+        .metadata_mut()
+        .insert("x-room-id", room_id_metadata(&room_id));
+    let member_snapshot = member_room_client
+        .get_room_members(get_members_request)
+        .await
+        .expect("get room members snapshot should succeed")
+        .into_inner();
     assert!(
-        snapshot
+        member_snapshot
             .members
             .iter()
             .any(|member| member.user_id == member_user_id),
-        "initial room members snapshot should include the joined member"
+        "room members snapshot should include the joined member"
     );
-    let initial_version = snapshot.version.clone();
 
     let suffix = unique_test_suffix();
     let joiner_username = bounded_test_username("grpc-watch-room-members", "joiner", &suffix);
@@ -7555,32 +7623,29 @@ async fn full_stack_grpc_message_stream_watch_room_members_receives_initial_and_
         "joiner should join room for grpc room-members watch"
     );
 
-    let updated_members = recv_matching_grpc_server_message(
+    let joined_event = recv_matching_grpc_server_message(
         &mut inbound,
         Duration::from_secs(10),
         |message| {
-            resource_room_members(message).is_some_and(|snapshot| {
-                snapshot.version != initial_version
-                    && snapshot
-                        .members
-                        .iter()
-                        .any(|member| member.user_id == joiner_id)
+            resource_room_member_joined(message).is_some_and(|event| {
+                event
+                    .member
+                    .as_ref()
+                    .is_some_and(|member| member.user_id == joiner_id)
             })
         },
-        "updated grpc room members snapshot",
+        "grpc room member joined event",
     )
     .await;
 
-    let snapshot =
-        resource_room_members(&updated_members).expect("updated snapshot should be present");
-    assert_eq!(snapshot.total, 3);
-    assert_ne!(snapshot.version, initial_version);
+    let joined =
+        resource_room_member_joined(&joined_event).expect("joined event should be present");
     assert!(
-        snapshot
-            .members
-            .iter()
-            .any(|member| member.user_id == joiner_id),
-        "updated room members snapshot should include the new joiner"
+        joined
+            .member
+            .as_ref()
+            .is_some_and(|member| member.user_id == joiner_id),
+        "room member joined event should include the new joiner"
     );
 }
 
@@ -7638,7 +7703,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     use synctv_proto::client::client_message;
     use synctv_proto::client::server_message;
     use synctv_proto::client::{
-        ChatMessageSend, ClientMessage, PlaybackUpdateType, UpdatePlaybackRequest,
+        ChatMessageSend, ClientMessage, PlaybackUpdateType, UpdatePlaybackStateRequest,
     };
 
     let fixture = start_room_realtime_fixture("ws-room-events").await;
@@ -7652,8 +7717,6 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         member_user_id,
         member_token,
     } = fixture;
-    let management_actor_username = "local-management";
-
     let mut owner_ws = ws_connect(&api_addr, &room_id, &owner_token).await;
     let mut member_ws = ws_connect(&api_addr, &room_id, &member_token).await;
     let _ = drain_until_quiet(&mut owner_ws, 250).await;
@@ -7671,6 +7734,71 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         "chat_events observation acknowledgement",
     )
     .await;
+    send_client_message(
+        &mut member_ws,
+        observe_playlist_items_message(
+            "ws-room-playlist-items",
+            String::new(),
+            synctv_proto::client::ListPlaylistItemsRequest {
+                playlist_id: String::new(),
+                page: 1,
+                page_size: 100,
+                search: String::new(),
+                source_provider: String::new(),
+                provider_instance_name: String::new(),
+                sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+                refresh: false,
+                target: Vec::new(),
+            },
+        ),
+    )
+    .await;
+    send_client_message(
+        &mut member_ws,
+        observe_room_settings_message("ws-room-settings", String::new()),
+    )
+    .await;
+    send_client_message(
+        &mut member_ws,
+        observe_room_members_message(
+            "ws-room-member-events",
+            String::new(),
+            synctv_proto::client::GetRoomMembersRequest {
+                page: 1,
+                page_size: 20,
+                search: String::new(),
+                role: None,
+                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+            },
+        ),
+    )
+    .await;
+    send_client_message(
+        &mut owner_ws,
+        observe_room_members_message(
+            "ws-owner-room-member-events",
+            String::new(),
+            synctv_proto::client::GetRoomMembersRequest {
+                page: 1,
+                page_size: 20,
+                search: String::new(),
+                role: None,
+                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+            },
+        ),
+    )
+    .await;
+    send_client_message(
+        &mut member_ws,
+        observe_playback_state_message("ws-playback-state"),
+    )
+    .await;
+    let _ = drain_until_quiet(&mut member_ws, 250).await;
+    let _ = drain_until_quiet(&mut owner_ws, 250).await;
 
     let observer_suffix = unique_test_suffix();
     let observer_username = format!("ws_room_observer_{observer_suffix}");
@@ -7701,17 +7829,12 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::UserJoined(joined))
-                    if joined.room_id == room_id
-                        && joined
-                            .member
-                            .as_ref()
-                            .is_some_and(|member| {
-                                member.user_id == observer_user_id && member.username == observer_username
-                            })
-            )
+            resource_room_member_joined(message).is_some_and(|joined| {
+                joined.room_id == room_id
+                    && joined.member.as_ref().is_some_and(|member| {
+                        member.user_id == observer_user_id && member.username == observer_username
+                    })
+            })
         },
         "user joined broadcast",
     )
@@ -7724,11 +7847,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::UserLeft(left))
-                    if left.room_id == room_id && left.user_id == observer_user_id
-            )
+            resource_room_member_left(message)
+                .is_some_and(|left| left.room_id == room_id && left.user_id == observer_user_id)
         },
         "user left broadcast",
     )
@@ -7745,6 +7865,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                 client_message_id: String::new(),
                 images: Vec::new(),
                 reply_to_message_id: String::new(),
+                metadata: Vec::new(),
+                mentions: Vec::new(),
             })),
         },
     )
@@ -7775,6 +7897,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                 client_message_id: String::new(),
                 images: Vec::new(),
                 reply_to_message_id: String::new(),
+                metadata: Vec::new(),
+                mentions: Vec::new(),
             })),
         },
     )
@@ -7818,13 +7942,12 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::MediaAdded(media))
-                    if media.media_id == media_one_id
-                        && media.name == "WS Room Media One"
-                        && media.creator_username == owner_username
-            )
+            resource_playlist_items(message).is_some_and(|snapshot| {
+                snapshot
+                    .media
+                    .iter()
+                    .any(|media| media.id == media_one_id && media.name == "WS Room Media One")
+            })
         },
         "first media added broadcast",
     )
@@ -7854,13 +7977,12 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::MediaAdded(media))
-                    if media.media_id == media_two_id
-                        && media.name == "WS Room Media Two"
-                        && media.creator_username == owner_username
-            )
+            resource_playlist_items(message).is_some_and(|snapshot| {
+                snapshot
+                    .media
+                    .iter()
+                    .any(|media| media.id == media_two_id && media.name == "WS Room Media Two")
+            })
         },
         "second media added broadcast",
     )
@@ -7884,13 +8006,11 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::MediaUpdated(media))
-                    if media.media_id == media_two_id
-                        && media.name == "WS Room Media Two Renamed"
-                        && media.updated_by == management_actor_username
-            )
+            resource_playlist_items(message).is_some_and(|snapshot| {
+                snapshot.media.iter().any(|media| {
+                    media.id == media_two_id && media.name == "WS Room Media Two Renamed"
+                })
+            })
         },
         "media updated broadcast",
     )
@@ -7915,12 +8035,14 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::PlaylistReordered(reordered))
-                    if reordered.media_ids
-                        == vec![media_two_id.clone(), media_one_id.clone()]
-            )
+            resource_playlist_items(message).is_some_and(|snapshot| {
+                snapshot
+                    .media
+                    .iter()
+                    .map(|media| media.id.clone())
+                    .collect::<Vec<_>>()
+                    == vec![media_two_id.clone(), media_one_id.clone()]
+            })
         },
         "playlist reordered broadcast",
     )
@@ -7936,13 +8058,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::MediaRemoved(media))
-                    if media.room_id == room_id
-                        && media.media_id == media_two_id
-                        && media.removed_by == management_actor_username
-            )
+            resource_playlist_items(message)
+                .is_some_and(|snapshot| snapshot.media.iter().all(|media| media.id != media_two_id))
         },
         "media removed broadcast",
     )
@@ -7979,27 +8096,25 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::RoomSettings(_))
-            )
+            resource_room_settings(message).is_some_and(|settings| {
+                serde_json::from_slice::<Value>(&settings.settings).is_ok_and(|decoded| {
+                    decoded["chat_enabled"] == false && decoded["allow_guest_join"] == true
+                })
+            })
         },
         "room settings broadcast",
     )
     .await;
-    match room_settings_message.message {
-        Some(server_message::Message::RoomSettings(settings)) => {
-            let decoded: Value =
-                serde_json::from_slice(&settings.settings).expect("decode room settings payload");
-            assert_eq!(decoded["chat_enabled"], false);
-            assert_eq!(decoded["allow_guest_join"], true);
-            assert!(
-                settings.version > 0,
-                "room settings change should carry version"
-            );
-        }
-        other => panic!("expected RoomSettingsChanged, got: {other:?}"),
-    }
+    let settings =
+        resource_room_settings(&room_settings_message).expect("room settings payload expected");
+    let decoded: Value =
+        serde_json::from_slice(&settings.settings).expect("decode room settings payload");
+    assert_eq!(decoded["chat_enabled"], false);
+    assert_eq!(decoded["allow_guest_join"], true);
+    assert!(
+        settings.version > 0,
+        "room settings change should carry version"
+    );
 
     let permission_bits = synctv_core::models::RoomAdminPermissionBits::LIVE_CONTROL
         | synctv_core::models::RoomAdminPermissionBits::PLAY_CONTROL;
@@ -8021,17 +8136,17 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     )
     .await;
     let _ = recv_matching_server_message(
-        &mut member_ws,
+        &mut owner_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::PermissionChanged(permission))
-                    if permission.user_id == member_user_id
-                        && permission.role == synctv_proto::common::RoomMemberRole::Admin as i32
-                        && permission.admin_added_permissions == permission_bits
-                        && permission.updated_by == management_actor_username
-            )
+            resource_room_member_event(message).is_some_and(|event| {
+                event.kind == synctv_proto::client::RoomMemberEventKind::PermissionChanged as i32
+                    && event.member.as_ref().is_some_and(|member| {
+                        member.user_id == member_user_id
+                            && member.role == synctv_proto::common::RoomMemberRole::Admin as i32
+                            && member.admin_added_permissions == permission_bits
+                    })
+            })
         },
         "permission changed broadcast",
     )
@@ -8055,14 +8170,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::PlaybackState(playback))
-                    if playback
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.is_playing && state.playing_media_id == media_one_id)
-            )
+            resource_playback_state(message)
+                .is_some_and(|state| state.is_playing && state.playing_media_id == media_one_id)
         },
         "playback start broadcast",
     )
@@ -8071,8 +8180,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     send_client_message(
         &mut owner_ws,
         ClientMessage {
-            message: Some(client_message::Message::PlaybackUpdate(
-                UpdatePlaybackRequest {
+            message: Some(client_message::Message::PlaybackStateUpdate(
+                UpdatePlaybackStateRequest {
                     r#type: PlaybackUpdateType::Pause as i32,
                     playing: None,
                     position: None,
@@ -8090,14 +8199,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::PlaybackState(playback))
-                    if playback
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| !state.is_playing && state.playing_media_id == media_one_id)
-            )
+            resource_playback_state(message)
+                .is_some_and(|state| !state.is_playing && state.playing_media_id == media_one_id)
         },
         "pause playback broadcast",
     )
@@ -8106,8 +8209,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     send_client_message(
         &mut owner_ws,
         ClientMessage {
-            message: Some(client_message::Message::PlaybackUpdate(
-                UpdatePlaybackRequest {
+            message: Some(client_message::Message::PlaybackStateUpdate(
+                UpdatePlaybackStateRequest {
                     r#type: PlaybackUpdateType::Seek as i32,
                     playing: Some(false),
                     position: Some(17.5),
@@ -8128,15 +8231,11 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::PlaybackState(playback))
-                    if playback.state.as_ref().is_some_and(|state| {
-                        !state.is_playing
-                            && state.playing_media_id == media_one_id
-                            && (state.position - 17.5).abs() < 0.01
-                    })
-            )
+            resource_playback_state(message).is_some_and(|state| {
+                !state.is_playing
+                    && state.playing_media_id == media_one_id
+                    && (state.position - 17.5).abs() < 0.01
+            })
         },
         "seek playback broadcast",
     )
@@ -8145,8 +8244,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     send_client_message(
         &mut owner_ws,
         ClientMessage {
-            message: Some(client_message::Message::PlaybackUpdate(
-                UpdatePlaybackRequest {
+            message: Some(client_message::Message::PlaybackStateUpdate(
+                UpdatePlaybackStateRequest {
                     r#type: PlaybackUpdateType::Speed as i32,
                     playing: Some(false),
                     position: None,
@@ -8164,15 +8263,11 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::PlaybackState(playback))
-                    if playback.state.as_ref().is_some_and(|state| {
-                        !state.is_playing
-                            && state.playing_media_id == media_one_id
-                            && (state.speed - 1.5).abs() < f64::EPSILON
-                    })
-            )
+            resource_playback_state(message).is_some_and(|state| {
+                !state.is_playing
+                    && state.playing_media_id == media_one_id
+                    && (state.speed - 1.5).abs() < f64::EPSILON
+            })
         },
         "set playback speed broadcast",
     )
@@ -8181,8 +8276,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     send_client_message(
         &mut owner_ws,
         ClientMessage {
-            message: Some(client_message::Message::PlaybackUpdate(
-                UpdatePlaybackRequest {
+            message: Some(client_message::Message::PlaybackStateUpdate(
+                UpdatePlaybackStateRequest {
                     r#type: PlaybackUpdateType::Play as i32,
                     playing: None,
                     position: None,
@@ -8200,15 +8295,11 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::PlaybackState(playback))
-                    if playback.state.as_ref().is_some_and(|state| {
-                        state.is_playing
-                            && state.playing_media_id == media_one_id
-                            && (state.speed - 1.5).abs() < f64::EPSILON
-                    })
-            )
+            resource_playback_state(message).is_some_and(|state| {
+                state.is_playing
+                    && state.playing_media_id == media_one_id
+                    && (state.speed - 1.5).abs() < f64::EPSILON
+            })
         },
         "resume playback broadcast",
     )
@@ -8218,8 +8309,6 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() {
-    use synctv_proto::client::server_message;
-
     let fixture = start_room_realtime_fixture("ws-playlist-events").await;
     let RoomRealtimeFixture {
         server,
@@ -8233,6 +8322,28 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
     } = fixture;
 
     let mut member_ws = ws_connect(&api_addr, &room_id, &member_token).await;
+    let _ = drain_until_quiet(&mut member_ws, 250).await;
+    send_client_message(
+        &mut member_ws,
+        observe_playlist_items_message(
+            "ws-playlist-lifecycle-items",
+            String::new(),
+            synctv_proto::client::ListPlaylistItemsRequest {
+                playlist_id: String::new(),
+                page: 1,
+                page_size: 100,
+                search: String::new(),
+                source_provider: String::new(),
+                provider_instance_name: String::new(),
+                sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+                refresh: false,
+                target: Vec::new(),
+            },
+        ),
+    )
+    .await;
     let _ = drain_until_quiet(&mut member_ws, 250).await;
 
     let created_playlist = run_synctv_remote_cli_json(
@@ -8258,15 +8369,12 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::PlaylistCreated(playlist))
-                    if playlist.room_id == room_id
-                        && playlist
-                            .playlist
-                            .as_ref()
-                            .is_some_and(|entry| entry.id == playlist_id && entry.name == "Realtime Playlist")
-            )
+            resource_playlist_items(message).is_some_and(|snapshot| {
+                snapshot
+                    .playlists
+                    .iter()
+                    .any(|entry| entry.id == playlist_id && entry.name == "Realtime Playlist")
+            })
         },
         "playlist created broadcast",
     )
@@ -8290,15 +8398,11 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::PlaylistUpdated(playlist))
-                    if playlist.room_id == room_id
-                        && playlist
-                            .playlist
-                            .as_ref()
-                            .is_some_and(|entry| entry.id == playlist_id && entry.name == "Realtime Playlist Renamed")
-            )
+            resource_playlist_items(message).is_some_and(|snapshot| {
+                snapshot.playlists.iter().any(|entry| {
+                    entry.id == playlist_id && entry.name == "Realtime Playlist Renamed"
+                })
+            })
         },
         "playlist updated broadcast",
     )
@@ -8314,11 +8418,12 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::PlaylistDeleted(playlist))
-                    if playlist.room_id == room_id && playlist.playlist_id == playlist_id
-            )
+            resource_playlist_items(message).is_some_and(|snapshot| {
+                snapshot
+                    .playlists
+                    .iter()
+                    .all(|entry| entry.id != playlist_id)
+            })
         },
         "playlist deleted broadcast",
     )
@@ -8328,8 +8433,6 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates() {
-    use synctv_proto::client::server_message;
-
     let fixture = start_room_realtime_fixture("ws-watch-playback").await;
     let RoomRealtimeFixture {
         server,
@@ -8339,20 +8442,6 @@ async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates
         member_token,
         ..
     } = fixture;
-
-    let mut member_ws = ws_connect(&api_addr, &room_id, &member_token).await;
-    let _ = recv_matching_server_message(
-        &mut member_ws,
-        Duration::from_secs(10),
-        |message| {
-            matches!(
-                message.message,
-                Some(server_message::Message::UserJoined(_))
-            )
-        },
-        "initial websocket UserJoined",
-    )
-    .await;
 
     let first_media = run_synctv_remote_cli_json(
         &server,
@@ -8374,19 +8463,6 @@ async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates
         .as_str()
         .expect("first media add should return media.id")
         .to_string();
-    let _ = recv_matching_server_message(
-        &mut member_ws,
-        Duration::from_secs(10),
-        |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::MediaAdded(media))
-                    if media.media_id == media_one_id
-            )
-        },
-        "first media added broadcast",
-    )
-    .await;
 
     let second_media = run_synctv_remote_cli_json(
         &server,
@@ -8408,19 +8484,6 @@ async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates
         .as_str()
         .expect("second media add should return media.id")
         .to_string();
-    let _ = recv_matching_server_message(
-        &mut member_ws,
-        Duration::from_secs(10),
-        |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::MediaAdded(media))
-                    if media.media_id == media_two_id
-            )
-        },
-        "second media added broadcast",
-    )
-    .await;
 
     let _ = run_synctv_remote_cli_json(
         &server,
@@ -8436,23 +8499,8 @@ async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates
         "start first playback for websocket watch",
     )
     .await;
-    let _ = recv_matching_server_message(
-        &mut member_ws,
-        Duration::from_secs(10),
-        |message| {
-            matches!(
-                &message.message,
-                Some(server_message::Message::PlaybackState(playback))
-                    if playback
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.playing_media_id == media_one_id)
-            )
-        },
-        "first playback state broadcast",
-    )
-    .await;
 
+    let mut member_ws = ws_connect(&api_addr, &room_id, &member_token).await;
     send_client_message(&mut member_ws, observe_playback_message("ws-playback")).await;
 
     let _initial_playback = recv_matching_server_message(
@@ -8498,8 +8546,6 @@ async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_websocket_watch_room_settings_receives_initial_and_future_updates() {
-    use synctv_proto::client::server_message;
-
     let fixture = start_room_realtime_fixture("ws-watch-room-settings").await;
     let RoomRealtimeFixture {
         server,
@@ -8510,18 +8556,6 @@ async fn full_stack_websocket_watch_room_settings_receives_initial_and_future_up
     } = fixture;
 
     let mut member_ws = ws_connect(&api_addr, &room_id, &member_token).await;
-    let _ = recv_matching_server_message(
-        &mut member_ws,
-        Duration::from_secs(10),
-        |message| {
-            matches!(
-                message.message,
-                Some(server_message::Message::UserJoined(_))
-            )
-        },
-        "initial websocket UserJoined",
-    )
-    .await;
 
     send_client_message(
         &mut member_ws,
@@ -8601,7 +8635,6 @@ async fn full_stack_websocket_watch_room_settings_receives_initial_and_future_up
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_updates() {
     use synctv_proto::client::room_service_client::RoomServiceClient;
-    use synctv_proto::client::server_message;
     use synctv_proto::client::ListPlaylistItemsRequest;
 
     let fixture = start_room_realtime_fixture("ws-watch-playlist-items").await;
@@ -8615,18 +8648,6 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
     } = fixture;
 
     let mut member_ws = ws_connect(&api_addr, &room_id, &member_token).await;
-    let _ = recv_matching_server_message(
-        &mut member_ws,
-        Duration::from_secs(10),
-        |message| {
-            matches!(
-                message.message,
-                Some(server_message::Message::UserJoined(_))
-            )
-        },
-        "initial websocket UserJoined",
-    )
-    .await;
 
     let mut member_room_client = RoomServiceClient::connect(server.api_base_url.clone())
         .await
@@ -8759,6 +8780,7 @@ async fn full_stack_websocket_watch_room_members_receives_initial_and_future_upd
         ..
     } = fixture;
 
+    let client = reqwest::Client::new();
     let mut member_ws = ws_connect(&api_addr, &room_id, &member_token).await;
     send_client_message(
         &mut member_ws,
@@ -8777,26 +8799,37 @@ async fn full_stack_websocket_watch_room_members_receives_initial_and_future_upd
     )
     .await;
 
-    let initial_members = recv_matching_server_message(
+    let _initial_observed = recv_matching_server_message(
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            resource_room_members(message)
-                .is_some_and(|snapshot| snapshot.total == 2 && !snapshot.version.is_empty())
+            matches!(
+                &message.message,
+                Some(synctv_proto::client::server_message::Message::ResourceObserved(_))
+            )
         },
-        "initial websocket room members snapshot",
+        "initial websocket room member events observation",
     )
     .await;
-    let snapshot =
-        resource_room_members(&initial_members).expect("room members snapshot should be present");
+    let members_response = client
+        .get(format!(
+            "{}/api/rooms/{}/members",
+            server.api_base_url, room_id
+        ))
+        .bearer_auth(&member_token)
+        .send()
+        .await
+        .expect("get room members snapshot should succeed");
+    assert_eq!(members_response.status(), StatusCode::OK);
+    let members_body = response_json(members_response).await;
     assert!(
-        snapshot
-            .members
+        members_body["members"]
+            .as_array()
+            .expect("members should be an array")
             .iter()
-            .any(|member| member.user_id == member_user_id),
-        "initial websocket room members snapshot should include the joined member"
+            .any(|member| member["user_id"].as_str() == Some(member_user_id.as_str())),
+        "room members snapshot should include the joined member"
     );
-    let initial_version = snapshot.version.clone();
 
     let suffix = unique_test_suffix();
     let joiner_username = bounded_test_username("ws-watch-room-members", "joiner", &suffix);
@@ -8823,32 +8856,29 @@ async fn full_stack_websocket_watch_room_members_receives_initial_and_future_upd
         "joiner should join room for websocket room-members watch"
     );
 
-    let updated_members = recv_matching_server_message(
+    let joined_event = recv_matching_server_message(
         &mut member_ws,
         Duration::from_secs(10),
         |message| {
-            resource_room_members(message).is_some_and(|snapshot| {
-                snapshot.version != initial_version
-                    && snapshot
-                        .members
-                        .iter()
-                        .any(|member| member.user_id == joiner_id)
+            resource_room_member_joined(message).is_some_and(|event| {
+                event
+                    .member
+                    .as_ref()
+                    .is_some_and(|member| member.user_id == joiner_id)
             })
         },
-        "updated websocket room members snapshot",
+        "websocket room member joined event",
     )
     .await;
 
-    let snapshot =
-        resource_room_members(&updated_members).expect("updated snapshot should be present");
-    assert_eq!(snapshot.total, 3);
-    assert_ne!(snapshot.version, initial_version);
+    let joined =
+        resource_room_member_joined(&joined_event).expect("joined event should be present");
     assert!(
-        snapshot
-            .members
-            .iter()
-            .any(|member| member.user_id == joiner_id),
-        "updated room members snapshot should include the new joiner"
+        joined
+            .member
+            .as_ref()
+            .is_some_and(|member| member.user_id == joiner_id),
+        "room member joined event should include the new joiner"
     );
 }
 

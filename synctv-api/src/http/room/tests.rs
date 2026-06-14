@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::{
     build_get_playback_request, parse_optional_query_bool, parse_optional_query_i32,
-    sse_event_from_server_message, sse_event_id_from_resource_changed, watch_after_event_sequence,
+    sse_event_from_server_message, sse_event_id_from_resource_event, watch_after_event_sequence,
     CancelOnDropStream, ChatImageObjectQuery, GetPlaybackQuery, PlaylistCoverObjectQuery,
     RoomCoverObjectQuery, VideoCoverObjectQuery, WatchPlaybackQuery, WatchQuery,
 };
@@ -11,7 +11,7 @@ use synctv_proto::client::{
     AddMediaBatchRequest, CreatePlaylistRequest, DeleteEntriesRequest, DeleteMediaQuery,
     DeletePlaylistQuery, GetChatHistoryRequest, GetChatMessageContextRequest,
     GetChatMessageRequest, GetHotRoomsRequest, GetRoomMembersRequest, ListPlaylistItemsRequest,
-    ListPlaylistsRequest, ListRoomsRequest, MoveMediaRequest, UpdatePlaybackRequest,
+    ListPlaylistsRequest, ListRoomsRequest, MoveMediaRequest, UpdatePlaybackStateRequest,
 };
 
 type TestResult<T = ()> = anyhow::Result<T>;
@@ -32,9 +32,9 @@ fn app_err<T>(result: Result<T, crate::http::AppError>) -> TestResult<crate::htt
 }
 
 #[test]
-fn test_update_playback_deserialize_playing_update() -> TestResult {
+fn test_update_playback_state_deserialize_playing_update() -> TestResult {
     let json = r#"{"type":1,"playing":true}"#;
-    let req: UpdatePlaybackRequest = serde_json::from_str(json)?;
+    let req: UpdatePlaybackStateRequest = serde_json::from_str(json)?;
     assert_eq!(
         req.r#type,
         synctv_proto::client::PlaybackUpdateType::Play as i32
@@ -46,9 +46,9 @@ fn test_update_playback_deserialize_playing_update() -> TestResult {
 }
 
 #[test]
-fn test_update_playback_deserialize_seek_update() -> TestResult {
+fn test_update_playback_state_deserialize_seek_update() -> TestResult {
     let json = r#"{"type":3,"position": 42.5}"#;
-    let req: UpdatePlaybackRequest = serde_json::from_str(json)?;
+    let req: UpdatePlaybackStateRequest = serde_json::from_str(json)?;
     assert_eq!(
         req.r#type,
         synctv_proto::client::PlaybackUpdateType::Seek as i32
@@ -62,9 +62,9 @@ fn test_update_playback_deserialize_seek_update() -> TestResult {
 }
 
 #[test]
-fn test_update_playback_deserialize_speed_update() -> TestResult {
+fn test_update_playback_state_deserialize_speed_update() -> TestResult {
     let json = r#"{"type":4,"speed": 2.0}"#;
-    let req: UpdatePlaybackRequest = serde_json::from_str(json)?;
+    let req: UpdatePlaybackStateRequest = serde_json::from_str(json)?;
     assert_eq!(
         req.r#type,
         synctv_proto::client::PlaybackUpdateType::Speed as i32
@@ -78,9 +78,9 @@ fn test_update_playback_deserialize_speed_update() -> TestResult {
 }
 
 #[test]
-fn test_update_playback_deserialize_full_state() -> TestResult {
+fn test_update_playback_state_deserialize_full_state() -> TestResult {
     let json = r#"{"type":3,"playing":false,"position":42.5,"speed":1.25,"version":9}"#;
-    let req: UpdatePlaybackRequest = serde_json::from_str(json)?;
+    let req: UpdatePlaybackStateRequest = serde_json::from_str(json)?;
     assert_eq!(
         req.r#type,
         synctv_proto::client::PlaybackUpdateType::Seek as i32
@@ -513,9 +513,9 @@ fn test_list_playlist_items_body_deserialize_dynamic_target() -> TestResult {
 }
 
 #[test]
-fn test_update_playback_request_deserialize_with_version() -> TestResult {
+fn test_update_playback_state_request_deserialize_with_version() -> TestResult {
     let json = r#"{"type": 1, "version": 42}"#;
-    let req: UpdatePlaybackRequest = serde_json::from_str(json)?;
+    let req: UpdatePlaybackStateRequest = serde_json::from_str(json)?;
     assert_eq!(
         req.r#type,
         synctv_proto::client::PlaybackUpdateType::Play as i32
@@ -643,10 +643,10 @@ fn test_move_playlist_body_deserializes_without_path_playlist_id() -> TestResult
 }
 
 #[test]
-fn test_sse_event_id_from_resource_changed_uses_event_sequence() {
-    let changed = synctv_proto::client::ResourceChanged {
+fn test_sse_event_id_from_resource_event_uses_event_sequence() {
+    let changed = synctv_proto::client::ResourceEvent {
         observe_id: "chat-events".to_string(),
-        payload: Some(synctv_proto::client::resource_changed::Payload::ChatEvent(
+        payload: Some(synctv_proto::client::resource_event::Payload::ChatEvent(
             synctv_proto::client::ChatMessageEvent {
                 event_id: " chat-event-3 ".to_string(),
                 room_id: "room_test".to_string(),
@@ -660,20 +660,20 @@ fn test_sse_event_id_from_resource_changed_uses_event_sequence() {
     };
 
     assert_eq!(
-        sse_event_id_from_resource_changed(&changed).as_deref(),
+        sse_event_id_from_resource_event(&changed).as_deref(),
         Some("3")
     );
 }
 
 #[tokio::test]
-async fn test_chat_resource_changed_sse_event_includes_event_sequence() -> TestResult {
+async fn test_chat_resource_event_sse_event_includes_event_sequence() -> TestResult {
     use axum::response::IntoResponse;
-    use synctv_proto::client::resource_changed::Payload;
+    use synctv_proto::client::resource_event::Payload;
     use synctv_proto::client::server_message::Message;
 
     let message = synctv_proto::client::ServerMessage {
-        message: Some(Message::ResourceChanged(
-            synctv_proto::client::ResourceChanged {
+        message: Some(Message::ResourceEvent(
+            synctv_proto::client::ResourceEvent {
                 observe_id: "chat-events".to_string(),
                 payload: Some(Payload::ChatEvent(synctv_proto::client::ChatMessageEvent {
                     event_id: "chat-event-3".to_string(),

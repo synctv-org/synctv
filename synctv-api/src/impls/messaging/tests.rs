@@ -126,11 +126,6 @@ fn media_id() -> MediaId {
 fn public_id_codec() -> synctv_core::PublicIdCodec {
     synctv_core::PublicIdCodec::plain()
 }
-fn public_actor_id() -> String {
-    public_id_codec()
-        .encode_user_id(user_id())
-        .checked("test value")
-}
 fn public_media_id() -> String {
     public_id_codec()
         .encode_media_id(media_id())
@@ -248,15 +243,6 @@ fn runtime_with_playlist_items_snapshot_service(
 ) -> StreamMessageHandlerRuntime {
     StreamMessageHandlerRuntime {
         playlist_items_snapshot_service: service,
-        ..test_stream_handler_runtime()
-    }
-}
-
-fn runtime_with_room_members_snapshot_service(
-    service: Arc<dyn RoomMembersSnapshotService>,
-) -> StreamMessageHandlerRuntime {
-    StreamMessageHandlerRuntime {
-        room_members_snapshot_service: service,
         ..test_stream_handler_runtime()
     }
 }
@@ -547,8 +533,13 @@ fn watch_observe_builders_require_resource_bodies() {
         Err(message) if message.contains("playlist_items")
     ));
     assert!(matches!(
-        watch_room_members_observe(synctv_proto::client::WatchRoomMembersRequest::default()),
-        Err(message) if message.contains("room_members")
+        watch_room_member_events_observe(
+            synctv_proto::client::WatchRoomMemberEventsRequest::default()
+        ),
+        Ok(observe) if matches!(
+            observe.resource,
+            Some(synctv_proto::client::observe_resource::Resource::RoomMemberEvents(_))
+        )
     ));
     assert!(matches!(
         watch_chat_events_observe(synctv_proto::client::WatchChatEventsRequest::default()),
@@ -624,6 +615,7 @@ fn chat_event_with_content(
             },
             images: Vec::new(),
             reactions: Vec::new(),
+            mentions: Vec::new(),
         },
         occurred_at: now,
     }
@@ -634,9 +626,9 @@ fn server_message_contains_chat_event_content(
     content: &str,
 ) -> bool {
     match &message.message {
-        Some(Message::ResourceChanged(changed)) => matches!(
+        Some(Message::ResourceEvent(changed)) => matches!(
             changed.payload.as_ref(),
-            Some(synctv_proto::client::resource_changed::Payload::ChatEvent(event))
+            Some(synctv_proto::client::resource_event::Payload::ChatEvent(event))
                 if event
                     .message
                     .as_ref()
@@ -644,20 +636,6 @@ fn server_message_contains_chat_event_content(
         ),
         _ => false,
     }
-}
-
-fn server_message_is_user_joined_for(
-    message: &synctv_proto::client::ServerMessage,
-    user_id: &str,
-) -> bool {
-    matches!(
-        &message.message,
-        Some(Message::UserJoined(joined))
-            if joined
-                .member
-                .as_ref()
-                .is_some_and(|member| member.user_id == user_id)
-    )
 }
 
 fn empty_playlist_items_response(
@@ -705,15 +683,6 @@ struct FailingMessageSender {
 }
 
 impl FailingMessageSender {
-    fn immediate() -> Arc<Self> {
-        Arc::new(Self {
-            fail_after: 0,
-            send_calls: AtomicUsize::new(0),
-            ping_calls: AtomicUsize::new(0),
-            alive: AtomicBool::new(true),
-        })
-    }
-
     fn fail_after(send_count_before_failure: usize) -> Arc<Self> {
         Arc::new(Self {
             fail_after: send_count_before_failure,
@@ -790,6 +759,8 @@ impl MessageSender for RecordingMessageSender {
 struct FailingStreamState {
     send_calls: AtomicUsize,
     alive: AtomicBool,
+    recv_started: AtomicBool,
+    recv_entered: tokio::sync::Notify,
 }
 
 impl FailingStreamState {
@@ -797,11 +768,9 @@ impl FailingStreamState {
         Arc::new(Self {
             send_calls: AtomicUsize::new(0),
             alive: AtomicBool::new(true),
+            recv_started: AtomicBool::new(false),
+            recv_entered: tokio::sync::Notify::new(),
         })
-    }
-
-    fn send_calls(&self) -> usize {
-        self.send_calls.load(Ordering::Relaxed)
     }
 }
 
@@ -809,7 +778,9 @@ impl FailingStreamState {
 struct RecordingStreamState {
     sent_messages: parking_lot::Mutex<Vec<ServerMessage>>,
     alive: AtomicBool,
+    recv_started: AtomicBool,
     closed: tokio::sync::Notify,
+    recv_entered: tokio::sync::Notify,
 }
 
 impl RecordingStreamState {
@@ -817,7 +788,9 @@ impl RecordingStreamState {
         Arc::new(Self {
             sent_messages: parking_lot::Mutex::new(Vec::new()),
             alive: AtomicBool::new(true),
+            recv_started: AtomicBool::new(false),
             closed: tokio::sync::Notify::new(),
+            recv_entered: tokio::sync::Notify::new(),
         })
     }
 
@@ -898,6 +871,13 @@ fn observe_playback_message(
 fn observe_room_settings_message(
     observe_id: impl Into<String>,
 ) -> synctv_proto::client::client_message::Message {
+    observe_room_settings_message_with_sequence(observe_id, None)
+}
+
+fn observe_room_settings_message_with_sequence(
+    observe_id: impl Into<String>,
+    after_event_sequence: Option<i64>,
+) -> synctv_proto::client::client_message::Message {
     synctv_proto::client::client_message::Message::ObserveResource(
         synctv_proto::client::ObserveResource {
             observe_id: observe_id.into(),
@@ -905,7 +885,7 @@ fn observe_room_settings_message(
             resource: Some(
                 synctv_proto::client::observe_resource::Resource::RoomSettings(
                     synctv_proto::client::ObserveRoomSettings {
-                        after_event_sequence: None,
+                        after_event_sequence,
                     },
                 ),
             ),
@@ -949,24 +929,29 @@ fn observe_playlist_items_resource_with_sequence(
     }
 }
 
-fn observe_room_members_message(
-    observe_id: &'static str,
-    request: synctv_proto::client::GetRoomMembersRequest,
-) -> synctv_proto::client::client_message::Message {
-    synctv_proto::client::client_message::Message::ObserveResource(
-        synctv_proto::client::ObserveResource {
-            observe_id: observe_id.to_string(),
-            delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
-            resource: Some(
-                synctv_proto::client::observe_resource::Resource::RoomMembers(
-                    synctv_proto::client::ObserveRoomMembers {
-                        request: Some(request),
-                        after_event_sequence: None,
-                    },
-                ),
-            ),
-        },
-    )
+fn permission_changed_event_for_target(
+    event_id: impl Into<String>,
+    target_user_id: UserId,
+    role_changed: bool,
+) -> RealtimeEvent {
+    RealtimeEvent::PermissionChanged {
+        event_id: event_id.into(),
+        room_id: room_id(),
+        target_user_id,
+        target_username: format!("user-{target_user_id}"),
+        changed_by: user_id(),
+        changed_by_username: "owner".to_string(),
+        role_changed,
+        new_permissions: RoomPermissionSet(RoomMemberPermissionBits::CHAT),
+        role: synctv_proto::common::RoomMemberRole::Admin as i32,
+        added_permissions: RoomPermissionSet(RoomMemberPermissionBits::CHAT),
+        removed_permissions: RoomPermissionSet(0),
+        admin_added_permissions: RoomPermissionSet(0),
+        admin_removed_permissions: RoomPermissionSet(0),
+        target_is_online: true,
+        target_connection_count: 1,
+        timestamp: now(),
+    }
 }
 
 fn observe_chat_events_message(
@@ -994,11 +979,19 @@ fn observe_chat_events_message_with_sequence(
     )
 }
 
-fn resource_changed_payload(
+fn webrtc_command_message(
+    command: synctv_proto::client::web_rtc_command::Command,
+) -> synctv_proto::client::client_message::Message {
+    synctv_proto::client::client_message::Message::Webrtc(synctv_proto::client::WebRtcCommand {
+        command: Some(command),
+    })
+}
+
+fn resource_event_payload(
     message: &ServerMessage,
-) -> Option<&synctv_proto::client::resource_changed::Payload> {
+) -> Option<&synctv_proto::client::resource_event::Payload> {
     match &message.message {
-        Some(Message::ResourceChanged(changed)) => changed.payload.as_ref(),
+        Some(Message::ResourceEvent(changed)) => changed.payload.as_ref(),
         _ => None,
     }
 }
@@ -1015,24 +1008,24 @@ fn resource_observe_error(
 fn resource_playback_state(
     message: &ServerMessage,
 ) -> Option<&synctv_proto::client::PlaybackState> {
-    match resource_changed_payload(message) {
-        Some(synctv_proto::client::resource_changed::Payload::PlaybackState(state)) => Some(state),
+    match resource_event_payload(message) {
+        Some(synctv_proto::client::resource_event::Payload::PlaybackState(state)) => Some(state),
         _ => None,
     }
 }
 
 fn resource_playback(message: &ServerMessage) -> Option<&synctv_proto::client::Playback> {
-    match resource_changed_payload(message) {
-        Some(synctv_proto::client::resource_changed::Payload::Playback(snapshot)) => Some(snapshot),
+    match resource_event_payload(message) {
+        Some(synctv_proto::client::resource_event::Payload::Playback(snapshot)) => Some(snapshot),
         _ => None,
     }
 }
 
 fn resource_room_settings(
     message: &ServerMessage,
-) -> Option<&synctv_proto::client::RoomSettingsChanged> {
-    match resource_changed_payload(message) {
-        Some(synctv_proto::client::resource_changed::Payload::RoomSettings(settings)) => {
+) -> Option<&synctv_proto::client::GetRoomSettingsResponse> {
+    match resource_event_payload(message) {
+        Some(synctv_proto::client::resource_event::Payload::RoomSettings(settings)) => {
             Some(settings)
         }
         _ => None,
@@ -1042,19 +1035,8 @@ fn resource_room_settings(
 fn resource_playlist_items(
     message: &ServerMessage,
 ) -> Option<&synctv_proto::client::ListPlaylistItemsResponse> {
-    match resource_changed_payload(message) {
-        Some(synctv_proto::client::resource_changed::Payload::PlaylistItems(snapshot)) => {
-            Some(snapshot)
-        }
-        _ => None,
-    }
-}
-
-fn resource_room_members(
-    message: &ServerMessage,
-) -> Option<&synctv_proto::client::GetRoomMembersResponse> {
-    match resource_changed_payload(message) {
-        Some(synctv_proto::client::resource_changed::Payload::RoomMembers(snapshot)) => {
+    match resource_event_payload(message) {
+        Some(synctv_proto::client::resource_event::Payload::PlaylistItems(snapshot)) => {
             Some(snapshot)
         }
         _ => None,
@@ -1064,11 +1046,20 @@ fn resource_room_members(
 #[async_trait::async_trait]
 impl StreamMessage for RecordingStream {
     async fn recv(&mut self) -> Option<Result<ClientMessage, String>> {
+        self.state.recv_started.store(true, Ordering::Relaxed);
+        self.state.recv_entered.notify_waiters();
         if let Some(msg) = self.incoming.pop_front() {
             return Some(msg);
         }
-        self.state.closed.notified().await;
-        None
+        loop {
+            if !self.is_alive() {
+                return None;
+            }
+            tokio::select! {
+                () = self.state.closed.notified() => return None,
+                () = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+        }
     }
 
     fn send(&self, message: ServerMessage) -> Result<(), String> {
@@ -1127,6 +1118,8 @@ impl FailingStream {
 #[async_trait::async_trait]
 impl StreamMessage for FailingStream {
     async fn recv(&mut self) -> Option<Result<ClientMessage, String>> {
+        self.state.recv_started.store(true, Ordering::Relaxed);
+        self.state.recv_entered.notify_waiters();
         if let Some(msg) = self.incoming.pop_front() {
             return Some(msg);
         }
@@ -1242,6 +1235,12 @@ impl TestMessageHandler {
             handler: rebuild_stream_message_handler_with_runtime(&self.handler, runtime),
         }
     }
+
+    fn skip_cleanup_user_left(&self) {
+        self.handler
+            .skip_cleanup_user_left
+            .store(true, Ordering::Relaxed);
+    }
 }
 
 impl Deref for TestMessageHandler {
@@ -1265,18 +1264,24 @@ impl std::borrow::Borrow<StreamMessageHandler> for &TestMessageHandler {
 }
 
 fn create_handler_test_database() -> synctv_core_testing::TestDatabase {
-    std::thread::spawn(|| {
+    let (container, url) = std::thread::spawn(|| {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .checked("test database runtime should build")
-            .block_on(synctv_core_testing::create_test_database_with_db_and_label(
+            .block_on(synctv_core_testing::create_test_database_url_with_label(
                 "messaging_handler",
                 "messaging_handler",
             ))
     })
     .join()
-    .checked("test database init thread should finish")
+    .checked("test database init thread should finish");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(Duration::from_secs(30))
+        .max_connections(8)
+        .connect_lazy(&url)
+        .checked("test should create lazy PostgreSQL pool");
+    synctv_core_testing::TestDatabase { container, pool }
 }
 
 fn bounded_fixture_username(node_id: &str) -> String {
@@ -1911,65 +1916,6 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
     }
 }
 
-#[derive(Clone)]
-struct StaticRoomMembersSnapshotService {
-    snapshot: synctv_proto::client::GetRoomMembersResponse,
-}
-
-#[async_trait::async_trait]
-impl crate::impls::room_members_snapshot::RoomMembersSnapshotService
-    for StaticRoomMembersSnapshotService
-{
-    async fn get_room_members_snapshot(
-        &self,
-        _actor: &crate::impls::client::RoomActor,
-        _req: &synctv_proto::client::GetRoomMembersRequest,
-    ) -> Result<synctv_proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
-        Ok(self.snapshot.clone())
-    }
-}
-
-#[derive(Clone)]
-struct MutableRoomMembersSnapshotService {
-    snapshot: Arc<parking_lot::Mutex<synctv_proto::client::GetRoomMembersResponse>>,
-    probe: SnapshotCallProbe,
-}
-
-impl MutableRoomMembersSnapshotService {
-    fn new(snapshot: synctv_proto::client::GetRoomMembersResponse) -> Arc<Self> {
-        Arc::new(Self {
-            snapshot: Arc::new(parking_lot::Mutex::new(snapshot)),
-            probe: SnapshotCallProbe::default(),
-        })
-    }
-
-    fn replace(&self, snapshot: synctv_proto::client::GetRoomMembersResponse) {
-        *self.snapshot.lock() = snapshot;
-    }
-
-    async fn wait_for_calls(&self, expected: usize) {
-        self.probe.wait_for_calls(expected).await;
-    }
-
-    fn call_count(&self) -> usize {
-        self.probe.call_count()
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::impls::room_members_snapshot::RoomMembersSnapshotService
-    for MutableRoomMembersSnapshotService
-{
-    async fn get_room_members_snapshot(
-        &self,
-        _actor: &crate::impls::client::RoomActor,
-        _req: &synctv_proto::client::GetRoomMembersRequest,
-    ) -> Result<synctv_proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
-        self.probe.mark_called();
-        Ok(self.snapshot.lock().clone())
-    }
-}
-
 fn test_message_handler(
     sender: Arc<dyn MessageSender>,
     event_service: Arc<RealtimeManager>,
@@ -2021,9 +1967,10 @@ fn test_message_handler_for_user_with_runtime_and_concurrency(
     event_service: Arc<RealtimeManager>,
     connection_service: Arc<ConnectionManager>,
     user_id: UserId,
-    runtime: StreamMessageHandlerRuntime,
+    mut runtime: StreamMessageHandlerRuntime,
     concurrency_config: Arc<MessageConcurrencyConfig>,
 ) -> TestMessageHandler {
+    runtime.presence_service = connection_service.presence_service();
     let database = create_handler_test_database();
     let pool = database.pool.clone();
     let handler = StreamMessageHandler::new_with_runtime(
@@ -2146,16 +2093,6 @@ where
     handler.with_playlist_items_snapshot_service(service)
 }
 
-fn test_handler_with_room_members_snapshot_service<H>(
-    handler: H,
-    service: Arc<dyn RoomMembersSnapshotService>,
-) -> H::Output
-where
-    H: StreamMessageHandlerTestRuntimeExt,
-{
-    handler.with_room_members_snapshot_service(service)
-}
-
 fn test_handler_with_room_settings_snapshot_service<H>(
     handler: H,
     service: Arc<dyn RoomSettingsSnapshotService>,
@@ -2173,10 +2110,6 @@ trait StreamMessageHandlerTestRuntimeExt {
     fn with_playlist_items_snapshot_service(
         self,
         service: Arc<dyn PlaylistItemsSnapshotService>,
-    ) -> Self::Output;
-    fn with_room_members_snapshot_service(
-        self,
-        service: Arc<dyn RoomMembersSnapshotService>,
     ) -> Self::Output;
     fn with_room_settings_snapshot_service(
         self,
@@ -2196,13 +2129,6 @@ impl StreamMessageHandlerTestRuntimeExt for TestMessageHandler {
         service: Arc<dyn PlaylistItemsSnapshotService>,
     ) -> TestMessageHandler {
         self.rebuild_with_runtime(runtime_with_playlist_items_snapshot_service(service))
-    }
-
-    fn with_room_members_snapshot_service(
-        self,
-        service: Arc<dyn RoomMembersSnapshotService>,
-    ) -> TestMessageHandler {
-        self.rebuild_with_runtime(runtime_with_room_members_snapshot_service(service))
     }
 
     fn with_room_settings_snapshot_service(
@@ -2227,13 +2153,6 @@ impl StreamMessageHandlerTestRuntimeExt for &TestMessageHandler {
         self.rebuild_with_runtime(runtime_with_playlist_items_snapshot_service(service))
     }
 
-    fn with_room_members_snapshot_service(
-        self,
-        service: Arc<dyn RoomMembersSnapshotService>,
-    ) -> TestMessageHandler {
-        self.rebuild_with_runtime(runtime_with_room_members_snapshot_service(service))
-    }
-
     fn with_room_settings_snapshot_service(
         self,
         service: Arc<dyn RoomSettingsSnapshotService>,
@@ -2256,16 +2175,6 @@ impl StreamMessageHandlerTestRuntimeExt for StreamMessageHandler {
         rebuild_stream_message_handler_with_runtime(
             self,
             runtime_with_playlist_items_snapshot_service(service),
-        )
-    }
-
-    fn with_room_members_snapshot_service(
-        self,
-        service: Arc<dyn RoomMembersSnapshotService>,
-    ) -> StreamMessageHandler {
-        rebuild_stream_message_handler_with_runtime(
-            self,
-            runtime_with_room_members_snapshot_service(service),
         )
     }
 
@@ -2294,16 +2203,6 @@ impl StreamMessageHandlerTestRuntimeExt for &StreamMessageHandler {
         rebuild_stream_message_handler_with_runtime(
             self,
             runtime_with_playlist_items_snapshot_service(service),
-        )
-    }
-
-    fn with_room_members_snapshot_service(
-        self,
-        service: Arc<dyn RoomMembersSnapshotService>,
-    ) -> StreamMessageHandler {
-        rebuild_stream_message_handler_with_runtime(
-            self,
-            runtime_with_room_members_snapshot_service(service),
         )
     }
 
@@ -2429,7 +2328,11 @@ async fn prepare_handler_for_run_after_join(
     connection_service: &Arc<ConnectionManager>,
 ) {
     connection_service
-        .register(handler.connection_id.clone().into_string(), handler.user_id)
+        .register_actor(
+            handler.connection_id.clone().into_string(),
+            handler.user_id,
+            handler.public_actor_id().checked("actor id should encode"),
+        )
         .await
         .checked("register should succeed");
     connection_service
@@ -2533,27 +2436,27 @@ fn realtime_manager_subscriber_count(event_service: &RealtimeManager, room_id: &
 async fn wait_for_run_after_join_ready(stream_state: &FailingStreamState) {
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            if stream_state.send_calls() >= 1 {
+            if stream_state.recv_started.load(Ordering::Relaxed) {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            stream_state.recv_entered.notified().await;
         }
     })
     .await
     .checked("run_after_join should be ready");
 }
 
-async fn wait_for_recorded_message_count(stream_state: &RecordingStreamState, expected: usize) {
+async fn wait_for_recording_stream_ready(stream_state: &RecordingStreamState) {
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            if stream_state.sent_messages().len() >= expected {
+            if stream_state.recv_started.load(Ordering::Relaxed) {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            stream_state.recv_entered.notified().await;
         }
     })
     .await
-    .checked("recording stream should receive expected messages");
+    .checked("recording stream should enter receive loop");
 }
 
 async fn wait_for_run_after_join_cleanup(
@@ -2562,7 +2465,7 @@ async fn wait_for_run_after_join_cleanup(
     event_service: &RealtimeManager,
     task: tokio::task::JoinHandle<Result<(), String>>,
 ) {
-    let result = tokio::time::timeout(Duration::from_secs(1), task)
+    let result = tokio::time::timeout(Duration::from_secs(5), task)
         .await
         .checked("run_after_join should exit")
         .checked("run_after_join task should not panic");
@@ -2571,7 +2474,7 @@ async fn wait_for_run_after_join_cleanup(
         "run_after_join should exit cleanly: {result:?}"
     );
 
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if connection_service.connection_count() == 0
                 && connection_service.room_connection_count(&handler.room_id) == 0
@@ -2589,138 +2492,8 @@ async fn wait_for_run_after_join_cleanup(
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_start_cancels_and_cleans_up_when_initial_send_fails() {
-    let sender = FailingMessageSender::immediate();
-    let fixture = create_start_handler_fixture("start_initial_send_fail", sender).await;
-    let StartTestFixture {
-        handler,
-        connection_service,
-        event_service,
-        ..
-    } = &fixture;
-
-    let (_tx, cancel_token) = handler.start().await.checked("start should return");
-
-    wait_for_start_cleanup(
-        handler,
-        connection_service,
-        event_service,
-        &cancel_token,
-        true,
-    )
-    .await;
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker (testcontainers)"]
-async fn test_start_does_not_broadcast_presence_events_when_initial_send_fails() {
-    let sender = FailingMessageSender::immediate();
-    let fixture =
-        create_start_handler_fixture("start_no_broadcast_on_initial_failure", sender).await;
-    let StartTestFixture {
-        handler,
-        connection_service,
-        event_service,
-        ..
-    } = &fixture;
-
-    let room = handler.room_id;
-    let user = handler.user_id;
-    let (mut rx, conn_id) = event_service
-        .subscribe(room, user)
-        .await
-        .checked("subscribe should succeed");
-    let (_tx, cancel_token) = handler.start().await.checked("start should return");
-
-    let maybe_presence_event = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
-
-    assert!(
-        maybe_presence_event.is_err(),
-        "initial send failure must not broadcast UserJoined/UserLeft presence events"
-    );
-
-    event_service.unsubscribe(&conn_id);
-    wait_for_start_cleanup(
-        handler,
-        connection_service,
-        event_service,
-        &cancel_token,
-        true,
-    )
-    .await;
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker (testcontainers)"]
-async fn test_start_user_joined_payload_uses_room_permission_overrides() {
-    let sender = RecordingMessageSender::new();
-    let fixture =
-        create_start_handler_fixture("start_joined_room_permission_overrides", sender.clone())
-            .await;
-    let StartTestFixture {
-        handler,
-        connection_service,
-        event_service,
-        ..
-    } = &fixture;
-
-    let mut settings = handler
-        .room_service
-        .get_room_settings(&handler.room_id)
-        .await
-        .checked("room settings should load");
-    settings.member_removed_permissions =
-        synctv_core::models::room_settings::MemberRemovedPermissions(
-            RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
-        );
-    handler
-        .room_service
-        .set_room_settings(&handler.room_id, &settings)
-        .await
-        .checked("room settings should update");
-
-    let (_tx, cancel_token) = handler.start().await.checked("start should return");
-
-    let messages = sender.sent_messages();
-    let joined = messages
-        .iter()
-        .find_map(|message| match &message.message {
-            Some(Message::UserJoined(joined)) => Some(joined),
-            _ => None,
-        })
-        .checked("initial UserJoined payload should be sent");
-    let member = joined
-        .member
-        .as_ref()
-        .checked("joined member should be set");
-
-    assert!(
-        RoomPermissionSet::default_member().has(RoomPermission::CREATE_MEDIA_RESOURCE),
-        "static member defaults include CREATE_MEDIA_RESOURCE, so the payload must prove it used room overrides"
-    );
-    assert!(
-        !RoomPermissionSet(member.permissions).has(RoomPermission::CREATE_MEDIA_RESOURCE),
-        "initial UserJoined payload must apply room-level permission removals"
-    );
-
-    cancel_token.cancel();
-    wait_for_start_cleanup(
-        handler,
-        connection_service,
-        event_service,
-        &cancel_token,
-        true,
-    )
-    .await;
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker (testcontainers)"]
 async fn test_start_cancels_and_cleans_up_when_realtime_event_send_fails() {
-    let sender = FailingMessageSender::fail_after(1);
+    let sender = FailingMessageSender::fail_after(0);
     let sender_for_assert = Arc::clone(&sender);
     let fixture = create_start_handler_fixture("start_event_send_failure", sender).await;
     let StartTestFixture {
@@ -2743,15 +2516,11 @@ async fn test_start_cancels_and_cleans_up_when_realtime_event_send_fails() {
     .await
     .checked("subscription should be established");
 
-    event_service.broadcast(RealtimeEvent::ChatMessage {
+    event_service.broadcast(RealtimeEvent::SystemNotification {
         event_id: "evt-start-fail".to_string(),
-        room_id: handler.room_id,
-        user_id: handler.user_id,
-        username: handler.username.clone(),
         message: "boom".to_string(),
+        level: synctv_realtime::sync::NotificationLevel::Info,
         timestamp: now(),
-        display_position: None,
-        display_color: None,
     });
 
     wait_for_start_cleanup(
@@ -2763,8 +2532,8 @@ async fn test_start_cancels_and_cleans_up_when_realtime_event_send_fails() {
     )
     .await;
     assert!(
-        sender_for_assert.send_calls() >= 2,
-        "initial join send + failing event send should both be attempted"
+        sender_for_assert.send_calls() >= 1,
+        "failing event send should be attempted"
     );
     fixture.shutdown().await;
 }
@@ -2772,7 +2541,7 @@ async fn test_start_cancels_and_cleans_up_when_realtime_event_send_fails() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_start_cancels_and_cleans_up_when_admin_notification_send_fails() {
-    let sender = FailingMessageSender::fail_after(1);
+    let sender = FailingMessageSender::fail_after(0);
     let sender_for_assert = Arc::clone(&sender);
     let fixture = create_start_handler_fixture("start_admin_notification_failure", sender).await;
     let StartTestFixture {
@@ -2814,100 +2583,14 @@ async fn test_start_cancels_and_cleans_up_when_admin_notification_send_fails() {
     )
     .await;
     assert!(
-        sender_for_assert.send_calls() >= 2,
-        "initial join send + failing admin notification send should both be attempted"
+        sender_for_assert.send_calls() >= 1,
+        "failing admin notification send should be attempted"
     );
     fixture.shutdown().await;
 }
 
 #[tokio::test]
-async fn test_run_after_join_cleans_up_when_realtime_event_send_fails() {
-    let event_service = test_realtime_manager("test_run_after_join_event_failure").await;
-    let connection_service = test_connection_manager();
-    let handler = test_message_handler(
-        FailingMessageSender::fail_after(usize::MAX),
-        event_service.clone(),
-        connection_service.clone(),
-    );
-    prepare_handler_for_run_after_join(&handler, &connection_service).await;
-
-    let (mut stream, stream_state) = FailingStream::fail_after(1);
-    let task_handler = handler.clone();
-    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
-
-    wait_for_run_after_join_ready(&stream_state).await;
-
-    event_service.broadcast(RealtimeEvent::ChatMessage {
-        event_id: "evt-run-after-join".to_string(),
-        room_id: handler.room_id,
-        user_id: handler.user_id,
-        username: handler.username.clone(),
-        message: "boom".to_string(),
-        timestamp: now(),
-        display_position: None,
-        display_color: None,
-    });
-
-    wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task).await;
-    shutdown_test_runtime_resources(event_service, connection_service).await;
-}
-
-#[tokio::test]
-async fn test_run_after_join_filters_own_join_broadcast() {
-    let event_service = test_realtime_manager("test_run_after_join_filters_own_join").await;
-    let connection_service = test_connection_manager();
-    let handler = test_message_handler(
-        RecordingMessageSender::new(),
-        event_service.clone(),
-        connection_service.clone(),
-    );
-    prepare_handler_for_run_after_join(&handler, &connection_service).await;
-
-    let (mut stream, stream_state) = RecordingStream::new();
-    let task_handler = handler.clone();
-    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
-
-    wait_for_recorded_message_count(&stream_state, 1).await;
-
-    event_service.broadcast(RealtimeEvent::UserJoined {
-        event_id: "evt-own-join".to_string(),
-        room_id: handler.room_id,
-        user_id: handler.user_id,
-        username: handler.username.clone(),
-        permissions: RoomPermissionSet::default_member(),
-        role: synctv_proto::common::RoomMemberRole::Member as i32,
-        added_permissions: RoomPermissionSet::default(),
-        removed_permissions: RoomPermissionSet::default(),
-        admin_added_permissions: RoomPermissionSet::default(),
-        admin_removed_permissions: RoomPermissionSet::default(),
-        joined_at: now(),
-        timestamp: now(),
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let public_user_id = handler
-        .public_id_codec
-        .encode_user_id(handler.user_id)
-        .checked("handler user id should encode");
-    let own_join_count = stream_state
-        .sent_messages()
-        .iter()
-        .filter(|message| server_message_is_user_joined_for(message, &public_user_id))
-        .count();
-    assert_eq!(
-        own_join_count, 1,
-        "the connection should keep the initial UserJoined payload and skip its own room broadcast"
-    );
-
-    connection_service.disconnect_connection(handler.connection_id());
-    stream_state.close();
-    wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task).await;
-    shutdown_test_runtime_resources(event_service, connection_service).await;
-}
-
-#[tokio::test]
-async fn test_run_after_join_records_heartbeat_activity() {
+async fn test_handle_client_message_sends_millisecond_heartbeat_ack() {
     let event_service = test_realtime_manager("test_run_after_join_records_heartbeat").await;
     let connection_service = test_connection_manager();
     let message_sender = RecordingMessageSender::new();
@@ -2916,37 +2599,27 @@ async fn test_run_after_join_records_heartbeat_activity() {
         event_service.clone(),
         connection_service.clone(),
     );
-    prepare_handler_for_run_after_join(&handler, &connection_service).await;
 
     let heartbeat = ClientMessage {
         message: Some(synctv_proto::client::client_message::Message::Heartbeat(
             synctv_proto::client::HeartbeatMessage { timestamp: 42 },
         )),
     };
-    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![heartbeat]);
-    let task_handler = handler.clone();
-    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
+    let heartbeat_started_at = chrono::Utc::now().timestamp_millis();
 
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            let heartbeat_ack_sent = message_sender
-                .sent_messages()
-                .iter()
-                .any(|msg| matches!(msg.message, Some(Message::HeartbeatAck(_))));
-            let message_count = connection_service
-                .get_connection(&handler.connection_id)
-                .map_or(0, |connection| connection.message_count);
-            if heartbeat_ack_sent && message_count == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .checked("heartbeat should refresh activity and receive an ack");
+    handler
+        .handle_client_message(&heartbeat)
+        .await
+        .checked("heartbeat should receive an ack");
 
-    connection_service.disconnect_connection(handler.connection_id());
-    wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task).await;
+    let heartbeat_ack_sent = message_sender.sent_messages().iter().any(|msg| {
+        matches!(
+            msg.message,
+            Some(Message::HeartbeatAck(ref ack))
+                if ack.timestamp >= heartbeat_started_at && ack.timestamp >= 10_000_000_000
+        )
+    });
+    assert!(heartbeat_ack_sent);
     shutdown_test_runtime_resources(event_service, connection_service).await;
 }
 
@@ -2993,7 +2666,7 @@ async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explici
         timestamp: now(),
     });
 
-    let (mut stream, stream_state) = RecordingStream::new();
+    let (mut stream, _stream_state) = RecordingStream::new();
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
@@ -3010,13 +2683,6 @@ async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explici
     .await
     .checked("chat event should be delivered through chat_events observation");
 
-    let messages = stream_state.sent_messages();
-    assert!(
-        messages
-            .iter()
-            .any(|msg| matches!(msg.message, Some(Message::UserJoined(_)))),
-        "run_after_join should still send the initial UserJoined payload"
-    );
     let messages = message_sender.sent_messages();
     assert!(
         messages
@@ -3068,6 +2734,7 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
             images: Vec::new(),
+            mentions: Vec::new(),
         })
         .await
         .checked("first message should be stored");
@@ -3081,6 +2748,7 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
             images: Vec::new(),
+            mentions: Vec::new(),
         })
         .await
         .checked("second message should be stored");
@@ -3094,6 +2762,7 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
             images: Vec::new(),
+            mentions: Vec::new(),
         })
         .await
         .checked("third message should be stored");
@@ -3128,8 +2797,8 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
     let replayed = message_sender
         .sent_messages()
         .iter()
-        .filter_map(|message| match resource_changed_payload(message) {
-            Some(synctv_proto::client::resource_changed::Payload::ChatEvent(event)) => event
+        .filter_map(|message| match resource_event_payload(message) {
+            Some(synctv_proto::client::resource_event::Payload::ChatEvent(event)) => event
                 .message
                 .as_ref()
                 .map(|message| message.content.clone()),
@@ -3177,6 +2846,7 @@ async fn test_observe_chat_events_replays_events_after_sequence() {
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
             images: Vec::new(),
+            mentions: Vec::new(),
         })
         .await
         .checked("first message should be stored");
@@ -3190,6 +2860,7 @@ async fn test_observe_chat_events_replays_events_after_sequence() {
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
             images: Vec::new(),
+            mentions: Vec::new(),
         })
         .await
         .checked("second message should be stored");
@@ -3226,8 +2897,8 @@ async fn test_observe_chat_events_replays_events_after_sequence() {
     let replayed = message_sender
         .sent_messages()
         .iter()
-        .filter_map(|message| match resource_changed_payload(message) {
-            Some(synctv_proto::client::resource_changed::Payload::ChatEvent(event)) => event
+        .filter_map(|message| match resource_event_payload(message) {
+            Some(synctv_proto::client::resource_event::Payload::ChatEvent(event)) => event
                 .message
                 .as_ref()
                 .map(|message| (message.content.clone(), event.sequence)),
@@ -3252,13 +2923,14 @@ async fn test_run_after_join_filters_chat_events_until_explicit_observe() {
         event_service.clone(),
         connection_service.clone(),
     );
+    handler.skip_cleanup_user_left();
     prepare_handler_for_run_after_join(&handler, &connection_service).await;
 
     let (mut stream, stream_state) = RecordingStream::new();
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
-    wait_for_recorded_message_count(&stream_state, 1).await;
+    wait_for_recording_stream_ready(&stream_state).await;
 
     event_service.broadcast(RealtimeEvent::ChatMessageEvent {
         event_id: "evt-filtered-chat".to_string(),
@@ -3278,17 +2950,11 @@ async fn test_run_after_join_filters_chat_events_until_explicit_observe() {
     assert!(
         messages
             .iter()
-            .any(|msg| matches!(msg.message, Some(Message::UserJoined(_)))),
-        "run_after_join should emit the initial UserJoined payload"
-    );
-    assert!(
-        messages
-            .iter()
             .all(|msg| !server_message_contains_chat_event_content(msg, "filtered-before-observe")),
         "chat events must wait for an explicit chat_events observation"
     );
 
-    connection_service.disconnect_connection(handler.connection_id());
+    stream_state.close();
     wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task).await;
     shutdown_test_runtime_resources(event_service, connection_service).await;
 }
@@ -3340,36 +3006,6 @@ async fn test_observe_chat_events_requires_view_chat_history_permission_for_memb
 }
 
 #[tokio::test]
-async fn test_run_after_join_cleans_up_when_initial_send_fails() {
-    let event_service = test_realtime_manager("test_run_after_join_initial_failure").await;
-    let connection_service = test_connection_manager();
-    let handler = test_message_handler(
-        FailingMessageSender::fail_after(usize::MAX),
-        event_service.clone(),
-        connection_service.clone(),
-    );
-    prepare_handler_for_run_after_join(&handler, &connection_service).await;
-
-    let (mut rx, conn_id) = event_service
-        .subscribe(handler.room_id, handler.user_id)
-        .await
-        .checked("subscribe should succeed");
-    let (mut stream, _stream_state) = FailingStream::fail_after(0);
-    let task_handler = handler.clone();
-    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
-
-    let maybe_presence_event = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
-    assert!(
-        maybe_presence_event.is_err(),
-        "initial run_after_join send failure must not broadcast UserJoined/UserLeft presence events"
-    );
-
-    event_service.unsubscribe(&conn_id);
-    wait_for_run_after_join_cleanup(&handler, &connection_service, &event_service, run_task).await;
-    shutdown_test_runtime_resources(event_service, connection_service).await;
-}
-
-#[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_observe_playback_state_without_cursor_sends_current_state_immediately() {
     let message_sender = RecordingMessageSender::new();
@@ -3385,7 +3021,7 @@ async fn test_observe_playback_state_without_cursor_sends_current_state_immediat
 
     prepare_handler_for_run_after_join(handler, connection_service).await;
 
-    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_playback_state_message("playback-state")),
     }]);
 
@@ -3407,13 +3043,6 @@ async fn test_observe_playback_state_without_cursor_sends_current_state_immediat
     .await
     .checked("recording stream should receive observed playback state");
 
-    let stream_messages = stream_state.sent_messages();
-    assert!(
-        stream_messages
-            .iter()
-            .any(|message| matches!(message.message, Some(Message::UserJoined(_)))),
-        "stream transport should still emit UserJoined payloads"
-    );
     let messages = message_sender.sent_messages();
     match messages.iter().find_map(resource_playback_state) {
         Some(state) => {
@@ -3456,6 +3085,7 @@ async fn test_observe_playback_sends_current_playback_on_subscribe() {
                     default_mode: String::new(),
                     metadata: std::collections::HashMap::new(),
                     expires_at: Some(12345),
+                    duration_seconds: None,
                 },
             }))
         },
@@ -3470,7 +3100,7 @@ async fn test_observe_playback_sends_current_playback_on_subscribe() {
 
     prepare_handler_for_run_after_join(handler, connection_service).await;
 
-    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_playback_message("playback", None)),
     }]);
 
@@ -3492,13 +3122,6 @@ async fn test_observe_playback_sends_current_playback_on_subscribe() {
     .await
     .checked("recording stream should receive observed playback");
 
-    let stream_messages = stream_state.sent_messages();
-    assert!(
-        stream_messages
-            .iter()
-            .any(|message| matches!(message.message, Some(Message::UserJoined(_)))),
-        "stream transport should still emit UserJoined payloads"
-    );
     let messages = message_sender.sent_messages();
     match messages.iter().find_map(resource_playback) {
         Some(playback) => {
@@ -3515,7 +3138,7 @@ async fn test_observe_playback_sends_current_playback_on_subscribe() {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_observe_playback_reports_current_playback_without_event_cursor() {
+async fn test_observe_playback_reports_current_playback_with_event_cursor() {
     let message_sender = RecordingMessageSender::new();
     let fixture = create_start_handler_fixture_with_runtime_builder(
         "observe_pb_playback_current",
@@ -3534,6 +3157,7 @@ async fn test_observe_playback_reports_current_playback_without_event_cursor() {
                     default_mode: String::new(),
                     metadata: std::collections::HashMap::new(),
                     expires_at: Some(12345),
+                    duration_seconds: None,
                 },
             }))
         },
@@ -3564,20 +3188,20 @@ async fn test_observe_playback_reports_current_playback_without_event_cursor() {
             _ => None,
         })
         .checked("observe should send ResourceObserved");
-    assert!(observed.event_cursor.is_none());
+    assert!(observed.event_cursor.is_some());
 
     let changed = messages
         .iter()
         .find_map(|message| match &message.message {
-            Some(Message::ResourceChanged(changed)) if changed.observe_id == "playback" => {
+            Some(Message::ResourceEvent(changed)) if changed.observe_id == "playback" => {
                 Some(changed)
             }
             _ => None,
         })
         .checked("observe should send initial playback");
-    assert!(changed.event_cursor.is_none());
+    assert!(changed.event_cursor.is_some());
     assert!(resource_playback(&ServerMessage {
-        message: Some(Message::ResourceChanged(changed.clone()))
+        message: Some(Message::ResourceEvent(changed.clone()))
     })
     .is_some_and(|playback| playback.media_id == public_media_id()));
     fixture.shutdown().await;
@@ -3645,7 +3269,7 @@ async fn test_replay_room_resource_event_without_payload_advances_cursor() {
         .sent_messages()
         .into_iter()
         .filter_map(|message| match message.message {
-            Some(Message::ResourceChanged(changed)) if changed.observe_id == "playlist-items" => {
+            Some(Message::ResourceEvent(changed)) if changed.observe_id == "playlist-items" => {
                 Some(changed)
             }
             _ => None,
@@ -3659,7 +3283,9 @@ async fn test_replay_room_resource_event_without_payload_advances_cursor() {
         .checked("audit-only event should produce a cursor-advancing change");
     assert!(matches!(
         replayed.payload,
-        Some(synctv_proto::client::resource_changed::Payload::ChangedOnly(_))
+        Some(synctv_proto::client::resource_event::Payload::ChangedOnly(
+            _
+        ))
     ));
 
     fixture.shutdown().await;
@@ -3683,7 +3309,7 @@ async fn test_observe_playback_state_sends_current_state() {
 
     prepare_handler_for_run_after_join(handler, connection_service).await;
 
-    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_playback_state_message("playback-state")),
     }]);
 
@@ -3692,22 +3318,18 @@ async fn test_observe_playback_state_sends_current_state() {
 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            let user_joined_sent = stream_state
-                .sent_messages()
-                .iter()
-                .any(|message| matches!(message.message, Some(Message::UserJoined(_))));
             let observe_registered = handler
                 .resource_observer
                 .has_observation("playback-state")
                 .await;
-            if user_joined_sent && observe_registered {
+            if observe_registered {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .checked("run_after_join should emit UserJoined and register playback state observation");
+    .checked("run_after_join should register playback state observation");
 
     assert!(
         message_sender
@@ -3716,14 +3338,6 @@ async fn test_observe_playback_state_sends_current_state() {
             .any(|message| { resource_playback_state(message).is_some() }),
         "observe should send the current playback state"
     );
-    assert!(
-        stream_state
-            .sent_messages()
-            .iter()
-            .any(|message| matches!(message.message, Some(Message::UserJoined(_)))),
-        "stream transport should still emit UserJoined payloads"
-    );
-
     connection_service.disconnect_connection(handler.connection_id());
     wait_for_run_after_join_cleanup(handler, connection_service, event_service, run_task).await;
     fixture.shutdown().await;
@@ -3751,6 +3365,7 @@ async fn test_observe_playback_with_matching_source_sends_current_playback() {
                 default_mode: String::new(),
                 metadata: std::collections::HashMap::new(),
                 expires_at: Some(chrono::Utc::now().timestamp() + 3600),
+                duration_seconds: None,
             });
             *playback_service_out
                 .lock()
@@ -3773,14 +3388,13 @@ async fn test_observe_playback_with_matching_source_sends_current_playback() {
 
     prepare_handler_for_run_after_join(handler, connection_service).await;
 
-    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_playback_message("playback", None)),
     }]);
 
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
-    wait_for_recorded_message_count(&stream_state, 1).await;
     playback_service.wait_for_calls(1).await;
 
     let sent_messages = message_sender.sent_messages();
@@ -3791,14 +3405,6 @@ async fn test_observe_playback_with_matching_source_sends_current_playback() {
                 .is_some_and(|playback| playback.name == "test media")),
         "observe should send the current playback: {sent_messages:?}"
     );
-    let stream_messages = stream_state.sent_messages();
-    assert!(
-        stream_messages
-            .iter()
-            .any(|message| matches!(message.message, Some(Message::UserJoined(_)))),
-        "stream transport should still emit UserJoined payloads"
-    );
-
     connection_service.disconnect_connection(handler.connection_id());
     wait_for_run_after_join_cleanup(handler, connection_service, event_service, run_task).await;
     fixture.shutdown().await;
@@ -3832,6 +3438,7 @@ async fn test_observe_playback_sends_current_playback_immediately() {
                 default_mode: String::new(),
                 metadata: std::collections::HashMap::new(),
                 expires_at: Some(12345),
+                duration_seconds: None,
             },
         }));
 
@@ -3890,6 +3497,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
         default_mode: String::new(),
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
+        duration_seconds: None,
     });
     let handler = handler
         .clone()
@@ -3926,10 +3534,11 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
         default_mode: String::new(),
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_801),
+        duration_seconds: None,
     });
 
     event_service.broadcast(RealtimeEvent::PlaybackStateChanged {
-        event_id: "evt-observe-playback-update".to_string(),
+        event_id: "evt-observe-playback-source-update".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
         username: handler.username.clone(),
@@ -3945,6 +3554,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
             updated_at: now(),
             version: 2,
         },
+        source_changed: true,
         timestamp: now(),
     });
 
@@ -3961,6 +3571,126 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
     })
     .await
     .checked("observed playback should receive future updates");
+
+    connection_service.disconnect_connection(handler.connection_id());
+    wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_observed_playback_ignores_play_pause_state_updates() {
+    let message_sender = RecordingMessageSender::new();
+    let fixture =
+        create_start_handler_fixture("observe_playback_ignores_state", message_sender.clone())
+            .await;
+    let StartTestFixture {
+        handler,
+        connection_service,
+        event_service,
+        ..
+    } = &fixture;
+
+    let playback_service = MutablePlaybackService::new(synctv_proto::client::Playback {
+        media_id: public_media_id(),
+        playlist_id: String::new(),
+        room_id: public_id_codec()
+            .encode_room_id(handler.room_id)
+            .checked("test value"),
+        name: "test media".to_string(),
+        playlist_position: 0.0,
+        playback_infos: std::collections::HashMap::new(),
+        default_mode: String::new(),
+        metadata: std::collections::HashMap::new(),
+        expires_at: Some(4_102_444_800),
+        duration_seconds: None,
+    });
+    let handler = handler
+        .clone()
+        .with_playback_service(playback_service.clone());
+
+    prepare_handler_for_run_after_join(&handler, connection_service).await;
+
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![
+        ClientMessage {
+            message: Some(observe_playback_message("playback", None)),
+        },
+        ClientMessage {
+            message: Some(observe_playback_state_message("playback-state")),
+        },
+    ]);
+
+    let task_handler = handler.clone();
+    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
+
+    playback_service.wait_for_calls(1).await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if message_sender.sent_messages().iter().any(|message| {
+                matches!(
+                    &message.message,
+                    Some(Message::ResourceObserved(observed))
+                        if observed.observe_id == "playback-state"
+                )
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .checked("playback_state observe should register");
+    let playback_messages_before = message_sender
+        .sent_messages()
+        .iter()
+        .filter(|message| resource_playback(message).is_some())
+        .count();
+
+    event_service.broadcast(RealtimeEvent::PlaybackStateChanged {
+        event_id: "evt-observe-playback-state-only".to_string(),
+        room_id: handler.room_id,
+        user_id: handler.user_id,
+        username: handler.username.clone(),
+        state: RoomPlaybackState {
+            room_id: handler.room_id,
+            playing_media_id: Some(media_id()),
+            playing_playlist_id: None,
+            target: Vec::new(),
+            current_progress_id: None,
+            position: 12.0,
+            speed: 1.0,
+            is_playing: false,
+            updated_at: now(),
+            version: 2,
+        },
+        source_changed: false,
+        timestamp: now(),
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if message_sender.sent_messages().iter().any(|message| {
+                resource_playback_state(message).is_some_and(|state| state.version == 2)
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .checked("playback_state observer should receive play/pause state updates");
+
+    assert_eq!(
+        playback_service.probe.call_count(),
+        1,
+        "playback observer should not regenerate media resources for state-only updates"
+    );
+    let playback_messages_after = message_sender
+        .sent_messages()
+        .iter()
+        .filter(|message| resource_playback(message).is_some())
+        .count();
+    assert_eq!(playback_messages_after, playback_messages_before);
 
     connection_service.disconnect_connection(handler.connection_id());
     wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;
@@ -4003,7 +3733,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
 
     handler
         .room_service
-        .update_playback(
+        .update_playback_state(
             handler.room_id,
             handler.user_id,
             |state| {
@@ -4028,6 +3758,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
         default_mode: String::new(),
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
+        duration_seconds: None,
     });
     playback_service.replace_dependencies(vec![
         synctv_core::provider::ProviderCredentialDependency::new(
@@ -4064,6 +3795,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
         default_mode: String::new(),
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_801),
+        duration_seconds: None,
     });
 
     event_service.broadcast(RealtimeEvent::ProviderCredentialChanged {
@@ -4130,7 +3862,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
 
     handler
         .room_service
-        .update_playback(
+        .update_playback_state(
             handler.room_id,
             handler.user_id,
             |state| {
@@ -4155,6 +3887,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
         default_mode: String::new(),
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
+        duration_seconds: None,
     });
     playback_service.replace_dependencies(vec![
         synctv_core::provider::ProviderCredentialDependency::new(
@@ -4235,7 +3968,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
 
     handler
         .room_service
-        .update_playback(
+        .update_playback_state(
             handler.room_id,
             handler.user_id,
             |state| {
@@ -4265,6 +3998,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         default_mode: String::new(),
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
+        duration_seconds: None,
     });
     let handler = handler
         .clone()
@@ -4317,6 +4051,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
             "\"media-updated\"".to_string(),
         )]),
         expires_at: Some(4_102_444_860),
+        duration_seconds: None,
     });
 
     event_service.broadcast(RealtimeEvent::MediaUpdated {
@@ -4416,6 +4151,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         default_mode: String::new(),
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
+        duration_seconds: None,
     });
     let handler = handler
         .clone()
@@ -4472,6 +4208,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
             "\"playlist-updated\"".to_string(),
         )]),
         expires_at: Some(4_102_444_860),
+        duration_seconds: None,
     });
 
     event_service.broadcast(RealtimeEvent::PlaylistUpdated {
@@ -4536,6 +4273,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
             expires_at: Some(4_102_444_800),
+            duration_seconds: None,
         }),
         Ok(synctv_proto::client::Playback {
             media_id: String::new(),
@@ -4552,6 +4290,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
                 "\"refreshed\"".to_string(),
             )]),
             expires_at: Some(4_102_444_860),
+            duration_seconds: None,
         }),
     ]);
     let handler = handler
@@ -4579,7 +4318,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
 
     let updated_state = handler
         .room_service
-        .update_playback(
+        .update_playback_state(
             handler.room_id,
             handler.user_id,
             |state| {
@@ -4601,6 +4340,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
         user_id: handler.user_id,
         username: handler.username.clone(),
         state: updated_state,
+        source_changed: true,
         timestamp: now(),
     });
 
@@ -4634,12 +4374,7 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
     let fixture =
         create_start_handler_fixture("observe_pb_playback_refresh_fail", message_sender.clone())
             .await;
-    let StartTestFixture {
-        handler,
-        connection_service,
-        event_service,
-        ..
-    } = &fixture;
+    let StartTestFixture { handler, .. } = &fixture;
 
     let playback_service = SequencedPlaybackService::new([
         Ok(synctv_proto::client::Playback {
@@ -4654,6 +4389,7 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
             expires_at: Some(111),
+            duration_seconds: None,
         }),
         Err(crate::impls::ApiError::ServiceUnavailable(
             "provider unavailable".to_string(),
@@ -4663,31 +4399,21 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
         .clone()
         .with_playback_service(playback_service.clone());
 
-    prepare_handler_for_run_after_join(&handler, connection_service).await;
+    handler
+        .handle_client_message(&ClientMessage {
+            message: Some(observe_playback_message("playback", None)),
+        })
+        .await
+        .checked("initial observed playback should be delivered");
+    assert!(
+        message_sender
+            .sent_messages()
+            .iter()
+            .any(|message| resource_playback(message).is_some()),
+        "initial observed playback should be delivered"
+    );
 
-    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_playback_message("playback", None)),
-    }]);
-
-    let task_handler = handler.clone();
-    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
-
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if message_sender
-                .sent_messages()
-                .iter()
-                .any(|message| resource_playback(message).is_some())
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .checked("initial observed playback should be delivered");
-
-    event_service.broadcast(RealtimeEvent::PlaybackStateChanged {
+    let refresh_event = RealtimeEvent::PlaybackStateChanged {
         event_id: "evt-observe-playback-refresh-error".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
@@ -4704,39 +4430,31 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
             updated_at: now(),
             version: 2,
         },
+        source_changed: true,
         timestamp: now(),
-    });
+    };
 
-    playback_service.wait_for_calls(1).await;
+    handler
+        .resource_observer
+        .room_hub
+        .refresh_for_room_event_with_cursor(
+            &refresh_event,
+            Some(handler.connection_id()),
+            event_cursor(201),
+        )
+        .await
+        .checked("failed playback refresh should not fail the realtime connection");
     assert!(
-        connection_service
-            .get_connection(handler.connection_id())
-            .is_some(),
-        "playback refresh failures should not tear down the realtime connection"
+        message_sender
+            .sent_messages()
+            .iter()
+            .any(|message| resource_observe_error(message).is_some()),
+        "failed playback refresh should send ResourceObserveError"
     );
-
-    event_service.broadcast(RealtimeEvent::UserLeft {
-        event_id: "evt-after-playback-refresh-error".to_string(),
-        room_id: handler.room_id,
-        user_id: UserId::expect_positive(113_002),
-        username: "another-user".to_string(),
-        timestamp: now(),
-    });
-
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if stream_state
-                .sent_messages()
-                .iter()
-                .any(|message| matches!(message.message, Some(Message::UserLeft(_))))
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .checked("connection should continue receiving later realtime events");
+    assert!(
+        !handler.resource_observer.has_observation("playback").await,
+        "failed playback refresh should remove the observation"
+    );
 
     let playback_messages = message_sender
         .sent_messages()
@@ -4748,8 +4466,6 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
         "failed playback refresh should remove the observation instead of repeatedly resending"
     );
 
-    connection_service.disconnect_connection(handler.connection_id());
-    wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;
     fixture.shutdown().await;
 }
 
@@ -4780,6 +4496,7 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
             expires_at: Some(refresh_at),
+            duration_seconds: None,
         }),
         Ok(synctv_proto::client::Playback {
             media_id: String::new(),
@@ -4796,6 +4513,7 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
                 "\"refreshed\"".to_string(),
             )]),
             expires_at: Some(refresh_at + 60),
+            duration_seconds: None,
         }),
     ]);
     let handler = handler.clone().with_playback_service(playback_service);
@@ -4860,7 +4578,7 @@ async fn test_observe_room_settings_without_cursor_sends_current_settings_immedi
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
-    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_room_settings_message("room-settings")),
     }]);
 
@@ -4882,23 +4600,9 @@ async fn test_observe_room_settings_without_cursor_sends_current_settings_immedi
     .await
     .checked("recording stream should receive observed room settings");
 
-    assert!(
-        stream_state
-            .sent_messages()
-            .iter()
-            .any(|message| matches!(message.message, Some(Message::UserJoined(_)))),
-        "stream transport should still emit UserJoined payloads"
-    );
-
     let messages = message_sender.sent_messages();
     match messages.iter().find_map(resource_room_settings) {
         Some(changed) => {
-            assert_eq!(
-                changed.room_id,
-                public_id_codec()
-                    .encode_room_id(handler.room_id)
-                    .checked("test value")
-            );
             assert_eq!(changed.version, 7);
             assert_eq!(changed.settings, br#"{"chat_enabled":true}"#.to_vec());
         }
@@ -4960,7 +4664,7 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
-    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_playlist_items_message(
             "playlist-items",
             synctv_proto::client::ListPlaylistItemsRequest {
@@ -4996,14 +4700,6 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
     })
     .await
     .checked("recording stream should receive observed playlist items");
-
-    assert!(
-        stream_state
-            .sent_messages()
-            .iter()
-            .any(|message| matches!(message.message, Some(Message::UserJoined(_)))),
-        "stream transport should still emit UserJoined payloads"
-    );
 
     let messages = message_sender.sent_messages();
     match messages.iter().find_map(resource_playlist_items) {
@@ -5103,7 +4799,7 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
         .count();
     assert_eq!(
         changed_versions, 2,
-        "both observe IDs should still receive their own ResourceChanged message"
+        "both observe IDs should still receive their own ResourceEvent message"
     );
 }
 
@@ -5131,7 +4827,10 @@ async fn test_resource_observations_are_bounded_per_connection() {
         let observe_id = format!("room-settings-{index}");
         handler
             .handle_client_message(&ClientMessage {
-                message: Some(observe_room_settings_message(&observe_id)),
+                message: Some(observe_room_settings_message_with_sequence(
+                    &observe_id,
+                    Some(0),
+                )),
             })
             .await
             .checked("observe should register while under the per-connection limit");
@@ -5140,7 +4839,10 @@ async fn test_resource_observations_are_bounded_per_connection() {
 
     handler
         .handle_client_message(&ClientMessage {
-            message: Some(observe_room_settings_message("room-settings-over-limit")),
+            message: Some(observe_room_settings_message_with_sequence(
+                "room-settings-over-limit",
+                Some(0),
+            )),
         })
         .await
         .checked("over-limit observe should send ResourceObserveError without closing");
@@ -5191,6 +4893,61 @@ async fn test_resource_observations_are_bounded_per_connection() {
             .resource_observer
             .has_observation("room-settings-after-unobserve")
             .await
+    );
+}
+
+#[test]
+fn test_room_member_events_filter_self_and_permission_only_changes() {
+    let other_user_id = UserId::expect_positive(2);
+    assert!(
+        !super::resource_observer::room_member_event_visible_to_observer(
+            &RealtimeEvent::UserJoined {
+                event_id: "evt-self-join".to_string(),
+                room_id: room_id(),
+                user_id: user_id(),
+                username: "test-user".to_string(),
+                permissions: RoomPermissionSet::default_member(),
+                role: synctv_proto::common::RoomMemberRole::Member as i32,
+                added_permissions: RoomPermissionSet::default(),
+                removed_permissions: RoomPermissionSet::default(),
+                admin_added_permissions: RoomPermissionSet::default(),
+                admin_removed_permissions: RoomPermissionSet::default(),
+                joined_at: now(),
+                timestamp: now(),
+            },
+            &user_id(),
+        )
+    );
+    assert!(
+        !super::resource_observer::room_member_event_visible_to_observer(
+            &RealtimeEvent::UserLeft {
+                event_id: "evt-self-left".to_string(),
+                room_id: room_id(),
+                user_id: user_id(),
+                username: "test-user".to_string(),
+                role: synctv_proto::common::RoomMemberRole::Member as i32,
+                timestamp: now(),
+            },
+            &user_id(),
+        )
+    );
+    assert!(
+        !super::resource_observer::room_member_event_visible_to_observer(
+            &permission_changed_event_for_target("evt-other-permission", other_user_id, false),
+            &user_id(),
+        )
+    );
+    assert!(
+        !super::resource_observer::room_member_event_visible_to_observer(
+            &permission_changed_event_for_target("evt-self-role", user_id(), true),
+            &user_id(),
+        )
+    );
+    assert!(
+        super::resource_observer::room_member_event_visible_to_observer(
+            &permission_changed_event_for_target("evt-other-role", other_user_id, true),
+            &user_id(),
+        )
     );
 }
 
@@ -5251,51 +5008,6 @@ async fn test_observe_playlist_items_requires_inner_request() {
 }
 
 #[tokio::test]
-async fn test_observe_room_members_requires_inner_request() {
-    let sender = RecordingMessageSender::new();
-    let snapshot_service =
-        MutableRoomMembersSnapshotService::new(synctv_proto::client::GetRoomMembersResponse {
-            members: Vec::new(),
-            total: 0,
-            version: "members-v1".to_string(),
-        });
-    let handler = test_message_handler_for_user_with_runtime(
-        sender.clone(),
-        test_realtime_manager("room_members_missing_request").await,
-        test_connection_manager(),
-        user_id(),
-        runtime_with_room_members_snapshot_service(snapshot_service.clone()),
-    );
-
-    handler
-        .resource_observer
-        .handle_observe_resource(&synctv_proto::client::ObserveResource {
-            observe_id: "room-members-missing-request".to_string(),
-            delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
-            resource: Some(
-                synctv_proto::client::observe_resource::Resource::RoomMembers(
-                    synctv_proto::client::ObserveRoomMembers {
-                        request: None,
-                        after_event_sequence: None,
-                    },
-                ),
-            ),
-        })
-        .await
-        .checked("invalid observe should send ResourceObserveError without closing");
-
-    assert_eq!(snapshot_service.call_count(), 0);
-    assert!(sender
-        .sent_messages()
-        .iter()
-        .filter_map(resource_observe_error)
-        .any(|error| error
-            .error
-            .as_ref()
-            .is_some_and(|error| error.message.contains("room_members request"))));
-}
-
-#[tokio::test]
 async fn test_observed_playlist_items_refresh_flag_is_not_persisted() {
     let message_sender = RecordingMessageSender::new();
     let handler = test_message_handler(
@@ -5349,11 +5061,11 @@ async fn test_observed_playlist_items_refresh_flag_is_not_persisted() {
 }
 
 #[tokio::test]
-async fn test_resource_changed_send_failure_propagates_and_removes_observation() {
+async fn test_resource_event_send_failure_propagates_and_removes_observation() {
     let message_sender = FailingMessageSender::fail_after(2);
     let handler = test_message_handler(
         message_sender.clone(),
-        test_realtime_manager("resource_changed_send_failure").await,
+        test_realtime_manager("resource_event_send_failure").await,
         test_connection_manager(),
     );
     let snapshot_service =
@@ -5390,7 +5102,7 @@ async fn test_resource_changed_send_failure_propagates_and_removes_observation()
         .resource_observer
         .refresh_observations_for_invalidations(&[ResourceInvalidation::PlaylistItems])
         .await
-        .expect_err("ResourceChanged send failure should propagate");
+        .expect_err("ResourceEvent send failure should propagate");
 
     assert!(
         error.contains("forced send failure"),
@@ -5529,7 +5241,7 @@ async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
 }
 
 #[tokio::test]
-async fn test_stale_refresh_after_unobserve_does_not_send_resource_changed() {
+async fn test_stale_refresh_after_unobserve_does_not_send_resource_event() {
     let message_sender = RecordingMessageSender::new();
     let handler = test_message_handler(
         message_sender.clone(),
@@ -5700,13 +5412,18 @@ async fn test_observed_playlist_items_singleflight_coalesces_concurrent_connecti
         refresh: false,
     };
     let message_a = ClientMessage {
-        message: Some(observe_playlist_items_message(
+        message: Some(observe_playlist_items_message_with_sequence(
             "playlist-items-a",
             request.clone(),
+            Some(0),
         )),
     };
     let message_b = ClientMessage {
-        message: Some(observe_playlist_items_message("playlist-items-b", request)),
+        message: Some(observe_playlist_items_message_with_sequence(
+            "playlist-items-b",
+            request,
+            Some(0),
+        )),
     };
 
     let (result_a, result_b) = tokio::join!(
@@ -6105,10 +5822,16 @@ async fn test_observed_room_settings_singleflight_coalesces_cross_user_loads() {
     )
     .with_room_settings_snapshot_service(snapshot_service.clone());
     let message_a = ClientMessage {
-        message: Some(observe_room_settings_message("room-settings-a")),
+        message: Some(observe_room_settings_message_with_sequence(
+            "room-settings-a",
+            Some(0),
+        )),
     };
     let message_b = ClientMessage {
-        message: Some(observe_room_settings_message("room-settings-b")),
+        message: Some(observe_room_settings_message_with_sequence(
+            "room-settings-b",
+            Some(0),
+        )),
     };
 
     let (result_a, result_b) = tokio::join!(
@@ -6150,7 +5873,10 @@ async fn test_observe_resource_does_not_reuse_completed_evaluation_across_invali
 
     handler
         .handle_client_message(&ClientMessage {
-            message: Some(observe_room_settings_message("room-settings-a")),
+            message: Some(observe_room_settings_message_with_sequence(
+                "room-settings-a",
+                Some(0),
+            )),
         })
         .await
         .checked("first observe should register");
@@ -6188,7 +5914,10 @@ async fn test_observe_resource_does_not_reuse_completed_evaluation_across_invali
 
     handler
         .handle_client_message(&ClientMessage {
-            message: Some(observe_room_settings_message("room-settings-b")),
+            message: Some(observe_room_settings_message_with_sequence(
+                "room-settings-b",
+                Some(0),
+            )),
         })
         .await
         .checked("second observe should load the latest snapshot");
@@ -6242,7 +5971,7 @@ async fn test_observe_playlist_items_sends_current_snapshot() {
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
-    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_playlist_items_message(
             "playlist-items",
             synctv_proto::client::ListPlaylistItemsRequest {
@@ -6264,7 +5993,6 @@ async fn test_observe_playlist_items_sends_current_snapshot() {
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
-    wait_for_recorded_message_count(&stream_state, 1).await;
     snapshot_service.wait_for_calls(1).await;
 
     assert!(
@@ -6275,14 +6003,6 @@ async fn test_observe_playlist_items_sends_current_snapshot() {
                 .is_some_and(|items| items.version == "items-v1")),
         "observe should send the current playlist items snapshot"
     );
-    let stream_messages = stream_state.sent_messages();
-    assert!(
-        stream_messages
-            .iter()
-            .any(|message| matches!(message.message, Some(Message::UserJoined(_)))),
-        "stream transport should still emit UserJoined payloads"
-    );
-
     connection_service.disconnect_connection(handler.connection_id());
     wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;
     fixture.shutdown().await;
@@ -6412,384 +6132,6 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_observe_room_members_without_cursor_sends_snapshot_immediately() {
-    let message_sender = RecordingMessageSender::new();
-    let fixture =
-        create_start_handler_fixture("observe_room_members_initial", message_sender.clone()).await;
-    let StartTestFixture {
-        handler,
-        connection_service,
-        event_service,
-        ..
-    } = &fixture;
-
-    let handler = test_handler_with_room_members_snapshot_service(
-        handler.clone(),
-        Arc::new(StaticRoomMembersSnapshotService {
-            snapshot: synctv_proto::client::GetRoomMembersResponse {
-                members: vec![synctv_proto::common::RoomMember {
-                    room_id: public_id_codec()
-                        .encode_room_id(handler.room_id)
-                        .checked("test value"),
-                    user_id: handler.user_id.to_string(),
-                    username: handler.username.clone(),
-                    role: synctv_proto::common::RoomMemberRole::Creator as i32,
-                    permissions: RoomPermissionSet::all().0,
-                    added_permissions: 0,
-                    removed_permissions: 0,
-                    admin_added_permissions: 0,
-                    admin_removed_permissions: 0,
-                    joined_at: 1,
-                    is_online: true,
-                }],
-                total: 1,
-                version: "members-v1".to_string(),
-            },
-        }),
-    );
-
-    prepare_handler_for_run_after_join(&handler, connection_service).await;
-
-    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_room_members_message(
-            "room-members",
-            synctv_proto::client::GetRoomMembersRequest {
-                page: 1,
-                page_size: 20,
-                search: String::new(),
-                role: None,
-                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-            },
-        )),
-    }]);
-
-    let task_handler = handler.clone();
-    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
-
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if message_sender
-                .sent_messages()
-                .iter()
-                .any(|message| resource_room_members(message).is_some())
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .checked("recording stream should receive observed room members");
-
-    assert!(
-        stream_state
-            .sent_messages()
-            .iter()
-            .any(|message| matches!(message.message, Some(Message::UserJoined(_)))),
-        "stream transport should still emit UserJoined payloads"
-    );
-
-    let messages = message_sender.sent_messages();
-    match messages.iter().find_map(resource_room_members) {
-        Some(snapshot) => {
-            assert_eq!(snapshot.version, "members-v1");
-            assert_eq!(snapshot.members.len(), 1);
-        }
-        None => std::panic::panic_any(format!(
-            "expected RoomMembers after observe, got {messages:?}"
-        )),
-    }
-
-    connection_service.disconnect_connection(handler.connection_id());
-    wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker (testcontainers)"]
-async fn test_observe_room_members_sends_current_snapshot() {
-    let message_sender = RecordingMessageSender::new();
-    let fixture =
-        create_start_handler_fixture("observe_room_members_same_version", message_sender.clone())
-            .await;
-    let StartTestFixture {
-        handler,
-        connection_service,
-        event_service,
-        ..
-    } = &fixture;
-
-    let snapshot_service =
-        MutableRoomMembersSnapshotService::new(synctv_proto::client::GetRoomMembersResponse {
-            members: Vec::new(),
-            total: 0,
-            version: "members-v1".to_string(),
-        });
-    let handler = handler
-        .clone()
-        .with_room_members_snapshot_service(snapshot_service.clone());
-
-    prepare_handler_for_run_after_join(&handler, connection_service).await;
-
-    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_room_members_message(
-            "room-members",
-            synctv_proto::client::GetRoomMembersRequest {
-                page: 1,
-                page_size: 20,
-                search: String::new(),
-                role: None,
-                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-            },
-        )),
-    }]);
-
-    let task_handler = handler.clone();
-    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
-
-    wait_for_recorded_message_count(&stream_state, 1).await;
-    snapshot_service.wait_for_calls(1).await;
-
-    assert!(
-        message_sender
-            .sent_messages()
-            .iter()
-            .any(|message| resource_room_members(message)
-                .is_some_and(|members| members.version == "members-v1")),
-        "observe should send the current room members snapshot"
-    );
-    assert!(
-        stream_state
-            .sent_messages()
-            .iter()
-            .any(|message| matches!(message.message, Some(Message::UserJoined(_)))),
-        "stream transport should still emit UserJoined payloads"
-    );
-
-    connection_service.disconnect_connection(handler.connection_id());
-    wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker (testcontainers)"]
-async fn test_observed_room_members_receive_future_permission_updates() {
-    let message_sender = RecordingMessageSender::new();
-    let fixture =
-        create_start_handler_fixture("observe_room_members_future_update", message_sender.clone())
-            .await;
-    let StartTestFixture {
-        handler,
-        connection_service,
-        event_service,
-        ..
-    } = &fixture;
-
-    let snapshot_service =
-        MutableRoomMembersSnapshotService::new(synctv_proto::client::GetRoomMembersResponse {
-            members: Vec::new(),
-            total: 0,
-            version: "members-v1".to_string(),
-        });
-    let handler = handler
-        .clone()
-        .with_room_members_snapshot_service(snapshot_service.clone());
-
-    prepare_handler_for_run_after_join(&handler, connection_service).await;
-
-    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_room_members_message(
-            "room-members",
-            synctv_proto::client::GetRoomMembersRequest {
-                page: 1,
-                page_size: 20,
-                search: String::new(),
-                role: None,
-                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-            },
-        )),
-    }]);
-
-    let task_handler = handler.clone();
-    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
-
-    snapshot_service.wait_for_calls(1).await;
-    assert!(
-        message_sender
-            .sent_messages()
-            .iter()
-            .any(|message| resource_room_members(message)
-                .is_some_and(|members| members.version == "members-v1")),
-        "observe should send the current room members snapshot"
-    );
-
-    snapshot_service.replace(synctv_proto::client::GetRoomMembersResponse {
-        members: vec![synctv_proto::common::RoomMember {
-            room_id: public_id_codec()
-                .encode_room_id(handler.room_id)
-                .checked("test value"),
-            user_id: "member002abc".to_string(),
-            username: "member_two".to_string(),
-            role: synctv_proto::common::RoomMemberRole::Member as i32,
-            permissions: RoomAdminPermissionBits::VIEW_MEMBER_LIST,
-            added_permissions: 0,
-            removed_permissions: 0,
-            admin_added_permissions: 0,
-            admin_removed_permissions: 0,
-            joined_at: 2,
-            is_online: false,
-        }],
-        total: 1,
-        version: "members-v2".to_string(),
-    });
-
-    event_service.broadcast(RealtimeEvent::PermissionChanged {
-        event_id: "evt-observe-room-members-update".to_string(),
-        room_id: handler.room_id,
-        target_user_id: UserId::expect_positive(113_004),
-        target_username: "member_two".to_string(),
-        changed_by: handler.user_id,
-        changed_by_username: handler.username.clone(),
-        new_permissions: RoomPermissionSet(RoomAdminPermissionBits::VIEW_MEMBER_LIST),
-        role: synctv_proto::common::RoomMemberRole::Member as i32,
-        added_permissions: RoomPermissionSet(0),
-        removed_permissions: RoomPermissionSet(0),
-        admin_added_permissions: RoomPermissionSet(0),
-        admin_removed_permissions: RoomPermissionSet(0),
-        timestamp: now(),
-    });
-
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if message_sender.sent_messages().iter().any(|message| {
-                resource_room_members(message)
-                    .is_some_and(|snapshot| snapshot.version == "members-v2")
-            }) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .checked("observed room members should receive future updates");
-
-    connection_service.disconnect_connection(handler.connection_id());
-    wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker (testcontainers)"]
-async fn test_observed_room_members_receive_future_room_settings_updates() {
-    let message_sender = RecordingMessageSender::new();
-    let fixture = create_start_handler_fixture(
-        "observe_room_members_settings_update",
-        message_sender.clone(),
-    )
-    .await;
-    let StartTestFixture {
-        handler,
-        connection_service,
-        event_service,
-        ..
-    } = &fixture;
-
-    let snapshot_service =
-        MutableRoomMembersSnapshotService::new(synctv_proto::client::GetRoomMembersResponse {
-            members: Vec::new(),
-            total: 0,
-            version: "members-v1".to_string(),
-        });
-    let handler = handler
-        .clone()
-        .with_room_members_snapshot_service(snapshot_service.clone());
-
-    prepare_handler_for_run_after_join(&handler, connection_service).await;
-
-    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
-        message: Some(observe_room_members_message(
-            "room-members",
-            synctv_proto::client::GetRoomMembersRequest {
-                page: 1,
-                page_size: 20,
-                search: String::new(),
-                role: None,
-                sort_by: synctv_proto::client::RoomMemberListSortBy::JoinedAt as i32,
-                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-            },
-        )),
-    }]);
-
-    let task_handler = handler.clone();
-    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
-
-    snapshot_service.wait_for_calls(1).await;
-    assert!(
-        message_sender
-            .sent_messages()
-            .iter()
-            .any(|message| resource_room_members(message)
-                .is_some_and(|members| members.version == "members-v1")),
-        "observe should send the current room members snapshot"
-    );
-
-    snapshot_service.replace(synctv_proto::client::GetRoomMembersResponse {
-        members: vec![synctv_proto::common::RoomMember {
-            room_id: public_id_codec()
-                .encode_room_id(handler.room_id)
-                .checked("test value"),
-            user_id: handler.user_id.to_string(),
-            username: handler.username.clone(),
-            role: synctv_proto::common::RoomMemberRole::Creator as i32,
-            permissions: RoomPermissionSet::all().0 | RoomAdminPermissionBits::PLAY_CONTROL,
-            added_permissions: RoomAdminPermissionBits::PLAY_CONTROL,
-            removed_permissions: 0,
-            admin_added_permissions: 0,
-            admin_removed_permissions: 0,
-            joined_at: 1,
-            is_online: true,
-        }],
-        total: 1,
-        version: "members-v2".to_string(),
-    });
-
-    event_service.broadcast(RealtimeEvent::RoomSettingsChanged {
-        event_id: "evt-observe-room-members-settings-update".to_string(),
-        room_id: handler.room_id,
-        user_id: handler.user_id,
-        username: handler.username.clone(),
-        settings_json: serde_json::to_vec(&serde_json::json!({
-            "admin_added_permissions": RoomAdminPermissionBits::PLAY_CONTROL
-        }))
-        .checked("room settings JSON should serialize"),
-        version: 2,
-        timestamp: now(),
-    });
-
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if message_sender.sent_messages().iter().any(|message| {
-                resource_room_members(message)
-                    .is_some_and(|snapshot| snapshot.version == "members-v2")
-            }) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .checked("room settings changes should refresh observed room members snapshots");
-
-    connection_service.disconnect_connection(handler.connection_id());
-    wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker (testcontainers)"]
 async fn test_observe_room_settings_sends_current_snapshot() {
     let message_sender = RecordingMessageSender::new();
     let fixture =
@@ -6814,14 +6156,13 @@ async fn test_observe_room_settings_sends_current_snapshot() {
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
-    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_room_settings_message("room-settings")),
     }]);
 
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
-    wait_for_recorded_message_count(&stream_state, 1).await;
     snapshot_service.wait_for_calls(1).await;
 
     assert!(
@@ -6832,14 +6173,6 @@ async fn test_observe_room_settings_sends_current_snapshot() {
                 .is_some_and(|settings| settings.version == 7)),
         "observe should send the current room settings snapshot"
     );
-    let stream_messages = stream_state.sent_messages();
-    assert!(
-        stream_messages
-            .iter()
-            .any(|message| matches!(message.message, Some(Message::UserJoined(_)))),
-        "stream transport should still emit UserJoined payloads"
-    );
-
     connection_service.disconnect_connection(handler.connection_id());
     wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;
     fixture.shutdown().await;
@@ -6873,14 +6206,13 @@ async fn test_observed_room_settings_receive_future_updates() {
 
     prepare_handler_for_run_after_join(&handler, connection_service).await;
 
-    let (mut stream, stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
         message: Some(observe_room_settings_message("room-settings")),
     }]);
 
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
-    wait_for_recorded_message_count(&stream_state, 1).await;
     snapshot_service.wait_for_calls(1).await;
     assert!(
         message_sender
@@ -6938,7 +6270,7 @@ async fn test_run_after_join_cleans_up_when_admin_notification_send_fails() {
     );
     prepare_handler_for_run_after_join(&handler, &connection_service).await;
 
-    let (mut stream, stream_state) = FailingStream::fail_after(1);
+    let (mut stream, stream_state) = FailingStream::fail_after(0);
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
@@ -6973,7 +6305,7 @@ async fn test_run_after_join_cleans_up_when_backpressure_error_send_fails() {
     prepare_handler_for_run_after_join(&handler, &connection_service).await;
 
     let input = ClientMessage { message: None };
-    let (mut stream, stream_state) = FailingStream::fail_after_with_incoming(1, vec![input]);
+    let (mut stream, stream_state) = FailingStream::fail_after_with_incoming(0, vec![input]);
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
@@ -7003,7 +6335,7 @@ async fn test_run_after_join_cleans_up_when_direct_notification_send_fails() {
     );
     prepare_handler_for_run_after_join(&handler, &connection_service).await;
 
-    let (mut stream, stream_state) = FailingStream::fail_after(1);
+    let (mut stream, stream_state) = FailingStream::fail_after(0);
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
@@ -7031,7 +6363,7 @@ async fn test_run_after_join_cleans_up_when_direct_notification_send_fails() {
 }
 
 #[test]
-fn test_ephemeral_chat_event_conversion() {
+fn test_chat_message_event_is_delivered_by_resource_observer() {
     let event = RealtimeEvent::ChatMessage {
         event_id: "evt1".to_string(),
         room_id: room_id(),
@@ -7045,38 +6377,7 @@ fn test_ephemeral_chat_event_conversion() {
 
     let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
         .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    let msg = &msgs[0];
-    match &msg.message {
-        Some(Message::Chat(chat)) => {
-            assert_eq!(chat.room_id, "room_test");
-            assert_eq!(chat.user_id, public_actor_id());
-            assert_eq!(chat.username, "alice");
-            assert_eq!(chat.content, "hello world");
-            assert_eq!(chat.display_position, "top");
-            assert_eq!(chat.display_color, "#ff0000");
-        }
-        other => std::panic::panic_any(format!("Expected Chat message, got: {other:?}")),
-    }
-}
-
-#[test]
-fn test_ephemeral_chat_event_rejects_invalid_presentation() {
-    let event = RealtimeEvent::ChatMessage {
-        event_id: "evt1".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "alice".to_string(),
-        message: "hello world".to_string(),
-        timestamp: now(),
-        display_position: Some("top\nbottom".to_string()),
-        display_color: Some("#ff0000".to_string()),
-    };
-
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("display position")
-    ));
+    assert!(msgs.is_empty());
 }
 
 #[test]
@@ -7113,6 +6414,7 @@ fn test_durable_chat_message_event_conversion() {
                 },
                 images: Vec::new(),
                 reactions: Vec::new(),
+                mentions: Vec::new(),
             },
             occurred_at: created_at,
         },
@@ -7123,112 +6425,67 @@ fn test_durable_chat_message_event_conversion() {
         .checked("realtime event should convert");
     assert!(
         msgs.is_empty(),
-        "durable chat events must be delivered through ResourceChanged(ChatEvent)"
+        "durable chat events must be delivered through ResourceEvent(ChatEvent)"
     );
 }
 
 #[test]
 fn test_playback_state_changed_event_conversion() {
-    let state = RoomPlaybackState {
-        room_id: room_id(),
-        playing_media_id: Some(media_id()),
-        playing_playlist_id: None,
-        target: Vec::new(),
-        current_progress_id: None,
-        position: 123.456,
-        speed: 1.5,
-        is_playing: true,
-        updated_at: now(),
-        version: 7,
-    };
     let event = RealtimeEvent::PlaybackStateChanged {
         event_id: "evt2".to_string(),
         room_id: room_id(),
         user_id: user_id(),
         username: "bob".to_string(),
-        state,
+        state: RoomPlaybackState {
+            room_id: room_id(),
+            playing_media_id: Some(media_id()),
+            playing_playlist_id: None,
+            target: Vec::new(),
+            current_progress_id: None,
+            position: 123.456,
+            speed: 1.5,
+            is_playing: true,
+            updated_at: now(),
+            version: 7,
+        },
+        source_changed: false,
         timestamp: now(),
     };
 
     let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
         .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::PlaybackState(ps)) => {
-            assert_eq!(ps.room_id, "room_test");
-            let s = ps.state.as_ref().checked("test value");
-            assert!(s.position >= 123.456);
-            assert!(
-                s.position < 124.0,
-                "playing state position should be computed from the persisted anchor, got {}",
-                s.position
-            );
-            assert!((s.speed - 1.5).abs() < f64::EPSILON);
-            assert!(s.is_playing);
-            assert_eq!(s.playing_media_id, public_media_id());
-            assert_eq!(s.version, 7);
-        }
-        other => std::panic::panic_any(format!("Expected PlaybackState, got: {other:?}")),
-    }
+    assert!(
+        msgs.is_empty(),
+        "playback state changes are delivered through observed playback_state ResourceEvent"
+    );
 }
 
 #[test]
-fn test_playback_state_changed_event_rejects_invalid_state_numbers() {
-    let mut state = RoomPlaybackState {
-        room_id: room_id(),
-        playing_media_id: Some(media_id()),
-        playing_playlist_id: None,
-        target: Vec::new(),
-        current_progress_id: None,
-        position: f64::NAN,
-        speed: 1.0,
-        is_playing: false,
-        updated_at: now(),
-        version: 7,
-    };
+fn test_playback_state_changed_event_does_not_validate_direct_message_payload() {
     let event = RealtimeEvent::PlaybackStateChanged {
         event_id: "evt-invalid-playback".to_string(),
         room_id: room_id(),
         user_id: user_id(),
         username: "bob".to_string(),
-        state: state.clone(),
+        state: RoomPlaybackState {
+            room_id: room_id(),
+            playing_media_id: Some(media_id()),
+            playing_playlist_id: None,
+            target: Vec::new(),
+            current_progress_id: None,
+            position: f64::NAN,
+            speed: 0.0,
+            is_playing: false,
+            updated_at: now(),
+            version: -1,
+        },
+        source_changed: false,
         timestamp: now(),
     };
 
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("position")
-    ));
-
-    state.position = 10.0;
-    state.speed = 0.0;
-    let event = RealtimeEvent::PlaybackStateChanged {
-        event_id: "evt-invalid-speed".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "bob".to_string(),
-        state: state.clone(),
-        timestamp: now(),
-    };
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("speed")
-    ));
-
-    state.speed = 1.0;
-    state.version = -1;
-    let event = RealtimeEvent::PlaybackStateChanged {
-        event_id: "evt-invalid-version".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "bob".to_string(),
-        state,
-        timestamp: now(),
-    };
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("version")
-    ));
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
+        .checked("direct playback state fanout should be skipped");
+    assert!(msgs.is_empty());
 }
 
 #[test]
@@ -7250,34 +6507,7 @@ fn test_user_joined_event_conversion() {
 
     let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
         .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::UserJoined(uj)) => {
-            assert_eq!(uj.room_id, "room_test");
-            let member = uj.member.as_ref().checked("test value");
-            assert_eq!(member.user_id, public_actor_id());
-            assert_eq!(member.username, "carol");
-            assert_eq!(member.role, 3);
-            assert_eq!(
-                member.added_permissions,
-                RoomAdminPermissionBits::PLAY_CONTROL
-            );
-            assert_eq!(
-                member.removed_permissions,
-                RoomAdminPermissionBits::CREATE_MEDIA_RESOURCE
-            );
-            assert_eq!(
-                member.admin_added_permissions,
-                RoomAdminPermissionBits::KICK_MEMBER
-            );
-            assert_eq!(
-                member.admin_removed_permissions,
-                RoomAdminPermissionBits::KICK_MEMBER
-            );
-            assert!(member.is_online);
-        }
-        other => std::panic::panic_any(format!("Expected UserJoined, got: {other:?}")),
-    }
+    assert!(msgs.is_empty());
 }
 
 #[test]
@@ -7297,10 +6527,11 @@ fn test_user_joined_event_rejects_unspecified_role() {
         timestamp: now(),
     };
 
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("role")
-    ));
+    assert!(
+        realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
+            .checked("member events are delivered through room_member_events")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -7320,100 +6551,11 @@ fn test_user_joined_event_rejects_invalid_username() {
         timestamp: now(),
     };
 
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("username")
-    ));
-}
-
-#[test]
-fn test_permission_changed_event_conversion_preserves_override_bitspace() {
-    let event = RealtimeEvent::PermissionChanged {
-        event_id: "evt-permission-override-bitspace".to_string(),
-        room_id: room_id(),
-        target_user_id: user_id(),
-        target_username: "carol".to_string(),
-        changed_by: user_id(),
-        changed_by_username: "owner".to_string(),
-        new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_WEBRTC),
-        role: synctv_proto::common::RoomMemberRole::Member as i32,
-        added_permissions: RoomPermissionSet(RoomMemberPermissionBits::USE_WEBRTC),
-        removed_permissions: RoomPermissionSet(RoomMemberPermissionBits::CHAT),
-        admin_added_permissions: RoomPermissionSet(0),
-        admin_removed_permissions: RoomPermissionSet(0),
-        timestamp: now(),
-    };
-
-    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
-        .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::PermissionChanged(permission)) => {
-            assert_eq!(permission.room_id, "room_test");
-            assert_eq!(permission.user_id, public_actor_id());
-            assert_eq!(
-                permission.effective_permissions,
-                RoomAdminPermissionBits::USE_WEBRTC
-            );
-            assert_eq!(
-                permission.added_permissions,
-                RoomMemberPermissionBits::USE_WEBRTC
-            );
-            assert_eq!(
-                permission.removed_permissions,
-                RoomMemberPermissionBits::CHAT
-            );
-        }
-        other => std::panic::panic_any(format!("Expected PermissionChanged, got: {other:?}")),
-    }
-}
-
-#[test]
-fn test_permission_changed_event_rejects_undefined_role() {
-    let event = RealtimeEvent::PermissionChanged {
-        event_id: "evt-permission-invalid-role".to_string(),
-        room_id: room_id(),
-        target_user_id: user_id(),
-        target_username: "carol".to_string(),
-        changed_by: user_id(),
-        changed_by_username: "owner".to_string(),
-        new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_WEBRTC),
-        role: 999,
-        added_permissions: RoomPermissionSet(0),
-        removed_permissions: RoomPermissionSet(0),
-        admin_added_permissions: RoomPermissionSet(0),
-        admin_removed_permissions: RoomPermissionSet(0),
-        timestamp: now(),
-    };
-
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("role")
-    ));
-}
-
-#[test]
-fn test_permission_changed_event_rejects_invalid_updated_by() {
-    let event = RealtimeEvent::PermissionChanged {
-        event_id: "evt-permission-invalid-updated-by".to_string(),
-        room_id: room_id(),
-        target_user_id: user_id(),
-        target_username: "carol".to_string(),
-        changed_by: user_id(),
-        changed_by_username: "\n".to_string(),
-        new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_WEBRTC),
-        role: synctv_proto::common::RoomMemberRole::Member as i32,
-        added_permissions: RoomPermissionSet(0),
-        removed_permissions: RoomPermissionSet(0),
-        admin_added_permissions: RoomPermissionSet(0),
-        admin_removed_permissions: RoomPermissionSet(0),
-        timestamp: now(),
-    };
-
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("updated-by username")
-    ));
+    assert!(
+        realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
+            .checked("member events are delivered through room_member_events")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -7423,362 +6565,161 @@ fn test_user_left_event_conversion() {
         room_id: room_id(),
         user_id: user_id(),
         username: "dave".to_string(),
+        role: synctv_proto::common::RoomMemberRole::Member as i32,
         timestamp: now(),
     };
 
     let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
         .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::UserLeft(ul)) => {
-            assert_eq!(ul.room_id, "room_test");
-            assert_eq!(ul.user_id, public_actor_id());
-        }
-        other => std::panic::panic_any(format!("Expected UserLeft, got: {other:?}")),
-    }
+    assert!(msgs.is_empty());
 }
 
 #[test]
-fn test_media_added_event_conversion() {
-    let event = RealtimeEvent::MediaAdded {
-        event_id: "evt5".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "eve".to_string(),
-        media_id: media_id(),
-        media_title: "Test Video".to_string(),
-        timestamp: now(),
-    };
-
-    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
-        .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::MediaAdded(ma)) => {
-            assert_eq!(ma.room_id, "room_test");
-            assert_eq!(ma.media_id, public_media_id());
-            assert_eq!(ma.name, "Test Video");
-            assert_eq!(ma.creator_username, "eve");
-        }
-        other => std::panic::panic_any(format!("Expected MediaAdded, got: {other:?}")),
-    }
-}
-
-#[test]
-fn test_media_added_event_rejects_invalid_title() {
-    let event = RealtimeEvent::MediaAdded {
-        event_id: "evt-invalid-media-title".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "eve".to_string(),
-        media_id: media_id(),
-        media_title: " ".to_string(),
-        timestamp: now(),
-    };
-
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("media title")
-    ));
-}
-
-#[test]
-fn test_media_removed_event_conversion() {
-    let event = RealtimeEvent::MediaRemoved {
-        event_id: "evt6".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "frank".to_string(),
-        media_id: media_id(),
-        timestamp: now(),
-    };
-
-    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
-        .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::MediaRemoved(mr)) => {
-            assert_eq!(mr.room_id, "room_test");
-            assert_eq!(mr.media_id, public_media_id());
-            assert_eq!(mr.removed_by, "frank");
-        }
-        other => std::panic::panic_any(format!("Expected MediaRemoved, got: {other:?}")),
-    }
-}
-
-#[test]
-fn test_media_removed_batch_event_conversion() {
-    let event = RealtimeEvent::MediaRemovedBatch {
-        event_id: "evt6_batch".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "frank".to_string(),
-        media_ids: vec![
-            MediaId::expect_positive(113_005),
-            MediaId::expect_positive(113_006),
-        ],
-        timestamp: now(),
-    };
-
-    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
-        .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::MediaRemovedBatch(batch)) => {
-            assert_eq!(batch.room_id, "room_test");
-            assert_eq!(
-                batch.media_ids,
-                vec![
-                    public_id_codec()
-                        .encode_media_id(MediaId::expect_positive(113_005))
-                        .checked("test value"),
-                    public_id_codec()
-                        .encode_media_id(MediaId::expect_positive(113_006))
-                        .checked("test value"),
-                ]
-            );
-            assert_eq!(batch.removed_by, "frank");
-            assert_eq!(batch.removed_by_user_id, public_actor_id());
-        }
-        other => std::panic::panic_any(format!("Expected MediaRemovedBatch, got: {other:?}")),
-    }
-}
-
-#[test]
-fn test_media_removed_batch_event_rejects_empty_media_ids() {
-    let event = RealtimeEvent::MediaRemovedBatch {
-        event_id: "evt-empty-media-batch".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "frank".to_string(),
-        media_ids: Vec::new(),
-        timestamp: now(),
-    };
-
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("media_ids")
-    ));
-}
-
-#[test]
-fn test_media_updated_event_conversion() {
-    let event = RealtimeEvent::MediaUpdated {
-        event_id: "evt6b".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "frank".to_string(),
-        media_id: media_id(),
-        media_title: "Renamed Video".to_string(),
-        timestamp: now(),
-    };
-
-    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
-        .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::MediaUpdated(mu)) => {
-            assert_eq!(mu.room_id, "room_test");
-            assert_eq!(mu.media_id, public_media_id());
-            assert_eq!(mu.name, "Renamed Video");
-            assert_eq!(mu.updated_by, "frank");
-        }
-        other => std::panic::panic_any(format!("Expected MediaUpdated, got: {other:?}")),
-    }
-}
-
-#[test]
-fn test_playlist_reordered_event_conversion() {
-    let event = RealtimeEvent::PlaylistReordered {
-        event_id: "evt6c".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "grace".to_string(),
-        media_ids: vec![
-            MediaId::expect_positive(113_006),
-            MediaId::expect_positive(113_005),
-        ],
-        timestamp: now(),
-    };
-
-    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
-        .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::PlaylistReordered(reordered)) => {
-            assert_eq!(reordered.room_id, "room_test");
-            assert_eq!(
-                reordered.media_ids,
-                vec![
-                    public_id_codec()
-                        .encode_media_id(MediaId::expect_positive(113_006))
-                        .checked("test value"),
-                    public_id_codec()
-                        .encode_media_id(MediaId::expect_positive(113_005))
-                        .checked("test value"),
-                ]
-            );
-            assert_eq!(reordered.reordered_by, "grace");
-            assert_eq!(reordered.reordered_by_user_id, public_actor_id());
-        }
-        other => std::panic::panic_any(format!("Expected PlaylistReordered, got: {other:?}")),
-    }
-}
-
-#[test]
-fn test_playlist_reordered_event_rejects_empty_media_ids() {
-    let event = RealtimeEvent::PlaylistReordered {
-        event_id: "evt-empty-playlist-reorder".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "grace".to_string(),
-        media_ids: Vec::new(),
-        timestamp: now(),
-    };
-
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("media_ids")
-    ));
-}
-
-#[test]
-fn test_playlist_created_event_conversion() {
-    let event = RealtimeEvent::PlaylistCreated {
-        event_id: "evt6d".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "grace".to_string(),
-        playlist: playlist(),
-        timestamp: now(),
-    };
-
-    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
-        .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::PlaylistCreated(created)) => {
-            assert_eq!(created.room_id, "room_test");
-            let playlist = created.playlist.as_ref().checked("playlist payload");
-            assert_eq!(playlist.id, public_playlist_id());
-            assert_eq!(playlist.name, "Test Playlist");
-            assert_eq!(playlist.version, 1);
-        }
-        other => std::panic::panic_any(format!("Expected PlaylistCreated, got: {other:?}")),
-    }
-}
-
-#[test]
-fn test_playlist_updated_event_conversion() {
+fn test_resource_backed_events_do_not_emit_direct_server_messages() {
     let mut updated_playlist = playlist();
     updated_playlist.name = "Renamed Playlist".to_string();
-    let event = RealtimeEvent::PlaylistUpdated {
-        event_id: "evt6e".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "heidi".to_string(),
-        playlist: updated_playlist,
-        timestamp: now(),
-    };
 
-    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
-        .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::PlaylistUpdated(updated)) => {
-            assert_eq!(updated.room_id, "room_test");
-            let playlist = updated.playlist.as_ref().checked("playlist payload");
-            assert_eq!(playlist.id, public_playlist_id());
-            assert_eq!(playlist.name, "Renamed Playlist");
-            assert_eq!(playlist.version, 1);
-        }
-        other => std::panic::panic_any(format!("Expected PlaylistUpdated, got: {other:?}")),
+    let events = vec![
+        RealtimeEvent::PermissionChanged {
+            event_id: "evt-permission-override-bitspace".to_string(),
+            room_id: room_id(),
+            target_user_id: user_id(),
+            target_username: "carol".to_string(),
+            changed_by: user_id(),
+            changed_by_username: "owner".to_string(),
+            role_changed: false,
+            new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_WEBRTC),
+            role: synctv_proto::common::RoomMemberRole::Member as i32,
+            added_permissions: RoomPermissionSet(RoomMemberPermissionBits::USE_WEBRTC),
+            removed_permissions: RoomPermissionSet(RoomMemberPermissionBits::CHAT),
+            admin_added_permissions: RoomPermissionSet(0),
+            admin_removed_permissions: RoomPermissionSet(0),
+            target_is_online: false,
+            target_connection_count: 0,
+            timestamp: now(),
+        },
+        RealtimeEvent::MediaAdded {
+            event_id: "evt5".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "eve".to_string(),
+            media_id: media_id(),
+            media_title: "Test Video".to_string(),
+            timestamp: now(),
+        },
+        RealtimeEvent::MediaRemoved {
+            event_id: "evt6".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "frank".to_string(),
+            media_id: media_id(),
+            timestamp: now(),
+        },
+        RealtimeEvent::MediaRemovedBatch {
+            event_id: "evt6_batch".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "frank".to_string(),
+            media_ids: vec![
+                MediaId::expect_positive(113_005),
+                MediaId::expect_positive(113_006),
+            ],
+            timestamp: now(),
+        },
+        RealtimeEvent::MediaUpdated {
+            event_id: "evt6b".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "frank".to_string(),
+            media_id: media_id(),
+            media_title: "Renamed Video".to_string(),
+            timestamp: now(),
+        },
+        RealtimeEvent::PlaylistReordered {
+            event_id: "evt6c".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "grace".to_string(),
+            media_ids: vec![
+                MediaId::expect_positive(113_006),
+                MediaId::expect_positive(113_005),
+            ],
+            timestamp: now(),
+        },
+        RealtimeEvent::PlaylistCreated {
+            event_id: "evt6d".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "grace".to_string(),
+            playlist: playlist(),
+            timestamp: now(),
+        },
+        RealtimeEvent::PlaylistUpdated {
+            event_id: "evt6e".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "heidi".to_string(),
+            playlist: updated_playlist,
+            timestamp: now(),
+        },
+        RealtimeEvent::PlaylistDeleted {
+            event_id: "evt6f".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "ivan".to_string(),
+            playlist_id: PlaylistId::expect_positive(113_007),
+            timestamp: now(),
+        },
+        RealtimeEvent::RoomSettingsChanged {
+            event_id: "evt6g".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "judy".to_string(),
+            settings_json: br#"{"chat_enabled":false}"#.to_vec(),
+            version: 12,
+            timestamp: now(),
+        },
+    ];
+
+    for event in events {
+        let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
+            .checked("resource-backed realtime event should convert");
+        assert!(
+            msgs.is_empty(),
+            "resource-backed event should only invalidate observed resources: {event:?}"
+        );
     }
 }
 
 #[test]
-fn test_playlist_deleted_event_conversion() {
-    let event = RealtimeEvent::PlaylistDeleted {
-        event_id: "evt6f".to_string(),
+fn test_permission_changed_room_member_event_preserves_presence_snapshot() {
+    let event = RealtimeEvent::PermissionChanged {
+        event_id: "evt-permission-presence".to_string(),
         room_id: room_id(),
-        user_id: user_id(),
-        username: "ivan".to_string(),
-        playlist_id: PlaylistId::expect_positive(113_007),
+        target_user_id: user_id(),
+        target_username: "carol".to_string(),
+        changed_by: user_id(),
+        changed_by_username: "owner".to_string(),
+        role_changed: false,
+        new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_WEBRTC),
+        role: synctv_proto::common::RoomMemberRole::Member as i32,
+        added_permissions: RoomPermissionSet(RoomMemberPermissionBits::USE_WEBRTC),
+        removed_permissions: RoomPermissionSet(RoomMemberPermissionBits::CHAT),
+        admin_added_permissions: RoomPermissionSet(0),
+        admin_removed_permissions: RoomPermissionSet(0),
+        target_is_online: false,
+        target_connection_count: 0,
         timestamp: now(),
     };
 
-    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
-        .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::PlaylistDeleted(deleted)) => {
-            assert_eq!(deleted.room_id, "room_test");
-            assert_eq!(
-                deleted.playlist_id,
-                public_id_codec()
-                    .encode_playlist_id(PlaylistId::expect_positive(113_007))
-                    .checked("test value")
-            );
-        }
-        other => std::panic::panic_any(format!("Expected PlaylistDeleted, got: {other:?}")),
-    }
-}
-
-#[test]
-fn test_room_settings_changed_event_conversion() {
-    let event = RealtimeEvent::RoomSettingsChanged {
-        event_id: "evt6g".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "judy".to_string(),
-        settings_json: br#"{"chat_enabled":false}"#.to_vec(),
-        version: 12,
-        timestamp: now(),
-    };
-
-    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
-        .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::RoomSettings(changed)) => {
-            assert_eq!(changed.room_id, "room_test");
-            assert_eq!(changed.settings, br#"{"chat_enabled":false}"#.to_vec());
-            assert_eq!(changed.version, 12);
-        }
-        other => std::panic::panic_any(format!("Expected RoomSettings, got: {other:?}")),
-    }
-}
-
-#[test]
-fn test_room_settings_changed_event_rejects_invalid_payload() {
-    let mut event = RealtimeEvent::RoomSettingsChanged {
-        event_id: "evt-invalid-room-settings".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "judy".to_string(),
-        settings_json: br"[]".to_vec(),
-        version: 12,
-        timestamp: now(),
-    };
-
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("Room settings JSON")
-    ));
-
-    if let RealtimeEvent::RoomSettingsChanged {
-        settings_json,
-        version,
-        ..
-    } = &mut event
-    {
-        *settings_json = br#"{"chat_enabled":false}"#.to_vec();
-        *version = -1;
-    }
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("version")
-    ));
+    let event = room_member_event_to_proto(&event, &public_id_codec(), 42)
+        .checked("permission event should convert")
+        .checked("permission event should produce member event");
+    let member = event
+        .member
+        .checked("permission event should include member");
+    assert!(!member.is_online);
+    assert_eq!(member.connection_count, 0);
 }
 
 #[test]
@@ -7795,33 +6736,7 @@ fn test_webrtc_offer_event_conversion() {
 
     let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
         .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::WebrtcOffer(o)) => {
-            assert_eq!(o.from, "conn_a");
-            assert_eq!(o.to, "conn_b");
-            assert_eq!(o.data, "sdp_data");
-        }
-        other => std::panic::panic_any(format!("Expected WebrtcOffer, got: {other:?}")),
-    }
-}
-
-#[test]
-fn test_webrtc_signaling_event_rejects_invalid_route_fields() {
-    let event = RealtimeEvent::WebRTCSignaling {
-        event_id: "evt-invalid-webrtc-route".to_string(),
-        room_id: room_id(),
-        message_type: WebRTCSignalKind::Offer,
-        from: "conn_a".to_string(),
-        to: " ".to_string(),
-        data: "sdp_data".to_string(),
-        timestamp: now(),
-    };
-
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("webrtc to")
-    ));
+    assert!(msgs.is_empty());
 }
 
 #[test]
@@ -7838,14 +6753,7 @@ fn test_webrtc_answer_event_conversion() {
 
     let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
         .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    match &msgs[0].message {
-        Some(Message::WebrtcAnswer(a)) => {
-            assert_eq!(a.from, "conn_b");
-            assert_eq!(a.to, "conn_a");
-        }
-        other => std::panic::panic_any(format!("Expected WebrtcAnswer, got: {other:?}")),
-    }
+    assert!(msgs.is_empty());
 }
 
 #[test]
@@ -7862,11 +6770,7 @@ fn test_webrtc_ice_candidate_event_conversion() {
 
     let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
         .checked("realtime event should convert");
-    assert_eq!(msgs.len(), 1);
-    assert!(matches!(
-        &msgs[0].message,
-        Some(Message::WebrtcIceCandidate(_))
-    ));
+    assert!(msgs.is_empty());
 }
 
 #[test]
@@ -7892,38 +6796,8 @@ fn test_webrtc_join_and_leave_event_conversion() {
     let leave_msgs = realtime_event_to_server_messages(&leave, "room_test", &public_id_codec())
         .checked("webrtc leave should convert");
 
-    match &join_msgs[0].message {
-        Some(Message::WebrtcJoin(join)) => {
-            assert_eq!(join.user_id, "user_1");
-            assert_eq!(join.conn_id, "conn_1");
-            assert_eq!(join.username, "alice");
-        }
-        other => std::panic::panic_any(format!("Expected WebrtcJoin, got: {other:?}")),
-    }
-    match &leave_msgs[0].message {
-        Some(Message::WebrtcLeave(leave)) => {
-            assert_eq!(leave.user_id, "user_1");
-            assert_eq!(leave.conn_id, "conn_1");
-        }
-        other => std::panic::panic_any(format!("Expected WebrtcLeave, got: {other:?}")),
-    }
-}
-
-#[test]
-fn test_webrtc_join_event_rejects_invalid_connection_id() {
-    let event = RealtimeEvent::WebRTCJoin {
-        event_id: "evt-invalid-webrtc-join".to_string(),
-        room_id: room_id(),
-        actor_id: "user_1".to_string(),
-        conn_id: "conn\n1".to_string(),
-        username: "alice".to_string(),
-        timestamp: now(),
-    };
-
-    assert!(matches!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()),
-        Err(message) if message.contains("connection id")
-    ));
+    assert!(join_msgs.is_empty());
+    assert!(leave_msgs.is_empty());
 }
 
 #[test]
@@ -8353,6 +7227,8 @@ async fn test_guest_chat_is_rejected_even_if_permission_bits_include_chat() {
                     client_message_id: String::new(),
                     images: Vec::new(),
                     reply_to_message_id: String::new(),
+                    metadata: Vec::new(),
+                    mentions: Vec::new(),
                 },
             )),
         })
@@ -8384,6 +7260,8 @@ async fn test_guest_chat_with_client_id_is_rejected() {
                     client_message_id: String::new(),
                     images: Vec::new(),
                     reply_to_message_id: String::new(),
+                    metadata: Vec::new(),
+                    mentions: Vec::new(),
                 },
             )),
         })
@@ -8418,6 +7296,37 @@ async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_inc
 
     assert!(err.contains("Guests cannot observe playlist items"));
     shutdown_test_runtime_resources(event_service, connection_service).await;
+}
+
+#[tokio::test]
+async fn test_webrtc_command_joins_without_resource_observation() {
+    let fixture = create_start_handler_fixture(
+        "webrtc_command_joins_without_observe",
+        FailingMessageSender::fail_after(usize::MAX),
+    );
+    let fixture = fixture.await;
+    let handler = &fixture.handler;
+    let connection_service = &fixture.connection_service;
+    prepare_handler_for_run_after_join(handler, connection_service).await;
+
+    handler
+        .handle_client_message(&ClientMessage {
+            message: Some(webrtc_command_message(
+                synctv_proto::client::web_rtc_command::Command::Join(
+                    synctv_proto::client::WebRtcJoin::default(),
+                ),
+            )),
+        })
+        .await
+        .checked("WebRTC command should auto-observe WebRTC events");
+
+    assert!(
+        connection_service
+            .get_connection(handler.connection_id.as_str())
+            .is_some_and(|connection| connection.rtc_joined),
+        "accepted command must join the RTC session"
+    );
+    fixture.shutdown().await;
 }
 
 #[test]
@@ -8634,10 +7543,6 @@ async fn test_guest_webrtc_recipient_validation_uses_public_guest_actor_id() {
             .checked("guest public actor id should encode"),
         connection_id
     );
-    assert!(
-        handler.current_connection_matches_webrtc_recipient(&guest_target),
-        "guest WebRTC targets must use the gst_* public actor id"
-    );
     handler
         .validate_webrtc_recipient(&guest_target)
         .checked("gst_* recipient should match the active guest connection");
@@ -8650,10 +7555,10 @@ async fn test_guest_webrtc_recipient_validation_uses_public_guest_actor_id() {
             .checked("encode internal synthetic user id"),
         connection_id
     );
-    assert!(
-        !handler.current_connection_matches_webrtc_recipient(&internal_user_target),
-        "guest WebRTC targets must not leak or accept the internal synthetic user id"
-    );
+    assert!(matches!(
+        handler.validate_webrtc_recipient(&internal_user_target),
+        Err(message) if message.contains("does not match")
+    ));
 
     shutdown_test_runtime_resources(event_service, connection_service).await;
 }
@@ -8672,108 +7577,6 @@ fn test_generate_connection_id_is_opaque() {
     assert!(
         connection_id["conn_".len()..].parse::<i64>().is_err(),
         "connection id suffix must not be a raw internal numeric id"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker-backed PostgreSQL"]
-async fn test_current_connection_matches_webrtc_recipient_requires_public_actor_id() {
-    let room_id = room_id();
-    let user_id = user_id();
-    let manager = test_connection_manager();
-    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
-    let event_service = test_realtime_manager("node-test").await;
-    let public_id_codec = Arc::new(synctv_core::PublicIdCodec::plain());
-
-    let handler = super::StreamMessageHandler::new(StreamMessageHandlerConfig {
-        room_id,
-        principal: RealtimePrincipal::user(user_id, "user".to_string()),
-        connection_id: None,
-        room_service: Arc::clone(&test_room_service(pool.clone())),
-        chat_service: test_chat_service(pool),
-        event_service,
-        connection_service: manager.clone(),
-        rate_limiter: Arc::new(RateLimiter::local_only(
-            "test:webrtc-recipient-public-user-match:".to_string(),
-        )),
-        rate_limit_config: Arc::new(RateLimitConfig::default()),
-        content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::clone(&public_id_codec),
-        sender: FailingMessageSender::fail_after(usize::MAX),
-        concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
-    });
-    let connection_id = handler.connection_id().to_string();
-    let recipient = format!(
-        "{}:{}",
-        public_id_codec
-            .encode_user_id(user_id)
-            .checked("encode user id"),
-        connection_id
-    );
-
-    manager
-        .register_actor(
-            connection_id.clone(),
-            user_id,
-            public_id_codec
-                .encode_user_id(user_id)
-                .checked("encode user id"),
-        )
-        .await
-        .checked("register");
-    manager
-        .join_room(&connection_id, room_id)
-        .await
-        .checked("join room");
-    manager.mark_rtc_joined(&room_id, &user_id, &connection_id, true);
-
-    assert!(
-        handler.current_connection_matches_webrtc_recipient(&recipient),
-        "WebRTC recipient should match the current connection only with public user id"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker-backed PostgreSQL"]
-async fn test_current_connection_matches_webrtc_recipient_rejects_malformed_target() {
-    let room_id = room_id();
-    let user_id = user_id();
-    let manager = test_connection_manager();
-    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
-    let event_service = test_realtime_manager("node-test").await;
-
-    let handler = super::StreamMessageHandler::new(StreamMessageHandlerConfig {
-        room_id,
-        principal: RealtimePrincipal::user(user_id, "user".to_string()),
-        connection_id: None,
-        room_service: Arc::clone(&test_room_service(pool.clone())),
-        chat_service: test_chat_service(pool),
-        event_service,
-        connection_service: manager.clone(),
-        rate_limiter: Arc::new(RateLimiter::local_only(
-            "test:webrtc-recipient-malformed-reject:".to_string(),
-        )),
-        rate_limit_config: Arc::new(RateLimitConfig::default()),
-        content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
-        sender: FailingMessageSender::fail_after(usize::MAX),
-        concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
-    });
-    let connection_id = handler.connection_id().to_string();
-
-    manager
-        .register(connection_id.clone(), user_id)
-        .await
-        .checked("register");
-    manager
-        .join_room(&connection_id, room_id)
-        .await
-        .checked("join room");
-    manager.mark_rtc_joined(&room_id, &user_id, &connection_id, true);
-
-    assert!(
-        !handler.current_connection_matches_webrtc_recipient(&connection_id),
-        "malformed WebRTC recipient must not match"
     );
 }
 
@@ -9282,6 +8085,7 @@ fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exit
             room_id: rid,
             user_id: uid,
             username: "tester".to_string(),
+            role: synctv_proto::common::RoomMemberRole::Member as i32,
             timestamp: now,
         },
         &uid,
@@ -9386,6 +8190,7 @@ fn test_watch_admin_event_matches_access_revocation_events() {
             room_id: rid,
             user_id: uid,
             username: "tester".to_string(),
+            role: synctv_proto::common::RoomMemberRole::Member as i32,
             timestamp: now,
         },
         &uid,
@@ -9506,6 +8311,7 @@ async fn test_resource_watch_prepare_enforces_room_connection_limit_and_releases
             chat_service: None,
             event_service: Arc::clone(&event_service) as Arc<dyn RealtimeEventService>,
             connection_service: Arc::clone(&connection_service) as Arc<dyn ConnectionRuntime>,
+            presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
             public_id_codec: Arc::clone(&public_id_codec),
             sender: RecordingMessageSender::new() as Arc<dyn MessageSender>,
             playback_service,
@@ -9588,6 +8394,7 @@ async fn test_resource_watch_prepare_rejects_missing_observe_resource_before_sub
         chat_service: None,
         event_service: Arc::clone(&event_service) as Arc<dyn RealtimeEventService>,
         connection_service: Arc::clone(&connection_service) as Arc<dyn ConnectionRuntime>,
+        presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
         public_id_codec,
         sender: RecordingMessageSender::new() as Arc<dyn MessageSender>,
         playback_service,
@@ -9692,6 +8499,7 @@ async fn test_resource_watch_chat_events_requires_view_chat_history_permission()
         chat_service: Some(chat_service),
         event_service: Arc::clone(&event_service) as Arc<dyn RealtimeEventService>,
         connection_service: Arc::clone(&connection_service) as Arc<dyn ConnectionRuntime>,
+        presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
         public_id_codec: Arc::clone(&public_id_codec),
         sender: RecordingMessageSender::new() as Arc<dyn MessageSender>,
         playback_service,

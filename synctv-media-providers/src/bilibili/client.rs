@@ -1,4 +1,5 @@
 //! Bilibili HTTP Client
+#![allow(clippy::must_use_candidate)]
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -2088,6 +2089,10 @@ impl BilibiliClient {
     /// Connect to live danmaku WebSocket and return a message stream
     ///
     /// Returns a tuple of (sender, receiver) for bidirectional communication
+    #[cfg_attr(
+        not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")),
+        allow(clippy::unused_async, clippy::unused_async_trait_impl)
+    )]
     pub async fn connect_live_danmaku(
         &self,
         room_id: u64,
@@ -2095,9 +2100,9 @@ impl BilibiliClient {
         #[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
         {
             let _ = room_id;
-            return Err(BilibiliError::InvalidConfig(
+            Err(BilibiliError::InvalidConfig(
                 "Bilibili live danmaku requires a TLS root feature".to_string(),
-            ));
+            ))
         }
 
         #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]

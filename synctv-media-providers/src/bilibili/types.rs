@@ -1,4 +1,5 @@
 //! Bilibili API Data Structures
+#![allow(clippy::doc_markdown)]
 
 use serde::{Deserialize, Serialize};
 

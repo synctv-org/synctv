@@ -88,6 +88,7 @@ mod tests {
                 message,
                 images: Vec::new(),
                 reactions: Vec::new(),
+                mentions: Vec::new(),
             },
             occurred_at,
         }

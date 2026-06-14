@@ -577,6 +577,7 @@ mod tests {
                 user_id: UserId::expect_positive(10_000_164),
                 username: "tester".to_string(),
                 state,
+                source_changed: false,
                 timestamp: Utc::now(),
             },
         )

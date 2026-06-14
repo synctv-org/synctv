@@ -14,6 +14,8 @@ pub trait MembershipEventFanoutService: Send + Sync {
         &self,
         target_user_id: UserId,
         changed_by: UserId,
+        target_is_online: bool,
+        target_connection_count: usize,
     ) -> PreparedPermissionChangedFanout;
 
     fn prepare_user_left_outbox_fanout(&self) -> PreparedUserLeftFanout;
@@ -24,6 +26,8 @@ pub struct PreparedPermissionChangedFanout {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
     event_service: Arc<dyn RealtimeEventService>,
     events: Arc<parking_lot::Mutex<Vec<RealtimeEvent>>>,
+    target_is_online: bool,
+    target_connection_count: usize,
 }
 
 impl PreparedPermissionChangedFanout {
@@ -34,11 +38,15 @@ impl PreparedPermissionChangedFanout {
         event_service: Arc<dyn RealtimeEventService>,
         _target_user_id: UserId,
         _changed_by: UserId,
+        target_is_online: bool,
+        target_connection_count: usize,
     ) -> Self {
         Self {
             realtime_fanout,
             event_service,
             events: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            target_is_online,
+            target_connection_count,
         }
     }
 
@@ -53,12 +61,15 @@ impl PreparedPermissionChangedFanout {
                 target_username: snapshot.target_username.clone(),
                 changed_by: snapshot.changed_by,
                 changed_by_username: snapshot.changed_by_username.clone(),
+                role_changed: snapshot.role_changed,
                 new_permissions: snapshot.new_permissions,
                 role: snapshot.role,
                 added_permissions: snapshot.added_permissions,
                 removed_permissions: snapshot.removed_permissions,
                 admin_added_permissions: snapshot.admin_added_permissions,
                 admin_removed_permissions: snapshot.admin_removed_permissions,
+                target_is_online: prepared.target_is_online,
+                target_connection_count: prepared.target_connection_count,
                 timestamp: chrono::Utc::now(),
             };
             prepared.events.lock().push(event.clone());
@@ -106,6 +117,7 @@ impl PreparedUserLeftFanout {
                 room_id: snapshot.room_id,
                 user_id: snapshot.user_id,
                 username: snapshot.username.clone(),
+                role: snapshot.role,
                 timestamp: chrono::Utc::now(),
             };
             *prepared.event.lock() = Some(event.clone());
@@ -157,12 +169,16 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
         &self,
         target_user_id: UserId,
         changed_by: UserId,
+        target_is_online: bool,
+        target_connection_count: usize,
     ) -> PreparedPermissionChangedFanout {
         PreparedPermissionChangedFanout::new(
             self.realtime_fanout.clone(),
             self.event_service.clone(),
             target_user_id,
             changed_by,
+            target_is_online,
+            target_connection_count,
         )
     }
 
@@ -216,6 +232,7 @@ mod tests {
             target_username: "target-user".to_string(),
             changed_by,
             changed_by_username: "actor-user".to_string(),
+            role_changed: false,
             new_permissions: synctv_core::models::RoomPermissionSet(7),
             role: i32::from(synctv_core::models::RoomRole::Member),
             added_permissions: synctv_core::models::RoomPermissionSet(1),
@@ -239,7 +256,7 @@ mod tests {
             event_service.clone(),
         );
         let user = user_id("self-joiner");
-        let prepared = service.prepare_permission_changed_outbox_fanout(user, user);
+        let prepared = service.prepare_permission_changed_outbox_fanout(user, user, true, 2);
         let factory = prepared.outbox_factory();
 
         let event = factory(&permission_snapshot(user, user))?;
@@ -258,6 +275,8 @@ mod tests {
             Arc::new(RecordingRealtimeEventService::default()),
             user_id("target"),
             user_id("actor"),
+            false,
+            0,
         );
         let factory = prepared.outbox_factory();
         let event = factory(&permission_snapshot(user_id("target"), user_id("actor")))?;
@@ -269,7 +288,11 @@ mod tests {
             .ok_or_else(|| test_error("prepared event should publish"))?;
         assert!(matches!(
             event.event,
-            RealtimeEvent::PermissionChanged { .. }
+            RealtimeEvent::PermissionChanged {
+                target_is_online: false,
+                target_connection_count: 0,
+                ..
+            }
         ));
         Ok(())
     }
@@ -283,6 +306,7 @@ mod tests {
             room_id: room_id(),
             user_id: user_id("target"),
             username: "target-user".to_string(),
+            role: synctv_proto::common::RoomMemberRole::Admin as i32,
         })?;
         assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();

@@ -1,4 +1,5 @@
 mod proto {
+    #![allow(clippy::pedantic)]
     tonic::include_proto!("synctv.proxy.slice_cache");
 }
 

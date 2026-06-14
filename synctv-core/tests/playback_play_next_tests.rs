@@ -270,6 +270,7 @@ impl TestDynamicProvider {
         PlaybackResult {
             playback_infos: infos,
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata: std::collections::HashMap::new(),
         }
     }

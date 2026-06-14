@@ -256,6 +256,7 @@ impl RoomService {
                 target_user_id,
                 actor_id,
                 Some(&created),
+                Self::role_member_event_scope(),
             )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
@@ -344,6 +345,7 @@ impl RoomService {
                 target_user_id,
                 actor_id,
                 Some(&updated),
+                Self::role_member_event_scope(),
             )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
@@ -425,7 +427,14 @@ impl RoomService {
             ));
         }
         let snapshot = self
-            .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                actor_id,
+                None,
+                Self::permission_member_event_scope(),
+            )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
@@ -522,6 +531,7 @@ impl RoomService {
                 target_user_id,
                 actor_id,
                 Some(&created),
+                Self::role_member_event_scope(),
             )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
@@ -600,6 +610,7 @@ impl RoomService {
                 target_user_id,
                 actor_id,
                 Some(&updated),
+                Self::role_member_event_scope(),
             )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
@@ -694,7 +705,14 @@ impl RoomService {
             ));
         }
         let snapshot = self
-            .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                actor_id,
+                None,
+                Self::permission_member_event_scope(),
+            )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;

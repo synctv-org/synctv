@@ -11,6 +11,7 @@ static PLAYLIST_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 static REVIEW_REQUEST_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 static BAN_RECORD_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 static EMAIL_REGISTRATION_TOKEN_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
+static CONTENT_REPORT_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 
 /// Generate a process-local positive numeric ID for tests and in-memory values.
 ///
@@ -179,6 +180,11 @@ numeric_id_type!(
     "EmailRegistrationTokenId",
     EMAIL_REGISTRATION_TOKEN_ID_COUNTER
 );
+numeric_id_type!(
+    ContentReportId,
+    "ContentReportId",
+    CONTENT_REPORT_ID_COUNTER
+);
 
 #[cfg(any(test, feature = "test-support"))]
 macro_rules! numeric_id_test_support {
@@ -210,6 +216,8 @@ numeric_id_test_support!(ReviewRequestId);
 numeric_id_test_support!(BanRecordId);
 #[cfg(any(test, feature = "test-support"))]
 numeric_id_test_support!(EmailRegistrationTokenId);
+#[cfg(any(test, feature = "test-support"))]
+numeric_id_test_support!(ContentReportId);
 
 #[cfg(test)]
 mod tests {

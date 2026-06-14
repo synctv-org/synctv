@@ -1,3 +1,5 @@
+#![allow(clippy::missing_errors_doc)]
+
 use std::sync::{OnceLock, RwLock};
 
 use chrono::{DateTime, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Utc};
@@ -76,20 +78,24 @@ pub fn set_default_timezone_name(value: &str) -> Result<(), TimeError> {
     Ok(())
 }
 
+#[must_use]
 pub fn default_timezone() -> Tz {
     *timezone_state()
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[must_use]
 pub fn default_timezone_name() -> String {
     default_timezone().to_string()
 }
 
+#[must_use]
 pub fn format_datetime_rfc3339(value: DateTime<Utc>) -> String {
     value.with_timezone(&default_timezone()).to_rfc3339()
 }
 
+#[must_use]
 pub fn format_datetime_display(value: DateTime<Utc>) -> String {
     let timezone = default_timezone();
     let localized = value.with_timezone(&timezone);
@@ -101,6 +107,7 @@ pub fn format_datetime_display(value: DateTime<Utc>) -> String {
     )
 }
 
+#[must_use]
 pub fn format_timestamp_secs_display(seconds: i64) -> Option<String> {
     let timestamp = DateTime::<Utc>::from_timestamp(seconds, 0)?;
     Some(format!(

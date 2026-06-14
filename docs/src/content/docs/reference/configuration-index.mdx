@@ -111,6 +111,7 @@ curl -fsS http://localhost:8080/health/ready
 | `public_ids.sqids.min_length` | 整数 | `12` | sqids 最小长度 |
 | `security.credential_encryption_key` | 64 个十六进制字符 | `""` | Provider 凭据加密 key |
 | `security.opaque_server_setup_secret` | secret 字符串 | `""` | OPAQUE 密码认证服务端 setup secret |
+| `security.ssrf.enabled` | 布尔值 | `false` | 是否启用全局 SSRF 出站防护 |
 | `security.ssrf.allow_private_network_targets` | 布尔值 | `false` | 是否允许服务端出站访问 private/loopback/link-local/reserved/metadata 目标 |
 | `security.ssrf.allowed_hosts` | 字符串数组 | `[]` | 全局 SSRF 策略额外允许的主机名 |
 | `security.ssrf.allowed_ip_ranges` | IP/CIDR 字符串数组 | `[]` | 全局 SSRF 策略额外允许的 IP 或网段 |
@@ -336,7 +337,6 @@ file_storage:
 | `connection_limits.ws_message_rate_limit_per_second` | 次/秒 | `50` | 每连接 WebSocket 消息速率 |
 | `bootstrap.create_root_user` | 布尔值 | `false` | 是否自动创建初始 root |
 | `bootstrap.root_username` | 字符串 | `root` | 初始 root 用户名 |
-| `bootstrap.root_email` | 邮箱或空 | `""` | 初始 root 邮箱 |
 | `bootstrap.root_password` | secret 字符串 | `""` | 初始 root 密码 |
 | `cluster.enabled` | 布尔值 | `false` | 是否启用集群模式 |
 | `cluster.secret` | secret 字符串 | `""` | 集群内部 gRPC 认证密钥 |

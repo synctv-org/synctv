@@ -1,3 +1,5 @@
+#![allow(clippy::missing_errors_doc)]
+#![cfg_attr(test, allow(clippy::doc_markdown, clippy::default_trait_access))]
 #![cfg_attr(
     test,
     allow(

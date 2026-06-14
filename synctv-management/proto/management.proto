@@ -53,7 +53,7 @@ service ManagementService {
     rpc StartPlayback(StartPlaybackRequest) returns (synctv.client.StartPlaybackResponse);
     rpc StopPlayback(StopPlaybackRequest) returns (synctv.client.StopPlaybackResponse);
     rpc GetPlayback(GetPlaybackRequest) returns (synctv.client.GetPlaybackResponse);
-    rpc UpdatePlayback(UpdatePlaybackRequest) returns (synctv.client.GetPlaybackResponse);
+    rpc UpdatePlaybackState(UpdatePlaybackStateRequest) returns (synctv.client.UpdatePlaybackStateResponse);
     rpc CreatePublishKey(CreatePublishKeyRequest) returns (synctv.provider.rtmp.CreatePublishKeyResponse);
     rpc GetStreamInfo(GetStreamInfoRequest) returns (synctv.provider.rtmp.GetStreamInfoResponse);
     rpc ListRoomStreams(ListRoomStreamsRequest) returns (synctv.client.ListRoomStreamsResponse);
@@ -510,9 +510,9 @@ message GetPlaybackRequest {
     synctv.client.PlaybackClientProfile playback_client_profile = 2;
 }
 
-message UpdatePlaybackRequest {
+message UpdatePlaybackStateRequest {
     string room_id = 1;
-    synctv.client.UpdatePlaybackRequest update = 2;
+    synctv.client.UpdatePlaybackStateRequest update = 2;
 }
 
 message CreatePublishKeyRequest {

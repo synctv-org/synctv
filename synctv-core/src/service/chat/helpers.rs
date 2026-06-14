@@ -128,6 +128,61 @@ pub(super) fn validate_chat_reaction_key(key: &str) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn normalize_chat_mentions(
+    content: &str,
+    mentions: &mut Vec<crate::models::ChatMentionInput>,
+) -> Result<()> {
+    mentions.sort_by(|left, right| {
+        left.start
+            .cmp(&right.start)
+            .then_with(|| left.length.cmp(&right.length))
+            .then_with(|| left.user_id.cmp(&right.user_id))
+    });
+    mentions.dedup_by(|left, right| {
+        left.user_id == right.user_id && left.start == right.start && left.length == right.length
+    });
+    if mentions.len() > 20 {
+        return Err(Error::InvalidInput(
+            "chat message supports at most 20 mentioned users".to_string(),
+        ));
+    }
+    let content_chars = content.chars().collect::<Vec<_>>();
+    let mut previous_end = 0_i32;
+    for mention in mentions {
+        if mention.start < previous_end {
+            return Err(Error::InvalidInput(
+                "chat mentions must not overlap".to_string(),
+            ));
+        }
+        let start = usize::try_from(mention.start)
+            .map_err(|_| Error::InvalidInput("chat mention start is invalid".to_string()))?;
+        let length = usize::try_from(mention.length)
+            .map_err(|_| Error::InvalidInput("chat mention length is invalid".to_string()))?;
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| Error::InvalidInput("chat mention range overflow".to_string()))?;
+        if end > content_chars.len() {
+            return Err(Error::InvalidInput(
+                "chat mention range exceeds content length".to_string(),
+            ));
+        }
+        let slice = &content_chars[start..end];
+        if slice.first().copied() != Some('@') {
+            return Err(Error::InvalidInput(
+                "chat mention range must start with @".to_string(),
+            ));
+        }
+        if slice.iter().any(|ch| ch.is_control() || ch.is_whitespace()) {
+            return Err(Error::InvalidInput(
+                "chat mention range must be a single @ token".to_string(),
+            ));
+        }
+        previous_end = i32::try_from(end)
+            .map_err(|_| Error::InvalidInput("chat mention range is too large".to_string()))?;
+    }
+    Ok(())
+}
+
 pub(super) fn chat_image_upload_request_to_file_request(
     request: CreateChatImageUploadSession,
 ) -> CreateFileUploadSession {
@@ -237,6 +292,7 @@ pub(super) fn chat_send_request_hash(request: &SendChatMessage) -> Result<String
         "message_type": request.message_type,
         "reply_to_message_id": request.reply_to_message_id,
         "metadata": request.metadata,
+        "mentions": request.mentions,
         "images": request.images,
     });
     let bytes = serde_json::to_vec(&payload)?;

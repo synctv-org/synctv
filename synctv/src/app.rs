@@ -255,6 +255,7 @@ impl RealtimeEventHandler for CoreRealtimeEventHandler {
 struct ClusterState {
     realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
     realtime_connection_service: Arc<dyn ConnectionRuntime>,
+    presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     realtime_event_service: Arc<dyn RealtimeEventService>,
     node_registry: Option<Arc<dyn synctv_cluster::discovery::ClusterNodeDirectory>>,
     health_monitor: Option<Arc<dyn synctv_cluster::discovery::ClusterHealthRuntime>>,
@@ -493,10 +494,13 @@ fn build_realtime_state_profile(
 fn build_connection_manager(
     limits: ConnectionLimits,
     profile: &synctv_core::SharedStateProfile,
+    presence_service: Arc<synctv_core::service::OnlinePresenceService>,
+    node_id: &str,
 ) -> Result<Arc<dyn ConnectionRuntime>> {
-    build_realtime_connection_runtime(limits, profile).map_err(|error| {
-        anyhow::anyhow!("Failed to initialize realtime connection runtime: {error}")
-    })
+    build_realtime_connection_runtime(limits, profile, presence_service, node_id.to_string())
+        .map_err(|error| {
+            anyhow::anyhow!("Failed to initialize realtime connection runtime: {error}")
+        })
 }
 
 fn build_room_message_runtime(
@@ -1151,9 +1155,31 @@ impl Application {
         );
         shutdown.register_task(
             "db_maintenance",
-            db_maintenance.spawn_maintenance_loop(singleton_cancel),
+            db_maintenance.spawn_maintenance_loop(singleton_cancel.clone()),
         );
         info!("Database maintenance service started (leader-gated cleanup tasks every 1h)");
+
+        let playback_auto_advance = synctv_core::service::PlaybackAutoAdvanceService::new(
+            core.services.room_service.playback_service().clone(),
+            synctv_core::repository::RoomSettingsRepository::new(infra.pool.clone()),
+            leader.leader_runtime.clone(),
+        );
+        shutdown.register_task(
+            "playback_auto_advance",
+            playback_auto_advance.spawn(std::time::Duration::from_secs(1), singleton_cancel.clone()),
+        );
+        info!("Playback auto-advance service started (leader-gated, interval: 1s)");
+
+        let playback_duration_probe = synctv_core::service::PlaybackDurationProbeService::new(
+            core.services.room_service.playback_service().clone(),
+            leader.leader_runtime.clone(),
+            infra.config.security.ssrf_guard(),
+        );
+        shutdown.register_task(
+            "playback_duration_probe",
+            playback_duration_probe.spawn(std::time::Duration::from_secs(15), singleton_cancel),
+        );
+        info!("Playback duration probe service started (leader-gated, interval: 15s)");
 
         if runtime_plan.cluster_runtime() {
             let pool = infra.pool.clone();
@@ -1231,10 +1257,18 @@ impl Application {
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<ClusterState> {
         // Connection manager
+        let presence_service = Arc::new(
+            synctv_core::service::OnlinePresenceService::from_shared_state_profile(
+                &runtime_plan.realtime_shared_state_profile,
+            )
+            .map_err(|error| anyhow::anyhow!("Failed to initialize presence service: {error}"))?,
+        );
         let connection_limits = ConnectionLimits::from(&infra.config.connection_limits);
         let realtime_connection_service = build_connection_manager(
             connection_limits,
             &runtime_plan.realtime_shared_state_profile,
+            presence_service.clone(),
+            &infra.node_id,
         )?;
         info!(
             max_per_user = infra.config.connection_limits.max_per_user,
@@ -1265,6 +1299,7 @@ impl Application {
                     realtime_event_service.clone(),
                 ),
                 realtime_connection_service: realtime_connection_service.clone(),
+                presence_service,
                 realtime_event_service,
                 node_registry: None,
                 health_monitor: None,
@@ -1370,6 +1405,7 @@ impl Application {
                 realtime_event_service.clone(),
             ),
             realtime_connection_service: realtime_connection_service.clone(),
+            presence_service,
             realtime_event_service,
             node_registry: Some(discovery.registry.clone()),
             health_monitor: Some(discovery.health_monitor.clone()),
@@ -1446,6 +1482,7 @@ impl Application {
             rate_limit_config: core.services.rate_limit_config.clone(),
             content_filter: core.services.content_filter.clone(),
             realtime_connection_service: cluster.realtime_connection_service,
+            presence_service: cluster.presence_service,
             realtime_event_service: cluster.realtime_event_service,
             providers_manager: core.services.providers_manager.clone(),
             provider_instance_manager: core.services.provider_instance_manager.clone(),
@@ -1585,6 +1622,27 @@ mod tests {
         realtime_manager.shutdown().await;
     }
 
+    fn test_presence_service(
+        profile: &synctv_core::SharedStateProfile,
+    ) -> Arc<synctv_core::service::OnlinePresenceService> {
+        Arc::new(
+            synctv_core::service::OnlinePresenceService::from_shared_state_profile(profile)
+                .expect("presence service should initialize"),
+        )
+    }
+
+    fn test_connection_manager(
+        profile: &synctv_core::SharedStateProfile,
+    ) -> Arc<dyn ConnectionRuntime> {
+        build_connection_manager(
+            ConnectionLimits::default(),
+            profile,
+            test_presence_service(profile),
+            "test-node",
+        )
+        .expect("connection manager should initialize")
+    }
+
     fn minimal_valid_startup_config() -> Config {
         Config {
             server: ServerConfig {
@@ -1634,7 +1692,6 @@ mod tests {
             bootstrap: BootstrapConfig {
                 create_root_user: false,
                 root_username: String::new(),
-                root_email: String::new(),
                 root_password: String::new(),
             },
             cluster: ClusterChannelConfig::default(),
@@ -1845,7 +1902,6 @@ mod tests {
             &BootstrapConfig {
                 create_root_user: false,
                 root_username: "root".to_string(),
-                root_email: String::new(),
                 root_password: String::new(),
             },
         )
@@ -1899,7 +1955,6 @@ mod tests {
             &BootstrapConfig {
                 create_root_user: false,
                 root_username: "root".to_string(),
-                root_email: String::new(),
                 root_password: String::new(),
             },
         )
@@ -1931,9 +1986,7 @@ mod tests {
         let config = minimal_valid_startup_config();
         let realtime_profile =
             synctv_core::SharedStateProfile::for_cluster_runtime(None, "test-local:", false);
-        let connection_manager =
-            build_connection_manager(ConnectionLimits::default(), &realtime_profile)
-                .expect("local connection manager should initialize");
+        let connection_manager = test_connection_manager(&realtime_profile);
         let cache_invalidation = Arc::new(synctv_core::cache::CacheInvalidationService::new(
             "test-node".to_string(),
             "test-local:cache:invalidate".to_string(),
@@ -1980,10 +2033,7 @@ mod tests {
             true,
         );
 
-        let connection_manager =
-            build_connection_manager(ConnectionLimits::default(), &realtime_profile).expect(
-                "distributed mode should require and accept shared realtime connection state",
-            );
+        let connection_manager = test_connection_manager(&realtime_profile);
 
         let realtime_config = RealtimeConfig {
             distributed_transport_factory: Some(
@@ -2024,7 +2074,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires Docker"]
     async fn test_build_connection_manager_wires_redis_in_cluster_mode() {
-        use redis::AsyncCommands;
         use synctv_core::models::{RoomId, UserId};
         let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
         let prefix = test_redis_key_prefix("conn-mgr-wires");
@@ -2040,8 +2089,14 @@ mod tests {
             true,
         );
 
-        let manager = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
-            .expect("distributed mode should build shared realtime connection manager");
+        let presence_service = test_presence_service(&realtime_profile);
+        let manager = build_connection_manager(
+            ConnectionLimits::default(),
+            &realtime_profile,
+            presence_service.clone(),
+            "test-node",
+        )
+        .expect("distributed mode should build shared realtime connection manager");
 
         manager
             .register("conn-1".to_string(), UserId::expect_positive(111_001))
@@ -2053,18 +2108,13 @@ mod tests {
             .await
             .expect("Room join should succeed");
 
-        let mut verify_conn = redis::aio::ConnectionManager::new(client)
+        let count = presence_service
+            .room_stats(room_id)
             .await
-            .expect("Verification connection should be created");
-        let count: i64 = verify_conn
-            .get(format!("{prefix}connections:room:{room_id}"))
-            .await
-            .expect("Redis room counter should exist when ConnectionManager is wired");
+            .expect("presence room stats should load")
+            .connection_count;
 
-        assert_eq!(
-            count, 1,
-            "Distributed room counter should be written to Redis"
-        );
+        assert_eq!(count, 1, "Distributed room presence should be tracked");
 
         manager.shutdown().await;
     }
@@ -2072,7 +2122,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires Docker"]
     async fn test_build_connection_manager_uses_shared_redis_handle_in_cluster_mode() {
-        use redis::AsyncCommands;
         use synctv_core::models::{RoomId, UserId};
 
         let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
@@ -2089,8 +2138,14 @@ mod tests {
             true,
         );
 
-        let manager = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
-            .expect("distributed mode should preserve shared runtime wiring");
+        let presence_service = test_presence_service(&realtime_profile);
+        let manager = build_connection_manager(
+            ConnectionLimits::default(),
+            &realtime_profile,
+            presence_service.clone(),
+            "test-node",
+        )
+        .expect("distributed mode should preserve shared runtime wiring");
 
         manager
             .register("conn-1".to_string(), UserId::expect_positive(111_001))
@@ -2108,17 +2163,15 @@ mod tests {
             .await
             .expect("room join after shared connection swap should succeed");
 
-        let mut verify_conn = redis::aio::ConnectionManager::new(client)
+        let count = presence_service
+            .room_stats(room_id)
             .await
-            .expect("verification connection should be created");
-        let count: i64 = verify_conn
-            .get(format!("{prefix}connections:room:{room_id}"))
-            .await
-            .expect("swapped shared Redis handle should still write distributed room counters");
+            .expect("presence room stats should load after shared runtime swap")
+            .connection_count;
 
         assert_eq!(
             count, 1,
-            "cluster ConnectionManager must continue using the shared Redis handle after a hot swap"
+            "cluster ConnectionManager must continue using the shared runtime after a hot swap"
         );
 
         manager.shutdown().await;
@@ -2127,7 +2180,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires Docker"]
     async fn test_build_connection_manager_keeps_standalone_mode_local_even_with_redis() {
-        use redis::AsyncCommands;
         use synctv_core::models::{RoomId, UserId};
         let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
         let app_conn = redis::aio::ConnectionManager::new(client.clone())
@@ -2141,8 +2193,14 @@ mod tests {
             false,
         );
 
-        let manager = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
-            .expect("standalone mode should build local connection manager");
+        let presence_service = test_presence_service(&realtime_profile);
+        let manager = build_connection_manager(
+            ConnectionLimits::default(),
+            &realtime_profile,
+            presence_service.clone(),
+            "test-node",
+        )
+        .expect("standalone mode should build local connection manager");
 
         manager
             .register("conn-1".to_string(), UserId::expect_positive(111_001))
@@ -2153,18 +2211,13 @@ mod tests {
             .await
             .expect("Standalone room join should succeed");
 
-        let mut verify_conn = redis::aio::ConnectionManager::new(client)
+        let count = presence_service
+            .room_stats(RoomId::expect_positive(111_002))
             .await
-            .expect("Verification connection should be created");
-        let count: Option<i64> = verify_conn
-            .get("test-standalone:connections:room:room-1")
-            .await
-            .expect("Redis lookup should succeed");
+            .expect("local presence room stats should load")
+            .connection_count;
 
-        assert!(
-            count.is_none(),
-            "Standalone mode must not write distributed room counters just because Redis exists"
-        );
+        assert!(count == 1, "Standalone mode should track presence locally");
 
         manager.shutdown().await;
     }
@@ -2173,8 +2226,12 @@ mod tests {
     fn test_build_connection_manager_returns_error_without_redis_in_cluster_mode() {
         let realtime_profile =
             synctv_core::SharedStateProfile::for_cluster_runtime(None, "test:", true);
-        let Err(error) = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
-        else {
+        let Err(error) = build_connection_manager(
+            ConnectionLimits::default(),
+            &realtime_profile,
+            Arc::new(synctv_core::service::OnlinePresenceService::local()),
+            "test-node",
+        ) else {
             panic!("distributed mode without Redis wiring must return an error");
         };
 

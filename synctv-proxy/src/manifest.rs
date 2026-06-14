@@ -10,7 +10,12 @@ pub const MAX_M3U8_URLS: usize = 1000;
 /// - Pass `max_urls` to override the default limit
 ///
 /// # Security
-/// - Returns an error if proxy_base contains line breaks (prevents response injection)
+/// - Returns an error if `proxy_base` contains line breaks (prevents response injection)
+///
+/// # Errors
+///
+/// Returns an error when a playlist URL cannot be parsed or a generated proxy URL
+/// would be unsafe.
 pub fn rewrite_m3u8(
     m3u8: &str,
     source_url: &str,

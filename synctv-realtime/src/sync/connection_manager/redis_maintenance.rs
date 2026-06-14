@@ -1130,8 +1130,7 @@ impl ConnectionManager {
 
     /// Get the number of active client connections for a user in a room across all replicas.
     ///
-    /// This differs from `room_online_user_count_distributed`: it counts every
-    /// client connection for the specific user, not distinct users.
+    /// This counts every client connection for the specific user in the room.
     pub async fn user_connection_count_in_room_distributed(
         &self,
         user_id: &UserId,
@@ -1177,88 +1176,6 @@ impl ConnectionManager {
             .into_iter()
             .filter(|conn| conn.room_id.as_ref() == Some(room_id))
             .count())
-    }
-
-    /// Returns true if the user still has another active connection in the same room,
-    /// potentially on another replica.
-    ///
-    /// In Redis-backed distributed mode this reads connection metadata from Redis so the
-    /// answer reflects all replicas. Local-only managers use in-memory state;
-    /// Redis-backed managers return an error when Redis is unavailable.
-    pub async fn has_other_connection_for_user_in_room_distributed(
-        &self,
-        user_id: &UserId,
-        room_id: &RoomId,
-        excluding_connection_id: &str,
-    ) -> Result<bool, String> {
-        if let Some(mut conn) = self
-            .redis_conn_snapshot_required(
-                "Distributed same-user room presence lookup unavailable while Redis is degraded",
-            )
-            .await?
-        {
-            let conn_ids = self.get_user_connections_distributed(user_id).await?;
-            let other_conn_ids: Vec<String> = conn_ids
-                .into_iter()
-                .filter(|conn_id| conn_id != excluding_connection_id)
-                .collect();
-
-            if other_conn_ids.is_empty() {
-                return Ok(false);
-            }
-
-            let metadata_keys: Vec<String> = other_conn_ids
-                .iter()
-                .map(|conn_id| format!("{}conn_mgr:conn:{conn_id}", self.redis_key_prefix))
-                .collect();
-
-            let metadata: Vec<Option<String>> = self
-                .redis_op(
-                    "fetch distributed connection metadata",
-                    conn.mget(metadata_keys),
-                )
-                .await?;
-
-            for entry in metadata.into_iter().flatten() {
-                match serde_json::from_str::<ConnectionInfoPersistent>(&entry) {
-                    Ok(info) => {
-                        if info.room_id.as_ref() == Some(room_id) {
-                            return Ok(true);
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            error = %e,
-                            user_id = %user_id,
-                            room_id = %room_id,
-                            "Failed to deserialize distributed connection metadata"
-                        );
-                    }
-                }
-            }
-
-            return Ok(false);
-        }
-
-        Ok(self.get_user_connections(user_id).into_iter().any(|conn| {
-            conn.connection_id != excluding_connection_id && conn.room_id.as_ref() == Some(room_id)
-        }))
-    }
-
-    /// Returns true if the user already has at least one active connection in the same room,
-    /// excluding the provided connection id.
-    pub async fn has_existing_presence_for_user_in_room_distributed(
-        &self,
-        user_id: &UserId,
-        room_id: &RoomId,
-        excluding_connection_id: &str,
-    ) -> Result<bool, String> {
-        self.has_other_connection_for_user_in_room_distributed(
-            user_id,
-            room_id,
-            excluding_connection_id,
-        )
-        .await
     }
 
     /// Atomically increment a Redis counter, set its TTL, and check if the new

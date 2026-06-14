@@ -62,6 +62,7 @@ data:
 
     security:
       ssrf:
+        enabled: {{ $ssrf.enabled | default false }}
         allow_private_network_targets: {{ $ssrf.allowPrivateNetworkTargets | default false }}
         allowed_hosts:{{ if $ssrf.allowedHosts }}
           {{- range $ssrf.allowedHosts }}
@@ -283,7 +284,6 @@ data:
     bootstrap:
       create_root_user: {{ .Values.config.bootstrap.createRootUser | default false }}
       root_username: {{ .Values.config.bootstrap.rootUsername | default "root" | quote }}
-      root_email: {{ .Values.config.bootstrap.rootEmail | default "" | quote }}
 
     {{- if .Values.config.email.smtpHost }}
     email:

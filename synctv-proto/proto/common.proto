@@ -87,4 +87,45 @@ message RoomMember {
 
   int64 joined_at = 10;
   bool is_online = 11;
+  int32 connection_count = 12;
+}
+
+message NodeConnectionCount {
+  string node_id = 1;
+  int32 connection_count = 2;
+}
+
+message RoomPresenceStats {
+  int32 online_user_count = 1;
+  int32 connection_count = 2;
+  repeated NodeConnectionCount node_connection_counts = 3;
+  int64 sampled_at = 4;
+  uint64 version = 5;
+}
+
+message UserPresenceStats {
+  int32 connection_count = 1;
+  repeated NodeConnectionCount node_connection_counts = 2;
+  int32 room_count = 3;
+  repeated string room_ids = 4;
+  int64 sampled_at = 5;
+  uint64 version = 6;
+}
+
+message NodePresenceStats {
+  string node_id = 1;
+  int32 connection_count = 2;
+  int32 online_user_count = 3;
+  int32 room_count = 4;
+  int64 sampled_at = 5;
+  uint64 version = 6;
+}
+
+message PresenceOverview {
+  int32 online_user_count = 1;
+  int32 connection_count = 2;
+  int32 active_room_count = 3;
+  repeated NodePresenceStats nodes = 4;
+  int64 sampled_at = 5;
+  uint64 version = 6;
 }

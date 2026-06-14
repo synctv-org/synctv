@@ -4,8 +4,8 @@ use std::sync::Arc;
 use crate::{
     cache::ConsistencyCoordinator,
     repository::{
-        ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository,
-        RoomPasswordRepository, RoomPlaybackStateRepository, RoomRepository,
+        ChatRepository, MediaRepository, PlaybackSourceMetadataRepository, PlaylistRepository,
+        RoomMemberRepository, RoomPasswordRepository, RoomPlaybackStateRepository, RoomRepository,
         RoomSettingsRepository,
     },
     service::{
@@ -122,6 +122,7 @@ impl RoomService {
         let media_repo = MediaRepository::new(pool.clone());
         let playlist_repo = PlaylistRepository::new(pool.clone());
         let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+        let playback_source_metadata_repo = PlaybackSourceMetadataRepository::new(pool.clone());
         let chat_repo = ChatRepository::new(pool.clone());
         let room_password_repo = RoomPasswordRepository::new(pool.clone());
 
@@ -170,6 +171,7 @@ impl RoomService {
                 l2_cache: Some(options.playback_l2_cache.clone()),
                 version_fence: options.version_fence.clone(),
                 realtime_outbox: options.realtime_outbox.clone(),
+                source_metadata_repo: Some(playback_source_metadata_repo),
             },
         );
         let room_settings_service = RoomSettingsService::new_with_version_fence(

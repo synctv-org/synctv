@@ -18,14 +18,15 @@ use synctv_proto::admin::{
     BatchBanUsersRequest, BatchBanUsersResponse, BatchDeleteRoomsRequest, BatchDeleteRoomsResponse,
     BatchDeleteUsersRequest, BatchDeleteUsersResponse, CreateUserRequest, CreateUserResponse,
     DeleteRoomRequest, DeleteRoomResponse, DeleteUserRequest, DeleteUserResponse,
-    GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest, GetRoomResponse,
-    GetRoomSettingsRequest, GetRoomSettingsResponse, GetSettingsGroupRequest,
-    GetSettingsGroupResponse, GetSettingsRequest, GetSettingsResponse, GetSystemStatsRequest,
-    GetSystemStatsResponse, GetUserPreferencesRequest, GetUserPreferencesResponse, GetUserRequest,
-    GetUserResponse, GetUserRoomsRequest, GetUserRoomsResponse, KickMemberRequest,
-    KickMemberResponse, KickStreamRequest, KickStreamResponse, ListActiveStreamsRequest,
-    ListActiveStreamsResponse, ListAdminsRequest, ListAdminsResponse, ListBanRecordsRequest,
-    ListBanRecordsResponse, ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse,
+    GetContentReportRequest, GetContentReportResponse, GetRoomMembersRequest,
+    GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
+    GetRoomSettingsResponse, GetSettingsGroupRequest, GetSettingsGroupResponse, GetSettingsRequest,
+    GetSettingsResponse, GetSystemStatsRequest, GetSystemStatsResponse, GetUserPreferencesRequest,
+    GetUserPreferencesResponse, GetUserRequest, GetUserResponse, GetUserRoomsRequest,
+    GetUserRoomsResponse, KickMemberRequest, KickMemberResponse, KickStreamRequest,
+    KickStreamResponse, ListActiveStreamsRequest, ListActiveStreamsResponse, ListAdminsRequest,
+    ListAdminsResponse, ListBanRecordsRequest, ListBanRecordsResponse, ListContentReportsRequest,
+    ListContentReportsResponse, ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse,
     ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse, ListRoomsRequest, ListRoomsResponse,
     ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse, ListUsersRequest,
     ListUsersResponse, RejectRoomCreationReviewRequest, RejectRoomCreationReviewResponse,
@@ -33,7 +34,8 @@ use synctv_proto::admin::{
     RejectUserRegistrationReviewResponse, RemoveAdminRequest, RemoveAdminResponse,
     ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendTestEmailRequest,
     SendTestEmailResponse, SetUserPasswordRequest, SetUserPasswordResponse, UnbanRoomRequest,
-    UnbanRoomResponse, UnbanUserRequest, UnbanUserResponse, UpdateMemberPermissionsRequest,
+    UnbanRoomResponse, UnbanUserRequest, UnbanUserResponse, UpdateContentReportStatusRequest,
+    UpdateContentReportStatusResponse, UpdateMemberPermissionsRequest,
     UpdateMemberPermissionsResponse, UpdateRoomPasswordRequest, UpdateRoomPasswordResponse,
     UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateSettingsRequest,
     UpdateSettingsResponse, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
@@ -721,6 +723,37 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ListBanRecordsResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
             api.list_ban_records(req, &validated.user_id).await
+        })
+        .await
+    }
+
+    async fn list_content_reports(
+        &self,
+        request: Request<ListContentReportsRequest>,
+    ) -> Result<Response<ListContentReportsResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            api.list_content_reports(req, &validated.user_id).await
+        })
+        .await
+    }
+
+    async fn get_content_report(
+        &self,
+        request: Request<GetContentReportRequest>,
+    ) -> Result<Response<GetContentReportResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            api.get_content_report(req, &validated.user_id).await
+        })
+        .await
+    }
+
+    async fn update_content_report_status(
+        &self,
+        request: Request<UpdateContentReportStatusRequest>,
+    ) -> Result<Response<UpdateContentReportStatusResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.update_content_report_status(req, &validated.user_id, &ctx)
+                .await
         })
         .await
     }

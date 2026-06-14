@@ -6,6 +6,7 @@ pub mod chat;
 pub(crate) mod chat_partition_manager;
 pub mod cleanup;
 pub(crate) mod content_filter;
+pub mod content_report;
 pub mod db_maintenance;
 pub mod distributed_lock;
 pub(crate) mod email;
@@ -24,7 +25,10 @@ mod partitioning;
 pub(crate) mod passkey;
 pub mod permission;
 pub mod playback;
+pub mod playback_auto_advance;
+pub mod playback_duration_probe;
 pub mod playlist;
+pub mod presence;
 mod provider_binding;
 pub(crate) mod providers_manager;
 pub mod publish_key;
@@ -66,6 +70,9 @@ pub use chat_partition_manager::{
 };
 pub use cleanup::{CleanupConfig, CleanupResult, CleanupService};
 pub use content_filter::{ContentFilter, ContentFilterError};
+pub use content_report::{
+    ContentReportListQuery, ContentReportListScope, ContentReportPage, ContentReportService,
+};
 pub use db_maintenance::DatabaseMaintenanceService;
 pub use distributed_lock::{with_coordination_lock, CoordinationLock, DistributedLock, LockGuard};
 pub use email::{mask_email, EmailConfig, EmailConfigProvider, EmailService};
@@ -102,8 +109,14 @@ pub use oauth2::{
 pub use optimistic_retry::retry_with_optimistic_lock;
 pub use passkey::{local_passkey_session_store, PasskeyService, PasskeySessionStore};
 pub use permission::{EffectivePermissionCalculator, PermissionService, RuntimePermissionDefaults};
-pub use playback::{PlaybackService, PlaybackStatePatch, PlaybackUpdateRequest, SeekResponse};
+pub use playback::{PlaybackService, PlaybackStatePatch, PlaybackStateUpdateRequest, SeekResponse};
+pub use playback_auto_advance::PlaybackAutoAdvanceService;
+pub use playback_duration_probe::PlaybackDurationProbeService;
 pub use playlist::{PlaylistService, RealtimeOutboxPlaylistEventFactory};
+pub use presence::{
+    OnlineNodeStats, OnlinePresenceService, OnlineRoomStats, OnlineUserRoomStats, OnlineUserStats,
+    PresenceConnection, PresenceEvent, PresenceOverview,
+};
 pub use providers_manager::ProvidersManager;
 pub use publish_key::{JtiStore, PublishKey, PublishKeyService, StreamingPublishKeyService};
 pub use rate_limit::{RateLimitConfig, RateLimitError, RateLimiter, RequestRateLimiterService};

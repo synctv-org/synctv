@@ -177,9 +177,11 @@ impl RoomService for ClientServiceImpl {
                 + 'static,
         >,
     >;
-    type WatchRoomMembersStream = std::pin::Pin<
+    type WatchRoomMemberEventsStream = std::pin::Pin<
         Box<
-            dyn tokio_stream::Stream<Item = Result<WatchRoomMembersEvent, Status>> + Send + 'static,
+            dyn tokio_stream::Stream<Item = Result<WatchRoomMemberEventsEvent, Status>>
+                + Send
+                + 'static,
         >,
     >;
     type WatchChatEventsStream = std::pin::Pin<
@@ -228,11 +230,11 @@ impl RoomService for ClientServiceImpl {
         streaming::watch_playlist_items(self, request).await
     }
 
-    async fn watch_room_members(
+    async fn watch_room_member_events(
         &self,
-        request: Request<WatchRoomMembersRequest>,
-    ) -> Result<Response<Self::WatchRoomMembersStream>, Status> {
-        streaming::watch_room_members(self, request).await
+        request: Request<WatchRoomMemberEventsRequest>,
+    ) -> Result<Response<Self::WatchRoomMemberEventsStream>, Status> {
+        streaming::watch_room_member_events(self, request).await
     }
 
     async fn watch_chat_events(
@@ -303,6 +305,41 @@ impl RoomService for ClientServiceImpl {
         request: Request<GetChatReadStateRequest>,
     ) -> Result<Response<ChatReadStateResponse>, Status> {
         chat::get_chat_read_state(self, request).await
+    }
+
+    async fn get_chat_message_read_receipts(
+        &self,
+        request: Request<GetChatMessageReadReceiptsRequest>,
+    ) -> Result<Response<GetChatMessageReadReceiptsResponse>, Status> {
+        chat::get_chat_message_read_receipts(self, request).await
+    }
+
+    async fn report_content(
+        &self,
+        request: Request<ReportContentRequest>,
+    ) -> Result<Response<ReportContentResponse>, Status> {
+        chat::report_content(self, request).await
+    }
+
+    async fn list_room_content_reports(
+        &self,
+        request: Request<ListRoomContentReportsRequest>,
+    ) -> Result<Response<ListRoomContentReportsResponse>, Status> {
+        chat::list_room_content_reports(self, request).await
+    }
+
+    async fn get_room_content_report(
+        &self,
+        request: Request<GetRoomContentReportRequest>,
+    ) -> Result<Response<GetRoomContentReportResponse>, Status> {
+        chat::get_room_content_report(self, request).await
+    }
+
+    async fn update_room_content_report_status(
+        &self,
+        request: Request<UpdateRoomContentReportStatusRequest>,
+    ) -> Result<Response<UpdateRoomContentReportStatusResponse>, Status> {
+        chat::update_room_content_report_status(self, request).await
     }
 
     async fn send_chat_message(
@@ -537,11 +574,11 @@ impl RoomService for ClientServiceImpl {
         playback::get_playback(self, request).await
     }
 
-    async fn update_playback(
+    async fn update_playback_state(
         &self,
-        request: Request<UpdatePlaybackRequest>,
-    ) -> Result<Response<GetPlaybackResponse>, Status> {
-        playback::update_playback(self, request).await
+        request: Request<UpdatePlaybackStateRequest>,
+    ) -> Result<Response<UpdatePlaybackStateResponse>, Status> {
+        playback::update_playback_state(self, request).await
     }
 
     // Playlist Management

@@ -51,7 +51,7 @@ impl PlaybackStatePatch {
 }
 
 #[derive(Clone)]
-pub struct PlaybackUpdateRequest {
+pub struct PlaybackStateUpdateRequest {
     pub room_id: RoomId,
     pub actor_user_id: UserId,
     pub patch: PlaybackStatePatch,
@@ -60,7 +60,7 @@ pub struct PlaybackUpdateRequest {
     pub outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
 }
 
-impl PlaybackUpdateRequest {
+impl PlaybackStateUpdateRequest {
     #[must_use]
     pub const fn new(room_id: RoomId, actor_user_id: UserId, patch: PlaybackStatePatch) -> Self {
         Self {

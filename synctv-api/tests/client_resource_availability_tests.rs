@@ -171,11 +171,15 @@ async fn create_client_api_fixture() -> ClientApiFixture {
         .await
         .unwrap();
 
+    let connection_service = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    let mut runtime = support::client_api_runtime();
+    runtime.presence_service = connection_service.presence_service();
+
     let client_api = ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
             user_service,
             room_service,
-            connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
+            connection_service,
             config: Arc::new(Config::default()),
             publish_key_service: None,
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
@@ -189,7 +193,7 @@ async fn create_client_api_fixture() -> ClientApiFixture {
             email_api: None,
             passkey_service: None,
         },
-        support::client_api_runtime(),
+        runtime,
     );
 
     ClientApiFixture {

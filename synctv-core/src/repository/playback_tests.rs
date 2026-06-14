@@ -119,7 +119,7 @@ async fn test_update_playback_state() {
 
     // Create owner and room
     let owner = UserFixture::new()
-        .with_username("playback_update_owner")
+        .with_username("playback_state_update_owner")
         .build();
     let owner = user_repo
         .create(&owner)

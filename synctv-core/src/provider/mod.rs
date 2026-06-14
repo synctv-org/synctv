@@ -268,6 +268,7 @@ pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult
     PlaybackResult {
         playback_infos,
         default_mode: "hls".to_string(),
+        duration_seconds: None,
         metadata,
     }
 }
@@ -643,6 +644,7 @@ mod tests {
         PlaybackResult {
             playback_infos,
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata: std::collections::HashMap::new(),
         }
     }
@@ -687,6 +689,7 @@ mod tests {
                 },
             )]),
             default_mode: "dash".to_string(),
+            duration_seconds: None,
             metadata: std::collections::HashMap::new(),
         };
 
@@ -750,6 +753,7 @@ mod tests {
                 },
             )]),
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata: std::collections::HashMap::new(),
         };
 
@@ -794,6 +798,7 @@ mod tests {
                 },
             )]),
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata: std::collections::HashMap::new(),
         };
 
@@ -836,6 +841,7 @@ mod tests {
                 },
             )]),
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata: std::collections::HashMap::new(),
         };
 

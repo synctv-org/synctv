@@ -15,7 +15,6 @@ This configuration should be used for first deployment or unattended initializat
 bootstrap:
   create_root_user: true
   root_username: "root"
-  root_email: "admin@example.com"
   root_password_file: "/run/secrets/root_password"
 ```
 
@@ -56,29 +55,6 @@ bootstrap:
 
 The username is not a secret, but it can appear in audit records, admin UI, and log context. Avoid personal real names.
 
-## `bootstrap.root_email`
-
-Type: string.
-
-Default: empty string.
-
-Purpose: email address for the initial root user.
-
-Example:
-
-```yaml
-bootstrap:
-  root_email: "admin@example.com"
-```
-
-Set it when:
-
-- Email verification, password recovery, or email 2FA is enabled.
-- The root account should receive system emails.
-- Your operational process requires administrator accounts to have traceable emails.
-
-If SMTP is not configured yet, leave it empty and add it later in the user profile.
-
 ## `bootstrap.root_password`
 
 Type: secret string.
@@ -109,7 +85,6 @@ Do not use:
 | --- | --- |
 | `SYNCTV_BOOTSTRAP_CREATE_ROOT_USER` | `bootstrap.create_root_user` |
 | `SYNCTV_BOOTSTRAP_ROOT_USERNAME` | `bootstrap.root_username` |
-| `SYNCTV_BOOTSTRAP_ROOT_EMAIL` | `bootstrap.root_email` |
 | `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | `bootstrap.root_password` |
 | `SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE` | `bootstrap.root_password` file |
 

@@ -364,6 +364,7 @@ fn test_app_state_with_rate_limits(
         connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
             synctv_realtime::sync::ConnectionLimits::default(),
         )),
+        presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
         jwt_service,
         realtime_fanout_service: crate::realtime_fanout::disabled_realtime_fanout_service(),
         oauth2_service: None,
@@ -689,6 +690,7 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
         connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
             synctv_realtime::sync::ConnectionLimits::default(),
         )),
+        presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
         jwt_service,
         realtime_fanout_service: crate::realtime_fanout::disabled_realtime_fanout_service(),
         oauth2_service: None,
@@ -1023,6 +1025,7 @@ async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 images: Vec::new(),
+                mentions: Vec::new(),
             })
             .await,
     )?;
@@ -1037,6 +1040,7 @@ async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 images: Vec::new(),
+                mentions: Vec::new(),
             })
             .await,
     )?;
@@ -1051,6 +1055,7 @@ async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 images: Vec::new(),
+                mentions: Vec::new(),
             })
             .await,
     )?;

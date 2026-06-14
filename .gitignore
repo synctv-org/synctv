@@ -2,12 +2,16 @@ target/
 **/target/
 **/**.local
 **/**.local.*
+**/**.local-*
 .DS_Store
 .idea/
 .vscode/
 .claude/
 .tmp/
 logs/
+.data-dev/
+.dev-data/
+.local-data/
 
 # Secrets and configuration
 *.pem

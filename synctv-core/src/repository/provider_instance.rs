@@ -660,6 +660,35 @@ impl UserProviderCredentialRepository {
             .collect()
     }
 
+    fn decrypt_readable_credential_rows(
+        &self,
+        rows: Vec<UserProviderCredentialRow>,
+    ) -> Vec<UserProviderCredential> {
+        rows.into_iter()
+            .filter_map(|row| {
+                let credential_id = row.id;
+                let user_id = row.user_id;
+                let provider = row.provider;
+                let server_id = row.server_id.clone();
+
+                match self.decrypt_credential_row(row) {
+                    Ok(credential) => Some(credential),
+                    Err(error) => {
+                        tracing::warn!(
+                            credential_id,
+                            user_id = %user_id,
+                            provider,
+                            server_id = %server_id,
+                            error = %error,
+                            "Skipping unreadable user provider credential"
+                        );
+                        None
+                    }
+                }
+            })
+            .collect()
+    }
+
     /// Get all credentials for a user (decrypted)
     pub async fn get_by_user(&self, user_id: UserId) -> Result<Vec<UserProviderCredential>> {
         let rows = sqlx::query_as!(
@@ -709,26 +738,26 @@ impl UserProviderCredentialRepository {
         provider: &str,
         server_id: &str,
     ) -> Result<Option<UserProviderCredential>> {
-        let row = sqlx::query_as!(
-            UserProviderCredentialRow,
-            r#"
-            SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: serde_json::Value",
+        let rows = sqlx::query_as::<_, UserProviderCredentialRow>(
+            r"
+            SELECT id, user_id, provider, server_id,
+                   provider_instance_name, credential_data,
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1 AND provider = $2 AND server_id = $3
-            "#,
-            user_id as UserId,
-            provider_type_code(provider)?,
-            server_id,
+            ORDER BY created_at DESC
+            ",
         )
-        .fetch_optional(&self.pool)
+        .bind(user_id)
+        .bind(provider_type_code(provider)?)
+        .bind(server_id)
+        .fetch_all(&self.pool)
         .await?;
 
-        match row {
-            Some(row) => Ok(Some(self.decrypt_credential_row(row)?)),
-            None => Ok(None),
-        }
+        Ok(self
+            .decrypt_readable_credential_rows(rows)
+            .into_iter()
+            .next())
     }
 
     /// Get all credentials for a specific provider type (decrypted)
@@ -753,6 +782,33 @@ impl UserProviderCredentialRepository {
         .await?;
 
         self.decrypt_credential_rows(rows)
+    }
+
+    /// Get readable credentials for a specific provider type.
+    ///
+    /// This is intended for bind-list UI paths where one corrupt historical
+    /// credential should not hide the user's current valid binding.
+    pub async fn get_readable_by_provider(
+        &self,
+        user_id: UserId,
+        provider: &str,
+    ) -> Result<Vec<UserProviderCredential>> {
+        let rows = sqlx::query_as::<_, UserProviderCredentialRow>(
+            r"
+            SELECT id, user_id, provider, server_id,
+                   provider_instance_name, credential_data,
+                   expires_at, created_at, updated_at
+            FROM user_media_provider_credentials
+            WHERE user_id = $1 AND provider = $2
+            ORDER BY created_at DESC
+            ",
+        )
+        .bind(user_id)
+        .bind(provider_type_code(provider)?)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(self.decrypt_readable_credential_rows(rows))
     }
 
     /// Create a new user credential (encrypts before storage)

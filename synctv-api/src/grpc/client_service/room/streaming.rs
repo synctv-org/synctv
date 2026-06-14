@@ -11,7 +11,7 @@ use super::super::{
 use super::RoomService;
 use crate::grpc::client_service::streaming::{
     watch_chat_events_event, watch_playback_event, watch_playback_state_event,
-    watch_playlist_items_event, watch_room_members_event, watch_room_settings_event,
+    watch_playlist_items_event, watch_room_member_events_event, watch_room_settings_event,
     GrpcMessageSender, GrpcStreamMessage, MESSAGE_STREAM_BUFFER_SIZE,
 };
 use crate::impls::messaging::{
@@ -165,6 +165,7 @@ pub(super) async fn message_stream(
             chat_event_dispatcher: crate::chat_event_dispatcher::default_chat_event_dispatcher(
                 event_service.clone(),
             ),
+            presence_service: service.presence_service.clone(),
             notification_service: service.notification_service.clone(),
             ws_message_rate_limit: service
                 .config
@@ -279,15 +280,15 @@ pub(super) async fn watch_playlist_items(
         .await
 }
 
-pub(super) async fn watch_room_members(
+pub(super) async fn watch_room_member_events(
     service: &ClientServiceImpl,
-    request: Request<WatchRoomMembersRequest>,
-) -> Result<Response<<ClientServiceImpl as RoomService>::WatchRoomMembersStream>, Status> {
+    request: Request<WatchRoomMemberEventsRequest>,
+) -> Result<Response<<ClientServiceImpl as RoomService>::WatchRoomMemberEventsStream>, Status> {
     let (metadata, room_id) = service.internal_room_request_context(&request)?;
-    let observe = crate::impls::messaging::watch_room_members_observe(request.into_inner())
+    let observe = crate::impls::messaging::watch_room_member_events_observe(request.into_inner())
         .map_err(Status::invalid_argument)?;
     service
-        .open_watch_stream(metadata, room_id, observe, watch_room_members_event)
+        .open_watch_stream(metadata, room_id, observe, watch_room_member_events_event)
         .await
 }
 

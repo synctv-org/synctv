@@ -332,6 +332,23 @@ pub(super) fn chat_message_to_proto(
         .map(chat_reaction_summary_to_proto)
         .collect::<Result<Vec<_>, _>>()?;
     let reaction_count = chat_reaction_count(&reactions)?;
+    let mentions = message
+        .mentions
+        .iter()
+        .map(|mention| {
+            Ok(synctv_proto::client::ChatMention {
+                user_id: api
+                    .public_id_codec
+                    .encode_user_id(mention.mentioned_user_id)
+                    .map_err(|error| {
+                        ApiError::Internal(format!("Failed to encode mention user id: {error}"))
+                    })?,
+                username: mention.username.clone().unwrap_or_default(),
+                start: mention.start,
+                length: mention.length,
+            })
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
     let playback = crate::impls::messaging::chat_playback_metadata_from_metadata(
         &msg.metadata,
         &api.public_id_codec,
@@ -373,6 +390,11 @@ pub(super) fn chat_message_to_proto(
         playback_position_seconds: playback.position_seconds,
         reactions,
         reaction_count,
+        metadata: crate::impls::client::convert::json_to_vec(
+            &msg.metadata,
+            "chat message metadata",
+        )?,
+        mentions,
     })
 }
 
@@ -583,6 +605,37 @@ pub(super) fn chat_read_state_to_proto(
             updated_at: state.state.updated_at.timestamp(),
         }),
         unread_count: state.unread_count,
+    })
+}
+
+pub(super) async fn chat_message_read_receipts_to_proto(
+    api: &ClientApiImpl,
+    page: synctv_core::models::ChatMessageReadReceiptsPage,
+) -> Result<synctv_proto::client::GetChatMessageReadReceiptsResponse, ApiError> {
+    let mut readers = Vec::with_capacity(page.readers.len());
+    for reader in page.readers {
+        readers.push(synctv_proto::client::ChatMessageReadReceiptUser {
+            user: Some(
+                api.user_public_view_with_loaded_avatar(&reader.user)
+                    .await?,
+            ),
+            read_at: reader.read_at.timestamp(),
+        });
+    }
+    let mut unread_members = Vec::with_capacity(page.unread_members.len());
+    for member in page.unread_members {
+        unread_members.push(synctv_proto::client::ChatMessageUnreadMember {
+            user: Some(
+                api.user_public_view_with_loaded_avatar(&member.user)
+                    .await?,
+            ),
+        });
+    }
+    Ok(synctv_proto::client::GetChatMessageReadReceiptsResponse {
+        readers,
+        unread_members,
+        reader_total: page.reader_total,
+        unread_total: page.unread_total,
     })
 }
 

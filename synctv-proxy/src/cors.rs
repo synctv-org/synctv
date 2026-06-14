@@ -208,6 +208,7 @@ impl CorsConfig {
 /// - Origins not in the allowed list receive 403 Forbidden.
 /// - When the allowed list is empty, all origins are rejected (secure default).
 /// - The `Vary: Origin` header is included for proper caching.
+#[must_use]
 pub fn proxy_options_preflight_with_cors(origin: Option<&str>, config: &CorsConfig) -> Response {
     handle_cors_preflight(origin, config)
 }

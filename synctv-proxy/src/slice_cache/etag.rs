@@ -1,7 +1,7 @@
-//! ETag consistency validation for cached resources, plus the `StoredEntry`
+//! `ETag` consistency validation for cached resources, plus the `StoredEntry`
 //! type used by cache backends.
 //!
-//! Mirrors nginx's slice filter ETag checking: the first slice's ETag
+//! Mirrors nginx's slice filter `ETag` checking: the first slice's `ETag`
 //! establishes the expected value; subsequent slices must match or the
 //! entire resource is invalidated.
 
@@ -9,11 +9,11 @@ use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 
-/// Per-resource metadata stored alongside slice data to enable ETag
+/// Per-resource metadata stored alongside slice data to enable `ETag`
 /// consistency checking across slices.
 #[derive(Clone, Debug)]
 pub struct CachedResourceMeta {
-    /// ETag returned by the upstream for this resource.
+    /// `ETag` returned by the upstream for this resource.
     pub etag: Option<String>,
     /// Last-Modified header returned by the upstream.
     pub last_modified: Option<String>,

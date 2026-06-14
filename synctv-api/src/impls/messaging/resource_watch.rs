@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use synctv_core::{
     models::{RoomId, RoomPermission, UserId},
-    service::{ChatService, RoomService},
+    service::{ChatService, OnlinePresenceService, RoomService},
 };
 use synctv_realtime::sync::{ConnectionId, RealtimeEvent};
 
@@ -29,7 +29,7 @@ pub enum WatchResourceKind {
     Playback,
     RoomSettings,
     PlaylistItems,
-    RoomMembers,
+    RoomMemberEvents,
     ChatEvents,
 }
 
@@ -40,7 +40,7 @@ impl WatchResourceKind {
             Self::Playback => "playback",
             Self::RoomSettings => "room_settings",
             Self::PlaylistItems => "playlist_items",
-            Self::RoomMembers => "room_members",
+            Self::RoomMemberEvents => "room_member_events",
             Self::ChatEvents => "chat_events",
         }
     }
@@ -54,6 +54,7 @@ pub struct ResourceWatchSessionConfig {
     pub chat_service: Option<Arc<ChatService>>,
     pub event_service: Arc<dyn RealtimeEventService>,
     pub connection_service: Arc<dyn ConnectionRuntime>,
+    pub presence_service: Arc<OnlinePresenceService>,
     pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
     pub sender: Arc<dyn MessageSender>,
     pub playback_service: Arc<dyn PlaybackService>,
@@ -89,11 +90,12 @@ impl ResourceWatchSession {
             chat_service,
             event_service,
             connection_service,
+            presence_service,
             public_id_codec,
             sender,
             playback_service,
             playlist_items_snapshot_service,
-            room_members_snapshot_service,
+            room_members_snapshot_service: _,
             room_settings_snapshot_service,
         } = config;
         let user_id = principal.connection_user_id();
@@ -104,11 +106,11 @@ impl ResourceWatchSession {
             actor: principal.room_actor(room_id),
             connection_id: connection_id.as_str().to_string(),
             room_service: Arc::clone(&room_service),
+            presence_service: Arc::clone(&presence_service),
             public_id_codec: Arc::clone(&public_id_codec),
             sender,
             playback_service,
             playlist_items_snapshot_service,
-            room_members_snapshot_service,
             room_settings_snapshot_service,
         });
         let observer = Arc::new(observer);
@@ -395,7 +397,7 @@ impl PreparedResourceWatchSession {
                     () = async {
                         match session
                             .resource_observer
-                            .next_playback_refresh_deadline()
+                            .next_expired_resource_refresh_deadline()
                             .await {
                             Some(deadline) => tokio::time::sleep_until(deadline).await,
                             None => std::future::pending::<()>().await,
@@ -403,7 +405,7 @@ impl PreparedResourceWatchSession {
                     } => {
                         if let Err(error) = session
                             .resource_observer
-                            .refresh_expired_playback_observations()
+                            .refresh_expired_resource_observations()
                             .await
                         {
                             break Err(error);
@@ -496,7 +498,8 @@ impl ResourceWatchSession {
 
         match resource {
             synctv_proto::client::observe_resource::Resource::PlaybackState(_)
-            | synctv_proto::client::observe_resource::Resource::RoomSettings(_) => {
+            | synctv_proto::client::observe_resource::Resource::RoomSettings(_)
+            | synctv_proto::client::observe_resource::Resource::OnlineCount(_) => {
                 if self.principal.is_guest() {
                     self.ensure_guest_admission_for_action().await?;
                 }
@@ -509,12 +512,19 @@ impl ResourceWatchSession {
                     Ok(())
                 }
             }
-            synctv_proto::client::observe_resource::Resource::RoomMembers(_) => {
+            synctv_proto::client::observe_resource::Resource::RoomMemberEvents(_)
+            | synctv_proto::client::observe_resource::Resource::OnlineEvent(_) => {
                 if self.principal.is_guest() {
                     self.ensure_guest_admission_for_action().await?;
                 }
                 self.check_realtime_permission(RoomPermission::VIEW_MEMBER_LIST)
                     .await
+            }
+            synctv_proto::client::observe_resource::Resource::SelfRoomMember(_) => {
+                if self.principal.is_guest() {
+                    return Err("Guests do not have a room member permission snapshot".to_string());
+                }
+                Ok(())
             }
             synctv_proto::client::observe_resource::Resource::ChatEvents(_) => {
                 if self.principal.is_guest() {
@@ -589,16 +599,14 @@ pub fn watch_playlist_items_observe(
     )
 }
 
-pub fn watch_room_members_observe(
-    req: synctv_proto::client::WatchRoomMembersRequest,
+pub fn watch_room_member_events_observe(
+    req: synctv_proto::client::WatchRoomMemberEventsRequest,
 ) -> Result<ObserveResource, String> {
-    let room_members = req
-        .room_members
-        .ok_or_else(|| "room_members watch body is required".to_string())?;
+    let room_member_events = req.room_member_events.unwrap_or_default();
     build_watch_observe(
-        WatchResourceKind::RoomMembers,
+        WatchResourceKind::RoomMemberEvents,
         req.delivery_mode,
-        synctv_proto::client::observe_resource::Resource::RoomMembers(room_members),
+        synctv_proto::client::observe_resource::Resource::RoomMemberEvents(room_member_events),
     )
 }
 

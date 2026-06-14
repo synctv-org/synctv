@@ -77,6 +77,8 @@ pub enum RealtimeEvent {
         user_id: UserId,
         username: String,
         state: RoomPlaybackState,
+        #[serde(default)]
+        source_changed: bool,
         timestamp: DateTime<Utc>,
     },
 
@@ -119,6 +121,8 @@ pub enum RealtimeEvent {
         room_id: RoomId,
         user_id: UserId,
         username: String,
+        #[serde(default)]
+        role: i32,
         timestamp: DateTime<Utc>,
     },
 
@@ -223,6 +227,8 @@ pub enum RealtimeEvent {
         target_username: String,
         changed_by: UserId,
         changed_by_username: String,
+        #[serde(default)]
+        role_changed: bool,
         new_permissions: RoomPermissionSet,
         role: i32, // RoomMemberRole as i32 for serde compatibility
         added_permissions: RoomPermissionSet,
@@ -231,6 +237,10 @@ pub enum RealtimeEvent {
         admin_added_permissions: RoomPermissionSet,
         #[serde(default)]
         admin_removed_permissions: RoomPermissionSet,
+        #[serde(default)]
+        target_is_online: bool,
+        #[serde(default)]
+        target_connection_count: usize,
         timestamp: DateTime<Utc>,
     },
 

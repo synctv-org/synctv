@@ -1,51 +1,10 @@
 use prost::Message;
 use sha2::{Digest, Sha256};
 use synctv_core::models::{
-    ChatEventKind, ChatMessageEvent, ChatMessageStatus, NewStoredFile, RoomId, RoomPlaybackState,
+    ChatEventKind, ChatMessageEvent, ChatMessageStatus, NewStoredFile, RoomPlaybackState,
 };
 
 use synctv_proto::client::{ClientMessage, ServerMessage};
-
-pub(super) fn playback_state_to_proto(
-    state: &RoomPlaybackState,
-    encode_room: &impl Fn(RoomId) -> Result<String, String>,
-    encode_media: &impl Fn(synctv_core::models::MediaId) -> Result<String, String>,
-    encode_playlist: &impl Fn(synctv_core::models::PlaylistId) -> Result<String, String>,
-) -> Result<synctv_proto::client::PlaybackState, String> {
-    let position = state.computed_position();
-    if !position.is_finite() || position < 0.0 {
-        return Err("Playback position must be a finite non-negative number".to_string());
-    }
-    if !state.speed.is_finite() || state.speed <= 0.0 {
-        return Err("Playback speed must be a finite positive number".to_string());
-    }
-    if state.version < 0 {
-        return Err("Playback version must be non-negative".to_string());
-    }
-
-    Ok(synctv_proto::client::PlaybackState {
-        room_id: encode_room(state.room_id)?,
-        playing_media_id: state
-            .playing_media_id
-            .as_ref()
-            .map(|id| encode_media(*id))
-            .transpose()?
-            .unwrap_or_default(),
-        position,
-        speed: state.speed,
-        is_playing: state.is_playing,
-        updated_at: state.updated_at.timestamp(),
-        version: state.version,
-        playing_playlist_id: state
-            .playing_playlist_id
-            .as_ref()
-            .map(|id| encode_playlist(*id))
-            .transpose()?
-            .unwrap_or_default(),
-        target: state.target.clone(),
-        target_hash: state.target_hash(),
-    })
-}
 
 pub(super) fn validated_room_member_role(role: i32) -> Result<i32, String> {
     let role = synctv_proto::common::RoomMemberRole::try_from(role)
@@ -70,40 +29,276 @@ pub(super) fn required_realtime_text(
     Ok(trimmed.to_string())
 }
 
-pub(super) fn encode_non_empty_media_ids(
-    media_ids: &[synctv_core::models::MediaId],
-    encode_media: &impl Fn(synctv_core::models::MediaId) -> Result<String, String>,
-    field_name: &'static str,
-) -> Result<Vec<String>, String> {
-    if media_ids.is_empty() {
-        return Err(format!("Realtime {field_name} media_ids must not be empty"));
-    }
-    media_ids
-        .iter()
-        .map(|id| encode_media(*id))
-        .collect::<Result<Vec<_>, _>>()
+pub(crate) fn room_member_event_to_proto(
+    event: &synctv_realtime::sync::RealtimeEvent,
+    public_id_codec: &synctv_core::PublicIdCodec,
+    sequence: i64,
+) -> Result<Option<synctv_proto::client::RoomMemberEvent>, String> {
+    use synctv_proto::client::RoomMemberEventKind;
+    use synctv_realtime::sync::RealtimeEvent;
+
+    let encode_room = |id| {
+        public_id_codec
+            .encode_room_id(id)
+            .map_err(|error| format!("Failed to encode room member event room id: {error}"))
+    };
+    let encode_user = |id| {
+        public_id_codec
+            .encode_user_id(id)
+            .map_err(|error| format!("Failed to encode room member event user id: {error}"))
+    };
+
+    let proto = match event {
+        RealtimeEvent::UserJoined {
+            event_id,
+            room_id,
+            user_id,
+            username,
+            permissions,
+            role,
+            added_permissions,
+            removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
+            joined_at,
+            timestamp,
+            ..
+        } => {
+            let room_id = encode_room(*room_id)?;
+            let user_id = encode_user(*user_id)?;
+            synctv_proto::client::RoomMemberEvent {
+                event_id: event_id.clone(),
+                room_id: room_id.clone(),
+                kind: RoomMemberEventKind::Joined as i32,
+                member: Some(synctv_proto::common::RoomMember {
+                    room_id,
+                    user_id: user_id.clone(),
+                    username: required_realtime_text(username, "user username", 50)?,
+                    role: validated_room_member_role(*role)?,
+                    permissions: permissions.0,
+                    added_permissions: added_permissions.0,
+                    removed_permissions: removed_permissions.0,
+                    admin_added_permissions: admin_added_permissions.0,
+                    admin_removed_permissions: admin_removed_permissions.0,
+                    joined_at: joined_at.timestamp(),
+                    is_online: true,
+                    connection_count: 1,
+                }),
+                user_id,
+                guest_id: String::new(),
+                username: required_realtime_text(username, "user username", 50)?,
+                actor_user_id: String::new(),
+                reason: String::new(),
+                occurred_at: timestamp.timestamp(),
+                sequence,
+            }
+        }
+        RealtimeEvent::GuestJoined {
+            event_id,
+            room_id,
+            guest_id,
+            username,
+            permissions,
+            role,
+            joined_at,
+            timestamp,
+            ..
+        } => {
+            let room_id = encode_room(*room_id)?;
+            let guest_id = required_realtime_text(guest_id, "guest id", 128)?;
+            synctv_proto::client::RoomMemberEvent {
+                event_id: event_id.clone(),
+                room_id: room_id.clone(),
+                kind: RoomMemberEventKind::Joined as i32,
+                member: Some(synctv_proto::common::RoomMember {
+                    room_id,
+                    user_id: guest_id.clone(),
+                    username: required_realtime_text(username, "guest username", 64)?,
+                    role: validated_room_member_role(*role)?,
+                    permissions: permissions.0,
+                    added_permissions: 0,
+                    removed_permissions: 0,
+                    admin_added_permissions: 0,
+                    admin_removed_permissions: 0,
+                    joined_at: joined_at.timestamp(),
+                    is_online: true,
+                    connection_count: 1,
+                }),
+                user_id: String::new(),
+                guest_id,
+                username: required_realtime_text(username, "guest username", 64)?,
+                actor_user_id: String::new(),
+                reason: String::new(),
+                occurred_at: timestamp.timestamp(),
+                sequence,
+            }
+        }
+        RealtimeEvent::UserLeft {
+            event_id,
+            room_id,
+            user_id,
+            username,
+            timestamp,
+            ..
+        } => synctv_proto::client::RoomMemberEvent {
+            event_id: event_id.clone(),
+            room_id: encode_room(*room_id)?,
+            kind: RoomMemberEventKind::Left as i32,
+            member: None,
+            user_id: encode_user(*user_id)?,
+            guest_id: String::new(),
+            username: required_realtime_text(username, "user username", 50)?,
+            actor_user_id: String::new(),
+            reason: String::new(),
+            occurred_at: timestamp.timestamp(),
+            sequence,
+        },
+        RealtimeEvent::GuestLeft {
+            event_id,
+            room_id,
+            guest_id,
+            username,
+            timestamp,
+        } => synctv_proto::client::RoomMemberEvent {
+            event_id: event_id.clone(),
+            room_id: encode_room(*room_id)?,
+            kind: RoomMemberEventKind::Left as i32,
+            member: None,
+            user_id: String::new(),
+            guest_id: required_realtime_text(guest_id, "guest id", 128)?,
+            username: required_realtime_text(username, "guest username", 64)?,
+            actor_user_id: String::new(),
+            reason: String::new(),
+            occurred_at: timestamp.timestamp(),
+            sequence,
+        },
+        RealtimeEvent::PermissionChanged {
+            event_id,
+            room_id,
+            target_user_id,
+            target_username,
+            changed_by,
+            new_permissions,
+            role,
+            added_permissions,
+            removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
+            target_is_online,
+            target_connection_count,
+            timestamp,
+            ..
+        } => {
+            let room_id = encode_room(*room_id)?;
+            let user_id = encode_user(*target_user_id)?;
+            synctv_proto::client::RoomMemberEvent {
+                event_id: event_id.clone(),
+                room_id: room_id.clone(),
+                kind: RoomMemberEventKind::PermissionChanged as i32,
+                member: Some(synctv_proto::common::RoomMember {
+                    room_id,
+                    user_id: user_id.clone(),
+                    username: required_realtime_text(target_username, "target username", 50)?,
+                    role: validated_room_member_role(*role)?,
+                    permissions: new_permissions.0,
+                    added_permissions: added_permissions.0,
+                    removed_permissions: removed_permissions.0,
+                    admin_added_permissions: admin_added_permissions.0,
+                    admin_removed_permissions: admin_removed_permissions.0,
+                    joined_at: 0,
+                    is_online: *target_is_online,
+                    connection_count: i32::try_from(*target_connection_count).unwrap_or(i32::MAX),
+                }),
+                user_id,
+                guest_id: String::new(),
+                username: required_realtime_text(target_username, "target username", 50)?,
+                actor_user_id: encode_user(*changed_by)?,
+                reason: String::new(),
+                occurred_at: timestamp.timestamp(),
+                sequence,
+            }
+        }
+        RealtimeEvent::KickUserFromRoom {
+            event_id,
+            room_id,
+            user_id,
+            reason,
+            timestamp,
+        } => synctv_proto::client::RoomMemberEvent {
+            event_id: event_id.clone(),
+            room_id: encode_room(*room_id)?,
+            kind: RoomMemberEventKind::Kicked as i32,
+            member: None,
+            user_id: encode_user(*user_id)?,
+            guest_id: String::new(),
+            username: String::new(),
+            actor_user_id: String::new(),
+            reason: required_realtime_text(reason, "kick reason", 500)?,
+            occurred_at: timestamp.timestamp(),
+            sequence,
+        },
+        _ => return Ok(None),
+    };
+
+    Ok(Some(proto))
 }
 
-pub(super) fn validated_room_settings_json(settings_json: &[u8]) -> Result<Vec<u8>, String> {
-    if settings_json.is_empty() {
-        return Err("Room settings JSON must not be empty".to_string());
-    }
-    let value: serde_json::Value = serde_json::from_slice(settings_json)
-        .map_err(|error| format!("Room settings JSON is invalid: {error}"))?;
-    if !value.is_object() {
-        return Err("Room settings JSON must be an object".to_string());
-    }
-    Ok(settings_json.to_vec())
-}
+pub(crate) fn online_event_to_proto(
+    event: &synctv_realtime::sync::RealtimeEvent,
+    public_id_codec: &synctv_core::PublicIdCodec,
+) -> Result<Option<synctv_proto::client::OnlineEvent>, String> {
+    use synctv_proto::client::OnlineEventKind;
+    use synctv_realtime::sync::RealtimeEvent;
 
-pub(super) fn validated_non_negative_version(
-    version: i64,
-    field_name: &'static str,
-) -> Result<i64, String> {
-    if version < 0 {
-        return Err(format!("{field_name} version must be non-negative"));
-    }
-    Ok(version)
+    let encode_room = |id| {
+        public_id_codec
+            .encode_room_id(id)
+            .map_err(|error| format!("Failed to encode online event room id: {error}"))
+    };
+    let encode_user = |id| {
+        public_id_codec
+            .encode_user_id(id)
+            .map_err(|error| format!("Failed to encode online event user id: {error}"))
+    };
+
+    let event = match event {
+        RealtimeEvent::UserJoined {
+            event_id,
+            room_id,
+            user_id,
+            username,
+            role,
+            timestamp,
+            ..
+        } => synctv_proto::client::OnlineEvent {
+            event_id: event_id.clone(),
+            room_id: encode_room(*room_id)?,
+            user_id: encode_user(*user_id)?,
+            username: required_realtime_text(username, "online event username", 50)?,
+            role: validated_room_member_role(*role)?,
+            kind: OnlineEventKind::Joined as i32,
+            occurred_at: timestamp.timestamp(),
+        },
+        RealtimeEvent::UserLeft {
+            event_id,
+            room_id,
+            user_id,
+            username,
+            role,
+            timestamp,
+        } => synctv_proto::client::OnlineEvent {
+            event_id: event_id.clone(),
+            room_id: encode_room(*room_id)?,
+            user_id: encode_user(*user_id)?,
+            username: required_realtime_text(username, "online event username", 50)?,
+            role: validated_room_member_role(*role)?,
+            kind: OnlineEventKind::Left as i32,
+            occurred_at: timestamp.timestamp(),
+        },
+        _ => return Ok(None),
+    };
+
+    Ok(Some(event))
 }
 
 pub(crate) fn chat_event_kind_to_proto(
@@ -317,17 +512,6 @@ fn validate_chat_metadata_text(
     Ok(Some(trimmed.to_string()))
 }
 
-pub(super) fn optional_chat_metadata_text(
-    value: Option<&str>,
-    field_name: &str,
-    max_len: usize,
-) -> Result<Option<String>, String> {
-    value
-        .map(|value| validate_chat_metadata_text(value, field_name, max_len))
-        .transpose()
-        .map(Option::flatten)
-}
-
 pub(crate) fn chat_playback_target_hash(target: &[u8]) -> String {
     hex::encode(Sha256::digest(target))
 }
@@ -440,6 +624,21 @@ pub(crate) fn chat_message_event_to_proto(
         .map_err(|error| error.to_string())?;
     let reaction_count =
         crate::impls::client::chat_reaction_count(&reactions).map_err(|e| e.to_string())?;
+    let mentions = event
+        .message
+        .mentions
+        .iter()
+        .map(|mention| {
+            Ok(synctv_proto::client::ChatMention {
+                user_id: public_id_codec
+                    .encode_user_id(mention.mentioned_user_id)
+                    .map_err(|error| format!("Failed to encode mention user id: {error}"))?,
+                username: mention.username.clone().unwrap_or_default(),
+                start: mention.start,
+                length: mention.length,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let playback = chat_playback_metadata_from_metadata(&message.metadata, public_id_codec)?;
     Ok(synctv_proto::client::ChatMessageEvent {
         event_id: event.event_id.clone(),
@@ -478,6 +677,12 @@ pub(crate) fn chat_message_event_to_proto(
             playback_position_seconds: playback.position_seconds,
             reactions,
             reaction_count,
+            metadata: crate::impls::client::convert::json_to_vec(
+                &message.metadata,
+                "chat message metadata",
+            )
+            .map_err(|error| error.to_string())?,
+            mentions,
         }),
         occurred_at: event.occurred_at.timestamp(),
         sequence: event.sequence,

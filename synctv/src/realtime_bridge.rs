@@ -83,12 +83,29 @@ pub fn room_event_to_realtime_event(
             playlist_id: *playlist_id,
             timestamp,
         }),
+        synctv_core::service::RoomEvent::UserJoined { user_id, username } => {
+            Some(RealtimeEvent::UserJoined {
+                event_id: synctv_common::snanoid!(16),
+                room_id: *room_id,
+                user_id: *user_id,
+                username: username.clone(),
+                permissions: synctv_core::models::RoomPermissionSet::default_member(),
+                role: synctv_proto::common::RoomMemberRole::Member as i32,
+                added_permissions: synctv_core::models::RoomPermissionSet(0),
+                removed_permissions: synctv_core::models::RoomPermissionSet(0),
+                admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
+                admin_removed_permissions: synctv_core::models::RoomPermissionSet(0),
+                joined_at: timestamp,
+                timestamp,
+            })
+        }
         synctv_core::service::RoomEvent::UserLeft { user_id, username } => {
             Some(RealtimeEvent::UserLeft {
                 event_id: synctv_common::snanoid!(16),
                 room_id: *room_id,
                 user_id: *user_id,
                 username: username.clone(),
+                role: synctv_proto::common::RoomMemberRole::Member as i32,
                 timestamp,
             })
         }
@@ -109,6 +126,7 @@ pub fn room_event_to_realtime_event(
             target_username: String::new(),
             changed_by: *updated_by_user_id,
             changed_by_username: updated_by_username.clone(),
+            role_changed: true,
             new_permissions: synctv_core::models::RoomPermissionSet(*effective_permissions),
             role: *role,
             added_permissions: synctv_core::models::RoomPermissionSet(*added_permissions),
@@ -119,6 +137,8 @@ pub fn room_event_to_realtime_event(
             admin_removed_permissions: synctv_core::models::RoomPermissionSet(
                 *admin_removed_permissions,
             ),
+            target_is_online: false,
+            target_connection_count: 0,
             timestamp,
         }),
         synctv_core::service::RoomEvent::SettingsUpdated {
@@ -152,8 +172,7 @@ pub fn room_event_to_realtime_event(
             deleted_by: system_user_id(),
             timestamp,
         }),
-        synctv_core::service::RoomEvent::UserJoined { .. }
-        | synctv_core::service::RoomEvent::ChatMessage { .. }
+        synctv_core::service::RoomEvent::ChatMessage { .. }
         | synctv_core::service::RoomEvent::MemberKicked { .. }
         | synctv_core::service::RoomEvent::GuestKicked { .. }
         | synctv_core::service::RoomEvent::StreamStarted { .. }
@@ -245,23 +264,48 @@ mod tests {
     }
 
     #[test]
+    fn test_room_event_to_realtime_event_maps_user_joined() {
+        let room_id = RoomId::expect_positive(120_013);
+        let user_id = UserId::expect_positive(120_014);
+
+        let event = room_event_to_realtime_event(
+            &room_id,
+            &synctv_core::service::RoomEvent::UserJoined {
+                user_id,
+                username: "joiner".to_string(),
+            },
+        )
+        .expect("UserJoined should bridge to RealtimeEvent");
+
+        match event {
+            RealtimeEvent::UserJoined {
+                room_id,
+                user_id,
+                username,
+                role,
+                ..
+            } => {
+                assert_eq!(room_id, RoomId::expect_positive(120_013));
+                assert_eq!(user_id, UserId::expect_positive(120_014));
+                assert_eq!(username, "joiner");
+                assert_eq!(role, synctv_proto::common::RoomMemberRole::Member as i32);
+            }
+            other => panic!("expected UserJoined, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_room_event_bridge_keeps_direct_realtime_events_explicitly_unmapped() {
         let room_id = RoomId::expect_positive(120_013);
         let user_id = UserId::expect_positive(120_014);
 
-        let events = [
-            synctv_core::service::RoomEvent::UserJoined {
-                user_id,
-                username: "joiner".to_string(),
-            },
-            synctv_core::service::RoomEvent::ChatMessage {
-                message_id: "chat-1".to_string(),
-                user_id,
-                username: "chat-user".to_string(),
-                content: "hello".to_string(),
-                timestamp: chrono::Utc::now(),
-            },
-        ];
+        let events = [synctv_core::service::RoomEvent::ChatMessage {
+            message_id: "chat-1".to_string(),
+            user_id,
+            username: "chat-user".to_string(),
+            content: "hello".to_string(),
+            timestamp: chrono::Utc::now(),
+        }];
 
         for event in events {
             assert!(

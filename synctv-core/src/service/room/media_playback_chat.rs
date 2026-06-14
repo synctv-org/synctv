@@ -64,7 +64,7 @@ impl RoomService {
             .await
     }
 
-    pub async fn update_playback(
+    pub async fn update_playback_state(
         &self,
         room_id: RoomId,
         user_id: UserId,

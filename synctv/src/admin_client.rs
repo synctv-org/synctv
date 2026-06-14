@@ -368,7 +368,7 @@ mod tests {
         RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
         SendTestEmailRequest, SetUserPasswordRequest, StartPlaybackRequest, StopPlaybackRequest,
         StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest,
-        UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackRequest,
+        UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackStateRequest,
         UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
         UpdateSettingsRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
         UpdateUserUsernameRequest,
@@ -800,10 +800,11 @@ mod tests {
         ) -> std::result::Result<Response<client_proto::GetPlaybackResponse>, Status> {
             unavailable_test_management_response()
         }
-        async fn update_playback(
+        async fn update_playback_state(
             &self,
-            _: Request<UpdatePlaybackRequest>,
-        ) -> std::result::Result<Response<client_proto::GetPlaybackResponse>, Status> {
+            _: Request<UpdatePlaybackStateRequest>,
+        ) -> std::result::Result<Response<client_proto::UpdatePlaybackStateResponse>, Status>
+        {
             unavailable_test_management_response()
         }
         async fn create_publish_key(

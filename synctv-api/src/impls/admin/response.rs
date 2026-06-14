@@ -1,6 +1,6 @@
 #[cfg(test)]
 use synctv_core::models::RoomId;
-use synctv_core::models::{UserId, UserStatus};
+use synctv_core::models::UserId;
 use synctv_core::service::UserService;
 
 use super::{
@@ -8,44 +8,74 @@ use super::{
     AdminApiImpl, ApiError,
 };
 
-pub(in crate::impls::admin) async fn load_creator_status_map(
+pub(in crate::impls::admin) async fn load_creator_user_map(
     user_service: &UserService,
     creator_ids: &[UserId],
-) -> Result<std::collections::HashMap<UserId, UserStatus>, ApiError> {
+) -> Result<std::collections::HashMap<UserId, synctv_core::models::User>, ApiError> {
     let users = user_service
         .get_users_by_ids(creator_ids)
         .await
         .map_err(ApiError::from)?;
-    Ok(users
-        .into_iter()
-        .map(|user| (user.id, user.status))
-        .collect())
-}
-
-pub(in crate::impls::admin) fn room_creator_status_from_map(
-    statuses: &std::collections::HashMap<UserId, UserStatus>,
-    room: &synctv_core::models::Room,
-) -> Result<UserStatus, ApiError> {
-    statuses.get(&room.created_by).copied().ok_or_else(|| {
-        ApiError::Internal(format!(
-            "Missing creator status for admin room {} creator {}",
-            room.id, room.created_by
-        ))
-    })
-}
-
-pub(in crate::impls::admin) async fn load_room_creator_status(
-    user_service: &UserService,
-    room: &synctv_core::models::Room,
-) -> Result<UserStatus, ApiError> {
-    match user_service.get_user(&room.created_by).await {
-        Ok(user) => Ok(user.status),
-        Err(synctv_core::Error::NotFound(_)) => Ok(UserStatus::Banned),
-        Err(error) => Err(ApiError::from(error)),
-    }
+    Ok(users.into_iter().map(|user| (user.id, user)).collect())
 }
 
 impl AdminApiImpl {
+    pub(in crate::impls::admin) async fn creator_avatar_url(
+        &self,
+        user: &synctv_core::models::User,
+    ) -> Result<Option<String>, ApiError> {
+        let Some(reference_id) = user.avatar_file_reference_id else {
+            return Ok(None);
+        };
+        let Some(storage) = self.user_service.file_storage_service() else {
+            return Ok(None);
+        };
+        let file_reference =
+            synctv_core::repository::FileStorageRepository::new(self.user_service.pool().clone())
+                .get_reference_by_id(reference_id)
+                .await
+                .map_err(ApiError::from)?;
+        let Some(file_reference) = file_reference else {
+            return Ok(None);
+        };
+
+        storage
+            .object_url(
+                &file_reference.storage_backend,
+                &file_reference.object_key,
+                &synctv_core::service::user_avatar_upload_policy().database_object_route_prefix,
+            )
+            .map_err(ApiError::from)
+    }
+
+    pub(in crate::impls::admin) async fn room_cover_for_admin(
+        &self,
+        room: &synctv_core::models::Room,
+    ) -> Result<Option<(synctv_core::models::StoredFileReference, String)>, ApiError> {
+        let Some(reference_id) = room.cover_file_reference_id else {
+            return Ok(None);
+        };
+        let Some(storage) = self.room_service.file_storage_service() else {
+            return Ok(None);
+        };
+        let file_reference =
+            synctv_core::repository::FileStorageRepository::new(self.room_service.pool().clone())
+                .get_reference_by_id(reference_id)
+                .await
+                .map_err(ApiError::from)?;
+        let Some(file_reference) = file_reference else {
+            return Ok(None);
+        };
+        let url = storage
+            .object_url(
+                &file_reference.storage_backend,
+                &file_reference.object_key,
+                &synctv_core::service::room_cover_upload_policy().database_object_route_prefix,
+            )
+            .map_err(ApiError::from)?;
+        Ok(url.map(|url| (file_reference, url)))
+    }
+
     pub(in crate::impls::admin) async fn admin_user_to_proto_with_email(
         &self,
         user: &synctv_core::models::User,
@@ -55,7 +85,17 @@ impl AdminApiImpl {
             .get_email(&user.id)
             .await
             .map_err(ApiError::from)?;
-        try_admin_user_to_proto(user, email.as_deref(), &self.public_id_codec)
+        let presence = self
+            .presence_service
+            .user_stats(user.id)
+            .await
+            .map_err(ApiError::from)?;
+        try_admin_user_to_proto(
+            user,
+            email.as_deref(),
+            Some(&presence),
+            &self.public_id_codec,
+        )
     }
 
     pub(in crate::impls::admin) async fn admin_room_member_to_proto(
@@ -91,27 +131,35 @@ impl AdminApiImpl {
                 .map_err(ApiError::from)?;
             &loaded_settings
         };
-        let creator_username = self
+        let creator = self
             .user_service
-            .get_usernames(std::slice::from_ref(&room.created_by))
+            .get_user(&room.created_by)
             .await
-            .map_err(ApiError::from)?
-            .into_values()
-            .next();
-        let creator_status = load_room_creator_status(&self.user_service, room).await?;
+            .map_err(ApiError::from)?;
+        let creator_avatar_url = self.creator_avatar_url(&creator).await?;
         let member_count = self
             .room_service
             .get_member_count(&room.id)
             .await
             .map(Some)
             .map_err(ApiError::from)?;
+        let presence = self
+            .presence_service
+            .room_stats(room.id)
+            .await
+            .map_err(ApiError::from)?;
+        let cover = self.room_cover_for_admin(room).await?;
 
         try_admin_room_to_proto(
             room,
             Some(settings),
             member_count,
-            creator_username.as_deref(),
-            creator_status,
+            Some(creator.username.as_str()),
+            creator.status,
+            creator_avatar_url.as_deref(),
+            cover.as_ref().map(|(reference, _)| reference),
+            cover.as_ref().map(|(_, url)| url.as_str()),
+            Some(&presence),
             &self.public_id_codec,
         )
     }

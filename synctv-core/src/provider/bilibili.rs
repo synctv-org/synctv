@@ -1091,6 +1091,7 @@ impl BilibiliProvider {
                     }
                 }
 
+                let duration_seconds = dash_resp.dash.as_ref().map(|dash| dash.duration);
                 if let Some(d) = &dash_resp.dash {
                     metadata.insert("duration".to_string(), json!(d.duration));
                     metadata.insert("min_buffer_time".to_string(), json!(d.min_buffer_time));
@@ -1128,6 +1129,7 @@ impl BilibiliProvider {
                 Ok(PlaybackResult {
                     playback_infos,
                     default_mode: "dash".to_string(),
+                    duration_seconds,
                     metadata,
                 })
             }
@@ -1173,6 +1175,10 @@ impl BilibiliProvider {
                     }
                 }
 
+                let duration_seconds = dash_resp
+                    .as_ref()
+                    .and_then(|resp| resp.dash.as_ref())
+                    .map(|dash| dash.duration);
                 if let Some(d) = dash_resp.as_ref().and_then(|resp| resp.dash.as_ref()) {
                     metadata.insert("duration".to_string(), json!(d.duration));
                 }
@@ -1238,6 +1244,7 @@ impl BilibiliProvider {
                 Ok(PlaybackResult {
                     playback_infos,
                     default_mode,
+                    duration_seconds,
                     metadata,
                 })
             }
@@ -1292,6 +1299,7 @@ impl BilibiliProvider {
                 Ok(PlaybackResult {
                     playback_infos,
                     default_mode,
+                    duration_seconds: None,
                     metadata,
                 })
             }

@@ -170,6 +170,7 @@ fn admin_lifecycle_playback_result(session_id: &str) -> synctv_core::provider::P
     synctv_core::provider::PlaybackResult {
         playback_infos,
         default_mode: "direct".to_string(),
+        duration_seconds: None,
         metadata,
     }
 }
@@ -295,12 +296,16 @@ impl MembershipEventFanoutService for RecordingMembershipEventFanout {
         &self,
         target_user_id: UserId,
         changed_by: UserId,
+        target_is_online: bool,
+        target_connection_count: usize,
     ) -> crate::membership_event_fanout::PreparedPermissionChangedFanout {
         crate::membership_event_fanout::PreparedPermissionChangedFanout::new(
             Arc::new(self.clone()),
             Arc::new(LocalNoopRealtimeEventService::new()),
             target_user_id,
             changed_by,
+            target_is_online,
+            target_connection_count,
         )
     }
 
@@ -636,6 +641,7 @@ async fn make_admin_api_for_delete_user_test(
                     )
                     .expect("test signing key should derive"),
                 ),
+                presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
                 request_executor: Arc::new(crate::test_support::local_request_executor()),
             },
         ),
@@ -746,6 +752,7 @@ async fn make_admin_api_with_livestream_for_test(
                     )
                     .expect("test signing key should derive"),
                 ),
+                presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
                 request_executor: Arc::new(crate::test_support::local_request_executor()),
             },
         ),
@@ -1128,6 +1135,10 @@ fn test_admin_room_to_proto_basic() -> TestResult {
         Some(10),
         Some("creator_user"),
         UserStatus::Active,
+        Some("https://cdn.example/avatar.png"),
+        None,
+        None,
+        None,
         &public_id_codec,
     )
     .map_err(|error| test_error(format!("{error:?}")))?;
@@ -1147,6 +1158,7 @@ fn test_admin_room_to_proto_basic() -> TestResult {
             .map_err(test_error)?
     );
     assert_eq!(proto.creator_username, "creator_user");
+    assert_eq!(proto.creator_avatar_url, "https://cdn.example/avatar.png");
     assert_eq!(
         proto.creator_status,
         synctv_proto::common::UserStatus::Active as i32
@@ -1168,6 +1180,10 @@ fn test_admin_room_to_proto_banned() -> TestResult {
         Some(0),
         Some("creator_user"),
         UserStatus::Banned,
+        None,
+        None,
+        None,
+        None,
         &public_id_codec,
     )
     .map_err(|error| test_error(format!("{error:?}")))?;
@@ -1195,6 +1211,10 @@ fn test_admin_room_to_proto_uses_supplied_settings() -> TestResult {
         Some(0),
         Some("creator_user"),
         UserStatus::Active,
+        None,
+        None,
+        None,
+        None,
         &public_id_codec,
     )
     .map_err(|error| test_error(format!("{error:?}")))?;
@@ -1216,6 +1236,10 @@ fn test_admin_room_to_proto_different_statuses() -> TestResult {
             Some(0),
             Some("creator_user"),
             UserStatus::Active,
+            None,
+            None,
+            None,
+            None,
             &public_id_codec,
         )
         .map_err(|error| test_error(format!("{error:?}")))?;
@@ -1225,32 +1249,6 @@ fn test_admin_room_to_proto_different_statuses() -> TestResult {
         );
     }
     Ok(())
-}
-
-#[test]
-fn room_creator_status_from_map_returns_loaded_status() -> TestResult {
-    let room = make_test_room(RoomStatus::Active);
-    let statuses = std::collections::HashMap::from([(room.created_by, UserStatus::Active)]);
-
-    assert_eq!(
-        api_ok(room_creator_status_from_map(&statuses, &room))?,
-        UserStatus::Active
-    );
-    Ok(())
-}
-
-#[test]
-fn room_creator_status_from_map_rejects_missing_status() {
-    let room = make_test_room(RoomStatus::Active);
-    let statuses = std::collections::HashMap::new();
-
-    assert!(matches!(
-        room_creator_status_from_map(&statuses, &room),
-        Err(ApiError::Internal(message))
-            if message.contains("creator status")
-                && message.contains(&room.id.to_string())
-                && message.contains(&room.created_by.to_string())
-    ));
 }
 
 #[test]
@@ -1370,41 +1368,6 @@ fn admin_query_enum_mappers_reject_unknown_values_and_preserve_defaults() -> Tes
         map_resource_availability_filter(99),
         Err(ApiError::InvalidInput(message)) if message.contains("availability")
     ));
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_load_room_creator_status_maps_missing_creator_to_banned() -> TestResult {
-    let (_postgres, pool) = create_test_pool().await;
-    let user_service = make_user_service(&pool);
-    let room = make_test_room(RoomStatus::Active);
-
-    let status = api_ok(load_room_creator_status(&user_service, &room).await)?;
-
-    assert_eq!(status, UserStatus::Banned);
-    pool.close().await;
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_load_room_creator_status_propagates_backend_failures() -> TestResult {
-    let (_postgres, pool) = create_test_pool().await;
-    let user_service = make_user_service(&pool);
-    let room = make_test_room(RoomStatus::Active);
-
-    pool.close().await;
-
-    let error = api_err(load_room_creator_status(&user_service, &room).await)?;
-
-    assert!(
-        matches!(
-            error,
-            ApiError::Internal(_) | ApiError::ServiceUnavailable(_)
-        ),
-        "unexpected error kind: {error:?}"
-    );
     Ok(())
 }
 
@@ -1582,7 +1545,7 @@ fn test_admin_user_to_proto_all_roles() -> TestResult {
         (UserRole::User, synctv_proto::common::UserRole::User as i32),
     ] {
         let user = make_test_user(role, UserStatus::Active);
-        let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec)
+        let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), None, &public_id_codec)
             .map_err(|error| test_error(format!("{error:?}")))?;
         assert_eq!(proto.role, expected);
     }
@@ -1603,7 +1566,7 @@ fn test_admin_user_to_proto_all_statuses() -> TestResult {
         ),
     ] {
         let user = make_test_user(UserRole::User, status);
-        let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec)
+        let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), None, &public_id_codec)
             .map_err(|error| test_error(format!("{error:?}")))?;
         assert_eq!(proto.status, expected);
     }
@@ -1614,7 +1577,7 @@ fn test_admin_user_to_proto_all_statuses() -> TestResult {
 fn test_admin_user_to_proto_fields() -> TestResult {
     let public_id_codec = synctv_core::PublicIdCodec::plain();
     let user = make_test_user(UserRole::Admin, UserStatus::Active);
-    let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), &public_id_codec)
+    let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), None, &public_id_codec)
         .map_err(|error| test_error(format!("{error:?}")))?;
 
     assert_eq!(
@@ -1636,7 +1599,7 @@ fn test_admin_user_to_proto_preserves_ban_timestamp() -> TestResult {
     user.is_banned = true;
     user.banned_at = Some(banned_at);
 
-    let proto = try_admin_user_to_proto(&user, Some("banned@test.com"), &public_id_codec)
+    let proto = try_admin_user_to_proto(&user, Some("banned@test.com"), None, &public_id_codec)
         .map_err(|error| test_error(format!("{error:?}")))?;
 
     assert_eq!(proto.banned_at, banned_at.timestamp());
@@ -1652,6 +1615,7 @@ fn test_admin_user_to_proto_rejects_banned_user_without_ban_timestamp() -> TestR
     let error = api_err(try_admin_user_to_proto(
         &user,
         Some("banned@test.com"),
+        None,
         &public_id_codec,
     ))?;
 
@@ -1666,7 +1630,7 @@ fn test_admin_user_to_proto_rejects_banned_user_without_ban_timestamp() -> TestR
 fn test_admin_user_to_proto_no_email() -> TestResult {
     let public_id_codec = synctv_core::PublicIdCodec::plain();
     let user = make_test_user(UserRole::User, UserStatus::Active);
-    let proto = try_admin_user_to_proto(&user, None, &public_id_codec)
+    let proto = try_admin_user_to_proto(&user, None, None, &public_id_codec)
         .map_err(|error| test_error(format!("{error:?}")))?;
     assert_eq!(proto.email, "");
     Ok(())
@@ -2506,6 +2470,7 @@ async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fai
             provider_stores: admin_api.provider_stores.clone(),
             provider_access_service: admin_api.provider_access_service.clone(),
             signing_key: admin_api.signing_key.clone(),
+            presence_service: admin_api.presence_service.clone(),
             request_executor: admin_api.request_executor.clone(),
         },
     );
@@ -4029,6 +3994,7 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
                 )
                 .expect("test signing key should derive"),
             ),
+            presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
             request_executor: Arc::new(crate::test_support::local_request_executor()),
         },
     );
@@ -4105,9 +4071,9 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
 
     api_ok(
         admin_api
-            .update_playback(
+            .update_playback_state(
                 &public_room_id(&admin_api, room.id),
-                synctv_proto::client::UpdatePlaybackRequest {
+                synctv_proto::client::UpdatePlaybackStateRequest {
                     r#type: synctv_proto::client::PlaybackUpdateType::Pause as i32,
                     playing: None,
                     position: Some(12.5),
@@ -4129,7 +4095,7 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
     assert_eq!(
         progress_calls.as_slice(),
         [("admin-session".to_string(), 12.5, true)],
-        "admin playback updates must trigger provider progress lifecycle hooks"
+        "admin playback state updates must trigger provider progress lifecycle hooks"
     );
     Ok(())
 }

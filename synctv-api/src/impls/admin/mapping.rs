@@ -1,4 +1,6 @@
-use synctv_core::models::{RoomId, UserId, UserStatus};
+use synctv_core::models::{
+    ContentReportAdminRow, ContentReportStatus, ContentReportTargetType, RoomId, UserId, UserStatus,
+};
 use synctv_core::service::{
     BanRecordRow, RoomCreationReviewRecord, RoomJoinReviewRecord, UserRegistrationReviewRecord,
 };
@@ -64,6 +66,75 @@ fn encode_optional_room_id(
     })
     .transpose()
     .map(std::option::Option::unwrap_or_default)
+}
+
+fn optional_i64_timestamp(value: Option<chrono::DateTime<chrono::Utc>>) -> i64 {
+    value.map_or(0, |timestamp| timestamp.timestamp())
+}
+
+fn content_report_target_type_to_proto(value: ContentReportTargetType) -> i32 {
+    match value {
+        ContentReportTargetType::Room => synctv_proto::admin::ContentReportTargetType::Room as i32,
+        ContentReportTargetType::User => synctv_proto::admin::ContentReportTargetType::User as i32,
+        ContentReportTargetType::RoomMember => {
+            synctv_proto::admin::ContentReportTargetType::RoomMember as i32
+        }
+        ContentReportTargetType::ChatMessage => {
+            synctv_proto::admin::ContentReportTargetType::ChatMessage as i32
+        }
+    }
+}
+
+fn content_report_status_to_proto(value: ContentReportStatus) -> i32 {
+    match value {
+        ContentReportStatus::Open => synctv_proto::admin::ContentReportStatus::Open as i32,
+        ContentReportStatus::Reviewing => {
+            synctv_proto::admin::ContentReportStatus::Reviewing as i32
+        }
+        ContentReportStatus::Resolved => synctv_proto::admin::ContentReportStatus::Resolved as i32,
+        ContentReportStatus::Dismissed => {
+            synctv_proto::admin::ContentReportStatus::Dismissed as i32
+        }
+    }
+}
+
+pub(crate) fn content_report_row_to_proto(
+    row: &ContentReportAdminRow,
+    public_id_codec: &synctv_core::PublicIdCodec,
+) -> Result<synctv_proto::admin::ContentReport, ApiError> {
+    Ok(synctv_proto::admin::ContentReport {
+        id: public_id_codec
+            .encode_content_report_id(row.id)
+            .map_err(ApiError::InvalidInput)?,
+        reporter_user_id: public_id_codec
+            .encode_user_id(row.reporter_user_id)
+            .map_err(ApiError::InvalidInput)?,
+        reporter_username: row.reporter_username.clone(),
+        room_id: encode_optional_room_id(public_id_codec, row.room_id)?,
+        room_name: row.room_name.clone(),
+        target_type: content_report_target_type_to_proto(row.target_type),
+        target_room_id: encode_optional_room_id(public_id_codec, row.target_room_id)?,
+        target_room_name: row.target_room_name.clone(),
+        target_user_id: encode_optional_user_id(public_id_codec, row.target_user_id)?,
+        target_username: row.target_username.clone(),
+        target_member_room_id: encode_optional_room_id(public_id_codec, row.target_member_room_id)?,
+        target_member_room_name: row.target_member_room_name.clone(),
+        target_member_user_id: encode_optional_user_id(public_id_codec, row.target_member_user_id)?,
+        target_member_username: row.target_member_username.clone(),
+        target_chat_message_id: row.target_chat_message_id.unwrap_or_default(),
+        target_chat_message_created_at: optional_i64_timestamp(row.target_chat_message_created_at),
+        target_chat_message_preview: row.target_chat_message_preview.clone(),
+        reason_code: row.reason_code.clone(),
+        reason: row.reason.clone(),
+        metadata: json_to_vec(&row.metadata, "content report metadata")?,
+        status: content_report_status_to_proto(row.status),
+        reviewed_by: encode_optional_user_id(public_id_codec, row.reviewed_by)?,
+        reviewed_by_username: row.reviewed_by_username.clone(),
+        reviewed_at: optional_timestamp(row.reviewed_at),
+        resolution_note: row.resolution_note.clone(),
+        created_at: row.created_at.timestamp(),
+        updated_at: row.updated_at.timestamp(),
+    })
 }
 
 pub(in crate::impls::admin) fn user_registration_review_row_to_proto(
@@ -168,12 +239,17 @@ pub(in crate::impls::admin) fn ban_row_to_proto(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::impls::admin) fn try_admin_room_to_proto(
     room: &synctv_core::models::Room,
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
     creator_username: Option<&str>,
     creator_status: UserStatus,
+    creator_avatar_url: Option<&str>,
+    cover: Option<&synctv_core::models::StoredFileReference>,
+    cover_url: Option<&str>,
+    presence: Option<&synctv_core::service::OnlineRoomStats>,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::admin::AdminRoom, ApiError> {
     let room_settings = settings.ok_or_else(|| {
@@ -208,6 +284,17 @@ pub(in crate::impls::admin) fn try_admin_room_to_proto(
         is_banned: room.is_banned,
         creator_status: user_status_to_proto(creator_status),
         version: i64::from(room.version),
+        presence: presence
+            .map(crate::impls::client::convert::room_presence_stats_to_proto)
+            .transpose()?,
+        creator_avatar_url: creator_avatar_url.unwrap_or_default().to_string(),
+        cover: cover
+            .map(|file| {
+                crate::impls::client::convert::stored_file_reference_to_resource_cover(
+                    file, cover_url,
+                )
+            })
+            .transpose()?,
     })
 }
 
@@ -247,12 +334,14 @@ pub(in crate::impls::admin) fn try_admin_room_member_to_proto_with_permissions(
         admin_removed_permissions: member.admin_removed_permissions,
         joined_at: member.joined_at.timestamp(),
         is_online: member.is_online,
+        connection_count: 0,
     })
 }
 
 pub(in crate::impls::admin) fn try_admin_user_to_proto(
     user: &synctv_core::models::User,
     email: Option<&str>,
+    presence: Option<&synctv_core::service::OnlineUserStats>,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
     Ok(synctv_proto::admin::AdminUser {
@@ -277,5 +366,10 @@ pub(in crate::impls::admin) fn try_admin_user_to_proto(
             .unwrap_or_default(),
         banned_reason: user.banned_reason.clone().unwrap_or_default(),
         avatar_url: String::new(),
+        presence: presence
+            .map(|stats| {
+                crate::impls::client::convert::user_presence_stats_to_proto(stats, public_id_codec)
+            })
+            .transpose()?,
     })
 }

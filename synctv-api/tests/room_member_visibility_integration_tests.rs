@@ -59,6 +59,8 @@ fn make_client_api(
     room_service: Arc<RoomService>,
 ) -> synctv_api::impls::ClientApiImpl {
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    let mut runtime = support::client_api_runtime();
+    runtime.presence_service = connection_manager.presence_service();
 
     synctv_api::impls::ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
@@ -78,7 +80,7 @@ fn make_client_api(
             email_api: None,
             passkey_service: None,
         },
-        support::client_api_runtime(),
+        runtime,
     )
 }
 
@@ -87,6 +89,8 @@ fn make_client_api_with_connections(
     room_service: Arc<RoomService>,
 ) -> (synctv_api::impls::ClientApiImpl, Arc<ConnectionManager>) {
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
+    let mut runtime = support::client_api_runtime();
+    runtime.presence_service = connection_manager.presence_service();
 
     let client_api = synctv_api::impls::ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
@@ -106,7 +110,7 @@ fn make_client_api_with_connections(
             email_api: None,
             passkey_service: None,
         },
-        support::client_api_runtime(),
+        runtime,
     );
 
     (client_api, connection_manager)

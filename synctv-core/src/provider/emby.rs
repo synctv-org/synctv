@@ -717,6 +717,9 @@ impl EmbyProvider {
         Ok(PlaybackResult {
             playback_infos,
             default_mode,
+            duration_seconds: item
+                .duration_seconds
+                .filter(|duration| duration.is_finite() && *duration > 0.0),
             metadata,
         })
     }
@@ -1629,6 +1632,7 @@ mod tests {
                 collection_type: String::new(),
                 has_thumbnail: false,
                 description: String::new(),
+                duration_seconds: Some(72.0),
             })
         }
 
@@ -2067,6 +2071,7 @@ mod tests {
         let result = PlaybackResult {
             playback_infos: HashMap::new(),
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata: HashMap::from([(
                 "emby_play_session_id".to_string(),
                 json!("play-session-123"),

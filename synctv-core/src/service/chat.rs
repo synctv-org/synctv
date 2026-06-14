@@ -14,11 +14,12 @@ use tracing::{debug, error, info, warn};
 use crate::{
     models::{
         AuditAction, AuditTargetType, ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatImage,
-        ChatMessage, ChatMessageContext, ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus,
-        ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReactionUsersCursor,
-        ChatReactionUsersPage, ChatReadStateWithUnread, CreateChatImageUploadSession,
-        DeleteChatMessage, EditChatMessage, FileBlob, FileUploadSession, MarkChatRead, RoomId,
-        SendChatMessage, SetChatReaction, UserId,
+        ChatMessage, ChatMessageContext, ChatMessageEvent, ChatMessageEventLog,
+        ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType, ChatMessageWithImages,
+        ChatPlaybackMessagesQuery, ChatReactionUsersCursor, ChatReactionUsersPage,
+        ChatReadStateWithUnread, CreateChatImageUploadSession, DeleteChatMessage, EditChatMessage,
+        FileBlob, FileUploadSession, MarkChatRead, RoomId, SendChatMessage, SetChatReaction,
+        UserId,
     },
     repository::{
         ChatMessageOperationIdempotency, ChatRepository, DeleteChatMessageEventRequest,
@@ -237,6 +238,7 @@ impl ChatService {
                     reply_to_message_id: None,
                     metadata: serde_json::Value::Object(Default::default()),
                     images: Vec::new(),
+                    mentions: Vec::new(),
                 },
                 control,
             )
@@ -278,6 +280,7 @@ impl ChatService {
         validate_client_message_id(request.client_message_id.as_deref())?;
         validate_chat_metadata(&request.metadata)?;
         validate_chat_images(&request.images)?;
+        normalize_chat_mentions(&request.content, &mut request.mentions)?;
         if request.content.trim().is_empty() && request.images.is_empty() {
             return Err(Error::InvalidInput(
                 "empty chat message: content or image is required".to_string(),
@@ -293,6 +296,15 @@ impl ChatService {
         self.permission_service
             .check_permission(&room_id, &user_id, crate::models::RoomPermission::CHAT)
             .await?;
+        for mention in &request.mentions {
+            self.permission_service
+                .check_permission(
+                    &room_id,
+                    &mention.user_id,
+                    crate::models::RoomPermission::VIEW_CHAT_HISTORY,
+                )
+                .await?;
+        }
 
         // Check if chat is enabled for this room
         let room_settings = self.room_settings_service.get(&room_id).await?;
@@ -395,6 +407,7 @@ impl ChatService {
             .insert_message_event_idempotent(
                 &message,
                 &request.images,
+                &request.mentions,
                 &request_hash,
                 &event_id,
                 occurred_at,
@@ -718,6 +731,45 @@ impl ChatService {
             state: state.unwrap_or_else(|| empty_read_state(*room_id, *user_id)),
             unread_count,
         })
+    }
+
+    pub async fn get_message_read_receipts(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        message_id: i64,
+        page: i32,
+        page_size: i32,
+    ) -> Result<ChatMessageReadReceiptsPage> {
+        self.permission_service
+            .check_permission(
+                room_id,
+                user_id,
+                crate::models::RoomPermission::VIEW_CHAT_HISTORY,
+            )
+            .await?;
+
+        let message = self
+            .chat_repository
+            .get_by_room_and_id(room_id, message_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+        if message.status == ChatMessageStatus::Deleted {
+            return Err(Error::Conflict("Message has been deleted".to_string()));
+        }
+        if message.user_id != Some(*user_id) {
+            return Err(Error::Authorization(
+                "Only the message sender can view read receipts".to_string(),
+            ));
+        }
+
+        let event = self
+            .chat_repository
+            .created_event_for_message(room_id, message.id, message.created_at)
+            .await?;
+        self.chat_repository
+            .message_read_receipts(room_id, &message, event.as_ref(), page, page_size)
+            .await
     }
 
     pub async fn edit_message(&self, request: EditChatMessage) -> Result<ChatMessageEvent> {

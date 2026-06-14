@@ -46,6 +46,7 @@ pub enum AuditAction {
     SettingsViewed,
     SettingsGroupViewed,
     ChatMessageDeleted,
+    ContentReportStatusUpdated,
 }
 
 impl AuditAction {
@@ -93,6 +94,7 @@ impl AuditAction {
             Self::SettingsViewed => "settings_viewed",
             Self::SettingsGroupViewed => "settings_group_viewed",
             Self::ChatMessageDeleted => "chat_message_deleted",
+            Self::ContentReportStatusUpdated => "content_report_status_updated",
         }
     }
 
@@ -138,6 +140,7 @@ impl AuditAction {
             Self::SettingsViewed => 37,
             Self::SettingsGroupViewed => 38,
             Self::ChatMessageDeleted => 39,
+            Self::ContentReportStatusUpdated => 40,
         }
     }
 }
@@ -192,6 +195,7 @@ impl TryFrom<i16> for AuditAction {
             37 => Ok(Self::SettingsViewed),
             38 => Ok(Self::SettingsGroupViewed),
             39 => Ok(Self::ChatMessageDeleted),
+            40 => Ok(Self::ContentReportStatusUpdated),
             other => Err(format!("Unknown audit action code: {other}")),
         }
     }
@@ -241,6 +245,7 @@ impl FromStr for AuditAction {
             "settings_viewed" => Ok(Self::SettingsViewed),
             "settings_group_viewed" => Ok(Self::SettingsGroupViewed),
             "chat_message_deleted" => Ok(Self::ChatMessageDeleted),
+            "content_report_status_updated" => Ok(Self::ContentReportStatusUpdated),
             other => Err(format!("Unknown audit action: {other}")),
         }
     }
@@ -265,6 +270,7 @@ pub enum AuditTargetType {
     Stream,
     Token,
     ChatMessage,
+    ContentReport,
 }
 
 impl AuditTargetType {
@@ -280,6 +286,7 @@ impl AuditTargetType {
             Self::Stream => "stream",
             Self::Token => "token",
             Self::ChatMessage => "chat_message",
+            Self::ContentReport => "content_report",
         }
     }
 
@@ -295,6 +302,7 @@ impl AuditTargetType {
             Self::Stream => 7,
             Self::Token => 8,
             Self::ChatMessage => 9,
+            Self::ContentReport => 10,
         }
     }
 }
@@ -319,6 +327,7 @@ impl TryFrom<i16> for AuditTargetType {
             7 => Ok(Self::Stream),
             8 => Ok(Self::Token),
             9 => Ok(Self::ChatMessage),
+            10 => Ok(Self::ContentReport),
             other => Err(format!("Unknown audit target type code: {other}")),
         }
     }
@@ -338,6 +347,7 @@ impl FromStr for AuditTargetType {
             "stream" => Ok(Self::Stream),
             "token" => Ok(Self::Token),
             "chat_message" => Ok(Self::ChatMessage),
+            "content_report" => Ok(Self::ContentReport),
             other => Err(format!("Unknown audit target type: {other}")),
         }
     }

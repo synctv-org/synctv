@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 #![allow(dead_code)]
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -9,6 +10,7 @@ mod integration_test_helpers;
 
 use integration_test_helpers::TestRedis;
 use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::service::OnlinePresenceService;
 use synctv_core::SharedStateProfile;
 use synctv_realtime::sync::{build_connection_manager, ConnectionLimits};
 
@@ -47,6 +49,8 @@ fn bench_ttl_refresh_large_scale(c: &mut Criterion) {
                     "ttl_large:",
                     true,
                 ),
+                Arc::new(OnlinePresenceService::local()),
+                "ttl-refresh-bench",
             )
             .expect("shared realtime connection runtime should initialize");
 

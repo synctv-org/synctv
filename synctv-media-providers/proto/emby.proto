@@ -102,6 +102,7 @@ message Item {
   string collection_type = 11;
   bool has_thumbnail = 12;
   string description = 13;
+  optional double duration_seconds = 14;
 }
 
 message GetItemsResp {

@@ -1347,6 +1347,7 @@ async fn test_send_message_event_idempotency_returns_existing_message() {
         reply_to_message_id: None,
         metadata: serde_json::Value::Object(Default::default()),
         images: Vec::new(),
+        mentions: Vec::new(),
     };
 
     let first = chat_service
@@ -1420,6 +1421,7 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
             images: Vec::new(),
+            mentions: Vec::new(),
         })
         .await
         .checked("test operation should succeed");
@@ -1433,6 +1435,7 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
             images: Vec::new(),
+            mentions: Vec::new(),
         })
         .await
         .checked("test operation should succeed");
@@ -1534,6 +1537,7 @@ async fn test_send_message_event_idempotency_rejects_different_payload() {
         reply_to_message_id: None,
         metadata: serde_json::Value::Object(Default::default()),
         images: Vec::new(),
+        mentions: Vec::new(),
     };
     chat_service
         .send_message_event(request.clone())
@@ -1916,6 +1920,7 @@ async fn test_image_message_history_returns_image_metadata() {
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
             images: vec![session.file],
+            mentions: Vec::new(),
         })
         .await
         .checked("test operation should succeed");
@@ -2011,6 +2016,7 @@ async fn test_reused_chat_image_object_keeps_storage_until_last_reference_is_rel
             .insert_message_event_idempotent(
                 &first_message,
                 &[image("shared-image-1")],
+                &[],
                 "shared-image-hash-1",
                 "shared-image-event-1",
                 Utc::now(),
@@ -2025,6 +2031,7 @@ async fn test_reused_chat_image_object_keeps_storage_until_last_reference_is_rel
             .insert_message_event_idempotent(
                 &second_message,
                 &[image("shared-image-2")],
+                &[],
                 "shared-image-hash-2",
                 "shared-image-event-2",
                 Utc::now(),
@@ -2138,6 +2145,7 @@ async fn test_image_message_idempotency_replays_and_rejects_changed_images() {
         reply_to_message_id: None,
         metadata: serde_json::Value::Object(Default::default()),
         images: vec![session.file],
+        mentions: Vec::new(),
     };
 
     let first = chat_service
@@ -2229,6 +2237,7 @@ async fn test_chat_message_images_require_matching_room_id() {
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
             images: Vec::new(),
+            mentions: Vec::new(),
         })
         .await
         .checked("test operation should succeed");
@@ -2313,6 +2322,7 @@ async fn test_deleted_image_message_history_hides_image_metadata() {
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
             images: vec![session.file],
+            mentions: Vec::new(),
         })
         .await
         .checked("test operation should succeed");
@@ -2383,6 +2393,7 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             reply_to_message_id: Some(9_999_999),
             metadata: serde_json::Value::Object(Default::default()),
             images: Vec::new(),
+            mentions: Vec::new(),
         })
         .await
         .failed("missing reply target should be rejected");
@@ -2398,6 +2409,7 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
             images: Vec::new(),
+            mentions: Vec::new(),
         })
         .await
         .checked("test operation should succeed");
@@ -2411,6 +2423,7 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             reply_to_message_id: Some(target.message.message.id),
             metadata: serde_json::Value::Object(Default::default()),
             images: Vec::new(),
+            mentions: Vec::new(),
         })
         .await
         .checked("test operation should succeed");
@@ -2445,6 +2458,7 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             reply_to_message_id: Some(target.message.message.id),
             metadata: serde_json::Value::Object(Default::default()),
             images: Vec::new(),
+            mentions: Vec::new(),
         })
         .await
         .failed("deleted reply target should be rejected");
@@ -2488,6 +2502,7 @@ async fn test_idempotent_reply_send_replays_after_reply_target_is_deleted() {
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
             images: Vec::new(),
+            mentions: Vec::new(),
         })
         .await
         .checked("test operation should succeed");
@@ -2500,6 +2515,7 @@ async fn test_idempotent_reply_send_replays_after_reply_target_is_deleted() {
         reply_to_message_id: Some(target.message.message.id),
         metadata: serde_json::Value::Object(Default::default()),
         images: Vec::new(),
+        mentions: Vec::new(),
     };
 
     let first = chat_service

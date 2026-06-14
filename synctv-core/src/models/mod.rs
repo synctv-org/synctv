@@ -108,6 +108,7 @@ macro_rules! sqlx_i16_enum {
 
 pub mod audit;
 pub mod chat;
+pub mod content_report;
 pub mod email_token;
 pub mod file_storage;
 pub mod id;
@@ -132,11 +133,17 @@ pub mod user_preferences;
 pub use audit::{AuditAction, AuditTargetType};
 pub use chat::{
     ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatImage, ChatImageUploadSession,
-    ChatMessage, ChatMessageContext, ChatMessageEvent, ChatMessageEventLog, ChatMessageStatus,
-    ChatMessageType, ChatMessageWithImages, ChatPlaybackMessagesQuery, ChatReaction,
-    ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage,
-    ChatReadState, ChatReadStateWithUnread, CreateChatImageUploadSession, DeleteChatMessage,
-    EditChatMessage, EventCursor, MarkChatRead, SendChatMessage, SendChatRequest, SetChatReaction,
+    ChatMention, ChatMentionInput, ChatMessage, ChatMessageContext, ChatMessageEvent,
+    ChatMessageEventLog, ChatMessageReadReceiptMember, ChatMessageReadReceiptUser,
+    ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType, ChatMessageWithImages,
+    ChatPlaybackMessagesQuery, ChatReaction, ChatReactionSummary, ChatReactionUser,
+    ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState, ChatReadStateWithUnread,
+    CreateChatImageUploadSession, DeleteChatMessage, EditChatMessage, EventCursor, MarkChatRead,
+    SendChatMessage, SendChatRequest, SetChatReaction,
+};
+pub use content_report::{
+    ContentReport, ContentReportAdminRow, ContentReportStatus, ContentReportTarget,
+    ContentReportTargetType, CreateContentReport,
 };
 pub use email_token::EmailTokenType;
 pub use file_storage::{
@@ -144,8 +151,8 @@ pub use file_storage::{
     FileReferenceTarget, FileUploadPolicy, FileUploadSession, NewStoredFile, StoredFileReference,
 };
 pub use id::{
-    generate_id, BanRecordId, EmailRegistrationTokenId, MediaId, PlaylistId, ReviewRequestId,
-    RoomId, TypedId, UserId,
+    generate_id, BanRecordId, ContentReportId, EmailRegistrationTokenId, MediaId, PlaylistId,
+    ReviewRequestId, RoomId, TypedId, UserId,
 };
 pub use media::{
     provider_type_code_from_name, provider_type_codes_from_names, provider_type_name_from_code,
@@ -171,7 +178,10 @@ pub use permission::{
     Role as RoomRole, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits,
     RoomPermission, RoomPermissionSet,
 };
-pub use playback::{RoomPlaybackProgress, RoomPlaybackState};
+pub use playback::{
+    hash_playback_target, PlaybackDurationSource, PlaybackDurationStatus, PlaybackSourceIdentity,
+    ClaimedPlaybackDurationProbe, PlaybackSourceMetadata, RoomPlaybackProgress, RoomPlaybackState,
+};
 pub use playlist::{
     CreatePlaylistRequest, Playlist, PlaylistListQuery, PlaylistListSortBy, PlaylistWithCount,
     UpdatePlaylistRequest,

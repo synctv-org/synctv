@@ -175,6 +175,7 @@ async fn test_cross_replica_permission_changed() {
             room_id,
             target_user_id: UserId::expect_positive(10_000_038),
             target_username: "target_user".to_string(),
+            role_changed: true,
             new_permissions: synctv_core::models::RoomPermissionSet(
                 synctv_core::models::RoomPermissionSet::default_member().0
                     | synctv_core::models::RoomAdminPermissionBits::KICK_MEMBER,
@@ -186,6 +187,8 @@ async fn test_cross_replica_permission_changed() {
             removed_permissions: synctv_core::models::RoomPermissionSet::empty(),
             admin_added_permissions: synctv_core::models::RoomPermissionSet::empty(),
             admin_removed_permissions: synctv_core::models::RoomPermissionSet::empty(),
+            target_is_online: true,
+            target_connection_count: 1,
             changed_by: UserId::expect_positive(10_000_039),
             changed_by_username: "admin_user".to_string(),
             timestamp: Utc::now(),

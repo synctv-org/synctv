@@ -10,6 +10,7 @@ use sqlx::postgres::{PgConnectOptions, PgConnection, PgPoolOptions, PgSslMode};
 use sqlx::Connection as _;
 use sqlx::PgPool;
 use testcontainers::core::wait::LogWaitStrategy;
+use testcontainers::core::Mount;
 use testcontainers::core::{ImageExt, ReuseDirective, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
@@ -22,8 +23,8 @@ use crate::docker::{
     cleanup_orphaned_testcontainers, current_test_run_id as docker_current_test_run_id,
     current_test_run_id_from as docker_current_test_run_id_from,
     docker_named_container_belongs_to_current_run, docker_port_candidates, host_address_family,
-    sanitize_container_name, startup_error_is_named_container_conflict, startup_error_is_retriable,
-    ProcessLock, TEST_RUN_LABEL,
+    run_has_active_lock, sanitize_container_name, startup_error_is_named_container_conflict,
+    startup_error_is_retriable, ProcessLock, TEST_RUN_LABEL,
 };
 
 fn trusted_dynamic_sql(sql: String) -> sqlx::AssertSqlSafe<String> {
@@ -130,7 +131,7 @@ struct SharedPostgresServer {
     // on one of those, its IO driver dies when the test finishes, causing
     // subsequent tests to see "A Tokio 1.x context was found, but it is
     // being shutdown."  Keeping a dedicated runtime alive prevents this.
-    _pool_runtime: tokio::runtime::Runtime,
+    pool_runtime: tokio::runtime::Runtime,
     host: String,
     port: u16,
     admin_pool: PgPool,
@@ -422,6 +423,10 @@ fn named_postgres_request(
         .with_container_name(container_name.to_string())
         .with_label(TEST_RUN_LABEL, run_id)
         .with_reuse(ReuseDirective::Always)
+        .with_mount(Mount::volume_mount(
+            postgres_data_volume_name(container_name),
+            "/var/lib/postgresql",
+        ))
         .with_cmd(postgres_ephemeral_tuning_args())
         .with_ready_conditions(postgres_ready_conditions())
 }
@@ -608,6 +613,55 @@ fn template_database_name_from(run_id: Option<&str>) -> String {
     truncate_database_identifier(&sanitize_database_component(&raw))
 }
 
+fn postgres_data_volume_name(container_name: &str) -> String {
+    format!("{container_name}-data")
+}
+
+fn run_id_from_postgres_data_volume(volume_name: &str) -> Option<String> {
+    volume_name
+        .strip_prefix("synctv-pg-shared-")?
+        .strip_suffix("-data")
+        .map(str::to_string)
+}
+
+fn cleanup_orphaned_postgres_data_volumes(current_run_id: &str) {
+    let Ok(output) = std::process::Command::new("docker")
+        .args(["volume", "ls", "-q"])
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+
+    for volume in String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|volume| !volume.is_empty())
+    {
+        let Some(run_id) = run_id_from_postgres_data_volume(volume) else {
+            continue;
+        };
+        if run_id == current_run_id || run_has_active_lock("postgres", &run_id) {
+            continue;
+        }
+        let output = std::process::Command::new("docker")
+            .args(["volume", "rm", volume])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => eprintln!(
+                "warning: failed to remove orphaned postgres data volume {volume}: {}",
+                crate::docker::format_command_failure("docker", &["volume", "rm", volume], &output)
+            ),
+            Err(err) => eprintln!(
+                "warning: failed to spawn docker for orphaned postgres data volume {volume}: {err}"
+            ),
+        }
+    }
+}
+
 fn truncate_database_identifier(value: &str) -> String {
     value.chars().take(MAX_DATABASE_IDENTIFIER_LEN).collect()
 }
@@ -744,6 +798,7 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
     let run_id = current_test_run_id();
     let run_lock = acquire_run_lock("postgres", &run_id);
     cleanup_orphaned_testcontainers("synctv-pg-", "postgres", &run_id);
+    cleanup_orphaned_postgres_data_volumes(&run_id);
     cleanup_orphaned_run_lock_files("synctv-postgres-run-");
     cleanup_orphaned_run_lock_files("synctv-postgres-startup-");
 
@@ -850,7 +905,7 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
 
     SharedPostgresServer {
         _container: postgres.map(std::mem::ManuallyDrop::new),
-        _pool_runtime: pool_runtime,
+        pool_runtime,
         host,
         port,
         admin_pool,
@@ -898,21 +953,9 @@ async fn provision_test_database(requested_db_name: &str, label: &str) -> TestCo
 }
 
 fn spawn_best_effort_database_cleanup(shared: Arc<SharedPostgresServer>, database_name: String) {
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.spawn(async move {
-            shared.drop_database(&database_name).await;
-        });
-        return;
-    }
-
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("drop-time postgres cleanup runtime should build");
-        runtime.block_on(async move {
-            shared.drop_database(&database_name).await;
-        });
+    let handle = shared.pool_runtime.handle().clone();
+    handle.spawn(async move {
+        shared.drop_database(&database_name).await;
     });
 }
 

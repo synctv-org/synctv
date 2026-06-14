@@ -293,6 +293,7 @@ impl RoomService {
                 user_id,
                 user_id,
                 Some(&created_member),
+                Self::role_member_event_scope(),
             )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())

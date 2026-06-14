@@ -55,6 +55,7 @@ pub struct PermissionChangedOutboxSnapshot {
     pub target_username: String,
     pub changed_by: UserId,
     pub changed_by_username: String,
+    pub role_changed: bool,
     pub new_permissions: RoomPermissionSet,
     pub role: i32,
     pub added_permissions: RoomPermissionSet,
@@ -68,6 +69,7 @@ pub struct UserLeftOutboxSnapshot {
     pub room_id: RoomId,
     pub user_id: UserId,
     pub username: String,
+    pub role: i32,
 }
 
 pub struct AdminAddMemberWithOutboxRequest<'a> {

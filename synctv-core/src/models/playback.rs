@@ -32,6 +32,100 @@ pub struct RoomPlaybackProgress {
     pub version: i64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PlaybackDurationStatus {
+    Unknown,
+    Pending,
+    Available,
+    Unavailable,
+    Failed,
+}
+
+sqlx_i16_enum!(PlaybackDurationStatus, "invalid playback duration status", {
+    Unknown = 0,
+    Pending = 1,
+    Available = 2,
+    Unavailable = 3,
+    Failed = 4,
+});
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PlaybackDurationSource {
+    Provider,
+    Probe,
+}
+
+sqlx_i16_enum!(PlaybackDurationSource, "invalid playback duration source", {
+    Provider = 1,
+    Probe = 2,
+});
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, sqlx::FromRow)]
+pub struct PlaybackSourceMetadata {
+    pub room_id: RoomId,
+    pub media_id: Option<MediaId>,
+    pub playlist_id: Option<PlaylistId>,
+    pub target_hash: String,
+    pub duration_seconds: Option<f64>,
+    pub duration_status: PlaybackDurationStatus,
+    pub duration_source: Option<PlaybackDurationSource>,
+    pub duration_error: Option<String>,
+    pub next_retry_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub version: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaimedPlaybackDurationProbe {
+    pub metadata: PlaybackSourceMetadata,
+    pub state: RoomPlaybackState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PlaybackSourceIdentity {
+    pub room_id: RoomId,
+    pub media_id: Option<MediaId>,
+    pub playlist_id: Option<PlaylistId>,
+    pub target_hash: String,
+}
+
+impl PlaybackSourceIdentity {
+    #[must_use]
+    pub fn from_state(state: &RoomPlaybackState) -> Option<Self> {
+        if state.playing_media_id.is_none() && state.playing_playlist_id.is_none() {
+            return None;
+        }
+
+        Some(Self {
+            room_id: state.room_id,
+            media_id: state.playing_media_id,
+            playlist_id: state.playing_playlist_id,
+            target_hash: state.target_hash(),
+        })
+    }
+
+    #[must_use]
+    pub fn static_media(room_id: RoomId, media_id: MediaId) -> Self {
+        Self {
+            room_id,
+            media_id: Some(media_id),
+            playlist_id: None,
+            target_hash: hash_playback_target(&[]),
+        }
+    }
+
+    #[must_use]
+    pub fn dynamic_playlist(room_id: RoomId, playlist_id: PlaylistId, target: &[u8]) -> Self {
+        Self {
+            room_id,
+            media_id: None,
+            playlist_id: Some(playlist_id),
+            target_hash: hash_playback_target(target),
+        }
+    }
+}
+
 impl RoomPlaybackState {
     #[must_use]
     pub fn new(room_id: RoomId) -> Self {
@@ -65,8 +159,13 @@ impl RoomPlaybackState {
 
     #[must_use]
     pub fn target_hash(&self) -> String {
-        hex::encode(Sha256::digest(&self.target))
+        hash_playback_target(&self.target)
     }
+}
+
+#[must_use]
+pub fn hash_playback_target(target: &[u8]) -> String {
+    hex::encode(Sha256::digest(target))
 }
 
 #[cfg(test)]

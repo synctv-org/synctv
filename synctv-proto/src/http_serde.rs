@@ -1,3 +1,5 @@
+#![allow(clippy::missing_errors_doc)]
+
 pub mod base64_bytes {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     use serde::{de::Error as _, Deserialize, Deserializer, Serializer};

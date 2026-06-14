@@ -45,7 +45,7 @@ use crate::proto::{
     SendTestEmailRequest, SetUserPasswordRequest, ShutdownMode as ProtoShutdownMode,
     SliceCacheConfigInfo, SliceCacheNodeFailure, SliceCacheStatsResponse, StartPlaybackRequest,
     StopPlaybackRequest, StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest,
-    UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackRequest,
+    UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackStateRequest,
     UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
     UpdateSettingsRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
     UpdateUserUsernameRequest, UserRef,
@@ -2166,19 +2166,19 @@ impl ManagementService for ManagementServiceImpl {
         Ok(Self::proto_response(response))
     }
 
-    async fn update_playback(
+    async fn update_playback_state(
         &self,
-        request: Request<UpdatePlaybackRequest>,
-    ) -> Result<Response<client_proto::GetPlaybackResponse>, Status> {
+        request: Request<UpdatePlaybackStateRequest>,
+    ) -> Result<Response<client_proto::UpdatePlaybackStateResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
-            .update_playback(
+            .update_playback_state(
                 &req.room_id,
                 req.update.ok_or_else(|| {
-                    Status::invalid_argument("playback update payload is required")
+                    Status::invalid_argument("playback state update payload is required")
                 })?,
                 &validated.user_id,
                 &ctx,

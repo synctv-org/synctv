@@ -248,6 +248,10 @@ impl Config {
             &mut self.security.opaque_server_setup_secret,
         )?;
         env_override_bool(
+            "SYNCTV_SECURITY_SSRF_ENABLED",
+            &mut self.security.ssrf.enabled,
+        )?;
+        env_override_bool(
             "SYNCTV_SECURITY_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS",
             &mut self.security.ssrf.allow_private_network_targets,
         )?;
@@ -761,10 +765,6 @@ impl Config {
         env_override_str(
             "SYNCTV_BOOTSTRAP_ROOT_USERNAME",
             &mut self.bootstrap.root_username,
-        );
-        env_override_str(
-            "SYNCTV_BOOTSTRAP_ROOT_EMAIL",
-            &mut self.bootstrap.root_email,
         );
         env_override_str(
             "SYNCTV_BOOTSTRAP_ROOT_PASSWORD",

@@ -444,6 +444,7 @@ fn read_state_allows_forward_event_on_same_message() {
                 message: message.clone(),
                 images: Vec::new(),
                 reactions: Vec::new(),
+                mentions: Vec::new(),
             },
             occurred_at: Utc::now(),
         },
@@ -1337,6 +1338,7 @@ async fn metadata_only_image_token_is_stripped_before_persistence() {
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 images: vec![session.file],
+                mentions: Vec::new(),
             })
             .await,
         "image message should be stored",
@@ -1431,6 +1433,7 @@ async fn custom_file_storage_can_normalize_image_metadata() {
                     height: Some(480),
                     metadata: serde_json::Value::Object(Default::default()),
                 }],
+                mentions: Vec::new(),
             })
             .await,
         "image message should be stored",
@@ -1524,6 +1527,7 @@ async fn deleting_image_message_releases_image_objects() {
                     height: Some(480),
                     metadata: serde_json::Value::Object(Default::default()),
                 }],
+                mentions: Vec::new(),
             })
             .await,
         "image message should be stored",
@@ -1609,6 +1613,7 @@ async fn concurrent_idempotent_send_returns_existing_created_event() {
         reply_to_message_id: None,
         metadata: serde_json::Value::Object(Default::default()),
         images: Vec::new(),
+        mentions: Vec::new(),
     };
     let worker_count = 6;
     let barrier = Arc::new(Barrier::new(worker_count));
@@ -1734,6 +1739,7 @@ async fn concurrent_same_edit_returns_existing_edit_event() {
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 images: Vec::new(),
+                mentions: Vec::new(),
             })
             .await,
         "message should be stored",
@@ -1857,6 +1863,7 @@ async fn concurrent_same_delete_returns_existing_delete_event() {
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 images: Vec::new(),
+                mentions: Vec::new(),
             })
             .await,
         "message should be stored",
@@ -1994,6 +2001,7 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 images: Vec::new(),
+                mentions: Vec::new(),
             })
             .await,
         "message should be stored",
@@ -2241,6 +2249,7 @@ async fn read_state_tracks_unread_count_and_stays_monotonic() {
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 images: Vec::new(),
+                mentions: Vec::new(),
             })
             .await,
         "first message should be stored",
@@ -2256,6 +2265,7 @@ async fn read_state_tracks_unread_count_and_stays_monotonic() {
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 images: Vec::new(),
+                mentions: Vec::new(),
             })
             .await,
         "second message should be stored",
@@ -2271,6 +2281,7 @@ async fn read_state_tracks_unread_count_and_stays_monotonic() {
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 images: Vec::new(),
+                mentions: Vec::new(),
             })
             .await,
         "reader own message should be stored",
@@ -2425,6 +2436,7 @@ async fn message_context_returns_messages_around_anchor_in_chronological_order()
                     reply_to_message_id: None,
                     metadata: serde_json::Value::Object(Default::default()),
                     images: Vec::new(),
+                    mentions: Vec::new(),
                 })
                 .await,
             "message should be stored",
@@ -2513,6 +2525,7 @@ async fn chat_text_validation_rejects_whitespace_send_and_edit() {
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 images: Vec::new(),
+                mentions: Vec::new(),
             })
             .await,
         "whitespace-only chat should be rejected",
@@ -2530,6 +2543,7 @@ async fn chat_text_validation_rejects_whitespace_send_and_edit() {
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 images: Vec::new(),
+                mentions: Vec::new(),
             })
             .await,
         "valid message should be stored",

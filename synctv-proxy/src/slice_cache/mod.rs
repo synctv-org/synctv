@@ -13,7 +13,7 @@
 //! - **[`range`]**: Request Range parsing, response Content-Range parsing
 //!   (modeled after `ngx_http_slice_parse_content_range`), and slice
 //!   alignment helpers.
-//! - **[`etag`]**: `CachedResourceMeta` for ETag consistency validation,
+//! - **[`etag`]**: `CachedResourceMeta` for `ETag` consistency validation,
 //!   `StoredEntry` for backend storage.
 //! - **[`status`]**: `CacheStatus` enum (modeled after nginx cache status
 //!   defines).
@@ -34,7 +34,7 @@
 //!   herd prevention).
 //! - **No full-body caching**: non-range client requests are served from cached
 //!   slices only when the origin supports range requests.
-//! - **ETag consistency**: validates that the ETag is stable across slices
+//! - **`ETag` consistency**: validates that the `ETag` is stable across slices
 //!   belonging to the same resource; triggers invalidation on mismatch.
 //! - **Content-Range validation**: upstream 206 responses are validated
 //!   against the requested range, matching nginx's header filter logic.

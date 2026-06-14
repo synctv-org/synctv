@@ -453,8 +453,8 @@ impl ServerSession {
                 self.on_create_stream(transaction_id).await?;
             }
             "deleteStream" if !others.is_empty() => {
-                let stream_id = match others.pop() {
-                    Some(Amf0ValueType::Number(streamid)) => streamid,
+                let deleted_stream_id = match others.pop() {
+                    Some(Amf0ValueType::Number(value)) => value,
                     _ => 0.0,
                 };
 
@@ -464,7 +464,8 @@ impl ServerSession {
                     self.stream_name
                 );
 
-                self.on_delete_stream(transaction_id, &stream_id).await?;
+                self.on_delete_stream(transaction_id, &deleted_stream_id)
+                    .await?;
                 self.state = ServerSessionState::DeleteStream;
             }
             "play" => {

@@ -114,14 +114,16 @@ provider credential decryption or password authentication.
 ## Security
 
 Server-side outbound requests use the global SSRF policy from
-`config.security.ssrf`. Private, loopback, link-local, reserved, and metadata
-targets are blocked by default. Prefer explicit allowlists for trusted internal
-media endpoints:
+`config.security.ssrf`. SSRF protection is disabled by default so self-hosted
+deployments can use private media sources. Public deployments should enable
+SSRF protection and prefer explicit allowlists for trusted internal media
+endpoints:
 
 ```yaml
 config:
   security:
     ssrf:
+      enabled: true
       allowPrivateNetworkTargets: false
       allowedHosts:
         - nas.example.internal

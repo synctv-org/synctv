@@ -1,3 +1,5 @@
+#![allow(clippy::missing_errors_doc, clippy::too_many_lines)]
+
 //! Slice cache store: backend orchestration, per-key locking, and upstream
 //! slice fetch/revalidation.
 //!
@@ -100,7 +102,7 @@ async fn read_exact_slice_body(
 /// ensures that concurrent requests for the same slice trigger at most a
 /// single upstream fetch.
 ///
-/// Resource metadata (ETag, Last-Modified, Content-Type) is stored in a
+/// Resource metadata (`ETag`, Last-Modified, Content-Type) is stored in a
 /// separate `DashMap` keyed by `url_hash + "meta"` to enable cross-slice
 /// ETag/Last-Modified validation and conditional requests.
 pub struct SliceCache {
@@ -113,7 +115,7 @@ pub struct SliceCache {
     backend: Arc<CacheBackend>,
     /// Per-key locks to prevent thundering herd.
     locks: Arc<dashmap::DashMap<String, SliceLock>>,
-    /// Per-resource metadata for ETag consistency validation.
+    /// Per-resource metadata for `ETag` consistency validation.
     pub(super) meta: Arc<dashmap::DashMap<String, CachedResourceMeta>>,
     /// Tracks which cache keys have been inserted recently so we can
     /// distinguish `EXPIRED` (was cached, TTL elapsed) from `MISS`
@@ -617,6 +619,7 @@ impl SliceCache {
     /// Retrieve the stored metadata for a resource, if any.
     /// Updates `last_accessed` on read so that LRU eviction in
     /// `cleanup_stale_meta` works correctly.
+    #[must_use]
     pub fn get_resource_meta(
         &self,
         url: &str,
@@ -703,7 +706,7 @@ impl SliceCache {
     /// requested range (like nginx's header filter at line 166:
     /// `if (cr.start != ctx->start || cr.end != end)`).
     ///
-    /// ETag consistency is validated against the stored resource metadata.
+    /// `ETag` consistency is validated against the stored resource metadata.
     /// Conditional requests (If-None-Match, If-Modified-Since) are sent
     /// when stored metadata is available.
     pub async fn get_or_fetch_slice(
@@ -1288,7 +1291,7 @@ impl SliceCache {
     }
 
     /// Remove stale metadata entries to prevent unbounded growth of the
-    /// `meta` DashMap. Uses a simple size cap: when the map exceeds
+    /// `meta` `DashMap`. Uses a simple size cap: when the map exceeds
     /// `MAX_META_ENTRIES`, evicts the least recently accessed entries until
     /// the map is at half capacity.
     pub fn cleanup_stale_meta(&self) {
@@ -1316,7 +1319,7 @@ impl SliceCache {
         self.seen_keys.entry_count()
     }
 
-    /// Run pending maintenance tasks on the seen_keys cache so that
+    /// Run pending maintenance tasks on the `seen_keys` cache so that
     /// `entry_count()` reflects recent inserts.
     pub async fn sync_seen_keys(&self) {
         self.seen_keys.run_pending_tasks().await;

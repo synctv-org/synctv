@@ -722,6 +722,7 @@ impl AlistProvider {
     ) -> PlaybackResult {
         let mut playback_infos = HashMap::new();
         let mut metadata = HashMap::new();
+        let mut duration_seconds = None;
 
         // Add basic metadata
         metadata.insert("name".to_string(), json!(&file_info.name));
@@ -827,6 +828,9 @@ impl AlistProvider {
             metadata.insert("duration".to_string(), json!(preview.duration));
             metadata.insert("width".to_string(), json!(preview.width));
             metadata.insert("height".to_string(), json!(preview.height));
+            if preview.duration.is_finite() && preview.duration > 0.0 {
+                duration_seconds = Some(preview.duration);
+            }
         }
 
         // Always add direct URL (raw_url) as fallback
@@ -858,6 +862,7 @@ impl AlistProvider {
         PlaybackResult {
             playback_infos,
             default_mode,
+            duration_seconds,
             metadata,
         }
     }

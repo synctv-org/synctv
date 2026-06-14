@@ -694,6 +694,7 @@ mod tests {
             result: super::super::PlaybackResult {
                 playback_infos: std::collections::HashMap::new(),
                 default_mode: "direct".to_string(),
+                duration_seconds: None,
                 metadata: std::collections::HashMap::new(),
             },
             expires_at: 0, // Already expired

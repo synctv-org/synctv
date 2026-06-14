@@ -887,13 +887,9 @@ const fn is_critical_message(message: &ServerMessage) -> bool {
     matches!(
         &message.message,
         Some(
-            Message::PlaybackState(_)
-                | Message::PlayingChanged(_)
-                | Message::Error(_)
-                | Message::PermissionChanged(_)
-                | Message::RoomSettings(_)
+            Message::Error(_)
                 | Message::ResourceObserved(_)
-                | Message::ResourceChanged(_)
+                | Message::ResourceEvent(_)
                 | Message::ResourceObserveError(_)
         )
     )
@@ -901,60 +897,19 @@ const fn is_critical_message(message: &ServerMessage) -> bool {
 
 const fn requires_state_resync(message: &ServerMessage) -> bool {
     use synctv_proto::client::server_message::Message;
-    matches!(
-        &message.message,
-        Some(
-            Message::UserJoined(_)
-                | Message::UserLeft(_)
-                | Message::MediaAdded(_)
-                | Message::MediaRemoved(_)
-                | Message::MediaRemovedBatch(_)
-                | Message::MediaUpdated(_)
-                | Message::PlaylistReordered(_)
-                | Message::PlaylistCreated(_)
-                | Message::PlaylistUpdated(_)
-                | Message::PlaylistDeleted(_)
-                | Message::PlaylistItems(_)
-                | Message::Playback(_)
-                | Message::RoomMembers(_)
-                | Message::Notification(_)
-        )
-    )
+    matches!(&message.message, Some(Message::Notification(_)))
 }
 
 /// Returns a human-readable message type name for logging purposes.
 const fn message_type_name(message: &ServerMessage) -> &'static str {
     use synctv_proto::client::server_message::Message;
     match &message.message {
-        Some(Message::Chat(_)) => "Chat",
-        Some(Message::PlaybackState(_)) => "PlaybackState",
-        Some(Message::UserJoined(_)) => "UserJoined",
-        Some(Message::UserLeft(_)) => "UserLeft",
-        Some(Message::RoomSettings(_)) => "RoomSettings",
         Some(Message::HeartbeatAck(_)) => "HeartbeatAck",
         Some(Message::Error(_)) => "Error",
-        Some(Message::MediaAdded(_)) => "MediaAdded",
-        Some(Message::MediaRemoved(_)) => "MediaRemoved",
-        Some(Message::MediaRemovedBatch(_)) => "MediaRemovedBatch",
-        Some(Message::MediaUpdated(_)) => "MediaUpdated",
-        Some(Message::PermissionChanged(_)) => "PermissionChanged",
-        Some(Message::PlaylistReordered(_)) => "PlaylistReordered",
-        Some(Message::PlaylistCreated(_)) => "PlaylistCreated",
-        Some(Message::PlaylistUpdated(_)) => "PlaylistUpdated",
-        Some(Message::PlaylistDeleted(_)) => "PlaylistDeleted",
-        Some(Message::PlaylistItems(_)) => "PlaylistItems",
-        Some(Message::RoomMembers(_)) => "RoomMembers",
         Some(Message::ResourceObserved(_)) => "ResourceObserved",
-        Some(Message::ResourceChanged(_)) => "ResourceChanged",
+        Some(Message::ResourceEvent(_)) => "ResourceEvent",
         Some(Message::ResourceObserveError(_)) => "ResourceObserveError",
-        Some(Message::PlayingChanged(_)) => "PlayingChanged",
-        Some(Message::WebrtcOffer(_)) => "WebrtcOffer",
-        Some(Message::WebrtcAnswer(_)) => "WebrtcAnswer",
-        Some(Message::WebrtcIceCandidate(_)) => "WebrtcIceCandidate",
-        Some(Message::WebrtcJoin(_)) => "WebrtcJoin",
-        Some(Message::WebrtcLeave(_)) => "WebrtcLeave",
         Some(Message::Notification(_)) => "Notification",
-        Some(Message::Playback(_)) => "Playback",
         None => "None",
     }
 }
@@ -1409,6 +1364,7 @@ async fn handle_socket(
             chat_event_dispatcher: crate::chat_event_dispatcher::default_chat_event_dispatcher(
                 event_service.clone(),
             ),
+            presence_service: state.presence_service.clone(),
             notification_service: state.notification_service.clone(),
             ws_message_rate_limit: state
                 .config

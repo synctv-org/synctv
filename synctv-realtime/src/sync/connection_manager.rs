@@ -1,12 +1,13 @@
 use dashmap::DashMap;
 use redis::AsyncCommands;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use synctv_core::{
     models::id::{RoomId, UserId},
+    service::OnlinePresenceService,
     RedisConnectionRuntime,
 };
 #[cfg(test)]
@@ -88,6 +89,10 @@ pub struct ConnectionManager {
 
     /// Connections by `room_id`
     room_connections: Arc<DashMap<RoomId, Vec<String>>>,
+
+    /// Core-owned online presence lifecycle and queries.
+    presence_service: Arc<OnlinePresenceService>,
+    node_id: Arc<str>,
 
     /// Connection limits
     limits: Arc<ConnectionLimits>,
@@ -205,11 +210,6 @@ impl ConnectionManager {
         )
     }
 
-    fn room_id_from_index_key(&self, key: &str) -> Option<RoomId> {
-        key.strip_prefix(&format!("{}conn_mgr:room:", self.redis_key_prefix))
-            .and_then(|value| value.parse::<RoomId>().ok())
-    }
-
     async fn redis_op<T, F>(&self, operation: &'static str, future: F) -> Result<T, String>
     where
         F: std::future::Future<Output = redis::RedisResult<T>>,
@@ -246,6 +246,8 @@ impl ConnectionManager {
             claimed_connection_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
             user_connections: Arc::new(DashMap::new()),
             room_connections: Arc::new(DashMap::new()),
+            presence_service: Arc::new(OnlinePresenceService::local()),
+            node_id: Arc::from("local"),
             limits: Arc::new(limits),
             total_connections: Arc::new(AtomicUsize::new(0)),
             timeout_index: Arc::new(parking_lot::Mutex::new(TimeoutIndex::default())),
@@ -292,6 +294,23 @@ impl ConnectionManager {
         } else {
             Self::new(limits)
         }
+    }
+
+    #[must_use]
+    pub fn with_presence_service(mut self, presence_service: Arc<OnlinePresenceService>) -> Self {
+        self.presence_service = presence_service;
+        self
+    }
+
+    #[must_use]
+    pub fn presence_service(&self) -> Arc<OnlinePresenceService> {
+        Arc::clone(&self.presence_service)
+    }
+
+    #[must_use]
+    pub fn with_node_id(mut self, node_id: impl Into<Arc<str>>) -> Self {
+        self.node_id = node_id.into();
+        self
     }
 
     #[cfg(test)]
@@ -1091,6 +1110,23 @@ impl ConnectionManager {
         // Persist connection metadata to Redis (best-effort)
         self.persist_registration_metadata_best_effort(&connection_id, &user_id)
             .await;
+        if let Err(error) = self
+            .presence_service
+            .register_connection(
+                connection_id.clone(),
+                self.node_id.to_string(),
+                user_id,
+                conn_info.actor_id.clone(),
+            )
+            .await
+        {
+            warn!(
+                connection_id = %connection_id,
+                user_id = %user_id,
+                error = %error,
+                "Failed to register core presence"
+            );
+        }
 
         // Update metrics
         self.total_connections_ever.fetch_add(1, Ordering::Relaxed);
@@ -1263,6 +1299,18 @@ impl ConnectionManager {
             self.persist_room_membership_metadata_best_effort(connection_id, transition)
                 .await;
         }
+        if let Err(error) = self
+            .presence_service
+            .join_room(connection_id, room_id)
+            .await
+        {
+            warn!(
+                connection_id = %connection_id,
+                room_id = %room_id,
+                error = %error,
+                "Failed to update core presence room membership"
+            );
+        }
 
         synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS
             .set(usize_to_i64_saturating(self.room_connections.len()));
@@ -1282,6 +1330,14 @@ impl ConnectionManager {
             conn.last_activity = Instant::now();
             conn.message_count += 1;
             self.schedule_idle_timeout(connection_id, conn.last_activity);
+        }
+        if self.presence_service.mark_seen_for_renewal(connection_id) {
+            let presence_service = self.presence_service.clone();
+            synctv_core::spawn::spawn_monitored("presence_renewal_flush", async move {
+                if let Err(error) = presence_service.flush_pending_renewals().await {
+                    warn!(error = %error, "Failed to flush core presence renewals");
+                }
+            });
         }
         self.total_messages.fetch_add(1, Ordering::Relaxed);
     }
@@ -1368,6 +1424,17 @@ impl ConnectionManager {
                 #[cfg(test)]
                 self.users_online_metric_decrements
                     .fetch_add(1, Ordering::Relaxed);
+            }
+            if let Err(error) = self
+                .presence_service
+                .unregister_connection(connection_id)
+                .await
+            {
+                warn!(
+                    connection_id = %connection_id,
+                    error = %error,
+                    "Failed to unregister core presence"
+                );
             }
             synctv_core::metrics::cluster::CLUSTER_CONNECTIONS.set(usize_to_i64_saturating(
                 self.total_connections.load(Ordering::Relaxed),
@@ -1611,330 +1678,6 @@ impl ConnectionManager {
             .iter()
             .map(|rid| self.room_connection_count(rid))
             .collect())
-    }
-
-    /// Get the number of distinct online users in a room on the local node.
-    #[must_use]
-    pub fn room_online_user_count(&self, room_id: &RoomId) -> usize {
-        use std::collections::HashSet;
-
-        self.get_room_connections(room_id)
-            .into_iter()
-            .map(|conn| conn.user_id)
-            .collect::<HashSet<_>>()
-            .len()
-    }
-
-    /// Get the number of distinct online users in a room across all replicas.
-    pub async fn room_online_user_count_distributed(
-        &self,
-        room_id: &RoomId,
-    ) -> Result<usize, String> {
-        let counts = self
-            .room_online_user_count_distributed_batch(&[room_id])
-            .await?;
-        Ok(counts.into_iter().next().unwrap_or(0))
-    }
-
-    /// Return the requested users that have at least one active connection in the room.
-    ///
-    /// The input is expected to be a paged member set. Redis-backed managers query
-    /// each requested user's connection index and validate metadata against the room,
-    /// so the result is replica-wide without scanning every room connection.
-    pub async fn room_online_user_ids_distributed(
-        &self,
-        room_id: &RoomId,
-        user_ids: &[UserId],
-    ) -> Result<Vec<UserId>, String> {
-        if user_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        if let Some(mut conn) = self
-            .redis_conn_snapshot_required(
-                "Distributed room member presence lookup unavailable while Redis is degraded",
-            )
-            .await?
-        {
-            let mut online_user_ids = HashSet::new();
-            let mut stale_index_members: Vec<(String, String)> = Vec::new();
-
-            let user_index_keys: Vec<String> = user_ids
-                .iter()
-                .map(|user_id| self.user_index_key(user_id))
-                .collect();
-            let mut index_pipe = redis::pipe();
-            for key in &user_index_keys {
-                index_pipe.smembers(key);
-            }
-            let indexed_connection_ids: Vec<Vec<String>> = self
-                .redis_op("fetch distributed user connection indexes", async {
-                    index_pipe.query_async(&mut conn).await
-                })
-                .await?;
-
-            let mut connection_owners = HashMap::<String, Vec<(UserId, String)>>::new();
-            for ((user_id, user_index_key), conn_ids) in user_ids
-                .iter()
-                .copied()
-                .zip(user_index_keys.iter().cloned())
-                .zip(indexed_connection_ids)
-            {
-                for conn_id in conn_ids {
-                    connection_owners
-                        .entry(conn_id)
-                        .or_default()
-                        .push((user_id, user_index_key.clone()));
-                }
-            }
-
-            let conn_ids: Vec<String> = connection_owners.keys().cloned().collect();
-            if !conn_ids.is_empty() {
-                let metadata_keys: Vec<String> = conn_ids
-                    .iter()
-                    .map(|conn_id| self.conn_metadata_key(conn_id))
-                    .collect();
-                let metadata: Vec<Option<String>> = self
-                    .redis_op("fetch distributed connection metadata", async {
-                        conn.mget(metadata_keys).await
-                    })
-                    .await?;
-
-                for (conn_id, metadata_json) in conn_ids.into_iter().zip(metadata) {
-                    let Some(owners) = connection_owners.remove(&conn_id) else {
-                        continue;
-                    };
-                    match metadata_json {
-                        Some(metadata_json) => {
-                            match serde_json::from_str::<ConnectionInfoPersistent>(&metadata_json) {
-                                Ok(info) => {
-                                    let mut matched_owner = false;
-                                    for (user_id, user_index_key) in owners {
-                                        if info.user_id == user_id
-                                            && info.room_id.as_ref() == Some(room_id)
-                                        {
-                                            online_user_ids.insert(user_id);
-                                            matched_owner = true;
-                                        } else if info.user_id != user_id {
-                                            stale_index_members
-                                                .push((user_index_key, conn_id.clone()));
-                                        }
-                                    }
-                                    if !matched_owner && info.room_id.as_ref() == Some(room_id) {
-                                        debug!(
-                                            connection_id = %conn_id,
-                                            room_id = %room_id,
-                                            "Distributed connection metadata did not match requested member page"
-                                        );
-                                    }
-                                }
-                                Err(error) => {
-                                    warn!(
-                                        connection_id = %conn_id,
-                                        error = %error,
-                                        "Failed to deserialize distributed connection metadata; pruning user index members"
-                                    );
-                                    stale_index_members.extend(owners.into_iter().map(
-                                        |(_, user_index_key)| (user_index_key, conn_id.clone()),
-                                    ));
-                                }
-                            }
-                        }
-                        None => {
-                            stale_index_members.extend(
-                                owners
-                                    .into_iter()
-                                    .map(|(_, user_index_key)| (user_index_key, conn_id.clone())),
-                            );
-                        }
-                    }
-                }
-            }
-
-            if !stale_index_members.is_empty() {
-                let mut pipe = redis::pipe();
-                for (index_key, connection_id) in &stale_index_members {
-                    pipe.srem(index_key, connection_id).ignore();
-                }
-                if let Err(error) = self
-                    .redis_op("prune stale distributed user index members", async {
-                        pipe.query_async::<()>(&mut conn).await
-                    })
-                    .await
-                {
-                    warn!(
-                        removed_members = stale_index_members.len(),
-                        error = %error,
-                        "Failed to prune stale distributed user index members on read"
-                    );
-                }
-            }
-
-            return Ok(user_ids
-                .iter()
-                .copied()
-                .filter(|user_id| online_user_ids.contains(user_id))
-                .collect());
-        }
-
-        let online_user_ids: HashSet<_> = user_ids
-            .iter()
-            .copied()
-            .filter(|user_id| {
-                self.get_user_connections(user_id)
-                    .into_iter()
-                    .any(|connection| connection.room_id.as_ref() == Some(room_id))
-            })
-            .collect();
-
-        Ok(user_ids
-            .iter()
-            .copied()
-            .filter(|user_id| online_user_ids.contains(user_id))
-            .collect())
-    }
-
-    /// Get distinct online user counts for multiple rooms across all replicas.
-    pub async fn room_online_user_count_distributed_batch(
-        &self,
-        room_ids: &[&RoomId],
-    ) -> Result<Vec<usize>, String> {
-        if room_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        if let Some(mut conn) = self
-            .redis_conn_snapshot_required(
-                "Distributed online user counts unavailable while Redis is degraded",
-            )
-            .await?
-        {
-            use std::collections::{HashMap, HashSet};
-
-            let mut room_to_users: HashMap<RoomId, HashSet<UserId>> = room_ids
-                .iter()
-                .map(|room_id| (**room_id, HashSet::new()))
-                .collect();
-
-            for room_id in room_ids {
-                let connection_ids = self.get_room_connections_distributed(room_id).await?;
-                for connection_id in connection_ids {
-                    let conn_key =
-                        format!("{}conn_mgr:conn:{connection_id}", self.redis_key_prefix);
-                    let metadata: Option<String> = self
-                        .redis_op("fetch distributed connection metadata", conn.get(&conn_key))
-                        .await?;
-
-                    let Some(metadata) = metadata else {
-                        continue;
-                    };
-
-                    let info: ConnectionInfoPersistent =
-                        serde_json::from_str(&metadata).map_err(|e| {
-                            format!("Failed to deserialize distributed connection metadata: {e}")
-                        })?;
-
-                    if info.room_id.as_ref() == Some(room_id) {
-                        room_to_users
-                            .entry(**room_id)
-                            .or_default()
-                            .insert(info.user_id);
-                    }
-                }
-            }
-
-            return Ok(room_ids
-                .iter()
-                .map(|room_id| room_to_users.get(room_id).map_or(0, HashSet::len))
-                .collect());
-        }
-
-        Ok(room_ids
-            .iter()
-            .map(|room_id| self.room_online_user_count(room_id))
-            .collect())
-    }
-
-    /// Get distinct online user counts for every room that currently has presence.
-    pub async fn hot_room_online_user_counts_distributed(
-        &self,
-    ) -> Result<Vec<(RoomId, usize)>, String> {
-        if let Some(mut conn) = self
-            .redis_conn_snapshot_required(
-                "Distributed hot-room online user counts unavailable while Redis is degraded",
-            )
-            .await?
-        {
-            let directory_key = self.room_index_directory_key();
-            let room_index_keys: Vec<String> = self
-                .redis_op("fetch room index directory", async {
-                    conn.smembers(&directory_key).await
-                })
-                .await?;
-            let mut room_counts = Vec::new();
-            for room_index_key in room_index_keys {
-                let Some(room_id) = self.room_id_from_index_key(&room_index_key) else {
-                    continue;
-                };
-                let connection_ids = self
-                    .load_valid_connection_ids_from_index(
-                        &mut conn,
-                        &room_index_key,
-                        None,
-                        Some(&room_id),
-                    )
-                    .await?;
-                if connection_ids.is_empty() {
-                    continue;
-                }
-
-                let metadata_keys: Vec<String> = connection_ids
-                    .iter()
-                    .map(|connection_id| self.conn_metadata_key(connection_id))
-                    .collect();
-                let metadata: Vec<Option<String>> = self
-                    .redis_op("fetch distributed connection metadata", async {
-                        conn.mget(metadata_keys).await
-                    })
-                    .await?;
-
-                let mut online_users = HashSet::new();
-                for entry in metadata.into_iter().flatten() {
-                    let info: ConnectionInfoPersistent =
-                        serde_json::from_str(&entry).map_err(|e| {
-                            format!("Failed to deserialize distributed connection metadata: {e}")
-                        })?;
-                    if info.room_id.as_ref() == Some(&room_id) {
-                        online_users.insert(info.user_id);
-                    }
-                }
-
-                if !online_users.is_empty() {
-                    room_counts.push((room_id, online_users.len()));
-                }
-            }
-
-            room_counts.sort_by_key(|(room_id, count)| (std::cmp::Reverse(*count), *room_id));
-            return Ok(room_counts);
-        }
-
-        let mut room_counts: Vec<(RoomId, usize)> = self
-            .room_connections
-            .iter()
-            .filter_map(|entry| {
-                let users: HashSet<UserId> = entry
-                    .value()
-                    .iter()
-                    .filter_map(|connection_id| {
-                        self.connections.get(connection_id).map(|conn| conn.user_id)
-                    })
-                    .collect();
-                let count = users.len();
-                (count > 0).then_some((*entry.key(), count))
-            })
-            .collect();
-        room_counts.sort_by_key(|(room_id, count)| (std::cmp::Reverse(*count), *room_id));
-        Ok(room_counts)
     }
 
     /// Get total connections ever established

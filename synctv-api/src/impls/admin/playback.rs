@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 
 use synctv_core::{
     models::{PlaylistId, RoomId, UserId, UserStatus},
-    service::{PlaybackStatePatch, PlaybackUpdateRequest},
+    service::{PlaybackStatePatch, PlaybackStateUpdateRequest},
 };
 
 use super::{
@@ -122,7 +122,8 @@ impl AdminApiImpl {
             media.position,
         )
         .id(media.id)
-        .default_mode(provider_result.default_mode.clone());
+        .default_mode(provider_result.default_mode.clone())
+        .duration_seconds(provider_result.duration_seconds);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
             let mut info = provider_playback_info_to_model(&provider_info);
@@ -227,7 +228,8 @@ impl AdminApiImpl {
             item.name.clone(),
             0.0,
         )
-        .default_mode(provider_result.default_mode.clone());
+        .default_mode(provider_result.default_mode.clone())
+        .duration_seconds(provider_result.duration_seconds);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
             let info = provider_playback_info_to_model(&provider_info);
@@ -299,6 +301,7 @@ impl AdminApiImpl {
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
             expires_at: None,
+            duration_seconds: None,
         })
     }
 
@@ -421,7 +424,7 @@ impl AdminApiImpl {
         let target =
             crate::impls::client::build_start_playback_request(req, &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
-        let previous_state = self.state_before_playback_update(&rid).await?;
+        let previous_state = self.state_before_playback_state_update(&rid).await?;
         let prepared_fanout =
             self.playback_fanout
                 .prepare_state_changed_outbox_fanout(PlaybackFanoutActor::new(
@@ -437,7 +440,7 @@ impl AdminApiImpl {
                 target.media_id,
                 target.playlist_id,
                 target.target,
-                Some(prepared_fanout.outbox_factory()),
+                Some(prepared_fanout.outbox_factory_with_source_changed(true)),
             )
             .await
             .map_err(ApiError::from)?;
@@ -468,7 +471,7 @@ impl AdminApiImpl {
     ) -> Result<synctv_proto::client::StopPlaybackResponse, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
-        let previous_state = self.state_before_playback_update(&rid).await?;
+        let previous_state = self.state_before_playback_state_update(&rid).await?;
         let prepared_fanout =
             self.playback_fanout
                 .prepare_state_changed_outbox_fanout(PlaybackFanoutActor::new(
@@ -478,7 +481,11 @@ impl AdminApiImpl {
 
         let state = self
             .room_service
-            .admin_stop_playback_as_with_outbox(rid, &actor, Some(prepared_fanout.outbox_factory()))
+            .admin_stop_playback_as_with_outbox(
+                rid,
+                &actor,
+                Some(prepared_fanout.outbox_factory_with_source_changed(true)),
+            )
             .await
             .map_err(ApiError::from)?;
         prepared_fanout.publish_after_outbox_commit();
@@ -555,17 +562,18 @@ impl AdminApiImpl {
         })
     }
 
-    pub async fn update_playback(
+    pub async fn update_playback_state(
         &self,
         room_id: &str,
-        req: synctv_proto::client::UpdatePlaybackRequest,
+        req: synctv_proto::client::UpdatePlaybackStateRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::client::GetPlaybackResponse, ApiError> {
+    ) -> Result<synctv_proto::client::UpdatePlaybackStateResponse, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
-        let command = crate::impls::client::build_update_playback(req, &self.public_id_codec)?;
+        let command =
+            crate::impls::client::build_playback_state_update(req, &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
-        let previous_state = self.state_before_playback_update(&rid).await?;
+        let previous_state = self.state_before_playback_state_update(&rid).await?;
         let prepared_fanout =
             self.playback_fanout
                 .prepare_state_changed_outbox_fanout(PlaybackFanoutActor::new(
@@ -574,14 +582,14 @@ impl AdminApiImpl {
                 ));
 
         let state = match command {
-            crate::impls::client::PlaybackUpdateCommand::Patch {
+            crate::impls::client::PlaybackStateUpdateCommand::Patch {
                 playing,
                 position,
                 speed,
                 version,
                 expected_source,
             } => {
-                let mut request = PlaybackUpdateRequest::new(
+                let mut request = PlaybackStateUpdateRequest::new(
                     rid,
                     *actor.user_id(),
                     PlaybackStatePatch::new(playing, position, speed),
@@ -608,12 +616,11 @@ impl AdminApiImpl {
             admin_user_id = %admin_user_id,
             ip_address = ctx.ip_address.as_deref().unwrap_or(""),
             user_agent = ctx.user_agent.as_deref().unwrap_or(""),
-            "Admin updated playback"
+            "Admin updated playback state"
         );
 
-        Ok(synctv_proto::client::GetPlaybackResponse {
+        Ok(synctv_proto::client::UpdatePlaybackStateResponse {
             playback_state: Some(try_playback_state_to_proto(&state, &self.public_id_codec)?),
-            playback: None,
         })
     }
 }

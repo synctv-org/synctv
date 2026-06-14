@@ -1,3 +1,5 @@
+#![allow(clippy::missing_errors_doc)]
+
 use std::future::Future;
 use std::time::{Duration, Instant};
 

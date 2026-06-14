@@ -220,47 +220,42 @@ fn test_ws_query_deserialization_rejects_extra_fields() -> TestResult {
 }
 
 #[test]
-fn test_media_removed_batch_requires_state_resync() {
+fn test_resource_event_is_critical() {
     let message = ServerMessage {
         message: Some(
-            synctv_proto::client::server_message::Message::MediaRemovedBatch(
-                synctv_proto::client::MediaRemovedBatch {
-                    room_id: "room_test".to_string(),
-                    media_ids: vec!["media_a".to_string(), "media_b".to_string()],
-                    removed_by: "frank".to_string(),
-                    removed_by_user_id: "user_test".to_string(),
+            synctv_proto::client::server_message::Message::ResourceEvent(
+                synctv_proto::client::ResourceEvent {
+                    observe_id: "playlist_items".to_string(),
+                    payload: Some(synctv_proto::client::resource_event::Payload::ChangedOnly(
+                        synctv_proto::client::ResourceEventOnly {},
+                    )),
+                    event_cursor: None,
                 },
             ),
         ),
     };
 
-    assert!(requires_state_resync(&message));
-    assert_eq!(message_type_name(&message), "MediaRemovedBatch");
+    assert!(is_critical_message(&message));
+    assert_eq!(message_type_name(&message), "ResourceEvent");
 }
 
 #[test]
-fn test_playback_requires_state_resync() {
+fn test_notification_requires_state_resync() {
     let message = ServerMessage {
-        message: Some(synctv_proto::client::server_message::Message::Playback(
-            synctv_proto::client::PlaybackChanged {
-                room_id: "room_test".to_string(),
-                playback: Some(synctv_proto::client::Playback {
-                    media_id: String::new(),
-                    playlist_id: String::new(),
-                    room_id: "room_test".to_string(),
-                    name: String::new(),
-                    playlist_position: 0.0,
-                    playback_infos: std::collections::HashMap::new(),
-                    default_mode: String::new(),
-                    metadata: std::collections::HashMap::new(),
-                    expires_at: Some(4_102_444_800),
-                }),
+        message: Some(synctv_proto::client::server_message::Message::Notification(
+            synctv_proto::client::UserNotification {
+                notification_id: "ntf_test".to_string(),
+                notification_type: "system".to_string(),
+                title: "Title".to_string(),
+                content: "Content".to_string(),
+                data: String::new(),
+                timestamp: 1,
             },
         )),
     };
 
     assert!(requires_state_resync(&message));
-    assert_eq!(message_type_name(&message), "Playback");
+    assert_eq!(message_type_name(&message), "Notification");
 }
 
 #[test]
@@ -1279,7 +1274,7 @@ async fn test_reservation_stays_full_until_connection_pre_join_succeeds() -> Tes
 #[test]
 fn test_state_resync_messages_disconnect_slow_client_immediately() -> TestResult {
     use crate::impls::messaging::MessageSender;
-    use synctv_proto::client::{server_message::Message, ServerMessage, UserJoinedRoom};
+    use synctv_proto::client::{server_message::Message, ServerMessage, UserNotification};
 
     let (critical_tx, _critical_rx) = tokio::sync::mpsc::channel(1);
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -1290,9 +1285,13 @@ fn test_state_resync_messages_disconnect_slow_client_immediately() -> TestResult
         .map_err(|error| test_error(error.to_string()))?;
 
     let result = sender.send(ServerMessage {
-        message: Some(Message::UserJoined(UserJoinedRoom {
-            room_id: "room12345678".to_string(),
-            member: None,
+        message: Some(Message::Notification(UserNotification {
+            notification_id: "ntf_test".to_string(),
+            notification_type: "system".to_string(),
+            title: "Title".to_string(),
+            content: "Content".to_string(),
+            data: String::new(),
+            timestamp: 1,
         })),
     });
 
@@ -1301,7 +1300,7 @@ fn test_state_resync_messages_disconnect_slow_client_immediately() -> TestResult
         Err(error) => error,
     };
     assert!(err.contains("stateful message"));
-    assert!(err.contains("UserJoined"));
+    assert!(err.contains("Notification"));
     Ok(())
 }
 

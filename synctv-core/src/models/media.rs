@@ -402,8 +402,11 @@ pub struct PlaybackResult {
     /// Provider decides this from its own source configuration and runtime context.
     pub default_mode: String,
 
-    /// Media-level metadata (duration, thumbnail, title, author, etc.)
-    /// Flexible JSON structure for provider-specific metadata
+    /// Backend-owned source duration in seconds when the provider knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<f64>,
+
+    /// Media-level provider metadata for display-only, provider-specific fields.
     #[serde(default)]
     pub metadata: std::collections::HashMap<String, JsonValue>,
 }
@@ -555,6 +558,7 @@ impl PlaybackResult {
             position: media.position,
             playback_infos,
             default_mode: mode_name.to_string(),
+            duration_seconds: None,
             metadata: std::collections::HashMap::new(),
         }
     }
@@ -575,6 +579,7 @@ impl PlaybackResult {
             position,
             playback_infos: indexmap::IndexMap::new(),
             default_mode: None,
+            duration_seconds: None,
             metadata: std::collections::HashMap::new(),
         }
     }
@@ -605,6 +610,7 @@ pub struct PlaybackResultBuilder {
     /// non-determinism).
     playback_infos: indexmap::IndexMap<String, PlaybackInfo>,
     default_mode: Option<String>,
+    duration_seconds: Option<f64>,
     metadata: std::collections::HashMap<String, JsonValue>,
 }
 
@@ -627,6 +633,12 @@ impl PlaybackResultBuilder {
     #[must_use]
     pub fn default_mode(mut self, mode_name: String) -> Self {
         self.default_mode = Some(mode_name);
+        self
+    }
+
+    #[must_use]
+    pub const fn duration_seconds(mut self, duration_seconds: Option<f64>) -> Self {
+        self.duration_seconds = duration_seconds;
         self
     }
 
@@ -664,6 +676,7 @@ impl PlaybackResultBuilder {
             position: self.position,
             playback_infos: self.playback_infos.into_iter().collect(),
             default_mode,
+            duration_seconds: self.duration_seconds,
             metadata: self.metadata,
         })
     }

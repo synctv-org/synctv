@@ -22,8 +22,8 @@ use crate::impls::messaging::{
 };
 use crate::impls::EndpointRateLimitCategory;
 use synctv_proto::client::{
-    GetRoomMembersRequest, ListPlaylistItemsRequest, WatchChatEventsRequest,
-    WatchPlaylistItemsRequest, WatchRoomMembersRequest, WatchRoomSettingsRequest,
+    ListPlaylistItemsRequest, WatchChatEventsRequest, WatchPlaylistItemsRequest,
+    WatchRoomMemberEventsRequest, WatchRoomSettingsRequest,
 };
 
 struct HttpWatchMessageSender {
@@ -111,8 +111,8 @@ pub(in crate::http::room) fn sse_event_from_server_message(
             None,
             encode_resource_watch_sse_data(format, &observed),
         ),
-        Message::ResourceChanged(changed) => {
-            let event_id = sse_event_id_from_resource_changed(&changed);
+        Message::ResourceEvent(changed) => {
+            let event_id = sse_event_id_from_resource_event(&changed);
             (
                 "changed",
                 event_id,
@@ -142,15 +142,15 @@ pub(in crate::http::room) fn sse_event_from_server_message(
     Some(Ok(event))
 }
 
-pub(in crate::http::room) fn sse_event_id_from_resource_changed(
-    changed: &synctv_proto::client::ResourceChanged,
+pub(in crate::http::room) fn sse_event_id_from_resource_event(
+    changed: &synctv_proto::client::ResourceEvent,
 ) -> Option<String> {
     changed
         .event_cursor
         .as_ref()
         .map(|cursor| cursor.sequence.to_string())
         .or_else(|| {
-            let Some(synctv_proto::client::resource_changed::Payload::ChatEvent(event)) =
+            let Some(synctv_proto::client::resource_event::Payload::ChatEvent(event)) =
                 changed.payload.as_ref()
             else {
                 return None;
@@ -224,6 +224,7 @@ pub(in crate::http::room) async fn open_resource_watch_sse(
         chat_service: state.chat_service.clone(),
         event_service,
         connection_service: state.connection_manager.clone(),
+        presence_service: state.presence_service.clone(),
         public_id_codec: state.shared_api_runtime.public_id_codec.clone(),
         sender,
         playback_service: state.shared_api_runtime.client_api.clone(),
@@ -302,19 +303,17 @@ pub async fn watch_room_members(
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
     headers: HeaderMap,
     Query(query): Query<WatchQuery>,
-    ProtoQuery(request): ProtoQuery<GetRoomMembersRequest>,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = path.room_id;
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
-    let request = WatchRoomMembersRequest {
+    let request = WatchRoomMemberEventsRequest {
         delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
-        room_members: Some(synctv_proto::client::ObserveRoomMembers {
-            request: Some(request),
+        room_member_events: Some(synctv_proto::client::ObserveRoomMemberEvents {
             after_event_sequence,
         }),
     };
-    let observe = crate::impls::messaging::watch_room_members_observe(request)
+    let observe = crate::impls::messaging::watch_room_member_events_observe(request)
         .map_err(super::super::AppError::bad_request)?;
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
 }

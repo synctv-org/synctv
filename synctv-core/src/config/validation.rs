@@ -423,17 +423,8 @@ impl Config {
 
         // Validate root identity. Password validation runs only when bootstrap
         // confirms it needs to create a root user.
-        if self.bootstrap.create_root_user {
-            if self.bootstrap.root_username.len() < 3 {
-                errors.push("Root username must be at least 3 characters".to_string());
-            }
-            if !self.bootstrap.root_email.is_empty()
-                && crate::validation::EmailValidator::new()
-                    .validate(&self.bootstrap.root_email)
-                    .is_err()
-            {
-                errors.push("Root email must be a valid email address".to_string());
-            }
+        if self.bootstrap.create_root_user && self.bootstrap.root_username.len() < 3 {
+            errors.push("Root username must be at least 3 characters".to_string());
         }
 
         // Validate port conflicts: RTMP must not collide with the unified API port.

@@ -973,11 +973,11 @@ impl RoomService {
     pub async fn admin_update_playback_as_request(
         &self,
         actor: &AuthorizedAdminActor,
-        request: crate::service::playback::PlaybackUpdateRequest,
+        request: crate::service::playback::PlaybackStateUpdateRequest,
     ) -> Result<RoomPlaybackState> {
         if request.actor_user_id != *actor.user_id() {
             return Err(Error::Authorization(
-                "Playback update actor does not match authorized admin actor".to_string(),
+                "Playback state update actor does not match authorized admin actor".to_string(),
             ));
         }
         self.playback_service

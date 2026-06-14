@@ -1,3 +1,4 @@
+#![allow(clippy::missing_errors_doc)]
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 //! `SyncTV` Protocol Definitions
@@ -43,6 +44,7 @@ pub fn validate<M: prost_reflect::ReflectMessage>(
 
 // Common shared types (enums, RoomMember)
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[allow(clippy::pedantic)]
 pub mod common {
     include!(concat!(
         env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
@@ -53,6 +55,7 @@ pub mod common {
 // Client API
 #[allow(clippy::large_enum_variant)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[allow(clippy::pedantic)]
 pub mod client {
     include!(concat!(
         env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
@@ -62,6 +65,7 @@ pub mod client {
 
 // Admin API
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[allow(clippy::pedantic)]
 pub mod admin {
     include!(concat!(
         env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
@@ -71,8 +75,10 @@ pub mod admin {
 
 // Providers
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[allow(clippy::pedantic)]
 pub mod providers {
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
     pub mod common {
         include!(concat!(
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
@@ -81,6 +87,7 @@ pub mod providers {
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
     pub mod rtmp {
         include!(concat!(
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
@@ -89,6 +96,7 @@ pub mod providers {
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
     pub mod bilibili {
         include!(concat!(
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
@@ -97,6 +105,7 @@ pub mod providers {
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
     pub mod alist {
         include!(concat!(
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
@@ -105,6 +114,7 @@ pub mod providers {
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
     pub mod emby {
         include!(concat!(
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
@@ -114,6 +124,7 @@ pub mod providers {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, clippy::too_many_lines)]
 mod tests {
     use prost::Message;
 
@@ -172,6 +183,8 @@ mod tests {
             availability: crate::client::ResourceAvailability::Available.into(),
             version: 7,
             cover: None,
+            presence: None,
+            creator: None,
         };
         let bytes = room.encode_to_vec();
         let decoded = crate::client::Room::decode(bytes.as_slice()).unwrap();
@@ -192,6 +205,7 @@ mod tests {
             admin_removed_permissions: 0x00,
             joined_at: 1_700_000_500,
             is_online: true,
+            connection_count: 2,
         };
         let bytes = member.encode_to_vec();
         let decoded = crate::common::RoomMember::decode(bytes.as_slice()).unwrap();
@@ -248,6 +262,13 @@ mod tests {
                 reacted_by_me: true,
             }],
             reaction_count: 2,
+            metadata: Vec::new(),
+            mentions: vec![crate::client::ChatMention {
+                user_id: "usr_1".into(),
+                username: "alice".into(),
+                start: 0,
+                length: 6,
+            }],
         };
         let bytes = msg.encode_to_vec();
         let decoded = crate::client::ChatMessageReceive::decode(bytes.as_slice()).unwrap();
@@ -265,6 +286,8 @@ mod tests {
                     client_message_id: "client-1".into(),
                     images: Vec::new(),
                     reply_to_message_id: String::new(),
+                    metadata: Vec::new(),
+                    mentions: Vec::new(),
                 },
             )),
         };
@@ -274,28 +297,81 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_server_message_playback() {
+    fn roundtrip_server_message_playback_state_resource() {
         let msg = crate::client::ServerMessage {
-            message: Some(crate::client::server_message::Message::PlaybackState(
-                crate::client::PlaybackStateChanged {
-                    room_id: "room-abc".into(),
-                    state: Some(crate::client::PlaybackState {
-                        room_id: "room-abc".into(),
-                        playing_media_id: "media-1".into(),
-                        position: 0.0,
-                        speed: 1.0,
-                        is_playing: false,
-                        updated_at: 0,
-                        version: 1,
-                        playing_playlist_id: String::new(),
-                        target: Vec::new(),
-                        target_hash: String::new(),
-                    }),
+            message: Some(crate::client::server_message::Message::ResourceEvent(
+                crate::client::ResourceEvent {
+                    observe_id: "playback_state".into(),
+                    payload: Some(crate::client::resource_event::Payload::PlaybackState(
+                        crate::client::PlaybackState {
+                            room_id: "room-abc".into(),
+                            playing_media_id: "media-1".into(),
+                            position: 0.0,
+                            speed: 1.0,
+                            is_playing: false,
+                            updated_at: 0,
+                            version: 1,
+                            playing_playlist_id: String::new(),
+                            target: Vec::new(),
+                            target_hash: String::new(),
+                        },
+                    )),
+                    event_cursor: None,
                 },
             )),
         };
         let bytes = msg.encode_to_vec();
         let decoded = crate::client::ServerMessage::decode(bytes.as_slice()).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn roundtrip_room_settings_resource_payload() {
+        let msg = crate::client::ResourceEvent {
+            observe_id: "room_settings".into(),
+            payload: Some(crate::client::resource_event::Payload::RoomSettings(
+                crate::client::GetRoomSettingsResponse {
+                    settings: br#"{"chat_enabled":true}"#.to_vec(),
+                    version: 1,
+                },
+            )),
+            event_cursor: None,
+        };
+        let bytes = msg.encode_to_vec();
+        let decoded = crate::client::ResourceEvent::decode(bytes.as_slice()).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn roundtrip_room_member_event() {
+        let msg = crate::client::RoomMemberEvent {
+            event_id: "evt-123".into(),
+            room_id: "room-abc".into(),
+            kind: crate::client::RoomMemberEventKind::Joined.into(),
+            member: Some(crate::common::RoomMember {
+                room_id: "room-abc".into(),
+                user_id: "user-123".into(),
+                username: "member".into(),
+                role: crate::common::RoomMemberRole::Member.into(),
+                permissions: 0xFF00,
+                added_permissions: 0,
+                removed_permissions: 0,
+                admin_added_permissions: 0,
+                admin_removed_permissions: 0,
+                joined_at: 1,
+                is_online: true,
+                connection_count: 1,
+            }),
+            user_id: "user-123".into(),
+            guest_id: String::new(),
+            username: "member".into(),
+            actor_user_id: String::new(),
+            reason: String::new(),
+            occurred_at: 1,
+            sequence: 2,
+        };
+        let bytes = msg.encode_to_vec();
+        let decoded = crate::client::RoomMemberEvent::decode(bytes.as_slice()).unwrap();
         assert_eq!(msg, decoded);
     }
 
@@ -328,24 +404,6 @@ mod tests {
         let bytes = server.encode_to_vec();
         let decoded = crate::client::IceServer::decode(bytes.as_slice()).unwrap();
         assert_eq!(server, decoded);
-    }
-
-    #[test]
-    fn roundtrip_permission_changed() {
-        let msg = crate::client::PermissionChanged {
-            room_id: "room-abc".into(),
-            user_id: "user-123".into(),
-            role: crate::common::RoomMemberRole::Member.into(),
-            effective_permissions: 0xFF00,
-            added_permissions: 0x0F00,
-            removed_permissions: 0x0001,
-            admin_added_permissions: 0,
-            admin_removed_permissions: 0,
-            updated_by: "admin-user".into(),
-        };
-        let bytes = msg.encode_to_vec();
-        let decoded = crate::client::PermissionChanged::decode(bytes.as_slice()).unwrap();
-        assert_eq!(msg, decoded);
     }
 
     #[test]
@@ -463,6 +521,8 @@ mod tests {
                     client_message_id: String::new(),
                     images: Vec::new(),
                     reply_to_message_id: String::new(),
+                    metadata: Vec::new(),
+                    mentions: Vec::new(),
                 },
             )),
         };
@@ -626,6 +686,7 @@ mod tests {
             banned_by: String::new(),
             banned_reason: String::new(),
             avatar_url: "https://cdn.example.com/admin.webp".into(),
+            presence: None,
         };
         let bytes = user.encode_to_vec();
         let decoded = crate::admin::AdminUser::decode(bytes.as_slice()).unwrap();
@@ -2069,6 +2130,134 @@ mod tests {
         .expect("OPAQUE password update finish should deserialize from base64 bytes");
         assert_eq!(decoded.credential_finalization, vec![10, 11]);
         assert_eq!(decoded.registration_upload, vec![12, 13]);
+
+        let decoded: crate::client::FinishSensitiveOperationVerificationRequest =
+            serde_json::from_str(
+                r#"{
+                    "session_id":"sensitive-session",
+                    "method":1,
+                    "password":"secret",
+                    "email_token":"",
+                    "passkey_session_id":""
+                }"#,
+            )
+            .expect("Sensitive password verification should allow omitted passkey credential");
+        assert_eq!(decoded.passkey_credential, Vec::<u8>::new());
+
+        let decoded: crate::client::FinishSensitiveOperationVerificationRequest =
+            serde_json::from_str(
+                r#"{
+                    "session_id":"sensitive-session",
+                    "method":2,
+                    "password":"",
+                    "email_token":"",
+                    "passkey_session_id":"passkey-session",
+                    "passkey_credential":{"id":"credential"}
+                }"#,
+            )
+            .expect("Sensitive passkey verification should deserialize JSON credential bytes");
+        assert_eq!(
+            String::from_utf8(decoded.passkey_credential).expect("credential JSON should be UTF-8"),
+            r#"{"id":"credential"}"#
+        );
+
+        let decoded: crate::client::SendChatMessageRequest = serde_json::from_str(
+            r#"{
+                "content":"hello",
+                "client_message_id":"client-message-1"
+            }"#,
+        )
+        .expect("Plain text chat send should allow omitted optional payload fields");
+        assert!(decoded.images.is_empty());
+        assert!(decoded.metadata.is_empty());
+        assert!(decoded.reply_to_message_id.is_empty());
+        assert!(decoded.display_position.is_empty());
+        assert!(decoded.display_color.is_empty());
+
+        let decoded: crate::client::SendChatMessageRequest = serde_json::from_str(
+            r#"{
+                "content":"",
+                "client_message_id":"client-message-2",
+                "images":[{
+                    "id":"image-1",
+                    "storage_backend":"database",
+                    "object_key":"chat/images/one.png",
+                    "url":"https://example.test/image.png",
+                    "mime_type":"image/png",
+                    "size_bytes":"68",
+                    "width":1,
+                    "height":1
+                }]
+            }"#,
+        )
+        .expect("Chat image send should allow omitted image metadata");
+        assert_eq!(decoded.images.len(), 1);
+        assert!(decoded.images[0].metadata.is_empty());
+
+        let decoded: crate::client::EditChatMessageRequest = serde_json::from_str(
+            r#"{
+                "message_id":"msg-1",
+                "content":"edited",
+                "expected_version":"1",
+                "client_operation_id":"edit-1"
+            }"#,
+        )
+        .expect("Chat edit should allow omitted metadata");
+        assert!(decoded.metadata.is_empty());
+
+        let decoded: crate::client::GetChatPlaybackMessagesRequest =
+            serde_json::from_str(r#"{"playback_media_id":"med_probe"}"#)
+                .expect("Chat playback query should allow omitted optional filters");
+        assert_eq!(decoded.playback_media_id, "med_probe");
+        assert!(decoded.playback_playlist_id.is_empty());
+        assert!(decoded.playback_target.is_empty());
+        assert_eq!(decoded.position_seconds, 0.0);
+        assert_eq!(decoded.before_seconds, 0.0);
+        assert_eq!(decoded.after_seconds, 0.0);
+        assert_eq!(decoded.limit, 0);
+        assert!(!decoded.include_deleted);
+
+        let decoded: crate::client::MarkAllAsReadRequest = serde_json::from_str(r"{}")
+            .expect("Notification mark-all request should allow omitted cutoff");
+        assert_eq!(decoded.before, None);
+
+        let decoded: crate::admin::AddMemberRequest = serde_json::from_str(
+            r#"{
+                "room_id":"room_probe",
+                "user_id":"usr_probe"
+            }"#,
+        )
+        .expect("Admin add-member should allow omitted role and notify");
+        assert_eq!(decoded.role, 0);
+        assert!(!decoded.notify);
+
+        let decoded: crate::admin::UpdateMemberPermissionsRequest = serde_json::from_str(
+            r#"{
+                "room_id":"room_probe",
+                "user_id":"usr_probe"
+            }"#,
+        )
+        .expect("Admin member permission update should allow omitted permission overrides");
+        assert_eq!(decoded.role, 0);
+        assert_eq!(decoded.added_permissions, 0);
+        assert_eq!(decoded.removed_permissions, 0);
+        assert_eq!(decoded.admin_added_permissions, 0);
+        assert_eq!(decoded.admin_removed_permissions, 0);
+
+        let decoded: crate::providers::common::ListAvailableProviderInstancesRequest =
+            serde_json::from_str(r"{}")
+                .expect("Provider available instances query should allow omitted provider type");
+        assert!(decoded.provider_type.is_empty());
+
+        let decoded: crate::providers::common::ListProviderInstancesRequest =
+            serde_json::from_str(r"{}")
+                .expect("Provider instances query should allow omitted filters");
+        assert_eq!(decoded.page, 0);
+        assert_eq!(decoded.page_size, 0);
+        assert!(decoded.provider_type.is_empty());
+        assert!(decoded.search.is_empty());
+        assert_eq!(decoded.enabled, None);
+        assert_eq!(decoded.tls, None);
 
         let decoded: crate::client::StartOpaquePasswordResetRequest = serde_json::from_str(
             r#"{

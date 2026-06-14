@@ -97,6 +97,7 @@ pub struct RouterConfig {
     pub providers: ProviderSet,
     pub event_service: Arc<dyn RealtimeEventService>,
     pub connection_manager: Arc<dyn ConnectionRuntime>,
+    pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub jwt_service: synctv_core::service::JwtService,
     pub realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
@@ -387,6 +388,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
             webrtc_status: config.webrtc_status.clone(),
             provider_access_service: provider_access_service.clone(),
             signing_key: proxy_signing_key.clone(),
+            presence_service: config.presence_service.clone(),
             request_executor: request_executor.clone(),
             ws_ticket_service: config.ws_ticket_service.clone(),
         },
@@ -429,6 +431,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
                 provider_stores: provider_stores.clone(),
                 provider_access_service: provider_access_service.clone(),
                 signing_key: proxy_signing_key.clone(),
+                presence_service: config.presence_service.clone(),
                 request_executor: request_executor.clone(),
             },
         );
@@ -769,7 +772,7 @@ fn register_write_routes() -> Router<AppState> {
         )
         .route(
             "/api/rooms/{room_id}/playback",
-            axum::routing::patch(room::update_playback),
+            axum::routing::patch(room::update_playback_state),
         )
         .route(
             "/api/rooms/{room_id}/playlists",
@@ -866,6 +869,10 @@ fn register_read_routes() -> Router<AppState> {
         .route(
             "/api/rooms/{room_id}/chat/messages/{message_id}/reactions/{reaction_key}/users",
             get(room::list_chat_reaction_users),
+        )
+        .route(
+            "/api/rooms/{room_id}/chat/messages/{message_id}/read-receipts",
+            get(room::get_chat_message_read_receipts),
         )
         .route(
             "/api/rooms/{room_id}/chat/read-state",
@@ -1071,6 +1078,18 @@ fn register_all_routes() -> Router<AppState> {
                 .route(
                     "/api/rooms/{room_id}/members/{user_id}",
                     axum::routing::patch(room_extra::set_member_permissions),
+                )
+                .route(
+                    "/api/rooms/{room_id}/reports",
+                    get(room::list_room_content_reports).post(room::report_content),
+                )
+                .route(
+                    "/api/rooms/{room_id}/reports/{report_id}",
+                    get(room::get_room_content_report),
+                )
+                .route(
+                    "/api/rooms/{room_id}/reports/{report_id}/status",
+                    post(room::update_room_content_report_status),
                 ),
         )
         .merge(Router::new().route("/api/tickets", post(ticket::create_ticket)))

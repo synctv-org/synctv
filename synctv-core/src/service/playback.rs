@@ -11,9 +11,15 @@ use crate::{
         CacheDomain, CacheInvalidationRuntime, CloneableError, ConsistencyCoordinator,
         PlaybackStateCache, SingleFlight, VersionFenceReservation, VersionFenceStore,
     },
-    models::{MediaId, PlayMode, PlaylistId, RoomId, RoomPlaybackState, RoomSettings, UserId},
-    repository::{realtime_outbox::RealtimeOutboxRepository, RoomPlaybackStateRepository},
-    service::{media::MediaService, permission::PermissionService, UserService},
+    models::{
+        MediaId, PlayMode, PlaybackSourceIdentity, PlaylistId, RoomId, RoomPlaybackState,
+        RoomSettings, UserId,
+    },
+    repository::{
+        realtime_outbox::RealtimeOutboxRepository, PlaybackSourceMetadataRepository,
+        RoomPlaybackStateRepository,
+    },
+    service::{media::BackendPlaybackRequest, media::MediaService, permission::PermissionService, UserService},
     Error, Result,
 };
 use rand::prelude::IteratorRandom;
@@ -29,7 +35,7 @@ use types::{
     validate_position_update_source, validate_seek_position, validate_switch_target, NextTarget,
 };
 pub use types::{
-    PlaybackSourceExpectation, PlaybackStatePatch, PlaybackUpdateRequest,
+    PlaybackSourceExpectation, PlaybackStatePatch, PlaybackStateUpdateRequest,
     RealtimeOutboxPlaybackStateEventFactory, SeekResponse, SwitchPlaybackTarget,
 };
 
@@ -39,6 +45,7 @@ pub use types::{
 #[derive(Clone)]
 pub struct PlaybackService {
     playback_repo: RoomPlaybackStateRepository,
+    source_metadata_repo: PlaybackSourceMetadataRepository,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     permission_service: PermissionService,
     media_service: MediaService,
@@ -64,6 +71,7 @@ pub struct PlaybackServiceRuntime {
     pub l2_cache: Option<PlaybackStateCache>,
     pub version_fence: Arc<dyn VersionFenceStore>,
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+    pub source_metadata_repo: Option<PlaybackSourceMetadataRepository>,
 }
 
 impl PlaybackServiceRuntime {
@@ -74,6 +82,7 @@ impl PlaybackServiceRuntime {
             l2_cache: None,
             version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
             realtime_outbox: None,
+            source_metadata_repo: None,
         }
     }
 }
@@ -144,8 +153,12 @@ impl PlaybackService {
         user_service: UserService,
         runtime: PlaybackServiceRuntime,
     ) -> Self {
+        let source_metadata_repo = runtime
+            .source_metadata_repo
+            .unwrap_or_else(|| PlaybackSourceMetadataRepository::new(playback_repo.pool().clone()));
         Self {
             playback_repo,
+            source_metadata_repo,
             realtime_outbox: runtime.realtime_outbox,
             permission_service,
             media_service,
@@ -183,6 +196,20 @@ impl PlaybackService {
 
     pub const fn has_invalidation_service(&self) -> bool {
         self.invalidation_service.is_some()
+    }
+
+    #[must_use]
+    pub const fn source_metadata_repository(&self) -> &PlaybackSourceMetadataRepository {
+        &self.source_metadata_repo
+    }
+
+    pub async fn generate_backend_playback_for_source(
+        &self,
+        request: BackendPlaybackRequest<'_>,
+    ) -> Result<Option<crate::provider::PlaybackResult>> {
+        self.media_service
+            .generate_backend_playback_for_source(request)
+            .await
     }
 
     fn playback_domain(room_id: &RoomId) -> CacheDomain {
@@ -265,7 +292,7 @@ impl PlaybackService {
             .await;
     }
 
-    async fn persist_playback_update_with_previous_progress(
+    async fn persist_playback_state_update_with_previous_progress(
         &self,
         state: &RoomPlaybackState,
         observed_version: i64,
@@ -309,7 +336,7 @@ impl PlaybackService {
                     tracing::warn!(
                         room_id = %state.room_id,
                         error = %rollback_error,
-                        "Failed to roll back playback update transaction"
+                        "Failed to roll back playback state update transaction"
                     );
                 }
                 self.abort_playback_write(&state.room_id, reservation.as_ref())
@@ -322,7 +349,7 @@ impl PlaybackService {
             &state.room_id,
             reservation.as_ref(),
             updated_state.version,
-            "persist_playback_update",
+            "persist_playback_state_update",
         )
         .await;
         Ok(updated_state)
@@ -378,7 +405,7 @@ impl PlaybackService {
         position: f64,
     ) -> Result<SeekResponse> {
         let result = self
-            .update_playback_state(PlaybackUpdateRequest::new(
+            .update_playback_state(PlaybackStateUpdateRequest::new(
                 room_id,
                 user_id,
                 PlaybackStatePatch::new(None, Some(position), None),
@@ -754,7 +781,7 @@ impl PlaybackService {
                     previous_progress_position_for_source_transition(&previous_state, &updated_state);
 
                 let saved_state = self
-                    .persist_playback_update_with_previous_progress(
+                    .persist_playback_state_update_with_previous_progress(
                         &updated_state,
                         observed_version,
                         previous_progress_position,
@@ -779,15 +806,12 @@ impl PlaybackService {
         .await
     }
 
-    /// Check if media has ended and auto-play next if needed
-    ///
-    /// This should be called when playback `position` is updated.
-    /// It checks if the current time has reached or exceeded the media duration.
+    /// Check if the current backend-known source duration has elapsed and advance.
     pub async fn check_and_auto_play(
         &self,
         room_id: &RoomId,
         settings: &RoomSettings,
-        position: f64,
+        _position: f64,
     ) -> Result<Option<RoomPlaybackState>> {
         let enabled = settings.auto_play.value.enabled;
 
@@ -795,45 +819,59 @@ impl PlaybackService {
             return Ok(None);
         }
 
-        // Get current media to check duration
         let state = self.get_state(room_id).await?;
-        let playing_media_id = state.playing_media_id;
+        self.auto_advance_state_if_due(&state, settings).await
+    }
 
-        let playing_media = match playing_media_id {
-            Some(ref id) => self
-                .media_service
-                .get_room_media(room_id, id)
-                .await?
-                .ok_or_else(|| Error::NotFound("Current media not found".to_string()))?,
-            None => return Ok(None),
-        };
-
-        // A negative position (-1.0) is an explicit "media ended" signal from the client
-        if position < 0.0 {
-            return self.play_next(room_id, settings).await;
+    async fn auto_advance_state_if_due(
+        &self,
+        state: &RoomPlaybackState,
+        settings: &RoomSettings,
+    ) -> Result<Option<RoomPlaybackState>> {
+        if !settings.auto_play.value.enabled || !state.is_playing {
+            return Ok(None);
         }
 
-        // Try to get duration from source_config metadata (any provider may store it)
-        let duration = playing_media
-            .source_config
-            .get("metadata")
-            .and_then(|m| m.get("duration"))
-            .and_then(serde_json::Value::as_f64);
+        let Some(identity) = PlaybackSourceIdentity::from_state(state) else {
+            return Ok(None);
+        };
+        let Some(metadata) = self.source_metadata_repo.get(&identity).await? else {
+            return Ok(None);
+        };
+        let Some(duration_seconds) = metadata.duration_seconds else {
+            return Ok(None);
+        };
 
-        // Use computed time to account for elapsed wall-clock time when playing
-        let effective_time = state.computed_position();
-
-        // Check if position is near end (within 1 second or past end)
-        if let Some(dur) = duration {
-            if effective_time >= dur - 1.0 {
-                // Auto-play next media
-                self.play_next(room_id, settings).await
-            } else {
-                Ok(None)
-            }
+        if state.computed_position() >= duration_seconds - 1.0 {
+            self.play_next(&state.room_id, settings).await
         } else {
             Ok(None)
         }
+    }
+
+    pub async fn auto_advance_due_sources(
+        &self,
+        settings_repo: &crate::repository::RoomSettingsRepository,
+        limit: i64,
+    ) -> Result<usize> {
+        let candidates = self
+            .source_metadata_repo
+            .list_active_finite_sources(limit)
+            .await?;
+        let mut advanced = 0_usize;
+
+        for (_metadata, state) in candidates {
+            let settings = settings_repo.get(&state.room_id).await?;
+            if self
+                .auto_advance_state_if_due(&state, &settings)
+                .await?
+                .is_some()
+            {
+                advanced += 1;
+            }
+        }
+
+        Ok(advanced)
     }
 
     /// Maximum retry attempts for optimistic lock conflicts.
@@ -908,7 +946,7 @@ impl PlaybackService {
                         previous_progress_position_for_source_transition(&previous_state, &state);
 
                     let updated_state = self
-                        .persist_playback_update_with_previous_progress(
+                        .persist_playback_state_update_with_previous_progress(
                             &state,
                             observed_version,
                             previous_progress_position,
@@ -1263,26 +1301,26 @@ impl PlaybackService {
 
     pub async fn update_playback_state(
         &self,
-        request: PlaybackUpdateRequest,
+        request: PlaybackStateUpdateRequest,
     ) -> Result<RoomPlaybackState> {
         self.update_playback_state_internal(request, false).await
     }
 
-    /// Management-only multi-field playback update. Callers must validate
+    /// Management-only multi-field playback state update. Callers must validate
     /// global admin/root identity before this bypasses room membership checks.
     pub async fn admin_update_playback_state(
         &self,
-        request: PlaybackUpdateRequest,
+        request: PlaybackStateUpdateRequest,
     ) -> Result<RoomPlaybackState> {
         self.update_playback_state_internal(request, true).await
     }
 
     async fn update_playback_state_internal(
         &self,
-        request: PlaybackUpdateRequest,
+        request: PlaybackStateUpdateRequest,
         bypass_permission: bool,
     ) -> Result<RoomPlaybackState> {
-        let PlaybackUpdateRequest {
+        let PlaybackStateUpdateRequest {
             room_id,
             actor_user_id,
             patch,
@@ -1367,7 +1405,7 @@ impl PlaybackService {
             let observed_version = state.version;
             apply_update(&mut state);
             let updated_state = self
-                .persist_playback_update_with_previous_progress(
+                .persist_playback_state_update_with_previous_progress(
                     &state,
                     observed_version,
                     None,

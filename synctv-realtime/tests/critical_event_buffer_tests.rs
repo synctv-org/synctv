@@ -78,12 +78,15 @@ fn test_permission_changed_is_critical() {
         target_username: "test_target".to_string(),
         changed_by,
         changed_by_username: "admin".to_string(),
+        role_changed: false,
         new_permissions: RoomPermissionSet(0),
         role: 0, // RoomMemberRole::Guest
         added_permissions: RoomPermissionSet(0),
         removed_permissions: RoomPermissionSet(0),
         admin_added_permissions: RoomPermissionSet(0),
         admin_removed_permissions: RoomPermissionSet(0),
+        target_is_online: false,
+        target_connection_count: 0,
         timestamp: chrono::Utc::now(),
     };
     assert!(
@@ -121,6 +124,7 @@ fn test_user_left_is_critical() {
         user_id,
         room_id,
         username: "test_user".to_string(),
+        role: 2,
         timestamp: chrono::Utc::now(),
     };
     assert!(event.is_critical(), "UserLeft should be a critical event");
@@ -160,6 +164,7 @@ fn test_playback_state_changed_is_not_critical() {
         room_id,
         username: "test_user".to_string(),
         state: synctv_core::models::playback::RoomPlaybackState::new(room_id),
+        source_changed: false,
         timestamp: chrono::Utc::now(),
     };
     assert!(

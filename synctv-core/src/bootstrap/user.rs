@@ -6,9 +6,7 @@ use tracing::info;
 use crate::{
     config::BootstrapConfig,
     models::{SignupMethod, User, UserRole},
-    repository::{
-        PasswordCredentialMaterial, UserEmailRepository, UserPasswordRepository, UserRepository,
-    },
+    repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
     service::auth::OpaquePasswordService,
     Error, Result,
 };
@@ -40,7 +38,6 @@ pub async fn bootstrap_root_user(
     }
 
     let repository = UserRepository::new(pool.clone());
-    let user_email_repository = UserEmailRepository::new(pool.clone());
     let user_password_repository = UserPasswordRepository::new(pool.clone());
 
     // Check if any root user exists
@@ -88,7 +85,6 @@ pub async fn bootstrap_root_user(
         &config.root_password,
     )?;
 
-    let root_email = (!config.root_email.is_empty()).then(|| config.root_email.clone());
     let mut user = User::new(
         config.root_username.clone(),
         SignupMethod::AdminCreated, // Root user created via bootstrap config
@@ -98,9 +94,6 @@ pub async fn bootstrap_root_user(
 
     let mut tx = pool.begin().await?;
     let created_user = repository.create_with_executor(&user, &mut *tx).await?;
-    user_email_repository
-        .create_for_user_with_executor(&created_user, root_email.as_deref(), &mut *tx)
-        .await?;
     user_password_repository
         .create_for_user_with_executor(
             &created_user,

@@ -199,12 +199,13 @@ existingSecret: "my-external-synctv-secret"
 
 ## 安全
 
-服务端出站请求使用 `config.security.ssrf` 中的全局 SSRF 策略。默认会阻止 private、loopback、link-local、reserved 和云 metadata 目标。对于可信的内网媒体端点，优先使用显式 allowlist：
+服务端出站请求使用 `config.security.ssrf` 中的全局 SSRF 策略。默认关闭 SSRF 防护，方便自托管环境使用内网媒体源。公网部署建议启用 SSRF 防护，并为可信内网媒体端点配置显式 allowlist：
 
 ```yaml
 config:
   security:
     ssrf:
+      enabled: true
       allowPrivateNetworkTargets: false
       allowedHosts:
         - nas.example.internal

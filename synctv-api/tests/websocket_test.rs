@@ -550,7 +550,7 @@ mod websocket_e2e {
     use synctv_api::http::websocket::websocket_handler;
     use synctv_api::impls::messaging::ProtoCodec;
     use synctv_core::cache::UsernameCache;
-    use synctv_core::models::id::UserId;
+    use synctv_core::models::id::{RoomId, UserId};
     use synctv_core::service::auth::jwt::JwtService;
     use synctv_core::service::rate_limit::RateLimiter;
     use synctv_core::service::user::UserServiceRuntimeOptions;
@@ -562,7 +562,8 @@ mod websocket_e2e {
         start_redis_url_with_label, test_redis_key_prefix, RedisContainer, TestContainer,
     };
     use synctv_proto::client::{
-        client_message, server_message, ClientMessage, HeartbeatMessage, ServerMessage, WebRtcJoin,
+        client_message, server_message, ClientMessage, HeartbeatMessage, ServerMessage,
+        WebRtcCommand, WebRtcJoin,
     };
     use synctv_realtime::sync::{
         build_connection_manager, ConnectionLimits, ConnectionManager, RealtimeConfig,
@@ -914,14 +915,23 @@ mod websocket_e2e {
             redis::Client::open(redis_url.clone()).expect("Redis client for connection manager");
         let redis_conn_for_connections =
             redis_connection_manager(&redis_client_for_connections).await;
+        let connection_profile = SharedStateProfile::for_cluster_runtime(
+            Some(synctv_core::direct_runtime(redis_conn_for_connections)),
+            &redis_key_prefix,
+            true,
+        );
+        let presence_service = Arc::new(
+            synctv_core::service::OnlinePresenceService::from_shared_state_profile(
+                &connection_profile,
+            )
+            .expect("shared presence service should initialize"),
+        );
         let connection_manager = Arc::new(
             build_connection_manager(
                 connection_limits,
-                &SharedStateProfile::for_cluster_runtime(
-                    Some(synctv_core::direct_runtime(redis_conn_for_connections)),
-                    &redis_key_prefix,
-                    true,
-                ),
+                &connection_profile,
+                presence_service.clone(),
+                node_id,
             )
             .expect("shared realtime connection runtime should initialize"),
         );
@@ -952,6 +962,9 @@ mod websocket_e2e {
 
         let ws_ticket_service = Arc::new(synctv_core::service::WsTicketService::local_only(None));
 
+        let chat_service =
+            build_test_chat_service(&pool, username_cache_for_chat, chat_rate_limit_config);
+
         let router_config = synctv_api::http::RouterConfig {
             config,
             user_service: user_service.clone(),
@@ -968,6 +981,7 @@ mod websocket_e2e {
             providers: providers.clone(),
             event_service: realtime_manager.clone(),
             connection_manager,
+            presence_service,
             jwt_service: jwt_service.clone(),
             realtime_fanout_service: synctv_api::realtime_fanout::disabled_realtime_fanout_service(
             ),
@@ -979,11 +993,7 @@ mod websocket_e2e {
             email_token_service: None,
             publish_key_service: None,
             notification_service: None,
-            chat_service: Some(build_test_chat_service(
-                &pool,
-                username_cache_for_chat,
-                chat_rate_limit_config,
-            )),
+            chat_service: Some(chat_service.clone()),
             audit_service: {
                 let (audit_svc, _audit_handle) =
                     synctv_core::service::AuditService::new(pool.clone());
@@ -1114,12 +1124,6 @@ mod websocket_e2e {
             .expect("test media id should encode")
     }
 
-    fn encode_test_playlist_id(playlist_id: &synctv_core::models::PlaylistId) -> String {
-        synctv_core::PublicIdCodec::plain()
-            .encode_playlist_id(*playlist_id)
-            .expect("test playlist id should encode")
-    }
-
     /// Connect to the WebSocket endpoint using Authorization header.
     async fn ws_connect(
         addr: &str,
@@ -1221,7 +1225,7 @@ mod websocket_e2e {
         collected
     }
 
-    /// Read the next server message, skipping `UserJoined` and `UserLeft` events.
+    /// Read the next server message, skipping room member events.
     /// Useful after draining initial messages when you want to read a specific
     /// event type (Chat, `HeartbeatAck`, etc.) without being tripped up by
     /// membership notifications that arrive at unpredictable times.
@@ -1230,10 +1234,7 @@ mod websocket_e2e {
     ) -> Option<ServerMessage> {
         loop {
             let msg = recv_server_message(ws).await?;
-            if !matches!(
-                &msg.message,
-                Some(server_message::Message::UserJoined(_) | server_message::Message::UserLeft(_))
-            ) {
+            if resource_room_member_event(&msg).is_none() {
                 return Some(msg);
             }
         }
@@ -1268,6 +1269,59 @@ mod websocket_e2e {
             .expect("send client message");
     }
 
+    async fn publish_realtime_event_confirmed(
+        server: &E2EServer,
+        event: synctv_realtime::sync::RealtimeEvent,
+    ) {
+        let event_type = event.event_type();
+        server
+            .realtime_manager
+            .publish_only_confirmed(event, std::time::Duration::from_secs(5))
+            .await
+            .unwrap_or_else(|error| panic!("cross-replica {event_type} publish failed: {error}"));
+    }
+
+    async fn wait_for_distributed_room_subscribers(
+        server: &E2EServer,
+        room_id: RoomId,
+        expected: usize,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let subscribers = server
+                .realtime_manager
+                .message_hub()
+                .get_room_subscribers_replicas_wide(&room_id)
+                .await
+                .expect("distributed room subscriber lookup should succeed");
+            if subscribers.len() >= expected {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "distributed room subscribers did not reach {expected}; got {}",
+                subscribers.len()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    fn observe_playback_state_message(observe_id: &str) -> ClientMessage {
+        ClientMessage {
+            message: Some(client_message::Message::ObserveResource(
+                synctv_proto::client::ObserveResource {
+                    observe_id: observe_id.to_string(),
+                    delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
+                    resource: Some(
+                        synctv_proto::client::observe_resource::Resource::PlaybackState(
+                            synctv_proto::client::ObservePlaybackState::default(),
+                        ),
+                    ),
+                },
+            )),
+        }
+    }
+
     fn observe_chat_events_message(observe_id: &str) -> ClientMessage {
         ClientMessage {
             message: Some(client_message::Message::ObserveResource(
@@ -1286,19 +1340,113 @@ mod websocket_e2e {
         }
     }
 
+    fn observe_room_member_events_message(observe_id: &str) -> ClientMessage {
+        ClientMessage {
+            message: Some(client_message::Message::ObserveResource(
+                synctv_proto::client::ObserveResource {
+                    observe_id: observe_id.to_string(),
+                    delivery_mode: synctv_proto::client::ResourceDeliveryMode::NotifyOnly as i32,
+                    resource: Some(
+                        synctv_proto::client::observe_resource::Resource::RoomMemberEvents(
+                            synctv_proto::client::ObserveRoomMemberEvents {
+                                after_event_sequence: None,
+                            },
+                        ),
+                    ),
+                },
+            )),
+        }
+    }
+
+    fn webrtc_command_message(
+        command: synctv_proto::client::web_rtc_command::Command,
+    ) -> ClientMessage {
+        ClientMessage {
+            message: Some(client_message::Message::Webrtc(WebRtcCommand {
+                command: Some(command),
+            })),
+        }
+    }
+
     fn resource_chat_event(
         message: &ServerMessage,
     ) -> Option<&synctv_proto::client::ChatMessageEvent> {
         match &message.message {
-            Some(server_message::Message::ResourceChanged(changed)) => {
+            Some(server_message::Message::ResourceEvent(changed)) => {
                 match changed.payload.as_ref() {
-                    Some(synctv_proto::client::resource_changed::Payload::ChatEvent(event)) => {
+                    Some(synctv_proto::client::resource_event::Payload::ChatEvent(event)) => {
                         Some(event)
                     }
                     _ => None,
                 }
             }
             _ => None,
+        }
+    }
+
+    fn resource_room_member_event(
+        message: &ServerMessage,
+    ) -> Option<&synctv_proto::client::RoomMemberEvent> {
+        match &message.message {
+            Some(server_message::Message::ResourceEvent(changed)) => {
+                match changed.payload.as_ref() {
+                    Some(synctv_proto::client::resource_event::Payload::RoomMemberEvent(event)) => {
+                        Some(event)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn resource_webrtc_event(
+        message: &ServerMessage,
+    ) -> Option<&synctv_proto::client::WebRtcEvent> {
+        match &message.message {
+            Some(server_message::Message::ResourceEvent(changed)) => {
+                match changed.payload.as_ref() {
+                    Some(synctv_proto::client::resource_event::Payload::WebrtcEvent(event)) => {
+                        Some(event)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn resource_room_member_joined(
+        message: &ServerMessage,
+    ) -> Option<&synctv_proto::client::RoomMemberEvent> {
+        resource_room_member_event(message)
+            .filter(|event| event.kind == synctv_proto::client::RoomMemberEventKind::Joined as i32)
+    }
+
+    fn resource_room_member_left(
+        message: &ServerMessage,
+    ) -> Option<&synctv_proto::client::RoomMemberEvent> {
+        resource_room_member_event(message)
+            .filter(|event| event.kind == synctv_proto::client::RoomMemberEventKind::Left as i32)
+    }
+
+    fn resource_playback_state_matches(
+        message: &ServerMessage,
+        observe_id: &str,
+        predicate: impl FnOnce(&synctv_proto::client::PlaybackState) -> bool,
+    ) -> bool {
+        match &message.message {
+            Some(server_message::Message::ResourceEvent(changed))
+                if changed.observe_id == observe_id =>
+            {
+                match changed.payload.as_ref() {
+                    Some(synctv_proto::client::resource_event::Payload::PlaybackState(state)) => {
+                        predicate(state)
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
         }
     }
 
@@ -1314,23 +1462,28 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        let msg = tokio::time::timeout(
+        let heartbeat = ClientMessage {
+            message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            })),
+        };
+        send_client_message(&mut ws, &heartbeat).await;
+        let ack = recv_matching_server_message(
+            &mut ws,
             std::time::Duration::from_secs(5),
-            recv_server_message(&mut ws),
+            |message| {
+                matches!(
+                    message.message,
+                    Some(server_message::Message::HeartbeatAck(_))
+                )
+            },
+            "heartbeat ack after websocket auth",
         )
-        .await
-        .expect("timeout waiting for initial message")
-        .expect("stream ended unexpectedly");
-
-        match msg.message {
-            Some(server_message::Message::UserJoined(joined)) => {
-                assert_eq!(joined.room_id, room_id);
-                let member = joined.member.expect("member should be present");
-                assert_eq!(member.user_id, encode_test_user_id(&user_id));
-                assert!(member.is_online);
-            }
-            other => panic!("Expected UserJoined, got: {other:?}"),
-        }
+        .await;
+        assert!(matches!(
+            ack.message,
+            Some(server_message::Message::HeartbeatAck(_))
+        ));
 
         ws.close(None).await.expect("close");
     }
@@ -1593,6 +1746,7 @@ mod websocket_e2e {
             .expect("user2 join room");
 
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
+        send_client_message(&mut ws1, &observe_room_member_events_message("ws1-members")).await;
         drain_until_quiet(&mut ws1, 2000).await;
 
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
@@ -1601,7 +1755,7 @@ mod websocket_e2e {
         let user2_join_event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let msg = recv_server_message(&mut ws1).await.expect("stream ended");
-                if let Some(server_message::Message::UserJoined(ref joined)) = msg.message {
+                if let Some(joined) = resource_room_member_joined(&msg) {
                     if joined.member.as_ref().map(|m| m.user_id.as_str())
                         == Some(encode_test_user_id(&user2_id).as_str())
                     {
@@ -1613,14 +1767,15 @@ mod websocket_e2e {
         .await
         .expect("timeout waiting for user2 join event on ws1");
 
-        match user2_join_event.message {
-            Some(server_message::Message::UserJoined(joined)) => {
-                assert_eq!(joined.room_id, room_id);
-                let member = joined.member.expect("member");
-                assert_eq!(member.user_id, encode_test_user_id(&user2_id));
-            }
-            other => panic!("Expected UserJoined for user2, got: {other:?}"),
-        }
+        let joined = resource_room_member_joined(&user2_join_event).unwrap_or_else(|| {
+            panic!(
+                "Expected joined room member event for user2, got: {:?}",
+                user2_join_event.message
+            )
+        });
+        assert_eq!(joined.room_id, room_id);
+        let member = joined.member.as_ref().expect("member");
+        assert_eq!(member.user_id, encode_test_user_id(&user2_id));
 
         ws1.close(None).await.expect("close ws1");
         ws2.close(None).await.expect("close ws2");
@@ -1648,6 +1803,7 @@ mod websocket_e2e {
             .expect("user2 join");
 
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
+        send_client_message(&mut ws1, &observe_room_member_events_message("ws1-members")).await;
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
 
         tokio::join!(
@@ -1680,6 +1836,8 @@ mod websocket_e2e {
                     client_message_id: String::new(),
                     images: Vec::new(),
                     reply_to_message_id: String::new(),
+                    metadata: Vec::new(),
+                    mentions: Vec::new(),
                 },
             )),
         };
@@ -1767,6 +1925,7 @@ mod websocket_e2e {
             .expect("join");
 
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
+        send_client_message(&mut ws1, &observe_room_member_events_message("ws1-members")).await;
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
 
         tokio::join!(
@@ -1780,7 +1939,7 @@ mod websocket_e2e {
         let left_event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let msg = recv_server_message(&mut ws1).await.expect("stream ended");
-                if matches!(&msg.message, Some(server_message::Message::UserLeft(_))) {
+                if resource_room_member_left(&msg).is_some() {
                     return msg;
                 }
             }
@@ -1788,13 +1947,14 @@ mod websocket_e2e {
         .await
         .expect("timeout waiting for UserLeft event");
 
-        match left_event.message {
-            Some(server_message::Message::UserLeft(left)) => {
-                assert_eq!(left.room_id, room_id);
-                assert_eq!(left.user_id, encode_test_user_id(&user2_id));
-            }
-            other => panic!("Expected UserLeft, got: {other:?}"),
-        }
+        let left = resource_room_member_left(&left_event).unwrap_or_else(|| {
+            panic!(
+                "Expected left room member event, got: {:?}",
+                left_event.message
+            )
+        });
+        assert_eq!(left.room_id, room_id);
+        assert_eq!(left.user_id, encode_test_user_id(&user2_id));
 
         ws1.close(None).await.expect("close ws1");
     }
@@ -1838,6 +1998,8 @@ mod websocket_e2e {
                     client_message_id: String::new(),
                     images: Vec::new(),
                     reply_to_message_id: String::new(),
+                    metadata: Vec::new(),
+                    mentions: Vec::new(),
                 },
             )),
         };
@@ -1883,40 +2045,12 @@ mod websocket_e2e {
         let room_id = create_test_room(&server.room_service, &user_id, "Reconnect Room").await;
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
-        let initial = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            recv_server_message(&mut ws),
-        )
-        .await
-        .expect("timeout")
-        .expect("no initial msg");
-        assert!(matches!(
-            initial.message,
-            Some(server_message::Message::UserJoined(_))
-        ));
 
         ws.close(None).await.expect("close");
         // Small delay to let the server process the disconnect
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         let mut ws2 = ws_connect(&server.addr, &room_id, &token).await;
-        let rejoined = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            recv_server_message(&mut ws2),
-        )
-        .await
-        .expect("timeout on reconnect")
-        .expect("no msg on reconnect");
-
-        match rejoined.message {
-            Some(server_message::Message::UserJoined(joined)) => {
-                assert_eq!(joined.room_id, room_id);
-                let member = joined.member.expect("member");
-                assert_eq!(member.user_id, encode_test_user_id(&user_id));
-            }
-            other => panic!("Expected UserJoined on reconnect, got: {other:?}"),
-        }
-
         drain_until_quiet(&mut ws2, 500).await;
 
         let heartbeat = ClientMessage {
@@ -2046,7 +2180,7 @@ mod websocket_e2e {
         let unexpected_user_left = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 let msg = recv_server_message(&mut ws1).await.expect("stream ended");
-                if matches!(msg.message, Some(server_message::Message::UserLeft(_))) {
+                if resource_room_member_left(&msg).is_some() {
                     return msg;
                 }
             }
@@ -2130,7 +2264,7 @@ mod websocket_e2e {
         let unexpected_user_left = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 let msg = recv_server_message(&mut ws1).await.expect("stream ended");
-                if matches!(msg.message, Some(server_message::Message::UserLeft(_))) {
+                if resource_room_member_left(&msg).is_some() {
                     return msg;
                 }
             }
@@ -2202,6 +2336,8 @@ mod websocket_e2e {
                     client_message_id: String::new(),
                     images: Vec::new(),
                     reply_to_message_id: String::new(),
+                    metadata: Vec::new(),
+                    mentions: Vec::new(),
                 },
             )),
         };
@@ -2299,7 +2435,7 @@ mod websocket_e2e {
                 let msg = recv_server_message(&mut ws_owner)
                     .await
                     .expect("stream ended");
-                if matches!(msg.message, Some(server_message::Message::UserLeft(_))) {
+                if resource_room_member_left(&msg).is_some() {
                     return msg;
                 }
             }
@@ -2388,11 +2524,11 @@ mod websocket_e2e {
                 let msg = recv_server_message(&mut ws_owner)
                     .await
                     .expect("stream ended");
-                if let Some(server_message::Message::UserJoined(joined)) = msg.message {
+                if let Some(joined) = resource_room_member_joined(&msg) {
                     if joined.member.as_ref().map(|m| m.user_id.as_str())
                         == Some(encode_test_user_id(&user2_id).as_str())
                     {
-                        return joined;
+                        return msg;
                     }
                 }
             }
@@ -2443,478 +2579,73 @@ mod websocket_e2e {
             drain_until_quiet(&mut ws_owner, 1500),
             drain_until_quiet(&mut ws_member, 1500),
         );
+        wait_for_distributed_room_subscribers(&server2, room, 2).await;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        let media_one = synctv_core::models::MediaId::new();
-        let media_two = synctv_core::models::MediaId::new();
-        let playlist_id = synctv_core::models::PlaylistId::new();
+        send_client_message(&mut ws_member, &observe_chat_events_message("chat_events")).await;
+        let _ = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::ResourceObserved(observed))
+                        if observed.observe_id == "chat_events"
+                )
+            },
+            "chat_events observed",
+        )
+        .await;
         let public_owner_id = encode_test_user_id(&owner_id);
-        let public_member_id = encode_test_user_id(&member_id);
-        let public_media_one = encode_test_media_id(&media_one);
-        let public_media_two = encode_test_media_id(&media_two);
-        let public_playlist_id = encode_test_playlist_id(&playlist_id);
-
-        let playlist = synctv_core::models::Playlist {
-            id: playlist_id,
-            room_id: room,
-            creator_id: Some(owner_id),
-            name: "Realtime Playlist".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 1024.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            version: 0,
-        };
-        let updated_playlist = synctv_core::models::Playlist {
-            name: "Realtime Playlist Renamed".to_string(),
-            version: 1,
-            ..playlist.clone()
-        };
-
-        server1
-            .realtime_manager
-            .broadcast(synctv_realtime::sync::RealtimeEvent::ChatMessage {
-                event_id: synctv_common::snanoid!(16),
-                room_id: room,
-                user_id: owner_id,
-                username: "matrix_owner".to_string(),
-                message: "cross-replica chat".to_string(),
-                timestamp: chrono::Utc::now(),
-                display_position: Some("top".to_string()),
-                display_color: Some("#ff6600".to_string()),
-            });
+        send_client_message(
+            &mut ws_owner,
+            &ClientMessage {
+                message: Some(client_message::Message::Chat(
+                    synctv_proto::client::ChatMessageSend {
+                        content: "cross-replica chat".to_string(),
+                        display_position: "top".to_string(),
+                        display_color: "#ff6600".to_string(),
+                        client_message_id: String::new(),
+                        images: Vec::new(),
+                        reply_to_message_id: String::new(),
+                        metadata: Vec::new(),
+                        mentions: Vec::new(),
+                    },
+                )),
+            },
+        )
+        .await;
         let chat_msg = recv_matching_server_message(
             &mut ws_member,
             std::time::Duration::from_secs(10),
-            |message| match &message.message {
-                Some(server_message::Message::Chat(chat)) => {
-                    chat.content == "cross-replica chat"
-                        && chat.user_id == public_owner_id
-                        && chat.display_position == "top"
-                        && chat.display_color == "#ff6600"
-                }
-                _ => false,
+            |message| {
+                resource_chat_event(message).is_some_and(|event| {
+                    event.message.as_ref().is_some_and(|chat| {
+                        chat.content == "cross-replica chat"
+                            && chat.user_id == public_owner_id
+                            && chat.display_position == "top"
+                            && chat.display_color == "#ff6600"
+                    })
+                })
             },
             "cross-replica chat",
         )
         .await;
         assert!(
-            matches!(chat_msg.message, Some(server_message::Message::Chat(_))),
-            "chat event should arrive as a chat payload"
+            resource_chat_event(&chat_msg).is_some(),
+            "chat event should arrive as a resource event payload"
         );
 
-        server1
-            .realtime_manager
-            .broadcast(synctv_realtime::sync::RealtimeEvent::MediaAdded {
-                event_id: synctv_common::snanoid!(16),
-                room_id: room,
-                user_id: owner_id,
-                username: "matrix_owner".to_string(),
-                media_id: media_one,
-                media_title: "Matrix Media One".to_string(),
-                timestamp: chrono::Utc::now(),
-            });
-        let media_added_msg = recv_matching_server_message(
-            &mut ws_member,
-            std::time::Duration::from_secs(10),
-            |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::MediaAdded(media))
-                        if media.media_id == public_media_one
-                            && media.name == "Matrix Media One"
-                            && media.creator_id == public_owner_id
-                )
-            },
-            "cross-replica media added",
-        )
-        .await;
-        assert!(
-            matches!(
-                media_added_msg.message,
-                Some(server_message::Message::MediaAdded(_))
-            ),
-            "MediaAdded event should be forwarded"
-        );
-
-        server1
-            .realtime_manager
-            .broadcast(synctv_realtime::sync::RealtimeEvent::MediaUpdated {
-                event_id: synctv_common::snanoid!(16),
-                room_id: room,
-                user_id: owner_id,
-                username: "matrix_owner".to_string(),
-                media_id: media_one,
-                media_title: "Matrix Media One Renamed".to_string(),
-                timestamp: chrono::Utc::now(),
-            });
-        let media_updated_msg = recv_matching_server_message(
-            &mut ws_member,
-            std::time::Duration::from_secs(10),
-            |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::MediaUpdated(media))
-                        if media.media_id == public_media_one
-                            && media.name == "Matrix Media One Renamed"
-                            && media.updated_by_user_id == public_owner_id
-                )
-            },
-            "cross-replica media updated",
-        )
-        .await;
-        assert!(
-            matches!(
-                media_updated_msg.message,
-                Some(server_message::Message::MediaUpdated(_))
-            ),
-            "MediaUpdated event should be forwarded"
-        );
-
-        server1.realtime_manager.broadcast(
-            synctv_realtime::sync::RealtimeEvent::PlaylistReordered {
-                event_id: synctv_common::snanoid!(16),
-                room_id: room,
-                user_id: owner_id,
-                username: "matrix_owner".to_string(),
-                media_ids: vec![media_two, media_one],
-                timestamp: chrono::Utc::now(),
-            },
-        );
-        let playlist_reordered_msg = recv_matching_server_message(
-            &mut ws_member,
-            std::time::Duration::from_secs(10),
-            |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::PlaylistReordered(reordered))
-                        if reordered.media_ids
-                            == vec![
-                                public_media_two.clone(),
-                                public_media_one.clone()
-                            ]
-                            && reordered.reordered_by_user_id == public_owner_id
-                )
-            },
-            "cross-replica playlist reordered",
-        )
-        .await;
-        assert!(
-            matches!(
-                playlist_reordered_msg.message,
-                Some(server_message::Message::PlaylistReordered(_))
-            ),
-            "PlaylistReordered event should be forwarded"
-        );
-
-        server1
-            .realtime_manager
-            .broadcast(synctv_realtime::sync::RealtimeEvent::MediaRemoved {
-                event_id: synctv_common::snanoid!(16),
-                room_id: room,
-                user_id: owner_id,
-                username: "matrix_owner".to_string(),
-                media_id: media_one,
-                timestamp: chrono::Utc::now(),
-            });
-        let media_removed_msg = recv_matching_server_message(
-            &mut ws_member,
-            std::time::Duration::from_secs(10),
-            |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::MediaRemoved(media))
-                        if media.media_id == public_media_one
-                            && media.removed_by_user_id == public_owner_id
-                )
-            },
-            "cross-replica media removed",
-        )
-        .await;
-        assert!(
-            matches!(
-                media_removed_msg.message,
-                Some(server_message::Message::MediaRemoved(_))
-            ),
-            "MediaRemoved event should be forwarded"
-        );
-
-        server1.realtime_manager.broadcast(
-            synctv_realtime::sync::RealtimeEvent::MediaRemovedBatch {
-                event_id: synctv_common::snanoid!(16),
-                room_id: room,
-                user_id: owner_id,
-                username: "matrix_owner".to_string(),
-                media_ids: vec![media_one, media_two],
-                timestamp: chrono::Utc::now(),
-            },
-        );
-        let media_removed_batch_msg = recv_matching_server_message(
-            &mut ws_member,
-            std::time::Duration::from_secs(10),
-            |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::MediaRemovedBatch(batch))
-                        if batch.media_ids
-                            == vec![
-                                public_media_one.clone(),
-                                public_media_two.clone()
-                            ]
-                            && batch.removed_by_user_id == public_owner_id
-                )
-            },
-            "cross-replica media removed batch",
-        )
-        .await;
-        assert!(
-            matches!(
-                media_removed_batch_msg.message,
-                Some(server_message::Message::MediaRemovedBatch(_))
-            ),
-            "MediaRemovedBatch event should be forwarded"
-        );
-
-        server1
-            .realtime_manager
-            .broadcast(synctv_realtime::sync::RealtimeEvent::PlaylistCreated {
-                event_id: synctv_common::snanoid!(16),
-                room_id: room,
-                user_id: owner_id,
-                username: "matrix_owner".to_string(),
-                playlist: playlist.clone(),
-                timestamp: chrono::Utc::now(),
-            });
-        let playlist_created_msg = recv_matching_server_message(
-            &mut ws_member,
-            std::time::Duration::from_secs(10),
-            |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::PlaylistCreated(created))
-                        if created
-                            .playlist
-                            .as_ref()
-                            .is_some_and(|playlist| {
-                                playlist.id == public_playlist_id
-                                    && playlist.name == "Realtime Playlist"
-                            })
-                )
-            },
-            "cross-replica playlist created",
-        )
-        .await;
-        assert!(
-            matches!(
-                playlist_created_msg.message,
-                Some(server_message::Message::PlaylistCreated(_))
-            ),
-            "PlaylistCreated event should be forwarded"
-        );
-
-        server1
-            .realtime_manager
-            .broadcast(synctv_realtime::sync::RealtimeEvent::PlaylistUpdated {
-                event_id: synctv_common::snanoid!(16),
-                room_id: room,
-                user_id: owner_id,
-                username: "matrix_owner".to_string(),
-                playlist: updated_playlist,
-                timestamp: chrono::Utc::now(),
-            });
-        let playlist_updated_msg = recv_matching_server_message(
-            &mut ws_member,
-            std::time::Duration::from_secs(10),
-            |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::PlaylistUpdated(updated))
-                        if updated
-                            .playlist
-                            .as_ref()
-                            .is_some_and(|playlist| {
-                                playlist.id == public_playlist_id
-                                    && playlist.name == "Realtime Playlist Renamed"
-                            })
-                )
-            },
-            "cross-replica playlist updated",
-        )
-        .await;
-        assert!(
-            matches!(
-                playlist_updated_msg.message,
-                Some(server_message::Message::PlaylistUpdated(_))
-            ),
-            "PlaylistUpdated event should be forwarded"
-        );
-
-        server1
-            .realtime_manager
-            .broadcast(synctv_realtime::sync::RealtimeEvent::PlaylistDeleted {
-                event_id: synctv_common::snanoid!(16),
-                room_id: room,
-                user_id: owner_id,
-                username: "matrix_owner".to_string(),
-                playlist_id,
-                timestamp: chrono::Utc::now(),
-            });
-        let playlist_deleted_msg = recv_matching_server_message(
-            &mut ws_member,
-            std::time::Duration::from_secs(10),
-            |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::PlaylistDeleted(deleted))
-                        if deleted.playlist_id == public_playlist_id
-                )
-            },
-            "cross-replica playlist deleted",
-        )
-        .await;
-        assert!(
-            matches!(
-                playlist_deleted_msg.message,
-                Some(server_message::Message::PlaylistDeleted(_))
-            ),
-            "PlaylistDeleted event should be forwarded"
-        );
-
-        let permission_bits = synctv_core::models::RoomAdminPermissionBits::LIVE_CONTROL
-            | synctv_core::models::RoomAdminPermissionBits::PLAY_CONTROL;
-        server1.realtime_manager.broadcast(
-            synctv_realtime::sync::RealtimeEvent::PermissionChanged {
-                event_id: synctv_common::snanoid!(16),
-                room_id: room,
-                target_user_id: member_id,
-                target_username: "matrix_member".to_string(),
-                changed_by: owner_id,
-                changed_by_username: "matrix_owner".to_string(),
-                new_permissions: synctv_core::models::RoomPermissionSet(permission_bits),
-                role: synctv_proto::common::RoomMemberRole::Admin as i32,
-                added_permissions: synctv_core::models::RoomPermissionSet(0),
-                removed_permissions: synctv_core::models::RoomPermissionSet(0),
-                admin_added_permissions: synctv_core::models::RoomPermissionSet(permission_bits),
-                admin_removed_permissions: synctv_core::models::RoomPermissionSet(0),
-                timestamp: chrono::Utc::now(),
-            },
-        );
-        let permission_changed_msg = recv_matching_server_message(
-            &mut ws_member,
-            std::time::Duration::from_secs(10),
-            |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::PermissionChanged(permission))
-                        if permission.user_id == public_member_id
-                            && permission.role == synctv_proto::common::RoomMemberRole::Admin as i32
-                            && permission.effective_permissions == permission_bits
-                            && permission.admin_added_permissions == permission_bits
-                            && permission.updated_by == "matrix_owner"
-                )
-            },
-            "cross-replica permission changed",
-        )
-        .await;
-        assert!(
-            matches!(
-                permission_changed_msg.message,
-                Some(server_message::Message::PermissionChanged(_))
-            ),
-            "PermissionChanged event should be forwarded"
-        );
-
-        let updated_settings = serde_json::json!({
-            "chat_enabled": false,
-            "allow_guest_join": true,
-        });
-        server1.realtime_manager.broadcast(
-            synctv_realtime::sync::RealtimeEvent::RoomSettingsChanged {
-                event_id: synctv_common::snanoid!(16),
-                room_id: room,
-                user_id: owner_id,
-                username: "matrix_owner".to_string(),
-                settings_json: serde_json::to_vec(&updated_settings).expect("encode room settings"),
-                version: 7,
-                timestamp: chrono::Utc::now(),
-            },
-        );
-        let room_settings_msg = recv_matching_server_message(
-            &mut ws_member,
-            std::time::Duration::from_secs(10),
-            |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::RoomSettings(settings))
-                        if settings.version == 7
-                )
-            },
-            "cross-replica room settings changed",
-        )
-        .await;
-        match room_settings_msg.message {
-            Some(server_message::Message::RoomSettings(settings)) => {
-                let decoded: serde_json::Value =
-                    serde_json::from_slice(&settings.settings).expect("decode room settings");
-                assert_eq!(decoded["chat_enabled"], false);
-                assert_eq!(decoded["allow_guest_join"], true);
-                assert_eq!(settings.version, 7);
-            }
-            other => panic!("expected RoomSettings message, got: {other:?}"),
-        }
-
-        let default_settings = serde_json::json!({
-            "chat_enabled": true,
-            "allow_guest_join": false,
-        });
-        server1.realtime_manager.broadcast(
-            synctv_realtime::sync::RealtimeEvent::RoomSettingsChanged {
-                event_id: synctv_common::snanoid!(16),
-                room_id: room,
-                user_id: owner_id,
-                username: "matrix_owner".to_string(),
-                settings_json: serde_json::to_vec(&default_settings).expect("encode room settings"),
-                version: 8,
-                timestamp: chrono::Utc::now(),
-            },
-        );
-        let room_settings_reset_msg = recv_matching_server_message(
-            &mut ws_member,
-            std::time::Duration::from_secs(10),
-            |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::RoomSettings(settings))
-                        if settings.version == 8
-                )
-            },
-            "cross-replica room settings reset",
-        )
-        .await;
-        match room_settings_reset_msg.message {
-            Some(server_message::Message::RoomSettings(settings)) => {
-                let decoded: serde_json::Value =
-                    serde_json::from_slice(&settings.settings).expect("decode room settings");
-                assert_eq!(decoded["chat_enabled"], true);
-                assert_eq!(decoded["allow_guest_join"], false);
-                assert_eq!(settings.version, 8);
-            }
-            other => panic!("expected RoomSettings reset message, got: {other:?}"),
-        }
-
-        server1
-            .realtime_manager
-            .broadcast(synctv_realtime::sync::RealtimeEvent::RoomDeleted {
+        publish_realtime_event_confirmed(
+            &server1,
+            synctv_realtime::sync::RealtimeEvent::RoomDeleted {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 deleted_by: owner_id,
                 timestamp: chrono::Utc::now(),
-            });
+            },
+        )
+        .await;
         let room_deleted_msg = recv_matching_server_message(
             &mut ws_member,
             std::time::Duration::from_secs(10),
@@ -2977,6 +2708,26 @@ mod websocket_e2e {
             drain_until_quiet(&mut ws_owner, 1500),
             drain_until_quiet(&mut ws_member, 1500),
         );
+        wait_for_distributed_room_subscribers(&server2, room, 2).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        send_client_message(
+            &mut ws_member,
+            &observe_playback_state_message("playback_state"),
+        )
+        .await;
+        let _ = recv_matching_server_message(
+            &mut ws_member,
+            std::time::Duration::from_secs(10),
+            |message| {
+                matches!(
+                    &message.message,
+                    Some(server_message::Message::ResourceObserved(observed))
+                        if observed.observe_id == "playback_state"
+                )
+            },
+            "playback_state observed",
+        )
+        .await;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         let media_id = synctv_core::models::MediaId::expect_positive(1);
@@ -2986,32 +2737,31 @@ mod websocket_e2e {
         started_state.playing_media_id = Some(media_id);
         started_state.is_playing = true;
         started_state.version = 1;
-        server1.realtime_manager.broadcast(
+        publish_realtime_event_confirmed(
+            &server1,
             synctv_realtime::sync::RealtimeEvent::PlaybackStateChanged {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
                 username: "playback_matrix_owner".to_string(),
                 state: started_state,
+                source_changed: false,
                 timestamp: chrono::Utc::now(),
             },
-        );
+        )
+        .await;
         let started_msg = recv_matching_server_message(
             &mut ws_member,
             std::time::Duration::from_secs(10),
             |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::PlaybackState(playback))
-                        if playback.state.as_ref().is_some_and(|state| {
-                            state.is_playing
-                                && state.playing_media_id == public_media_id
-                                && state.position >= 0.0
-                                && state.position.is_finite()
-                                && (state.speed - 1.0).abs() < f64::EPSILON
-                                && state.version == 1
-                        })
-                )
+                resource_playback_state_matches(message, "playback_state", |state| {
+                    state.is_playing
+                        && state.playing_media_id == public_media_id
+                        && state.position >= 0.0
+                        && state.position.is_finite()
+                        && (state.speed - 1.0).abs() < f64::EPSILON
+                        && state.version == 1
+                })
             },
             "cross-replica playback start",
         )
@@ -3019,9 +2769,9 @@ mod websocket_e2e {
         assert!(
             matches!(
                 started_msg.message,
-                Some(server_message::Message::PlaybackState(_))
+                Some(server_message::Message::ResourceEvent(_))
             ),
-            "Playback start should be forwarded"
+            "Playback start should be forwarded through playback_state ResourceEvent"
         );
 
         let mut paused_state = synctv_core::models::RoomPlaybackState::new(room);
@@ -3029,32 +2779,31 @@ mod websocket_e2e {
         paused_state.position = 17.5;
         paused_state.is_playing = false;
         paused_state.version = 2;
-        server1.realtime_manager.broadcast(
+        publish_realtime_event_confirmed(
+            &server1,
             synctv_realtime::sync::RealtimeEvent::PlaybackStateChanged {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
                 username: "playback_matrix_owner".to_string(),
                 state: paused_state,
+                source_changed: false,
                 timestamp: chrono::Utc::now(),
             },
-        );
+        )
+        .await;
         let paused_msg = recv_matching_server_message(
             &mut ws_member,
             std::time::Duration::from_secs(10),
             |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::PlaybackState(playback))
-                        if playback.state.as_ref().is_some_and(|state| {
-                            !state.is_playing
-                                && state.playing_media_id == public_media_id
-                                && state.position >= 17.5
-                                && state.position.is_finite()
-                                && (state.speed - 1.0).abs() < f64::EPSILON
-                                && state.version == 2
-                        })
-                )
+                resource_playback_state_matches(message, "playback_state", |state| {
+                    !state.is_playing
+                        && state.playing_media_id == public_media_id
+                        && state.position >= 17.5
+                        && state.position.is_finite()
+                        && (state.speed - 1.0).abs() < f64::EPSILON
+                        && state.version == 2
+                })
             },
             "cross-replica playback pause and seek",
         )
@@ -3062,9 +2811,9 @@ mod websocket_e2e {
         assert!(
             matches!(
                 paused_msg.message,
-                Some(server_message::Message::PlaybackState(_))
+                Some(server_message::Message::ResourceEvent(_))
             ),
-            "Playback pause/seek should be forwarded"
+            "Playback pause/seek should be forwarded through playback_state ResourceEvent"
         );
 
         let mut resumed_state = synctv_core::models::RoomPlaybackState::new(room);
@@ -3073,32 +2822,31 @@ mod websocket_e2e {
         resumed_state.speed = 1.5;
         resumed_state.is_playing = true;
         resumed_state.version = 3;
-        server1.realtime_manager.broadcast(
+        publish_realtime_event_confirmed(
+            &server1,
             synctv_realtime::sync::RealtimeEvent::PlaybackStateChanged {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
                 username: "playback_matrix_owner".to_string(),
                 state: resumed_state,
+                source_changed: false,
                 timestamp: chrono::Utc::now(),
             },
-        );
+        )
+        .await;
         let resumed_msg = recv_matching_server_message(
             &mut ws_member,
             std::time::Duration::from_secs(10),
             |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::PlaybackState(playback))
-                        if playback.state.as_ref().is_some_and(|state| {
-                            state.is_playing
-                                && state.playing_media_id == public_media_id
-                                && state.position >= 17.5
-                                && state.position.is_finite()
-                                && (state.speed - 1.5).abs() < f64::EPSILON
-                                && state.version == 3
-                        })
-                )
+                resource_playback_state_matches(message, "playback_state", |state| {
+                    state.is_playing
+                        && state.playing_media_id == public_media_id
+                        && state.position >= 17.5
+                        && state.position.is_finite()
+                        && (state.speed - 1.5).abs() < f64::EPSILON
+                        && state.version == 3
+                })
             },
             "cross-replica playback resume with speed",
         )
@@ -3106,38 +2854,37 @@ mod websocket_e2e {
         assert!(
             matches!(
                 resumed_msg.message,
-                Some(server_message::Message::PlaybackState(_))
+                Some(server_message::Message::ResourceEvent(_))
             ),
-            "Playback resume/speed should be forwarded"
+            "Playback resume/speed should be forwarded through playback_state ResourceEvent"
         );
 
         let mut stopped_state = synctv_core::models::RoomPlaybackState::new(room);
         stopped_state.version = 4;
-        server1.realtime_manager.broadcast(
+        publish_realtime_event_confirmed(
+            &server1,
             synctv_realtime::sync::RealtimeEvent::PlaybackStateChanged {
                 event_id: synctv_common::snanoid!(16),
                 room_id: decode_test_room_id(&room_id),
                 user_id: owner_id,
                 username: "playback_matrix_owner".to_string(),
                 state: stopped_state,
+                source_changed: false,
                 timestamp: chrono::Utc::now(),
             },
-        );
+        )
+        .await;
         let stopped_msg = recv_matching_server_message(
             &mut ws_member,
             std::time::Duration::from_secs(10),
             |message| {
-                matches!(
-                    &message.message,
-                    Some(server_message::Message::PlaybackState(playback))
-                        if playback.state.as_ref().is_some_and(|state| {
-                            !state.is_playing
-                                && state.playing_media_id.is_empty()
-                                && (state.position - 0.0).abs() < f64::EPSILON
-                                && (state.speed - 1.0).abs() < f64::EPSILON
-                                && state.version == 4
-                        })
-                )
+                resource_playback_state_matches(message, "playback_state", |state| {
+                    !state.is_playing
+                        && state.playing_media_id.is_empty()
+                        && (state.position - 0.0).abs() < f64::EPSILON
+                        && (state.speed - 1.0).abs() < f64::EPSILON
+                        && state.version == 4
+                })
             },
             "cross-replica playback stop",
         )
@@ -3145,9 +2892,9 @@ mod websocket_e2e {
         assert!(
             matches!(
                 stopped_msg.message,
-                Some(server_message::Message::PlaybackState(_))
+                Some(server_message::Message::ResourceEvent(_))
             ),
-            "Playback stop should be forwarded"
+            "Playback stop should be forwarded through playback_state ResourceEvent"
         );
 
         ws_owner.close(None).await.expect("close owner");
@@ -3186,6 +2933,8 @@ mod websocket_e2e {
                         client_message_id: String::new(),
                         images: Vec::new(),
                         reply_to_message_id: String::new(),
+                        metadata: Vec::new(),
+                        mentions: Vec::new(),
                     },
                 )),
             };
@@ -3204,7 +2953,12 @@ mod websocket_e2e {
             }
             match tokio::time::timeout(remaining, recv_server_message(&mut ws)).await {
                 Ok(Some(msg)) => match msg.message {
-                    Some(server_message::Message::Chat(_)) => {
+                    Some(server_message::Message::ResourceEvent(event))
+                        if matches!(
+                            event.payload.as_ref(),
+                            Some(synctv_proto::client::resource_event::Payload::ChatEvent(_))
+                        ) =>
+                    {
                         chat_count += 1;
                     }
                     Some(server_message::Message::Error(_)) => {
@@ -3283,6 +3037,8 @@ mod websocket_e2e {
                     client_message_id: String::new(),
                     images: Vec::new(),
                     reply_to_message_id: String::new(),
+                    metadata: Vec::new(),
+                    mentions: Vec::new(),
                 },
             )),
         };
@@ -3334,6 +3090,7 @@ mod websocket_e2e {
             .expect("join");
 
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
+        send_client_message(&mut ws1, &observe_room_member_events_message("ws1-members")).await;
         drain_until_quiet(&mut ws1, 2000).await;
 
         let ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
@@ -3343,25 +3100,26 @@ mod websocket_e2e {
         // Abruptly drop user2's WebSocket (simulate TCP disconnect without Close frame)
         drop(ws2);
 
-        // user1 should receive UserLeft for user2 (server detects the drop)
+        // user1 should receive a left member event for user2.
         let left_event = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 let msg = recv_server_message(&mut ws1).await.expect("stream ended");
-                if matches!(&msg.message, Some(server_message::Message::UserLeft(_))) {
+                if resource_room_member_left(&msg).is_some() {
                     return msg;
                 }
             }
         })
         .await
-        .expect("timeout waiting for UserLeft after TCP drop");
+        .expect("timeout waiting for left member event after TCP drop");
 
-        match left_event.message {
-            Some(server_message::Message::UserLeft(left)) => {
-                assert_eq!(left.room_id, room_id);
-                assert_eq!(left.user_id, encode_test_user_id(&user2_id));
-            }
-            other => panic!("Expected UserLeft after TCP drop, got: {other:?}"),
-        }
+        let left = resource_room_member_left(&left_event).unwrap_or_else(|| {
+            panic!(
+                "Expected left room member event after TCP drop, got: {:?}",
+                left_event.message
+            )
+        });
+        assert_eq!(left.room_id, room_id);
+        assert_eq!(left.user_id, encode_test_user_id(&user2_id));
 
         ws1.close(None).await.expect("close ws1");
     }
@@ -3438,6 +3196,8 @@ mod websocket_e2e {
                     client_message_id: String::new(),
                     images: Vec::new(),
                     reply_to_message_id: String::new(),
+                    metadata: Vec::new(),
+                    mentions: Vec::new(),
                 },
             )),
         };
@@ -3538,6 +3298,8 @@ mod websocket_e2e {
                     client_message_id: String::new(),
                     images: Vec::new(),
                     reply_to_message_id: String::new(),
+                    metadata: Vec::new(),
+                    mentions: Vec::new(),
                 },
             )),
         };
@@ -3579,31 +3341,6 @@ mod websocket_e2e {
 
         let mut ws1 = ws_connect(&server.addr, &room_id, &token).await;
         let mut ws2 = ws_connect(&server.addr, &room_id, &token).await;
-
-        // Both should get UserJoined
-        let msg1 = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            recv_server_message(&mut ws1),
-        )
-        .await
-        .expect("timeout")
-        .expect("no initial msg for conn1");
-        assert!(
-            matches!(msg1.message, Some(server_message::Message::UserJoined(_))),
-            "Connection 1 should get UserJoined"
-        );
-
-        let msg2 = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            recv_server_message(&mut ws2),
-        )
-        .await
-        .expect("timeout")
-        .expect("no initial msg for conn2");
-        assert!(
-            matches!(msg2.message, Some(server_message::Message::UserJoined(_))),
-            "Connection 2 should get UserJoined"
-        );
 
         let heartbeat = ClientMessage {
             message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
@@ -3676,11 +3413,11 @@ mod websocket_e2e {
                 let msg = recv_server_message(&mut ws_owner)
                     .await
                     .expect("stream ended");
-                if let Some(server_message::Message::UserJoined(joined)) = msg.message {
+                if let Some(joined) = resource_room_member_joined(&msg) {
                     if joined.member.as_ref().map(|m| m.user_id.as_str())
                         == Some(encode_test_user_id(&user2_id).as_str())
                     {
-                        return joined;
+                        return msg;
                     }
                 }
             }
@@ -3752,7 +3489,7 @@ mod websocket_e2e {
                 let msg = recv_server_message(&mut ws_owner)
                     .await
                     .expect("stream ended");
-                if matches!(msg.message, Some(server_message::Message::UserLeft(_))) {
+                if resource_room_member_left(&msg).is_some() {
                     return msg;
                 }
             }
@@ -3826,20 +3563,27 @@ mod websocket_e2e {
             drain_until_quiet(&mut ws1, 1500),
             drain_until_quiet(&mut ws2, 1500),
         );
-
-        let rtc_join = ClientMessage {
-            message: Some(client_message::Message::WebrtcJoin(WebRtcJoin {
+        let rtc_join = webrtc_command_message(
+            synctv_proto::client::web_rtc_command::Command::Join(WebRtcJoin {
                 user_id: String::new(),
                 conn_id: String::new(),
                 username: String::new(),
-            })),
-        };
+            }),
+        );
+        send_client_message(&mut ws1, &rtc_join).await;
+        drain_until_quiet(&mut ws1, 500).await;
+
         send_client_message(&mut ws2, &rtc_join).await;
 
         let join_event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let msg = recv_server_message(&mut ws1).await.expect("stream ended");
-                if matches!(&msg.message, Some(server_message::Message::WebrtcJoin(_))) {
+                if resource_webrtc_event(&msg).is_some_and(|event| {
+                    matches!(
+                        event.event,
+                        Some(synctv_proto::client::web_rtc_event::Event::Join(_))
+                    )
+                }) {
                     return msg;
                 }
             }
@@ -3847,10 +3591,13 @@ mod websocket_e2e {
         .await
         .expect("timeout waiting for WebRTC join");
 
-        let joined_conn_id = match join_event.message {
-            Some(server_message::Message::WebrtcJoin(joined)) => joined.conn_id,
-            other => panic!("Expected WebrtcJoin, got: {other:?}"),
-        };
+        let joined_conn_id =
+            match resource_webrtc_event(&join_event).and_then(|event| event.event.as_ref()) {
+                Some(synctv_proto::client::web_rtc_event::Event::Join(joined)) => {
+                    joined.conn_id.clone()
+                }
+                other => panic!("Expected WebRTC join resource event, got: {other:?}"),
+            };
 
         let same_user_connections = server.connection_manager.get_user_connections(&user_id);
         assert_eq!(
@@ -3868,12 +3615,14 @@ mod websocket_e2e {
 
         assert_eq!(
             rtc_joined_connections.len(),
-            1,
-            "exactly one connection should be marked rtc_joined"
+            2,
+            "both same-user connections can independently join WebRTC"
         );
-        assert_eq!(
-            rtc_joined_connections[0].connection_id, joined_conn_id,
-            "the connection marked rtc_joined must match the current WebRTC join event connection"
+        assert!(
+            rtc_joined_connections
+                .iter()
+                .any(|connection| connection.connection_id == joined_conn_id),
+            "the reported WebRTC join connection must be marked rtc_joined"
         );
 
         ws1.close(None).await.expect("close ws1");
@@ -3969,15 +3718,13 @@ mod websocket_e2e {
             1,
             "after targeted disconnect exactly one sender connection should remain"
         );
-        let offer = ClientMessage {
-            message: Some(client_message::Message::WebrtcOffer(
-                synctv_proto::client::WebRtcOffer {
-                    to: encode_test_user_id(&peer_user_id),
-                    from: String::new(),
-                    data: "{\"type\":\"offer\",\"sdp\":\"test-sdp\"}".to_string(),
-                },
-            )),
-        };
+        let offer = webrtc_command_message(synctv_proto::client::web_rtc_command::Command::Offer(
+            synctv_proto::client::WebRtcOffer {
+                to: encode_test_user_id(&peer_user_id),
+                from: String::new(),
+                data: "{\"type\":\"offer\",\"sdp\":\"test-sdp\"}".to_string(),
+            },
+        ));
         if sender_is_ws2 {
             send_client_message(&mut ws2, &offer).await;
         } else {
@@ -4017,7 +3764,16 @@ mod websocket_e2e {
                         Some(server_message)
                             if matches!(
                                 &server_message.message,
-                                Some(server_message::Message::WebrtcOffer(_))
+                                Some(server_message::Message::ResourceEvent(event))
+                                    if matches!(
+                                        event.payload.as_ref(),
+                                        Some(synctv_proto::client::resource_event::Payload::WebrtcEvent(
+                                            webrtc
+                                        )) if matches!(
+                                            webrtc.event.as_ref(),
+                                            Some(synctv_proto::client::web_rtc_event::Event::Offer(_))
+                                        )
+                                    )
                             ) =>
                         {
                             return true;
@@ -4078,7 +3834,6 @@ mod websocket_e2e {
             drain_until_quiet(&mut ws_sender, 1500),
             drain_until_quiet(&mut ws_peer, 1500),
         );
-
         let peer_conn_id = server
             .connection_manager
             .get_user_connections(&peer_user_id)
@@ -4087,15 +3842,13 @@ mod websocket_e2e {
             .expect("peer connection must be present")
             .connection_id;
 
-        let offer = ClientMessage {
-            message: Some(client_message::Message::WebrtcOffer(
-                synctv_proto::client::WebRtcOffer {
-                    to: format!("{}:{}", encode_test_user_id(&peer_user_id), peer_conn_id),
-                    from: String::new(),
-                    data: "{\"type\":\"offer\",\"sdp\":\"test-sdp\"}".to_string(),
-                },
-            )),
-        };
+        let offer = webrtc_command_message(synctv_proto::client::web_rtc_command::Command::Offer(
+            synctv_proto::client::WebRtcOffer {
+                to: format!("{}:{}", encode_test_user_id(&peer_user_id), peer_conn_id),
+                from: String::new(),
+                data: "{\"type\":\"offer\",\"sdp\":\"test-sdp\"}".to_string(),
+            },
+        ));
         send_client_message(&mut ws_sender, &offer).await;
 
         let error_message = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -4130,7 +3883,16 @@ mod websocket_e2e {
                         Some(server_message)
                             if matches!(
                                 &server_message.message,
-                                Some(server_message::Message::WebrtcOffer(_))
+                                Some(server_message::Message::ResourceEvent(event))
+                                    if matches!(
+                                        event.payload.as_ref(),
+                                        Some(synctv_proto::client::resource_event::Payload::WebrtcEvent(
+                                            webrtc
+                                        )) if matches!(
+                                            webrtc.event.as_ref(),
+                                            Some(synctv_proto::client::web_rtc_event::Event::Offer(_))
+                                        )
+                                    )
                             ) =>
                         {
                             return true;
@@ -4286,23 +4048,24 @@ mod websocket_e2e {
         // ws_connect already asserts HTTP 101 Switching Protocols
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Should receive the initial UserJoined message confirming successful auth
-        let initial = tokio::time::timeout(
+        let heartbeat = ClientMessage {
+            message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            })),
+        };
+        send_client_message(&mut ws, &heartbeat).await;
+        recv_matching_server_message(
+            &mut ws,
             std::time::Duration::from_secs(5),
-            recv_server_message(&mut ws),
+            |message| {
+                matches!(
+                    message.message,
+                    Some(server_message::Message::HeartbeatAck(_))
+                )
+            },
+            "heartbeat ack after valid auth",
         )
-        .await
-        .expect("timeout waiting for initial message after valid auth")
-        .expect("stream ended");
-
-        assert!(
-            matches!(
-                initial.message,
-                Some(server_message::Message::UserJoined(_))
-            ),
-            "Expected UserJoined after successful auth, got: {:?}",
-            initial.message,
-        );
+        .await;
 
         ws.close(None).await.expect("close");
         server.shutdown().await;

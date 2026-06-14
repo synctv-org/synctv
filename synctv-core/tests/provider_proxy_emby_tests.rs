@@ -55,6 +55,7 @@ fn make_versioned(
                 },
             )]),
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata: HashMap::new(),
         },
         expires_at: chrono::Utc::now().timestamp() + ttl_secs,
@@ -356,6 +357,7 @@ async fn test_signed_subtitle_url_round_trips_to_matching_mode() {
             ),
         ]),
         default_mode: "source_a".to_string(),
+        duration_seconds: None,
         metadata: HashMap::new(),
     };
     let stored = VersionedPlayback {

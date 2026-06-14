@@ -1,6 +1,7 @@
 pub(crate) mod audit;
 pub(crate) mod ban;
 pub mod chat;
+pub(crate) mod content_report;
 pub(crate) mod email_bind;
 pub(crate) mod email_registration_token;
 pub(crate) mod email_token;
@@ -8,6 +9,7 @@ pub(crate) mod file_storage;
 pub(crate) mod media;
 pub(crate) mod notification;
 pub(crate) mod playback;
+pub(crate) mod playback_source_metadata;
 pub(crate) mod playlist;
 pub(crate) mod provider_instance;
 pub(crate) mod query_builder;
@@ -37,6 +39,9 @@ pub use chat::{
     ChatMessageOperationIdempotency, ChatRepository, DeleteChatMessageEventRequest,
     EditChatMessageEventRequest,
 };
+pub use content_report::{
+    ContentReportListQuery, ContentReportListScope, ContentReportPage, ContentReportRepository,
+};
 pub use email_bind::EmailBindRepository;
 pub use email_registration_token::{EmailRegistrationToken, EmailRegistrationTokenRepository};
 pub use email_token::EmailTokenRepository;
@@ -44,6 +49,7 @@ pub use file_storage::FileStorageRepository;
 pub use media::MediaRepository;
 pub use notification::NotificationRepository;
 pub use playback::RoomPlaybackStateRepository;
+pub use playback_source_metadata::PlaybackSourceMetadataRepository;
 pub use playlist::PlaylistRepository;
 pub use provider_instance::{ProviderInstanceRepository, UserProviderCredentialRepository};
 pub use review::{

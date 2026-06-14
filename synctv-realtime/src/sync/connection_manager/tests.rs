@@ -392,72 +392,6 @@ async fn test_join_room() -> TestResult {
 }
 
 #[tokio::test]
-async fn test_has_other_connection_for_user_in_room_distributed_uses_local_state_without_redis(
-) -> TestResult {
-    let manager = ConnectionManager::default();
-    let user_id = UserId::expect_positive(10_000_010);
-    let room_id = RoomId::expect_positive(10_000_092);
-
-    manager.register("conn1".to_string(), user_id).await?;
-    manager.register("conn2".to_string(), user_id).await?;
-    manager.join_room("conn1", room_id).await?;
-    manager.join_room("conn2", room_id).await?;
-
-    let has_other = manager
-        .has_other_connection_for_user_in_room_distributed(&user_id, &room_id, "conn1")
-        .await?;
-
-    assert!(has_other, "second local room connection should be detected");
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_has_other_connection_for_user_in_room_distributed_ignores_other_rooms() -> TestResult
-{
-    let manager = ConnectionManager::default();
-    let user_id = UserId::expect_positive(10_000_010);
-    let room_id = RoomId::expect_positive(10_000_092);
-    let other_room_id = RoomId::expect_positive(10_000_094);
-
-    manager.register("conn1".to_string(), user_id).await?;
-    manager.register("conn2".to_string(), user_id).await?;
-    manager.join_room("conn1", room_id).await?;
-    manager.join_room("conn2", other_room_id).await?;
-
-    let has_other = manager
-        .has_other_connection_for_user_in_room_distributed(&user_id, &room_id, "conn1")
-        .await?;
-
-    assert!(
-        !has_other,
-        "connection in another room must not keep room presence alive"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_has_existing_presence_for_user_in_room_distributed_uses_same_logic() -> TestResult {
-    let manager = ConnectionManager::default();
-    let user_id = UserId::expect_positive(10_000_010);
-    let room_id = RoomId::expect_positive(10_000_092);
-
-    manager.register("conn1".to_string(), user_id).await?;
-    manager.register("conn2".to_string(), user_id).await?;
-    manager.join_room("conn1", room_id).await?;
-    manager.join_room("conn2", room_id).await?;
-
-    let has_existing_presence = manager
-        .has_existing_presence_for_user_in_room_distributed(&user_id, &room_id, "conn2")
-        .await?;
-
-    assert!(
-        has_existing_presence,
-        "existing same-user room presence should be detected before broadcasting UserJoined"
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn test_per_room_limit() -> TestResult {
     let limits = ConnectionLimits {
         max_per_room: 2,
@@ -749,69 +683,6 @@ async fn test_room_connection_count_distributed_without_redis_uses_local_state()
         .room_connection_count_distributed_batch(&[&room_id])
         .await?;
     assert_eq!(counts, vec![1]);
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_room_online_user_count_deduplicates_same_user_connections() -> TestResult {
-    let manager = ConnectionManager::default();
-    let user_id = UserId::expect_positive(10_000_010);
-    let room_id = RoomId::expect_positive(10_000_092);
-
-    manager.register("conn1".to_string(), user_id).await?;
-    manager.register("conn2".to_string(), user_id).await?;
-    manager.join_room("conn1", room_id).await?;
-    manager.join_room("conn2", room_id).await?;
-
-    assert_eq!(manager.room_connection_count(&room_id), 2);
-    assert_eq!(manager.room_online_user_count(&room_id), 1);
-
-    let distributed = manager.room_online_user_count_distributed(&room_id).await?;
-    assert_eq!(distributed, 1);
-
-    let batch = manager
-        .room_online_user_count_distributed_batch(&[&room_id])
-        .await?;
-    assert_eq!(batch, vec![1]);
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_room_online_user_ids_distributed_without_redis_checks_requested_users_only(
-) -> TestResult {
-    let manager = ConnectionManager::default();
-    let online_user = UserId::expect_positive(10_000_170);
-    let other_online_user = UserId::expect_positive(10_000_171);
-    let offline_user = UserId::expect_positive(10_000_172);
-    let room_id = RoomId::expect_positive(10_000_173);
-    let other_room_id = RoomId::expect_positive(10_000_174);
-
-    manager
-        .register("presence-local-online".to_string(), online_user)
-        .await?;
-    manager
-        .register("presence-local-other-user".to_string(), other_online_user)
-        .await?;
-    manager
-        .register("presence-local-other-room".to_string(), offline_user)
-        .await?;
-    manager.join_room("presence-local-online", room_id).await?;
-    manager
-        .join_room("presence-local-other-user", room_id)
-        .await?;
-    manager
-        .join_room("presence-local-other-room", other_room_id)
-        .await?;
-
-    let online_user_ids = manager
-        .room_online_user_ids_distributed(&room_id, &[online_user, offline_user])
-        .await?;
-
-    assert_eq!(
-        online_user_ids,
-        vec![online_user],
-        "presence lookup should only return requested users in the target room"
-    );
     Ok(())
 }
 
@@ -1325,49 +1196,6 @@ async fn test_distributed_queries_prune_stale_index_members() -> TestResult {
         room_members,
         vec![valid.to_string()],
         "room index should retain only valid members after lazy pruning"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker Redis"]
-async fn test_room_online_user_ids_distributed_reads_other_replicas_without_room_scan() -> TestResult
-{
-    let (_container, client, conn_a, prefix) = docker_redis_connection("presence-users:").await?;
-    let conn_b = redis::aio::ConnectionManager::new(client).await?;
-    let manager_a = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn_a, &prefix);
-    let manager_b = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn_b, &prefix);
-
-    let user_a = UserId::expect_positive(10_000_175);
-    let user_b = UserId::expect_positive(10_000_176);
-    let user_c = UserId::expect_positive(10_000_177);
-    let room_id = RoomId::expect_positive(10_000_178);
-    let other_room_id = RoomId::expect_positive(10_000_179);
-
-    manager_a
-        .register("presence-replica-a".to_string(), user_a)
-        .await?;
-    manager_b
-        .register("presence-replica-b".to_string(), user_b)
-        .await?;
-    manager_b
-        .register("presence-replica-other-room".to_string(), user_c)
-        .await?;
-
-    manager_a.join_room("presence-replica-a", room_id).await?;
-    manager_b.join_room("presence-replica-b", room_id).await?;
-    manager_b
-        .join_room("presence-replica-other-room", other_room_id)
-        .await?;
-
-    let online_user_ids = manager_a
-        .room_online_user_ids_distributed(&room_id, &[user_a, user_b, user_c])
-        .await?;
-
-    assert_eq!(
-        online_user_ids,
-        vec![user_a, user_b],
-        "lookup from one replica should include target-room users connected to another replica"
     );
     Ok(())
 }

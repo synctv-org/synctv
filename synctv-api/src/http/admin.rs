@@ -69,6 +69,13 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
         .route("/reviews/room-joins/reject", post(reject_room_join_review))
         // Moderation bans
         .route("/bans", get(list_ban_records))
+        // Moderation reports
+        .route("/reports", get(list_content_reports))
+        .route("/reports/{report_id}", get(get_content_report))
+        .route(
+            "/reports/{report_id}/status",
+            post(update_content_report_status),
+        )
         // Settings
         .route("/settings", get(get_settings).post(set_settings))
         .route("/settings/{group}", get(get_settings_group))
@@ -413,6 +420,120 @@ pub(crate) async fn list_ban_records(
         request_meta,
         require_admin_api,
         move |api, validated, _| async move { api.list_ban_records(req, &validated.user_id).await },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/reports",
+        tag = "Admin",
+        params(
+            ("page" = Option<i32>, Query, description = "Page number"),
+            ("page_size" = Option<i32>, Query, description = "Page size"),
+            ("status" = Option<i32>, Query, description = "Content report status"),
+            ("target_type" = Option<i32>, Query, description = "Content report target type"),
+            ("reporter_user_id" = Option<String>, Query, description = "Reporter public user id"),
+            ("room_id" = Option<String>, Query, description = "Related public room id"),
+            ("target_room_id" = Option<String>, Query, description = "Reported room public id"),
+            ("target_user_id" = Option<String>, Query, description = "Reported public user id"),
+            ("target_member_room_id" = Option<String>, Query, description = "Reported member room public id"),
+            ("target_member_user_id" = Option<String>, Query, description = "Reported room member public user id"),
+            ("target_chat_message_id" = Option<i64>, Query, description = "Reported chat message id"),
+            ("scope" = Option<i32>, Query, description = "Report list scope"),
+            ("search" = Option<String>, Query, description = "Search text")
+        ),
+        responses(
+            (status = 200, description = "Content reports", body = admin::ListContentReportsResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_content_reports(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ProtoQuery(req): ProtoQuery<admin::ListContentReportsRequest>,
+) -> AppResult<Json<admin::ListContentReportsResponse>> {
+    let resp =
+        execute_admin_endpoint(
+            &state,
+            request_meta,
+            require_admin_api,
+            move |api, validated, _| async move {
+                api.list_content_reports(req, &validated.user_id).await
+            },
+        )
+        .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/reports/{report_id}",
+        tag = "Admin",
+        params(("report_id" = String, Path, description = "Content report public id")),
+        responses(
+            (status = 200, description = "Content report", body = admin::GetContentReportResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn get_content_report(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(report_id): Path<String>,
+) -> AppResult<Json<admin::GetContentReportResponse>> {
+    let req = admin::GetContentReportRequest { report_id };
+    let resp =
+        execute_admin_endpoint(
+            &state,
+            request_meta,
+            require_admin_api,
+            move |api, validated, _| async move {
+                api.get_content_report(req, &validated.user_id).await
+            },
+        )
+        .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/reports/{report_id}/status",
+        tag = "Admin",
+        params(("report_id" = String, Path, description = "Content report public id")),
+        request_body = admin::UpdateContentReportStatusRequest,
+        responses(
+            (status = 200, description = "Content report status updated", body = admin::UpdateContentReportStatusResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn update_content_report_status(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(report_id): Path<String>,
+    Json(mut req): Json<admin::UpdateContentReportStatusRequest>,
+) -> AppResult<Json<admin::UpdateContentReportStatusResponse>> {
+    req.report_id = report_id;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, rctx| async move {
+            api.update_content_report_status(req, &validated.user_id, &rctx)
+                .await
+        },
     )
     .await?;
     Ok(Json(resp))

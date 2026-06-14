@@ -51,6 +51,7 @@ fn make_versioned(
                 },
             )]),
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata: HashMap::new(),
         },
         expires_at: chrono::Utc::now().timestamp() + ttl_secs,
@@ -265,6 +266,7 @@ async fn test_signed_subtitle_url_round_trips_with_generic_index_contract() {
             },
         )]),
         default_mode: "dash".to_string(),
+        duration_seconds: None,
         metadata: HashMap::new(),
     };
     let stored = VersionedPlayback {
@@ -341,6 +343,7 @@ async fn test_signed_mpd_stream_url_round_trips_with_indexed_proxy_contract() {
             },
         )]),
         default_mode: "dash".to_string(),
+        duration_seconds: None,
         metadata: HashMap::new(),
     };
     let stored = VersionedPlayback {
@@ -423,6 +426,7 @@ async fn test_signed_hls_url_round_trips_with_indexed_proxy_contract() {
             },
         )]),
         default_mode: "10000P_250".to_string(),
+        duration_seconds: None,
         metadata: HashMap::new(),
     };
     let stored = VersionedPlayback {

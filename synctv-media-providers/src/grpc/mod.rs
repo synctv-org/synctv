@@ -5,6 +5,7 @@
 
 // Include generated protobuf code
 pub mod alist {
+    #![allow(clippy::pedantic)]
     include!(concat!(
         env!("SYNCTV_MEDIA_PROVIDERS_PROTO_OUT_DIR"),
         "/synctv.media.alist.rs"
@@ -12,6 +13,7 @@ pub mod alist {
 }
 
 pub mod bilibili {
+    #![allow(clippy::pedantic)]
     include!(concat!(
         env!("SYNCTV_MEDIA_PROVIDERS_PROTO_OUT_DIR"),
         "/synctv.media.bilibili.rs"
@@ -19,6 +21,7 @@ pub mod bilibili {
 }
 
 pub mod emby {
+    #![allow(clippy::pedantic)]
     include!(concat!(
         env!("SYNCTV_MEDIA_PROVIDERS_PROTO_OUT_DIR"),
         "/synctv.media.emby.rs"

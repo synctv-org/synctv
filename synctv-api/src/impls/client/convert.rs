@@ -68,6 +68,82 @@ fn usize_to_i32(value: usize, field: &'static str) -> Result<i32, crate::impls::
         .map_err(|_| crate::impls::ApiError::Internal(format!("{field} exceeds i32::MAX")))
 }
 
+pub(crate) fn room_presence_stats_to_proto(
+    stats: &synctv_core::service::OnlineRoomStats,
+) -> Result<synctv_proto::common::RoomPresenceStats, crate::impls::ApiError> {
+    Ok(synctv_proto::common::RoomPresenceStats {
+        online_user_count: usize_to_i32(stats.online_user_count, "online user count")?,
+        connection_count: usize_to_i32(stats.connection_count, "room connection count")?,
+        node_connection_counts: node_connection_counts_to_proto(&stats.node_connection_counts)?,
+        sampled_at: stats.sampled_at_ms / 1000,
+        version: stats.version,
+    })
+}
+
+fn node_connection_counts_to_proto(
+    counts: &std::collections::BTreeMap<String, usize>,
+) -> Result<Vec<synctv_proto::common::NodeConnectionCount>, crate::impls::ApiError> {
+    counts
+        .iter()
+        .map(|(node_id, count)| {
+            Ok(synctv_proto::common::NodeConnectionCount {
+                node_id: node_id.clone(),
+                connection_count: usize_to_i32(*count, "node connection count")?,
+            })
+        })
+        .collect::<Result<Vec<_>, crate::impls::ApiError>>()
+}
+
+pub(crate) fn user_presence_stats_to_proto(
+    stats: &synctv_core::service::OnlineUserStats,
+    public_id_codec: &synctv_core::PublicIdCodec,
+) -> Result<synctv_proto::common::UserPresenceStats, crate::impls::ApiError> {
+    Ok(synctv_proto::common::UserPresenceStats {
+        connection_count: usize_to_i32(stats.connection_count, "user connection count")?,
+        node_connection_counts: node_connection_counts_to_proto(&stats.node_connection_counts)?,
+        room_count: usize_to_i32(stats.room_count, "user room count")?,
+        room_ids: stats
+            .rooms
+            .iter()
+            .copied()
+            .map(|room_id| public_id_codec.encode_room_id(room_id))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(crate::impls::ApiError::InvalidInput)?,
+        sampled_at: stats.sampled_at_ms / 1000,
+        version: stats.version,
+    })
+}
+
+pub(crate) fn node_presence_stats_to_proto(
+    stats: &synctv_core::service::OnlineNodeStats,
+) -> Result<synctv_proto::common::NodePresenceStats, crate::impls::ApiError> {
+    Ok(synctv_proto::common::NodePresenceStats {
+        node_id: stats.node_id.clone(),
+        connection_count: usize_to_i32(stats.connection_count, "node connection count")?,
+        online_user_count: usize_to_i32(stats.online_user_count, "node online user count")?,
+        room_count: usize_to_i32(stats.room_count, "node room count")?,
+        sampled_at: stats.sampled_at_ms / 1000,
+        version: stats.version,
+    })
+}
+
+pub(crate) fn presence_overview_to_proto(
+    stats: &synctv_core::service::PresenceOverview,
+) -> Result<synctv_proto::common::PresenceOverview, crate::impls::ApiError> {
+    Ok(synctv_proto::common::PresenceOverview {
+        online_user_count: usize_to_i32(stats.online_user_count, "online user count")?,
+        connection_count: usize_to_i32(stats.connection_count, "connection count")?,
+        active_room_count: usize_to_i32(stats.active_room_count, "active room count")?,
+        nodes: stats
+            .nodes
+            .iter()
+            .map(node_presence_stats_to_proto)
+            .collect::<Result<Vec<_>, crate::impls::ApiError>>()?,
+        sampled_at: stats.sampled_at_ms / 1000,
+        version: stats.version,
+    })
+}
+
 fn require_non_empty_url(url: &str, field: &'static str) -> Result<String, crate::impls::ApiError> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
@@ -427,17 +503,37 @@ pub(crate) fn try_user_to_proto(
     })
 }
 
+pub(crate) fn try_user_public_view_to_proto(
+    user: &synctv_core::models::User,
+    avatar_url: Option<&str>,
+    public_id_codec: &synctv_core::PublicIdCodec,
+) -> Result<synctv_proto::client::UserPublicView, crate::impls::ApiError> {
+    Ok(synctv_proto::client::UserPublicView {
+        id: public_id_codec
+            .encode_user_id(user.id)
+            .map_err(|error| proto_encode_error("user", &error))?,
+        username: user.username.clone(),
+        role: user_role_to_proto(user.role),
+        created_at: user.created_at.timestamp(),
+        avatar_url: avatar_url.unwrap_or_default().to_string(),
+        avatar: None,
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn try_room_to_proto_basic(
     room: &synctv_core::models::Room,
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Room, crate::impls::ApiError> {
-    try_room_to_proto_with_availability(
+    try_room_to_proto_with_availability_and_presence(
         room,
         settings,
         member_count,
         ClientResourceAvailability::Available,
+        None,
+        None,
         public_id_codec,
     )
 }
@@ -446,22 +542,33 @@ pub(crate) fn try_room_to_proto_basic_with_cover(
     room: &synctv_core::models::Room,
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
+    creator: Option<synctv_proto::client::UserPublicView>,
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_url: Option<&str>,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Room, crate::impls::ApiError> {
-    let mut proto = try_room_to_proto_basic(room, settings, member_count, public_id_codec)?;
+    let mut proto = try_room_to_proto_with_availability_and_presence(
+        room,
+        settings,
+        member_count,
+        ClientResourceAvailability::Available,
+        None,
+        creator,
+        public_id_codec,
+    )?;
     proto.cover = cover
         .map(|file| stored_file_reference_to_resource_cover(file, cover_url))
         .transpose()?;
     Ok(proto)
 }
 
-pub(crate) fn try_room_to_proto_with_availability(
+pub(crate) fn try_room_to_proto_with_availability_and_presence(
     room: &synctv_core::models::Room,
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
     availability: ClientResourceAvailability,
+    presence: Option<&synctv_core::service::OnlineRoomStats>,
+    creator: Option<synctv_proto::client::UserPublicView>,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Room, crate::impls::ApiError> {
     let room_settings = settings.ok_or_else(|| {
@@ -490,23 +597,30 @@ pub(crate) fn try_room_to_proto_with_availability(
         availability: resource_availability_enum_to_proto(availability),
         version: i64::from(room.version),
         cover: None,
+        presence: presence.map(room_presence_stats_to_proto).transpose()?,
+        creator,
     })
 }
 
-pub(crate) fn try_room_to_proto_with_availability_and_cover(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_room_to_proto_with_availability_presence_and_cover(
     room: &synctv_core::models::Room,
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
     availability: ClientResourceAvailability,
+    presence: Option<&synctv_core::service::OnlineRoomStats>,
+    creator: Option<synctv_proto::client::UserPublicView>,
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_url: Option<&str>,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Room, crate::impls::ApiError> {
-    let mut proto = try_room_to_proto_with_availability(
+    let mut proto = try_room_to_proto_with_availability_and_presence(
         room,
         settings,
         member_count,
         availability,
+        presence,
+        creator,
         public_id_codec,
     )?;
     proto.cover = cover
@@ -782,6 +896,7 @@ pub(crate) fn try_room_member_to_proto_with_permissions(
         admin_removed_permissions: member.admin_removed_permissions,
         joined_at: member.joined_at.timestamp(),
         is_online: member.is_online,
+        connection_count: 0,
     })
 }
 
@@ -971,6 +1086,7 @@ pub(crate) fn try_playback_to_proto(
         default_mode: result.default_mode.clone(),
         metadata,
         expires_at: None,
+        duration_seconds: result.duration_seconds,
     })
 }
 
@@ -1474,6 +1590,7 @@ mod tests {
                 },
             )]),
             default_mode: "missing".to_string(),
+            duration_seconds: None,
             metadata: HashMap::new(),
         };
 
@@ -1512,6 +1629,7 @@ mod tests {
                 },
             )]),
             default_mode: String::new(),
+            duration_seconds: None,
             metadata: HashMap::new(),
         };
 
@@ -1566,6 +1684,7 @@ mod tests {
                 ),
             ]),
             default_mode: "direct".to_string(),
+            duration_seconds: None,
             metadata: HashMap::new(),
         };
 

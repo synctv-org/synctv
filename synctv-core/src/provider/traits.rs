@@ -62,7 +62,11 @@ pub struct PlaybackResult {
     /// Default playback mode to use
     pub default_mode: String,
 
-    /// Additional metadata (duration, thumbnail, etc.)
+    /// Backend-owned source duration in seconds when the provider knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<f64>,
+
+    /// Additional provider metadata for display-only fields.
     #[serde(default)]
     pub metadata: HashMap<String, Value>,
 }

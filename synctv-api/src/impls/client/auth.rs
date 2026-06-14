@@ -10,6 +10,7 @@ use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{
     AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin, PendingAccountRegistration,
 };
+use synctv_proto::client::{RegisterWithDirectPasswordRequest, StartOpaqueRegistrationRequest};
 
 pub(crate) struct PasskeyAuthChallenge {
     pub session_id: String,
@@ -85,6 +86,28 @@ fn normalize_optional_email(email: Option<String>) -> Result<Option<String>, Api
                 .map_err(|error| ApiError::InvalidInput(error.to_string()))
         })
         .transpose()
+}
+
+fn validate_opaque_registration_request(
+    req: &mut StartOpaqueRegistrationRequest,
+) -> Result<Option<String>, ApiError> {
+    req.username = crate::impls::validation::validate_username(&req.username)
+        .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+    let email = normalize_optional_email(req.email.clone())?;
+    req.email.clone_from(&email);
+    crate::impls::validate_proto_request(req)?;
+    Ok(email)
+}
+
+fn validate_direct_password_registration_request(
+    req: &mut RegisterWithDirectPasswordRequest,
+) -> Result<Option<String>, ApiError> {
+    req.username = crate::impls::validation::validate_username(&req.username)
+        .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+    let email = normalize_optional_email(req.email.clone())?;
+    req.email.clone_from(&email);
+    crate::impls::validate_proto_request(req)?;
+    Ok(email)
 }
 
 fn pending_registration_to_proto(
@@ -372,10 +395,7 @@ impl ClientApiImpl {
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::client::StartOpaqueRegistrationResponse, ApiError> {
-        req.username = crate::impls::validation::validate_username(&req.username)
-            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
-        let email = normalize_optional_email(req.email.clone())?;
-        crate::impls::validate_proto_request(&req)?;
+        let email = validate_opaque_registration_request(&mut req)?;
 
         let challenge = self
             .user_service
@@ -422,10 +442,7 @@ impl ClientApiImpl {
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::client::RegisterResponse, ApiError> {
-        req.username = crate::impls::validation::validate_username(&req.username)
-            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
-        let email = normalize_optional_email(req.email.clone())?;
-        crate::impls::validate_proto_request(&req)?;
+        let email = validate_direct_password_registration_request(&mut req)?;
 
         let outcome = self
             .user_service
@@ -850,7 +867,8 @@ where
 mod tests {
     use super::{
         nonnegative_token_ttl_seconds, registration_outcome_to_proto, revoke_logout_token_in_order,
-        revoke_session_for_logout, LogoutToken,
+        revoke_session_for_logout, validate_direct_password_registration_request,
+        validate_opaque_registration_request, LogoutToken,
     };
     use crate::impls::ApiError;
     use std::sync::{
@@ -987,6 +1005,36 @@ mod tests {
             error.to_string().contains("reserved"),
             "reserved-word validation should remain in place: {error}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn opaque_registration_normalizes_empty_email_before_proto_validation() -> TestResult {
+        let mut request = synctv_proto::client::StartOpaqueRegistrationRequest {
+            username: "uiuser611010".to_string(),
+            email: Some(String::new()),
+            registration_request: vec![1, 2, 3],
+        };
+
+        let email = api_ok(validate_opaque_registration_request(&mut request))?;
+
+        assert_eq!(email, None);
+        assert_eq!(request.email, None);
+        Ok(())
+    }
+
+    #[test]
+    fn direct_password_registration_normalizes_empty_email_before_proto_validation() -> TestResult {
+        let mut request = synctv_proto::client::RegisterWithDirectPasswordRequest {
+            username: "direct_user".to_string(),
+            email: Some(String::new()),
+            password: "LocalDevRootPass2026".to_string(),
+        };
+
+        let email = api_ok(validate_direct_password_registration_request(&mut request))?;
+
+        assert_eq!(email, None);
+        assert_eq!(request.email, None);
         Ok(())
     }
 

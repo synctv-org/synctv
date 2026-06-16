@@ -3,8 +3,9 @@ use sqlx::{Postgres, Transaction};
 use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
-        FileBlob, FileRangeRequest, FileUploadRange, FileUploadSessionCreateResult, GetFileObject,
-        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, User, UserId,
+        FileBlob, FileObjectDownload, FileRangeRequest, FileUploadRange,
+        FileUploadSessionCreateResult, GetFileObject, StoreFileUpload, StoreFileUploadResult,
+        SubmittedFileReference, User, UserId,
     },
     service::{
         file_storage::{FileStorageCleanupOrigin, FileStorageContext},
@@ -107,6 +108,23 @@ impl UserService {
             .as_ref()
             .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
             .get_object(GetFileObject {
+                encoded_object_key: encoded_object_key.to_string(),
+                read_token: read_token.to_string(),
+                range,
+            })
+            .await
+    }
+
+    pub async fn get_avatar_object_stream(
+        &self,
+        encoded_object_key: &str,
+        read_token: &str,
+        range: Option<FileRangeRequest>,
+    ) -> Result<FileObjectDownload> {
+        self.file_storage_service
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
+            .get_object_stream(GetFileObject {
                 encoded_object_key: encoded_object_key.to_string(),
                 read_token: read_token.to_string(),
                 range,

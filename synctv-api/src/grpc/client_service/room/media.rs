@@ -2,6 +2,7 @@ use tonic::{Request, Response, Status};
 
 use super::super::{map_api_error, ClientServiceImpl};
 use crate::impls::EndpointRateLimitCategory;
+use futures::StreamExt;
 use synctv_proto::client::*;
 
 pub(super) async fn get_ice_servers(
@@ -152,10 +153,13 @@ pub(super) async fn complete_room_cover_upload_session(
 pub(super) async fn get_room_cover_object(
     service: &ClientServiceImpl,
     request: Request<synctv_proto::client::GetRoomCoverObjectRequest>,
-) -> Result<Response<synctv_proto::client::RoomCoverObjectResponse>, Status> {
+) -> Result<
+    Response<<ClientServiceImpl as room_service_server::RoomService>::GetRoomCoverObjectStream>,
+    Status,
+> {
     let metadata = service.request_metadata(&request)?;
     let req = request.into_inner();
-    let response = service
+    let download = service
         .client_api
         .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, move || {
             let client_api = service.client_api.clone();
@@ -163,7 +167,9 @@ pub(super) async fn get_room_cover_object(
         })
         .await
         .map_err(map_api_error)?;
-    Ok(Response::new(response))
+    let stream = crate::impls::client::file_download::room_cover_chunk_stream(download)
+        .map(|result| result.map_err(map_api_error));
+    Ok(Response::new(Box::pin(stream)))
 }
 
 pub(super) async fn update_room_cover(
@@ -249,10 +255,13 @@ pub(super) async fn complete_media_cover_upload_session(
 pub(super) async fn get_media_cover_object(
     service: &ClientServiceImpl,
     request: Request<GetMediaCoverObjectRequest>,
-) -> Result<Response<MediaCoverObjectResponse>, Status> {
+) -> Result<
+    Response<<ClientServiceImpl as room_service_server::RoomService>::GetMediaCoverObjectStream>,
+    Status,
+> {
     let metadata = service.request_metadata(&request)?;
     let req = request.into_inner();
-    let response = service
+    let download = service
         .client_api
         .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, move || {
             let client_api = service.client_api.clone();
@@ -260,7 +269,9 @@ pub(super) async fn get_media_cover_object(
         })
         .await
         .map_err(map_api_error)?;
-    Ok(Response::new(response))
+    let stream = crate::impls::client::file_download::media_cover_chunk_stream(download)
+        .map(|result| result.map_err(map_api_error));
+    Ok(Response::new(Box::pin(stream)))
 }
 
 pub(super) async fn update_media_cover(
@@ -369,10 +380,13 @@ pub(super) async fn complete_playlist_cover_upload_session(
 pub(super) async fn get_playlist_cover_object(
     service: &ClientServiceImpl,
     request: Request<synctv_proto::client::GetPlaylistCoverObjectRequest>,
-) -> Result<Response<synctv_proto::client::PlaylistCoverObjectResponse>, Status> {
+) -> Result<
+    Response<<ClientServiceImpl as room_service_server::RoomService>::GetPlaylistCoverObjectStream>,
+    Status,
+> {
     let metadata = service.request_metadata(&request)?;
     let req = request.into_inner();
-    let response = service
+    let download = service
         .client_api
         .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, move || {
             let client_api = service.client_api.clone();
@@ -380,7 +394,9 @@ pub(super) async fn get_playlist_cover_object(
         })
         .await
         .map_err(map_api_error)?;
-    Ok(Response::new(response))
+    let stream = crate::impls::client::file_download::playlist_cover_chunk_stream(download)
+        .map(|result| result.map_err(map_api_error));
+    Ok(Response::new(Box::pin(stream)))
 }
 
 pub(super) async fn update_playlist_cover(

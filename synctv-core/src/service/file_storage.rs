@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use futures::{StreamExt, TryStreamExt};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -9,11 +10,11 @@ use sha2::{Digest, Sha256};
 use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
-        FileBlob, FileBlobCompression, FileByteRange, FileOwnershipProofRange, FileRangeRequest,
-        FileReferenceTarget, FileUploadManifestPart, FileUploadPlan, FileUploadPlanPart,
-        FileUploadRange, FileUploadSessionCreateResult, GetFileObject, NewStoredFile,
-        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
-        UserId,
+        FileBlob, FileBlobCompression, FileByteRange, FileObjectDownload, FileObjectMetadata,
+        FileOwnershipProofRange, FileRangeRequest, FileReferenceTarget, FileUploadManifestPart,
+        FileUploadPlan, FileUploadPlanPart, FileUploadRange, FileUploadSessionCreateResult,
+        GetFileObject, NewStoredFile, StoreFileUpload, StoreFileUploadResult,
+        SubmittedFileReference, SubmittedFileReferenceKind, UserId,
     },
     repository::FileStorageRepository,
     Error, Result,
@@ -62,6 +63,44 @@ pub(super) const FILE_UPLOAD_CHECKSUM_ALGORITHM_SHA256: &str = "sha256";
 pub(super) fn payload_len_i64(len: usize) -> Result<i64> {
     i64::try_from(len)
         .map_err(|_| Error::InvalidInput("file payload size exceeds i64::MAX".to_string()))
+}
+
+pub(super) fn file_blob_to_download(blob: FileBlob) -> FileObjectDownload {
+    let metadata = FileObjectMetadata {
+        storage_backend: blob.storage_backend,
+        object_key: blob.object_key,
+        mime_type: blob.mime_type,
+        size_bytes: blob.size_bytes,
+        total_size_bytes: blob.total_size_bytes,
+        content_manifest_sha256: blob.content_manifest_sha256,
+        compression: blob.compression,
+        range: blob.range,
+        metadata: blob.metadata,
+        created_at: blob.created_at,
+    };
+    let data = bytes::Bytes::from(blob.data);
+    FileObjectDownload {
+        metadata,
+        stream: futures::stream::once(async move { Ok(data) }).boxed(),
+    }
+}
+
+pub(super) async fn collect_file_object_download(
+    mut download: FileObjectDownload,
+) -> Result<FileBlob> {
+    let capacity = usize::try_from(download.metadata.size_bytes).unwrap_or_default();
+    let mut data = Vec::with_capacity(capacity);
+    while let Some(chunk) = download.stream.try_next().await? {
+        data.extend_from_slice(&chunk);
+    }
+    if payload_len_i64(data.len())? != download.metadata.size_bytes {
+        return Err(Error::Internal(
+            "file object stream returned an unexpected size".to_string(),
+        ));
+    }
+    let mut blob = download.metadata.empty_blob();
+    blob.data = data;
+    Ok(blob)
 }
 
 pub(super) fn upload_session_part_size(_max_size_bytes: i64) -> i64 {
@@ -500,6 +539,10 @@ pub trait FileStorageService: Send + Sync {
 
     async fn get_object(&self, _request: GetFileObject) -> Result<FileBlob> {
         Err(Error::NotFound("File object not found".to_string()))
+    }
+
+    async fn get_object_stream(&self, request: GetFileObject) -> Result<FileObjectDownload> {
+        self.get_object(request).await.map(file_blob_to_download)
     }
 }
 
@@ -1459,7 +1502,7 @@ pub(super) fn database_file_object_url(
     Ok(format!("{route_prefix}/{encoded_key}?token={read_token}"))
 }
 
-fn database_file_read_token(
+pub(super) fn database_file_read_token(
     storage_backend: &str,
     object_key: &str,
     secret: &str,

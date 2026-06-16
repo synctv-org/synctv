@@ -19,7 +19,7 @@ use crate::{
         ChatMessageWithAttachments, ChatPlaybackMessagesQuery, ChatReactionUsersCursor,
         ChatReactionUsersPage, ChatReadStateWithUnread, CompleteFileUploadSession,
         CompleteFileUploadSessionResult, CreateChatAttachmentUploadSession, DeleteChatMessage,
-        EditChatMessage, FileBlob, FileRangeRequest, FileUploadRange,
+        EditChatMessage, FileBlob, FileObjectDownload, FileRangeRequest, FileUploadRange,
         FileUploadSessionCreateResult, GetFileObject, MarkChatRead, RoomId, SendChatMessage,
         SetChatReaction, StoreFileUpload, StoreFileUploadResult, SubmittedFileReference,
         SubmittedFileReferenceKind, UserId,
@@ -221,6 +221,21 @@ impl ChatService {
     ) -> Result<FileBlob> {
         self.file_storage_service
             .get_object(GetFileObject {
+                encoded_object_key: encoded_object_key.to_string(),
+                read_token: read_token.to_string(),
+                range,
+            })
+            .await
+    }
+
+    pub async fn get_attachment_object_stream(
+        &self,
+        encoded_object_key: &str,
+        read_token: &str,
+        range: Option<FileRangeRequest>,
+    ) -> Result<FileObjectDownload> {
+        self.file_storage_service
+            .get_object_stream(GetFileObject {
                 encoded_object_key: encoded_object_key.to_string(),
                 read_token: read_token.to_string(),
                 range,

@@ -49,7 +49,7 @@ service UserService {
   rpc CreateUserAvatarUploadSession(CreateUserAvatarUploadSessionRequest) returns (CreateUserAvatarUploadSessionResponse);
   rpc UploadUserAvatarObject(UploadUserAvatarObjectRequest) returns (UploadUserAvatarObjectResponse);
   rpc CompleteUserAvatarUploadSession(CompleteUserAvatarUploadSessionRequest) returns (CompleteUserAvatarUploadSessionResponse);
-  rpc GetUserAvatarObject(GetUserAvatarObjectRequest) returns (UserAvatarObjectResponse);
+  rpc GetUserAvatarObject(GetUserAvatarObjectRequest) returns (stream UserAvatarObjectResponse);
   rpc UpdateUserAvatar(UpdateUserAvatarRequest) returns (GetProfileResponse);
   rpc ClearUserAvatar(ClearUserAvatarRequest) returns (GetProfileResponse);
   rpc StartSensitiveOperationVerification(StartSensitiveOperationVerificationRequest) returns (StartSensitiveOperationVerificationResponse);
@@ -119,11 +119,11 @@ service RoomService {
   rpc CreateChatAttachmentUploadSession(CreateChatAttachmentUploadSessionRequest) returns (CreateChatAttachmentUploadSessionResponse);
   rpc UploadChatAttachmentObject(UploadChatAttachmentObjectRequest) returns (UploadChatAttachmentObjectResponse);
   rpc CompleteChatAttachmentUploadSession(CompleteChatAttachmentUploadSessionRequest) returns (CompleteChatAttachmentUploadSessionResponse);
-  rpc GetChatAttachmentObject(GetChatAttachmentObjectRequest) returns (ChatAttachmentObjectResponse);
+  rpc GetChatAttachmentObject(GetChatAttachmentObjectRequest) returns (stream ChatAttachmentObjectResponse);
   rpc CreateRoomCoverUploadSession(CreateRoomCoverUploadSessionRequest) returns (CreateRoomCoverUploadSessionResponse);
   rpc UploadRoomCoverObject(UploadRoomCoverObjectRequest) returns (UploadRoomCoverObjectResponse);
   rpc CompleteRoomCoverUploadSession(CompleteRoomCoverUploadSessionRequest) returns (CompleteRoomCoverUploadSessionResponse);
-  rpc GetRoomCoverObject(GetRoomCoverObjectRequest) returns (RoomCoverObjectResponse);
+  rpc GetRoomCoverObject(GetRoomCoverObjectRequest) returns (stream RoomCoverObjectResponse);
   rpc UpdateRoomCover(UpdateRoomCoverRequest) returns (GetRoomResponse);
   rpc ClearRoomCover(ClearRoomCoverRequest) returns (GetRoomResponse);
   rpc SendChatMessage(SendChatMessageRequest) returns (ChatMessageEventResponse);
@@ -153,7 +153,7 @@ service RoomService {
   rpc CreatePlaylistCoverUploadSession(CreatePlaylistCoverUploadSessionRequest) returns (CreatePlaylistCoverUploadSessionResponse);
   rpc UploadPlaylistCoverObject(UploadPlaylistCoverObjectRequest) returns (UploadPlaylistCoverObjectResponse);
   rpc CompletePlaylistCoverUploadSession(CompletePlaylistCoverUploadSessionRequest) returns (CompletePlaylistCoverUploadSessionResponse);
-  rpc GetPlaylistCoverObject(GetPlaylistCoverObjectRequest) returns (PlaylistCoverObjectResponse);
+  rpc GetPlaylistCoverObject(GetPlaylistCoverObjectRequest) returns (stream PlaylistCoverObjectResponse);
   rpc UpdatePlaylistCover(UpdatePlaylistCoverRequest) returns (UpdatePlaylistResponse);
   rpc ClearPlaylistCover(ClearPlaylistCoverRequest) returns (UpdatePlaylistResponse);
   rpc MovePlaylist(MovePlaylistRequest) returns (MovePlaylistResponse);
@@ -166,7 +166,7 @@ service RoomService {
   rpc CreateMediaCoverUploadSession(CreateMediaCoverUploadSessionRequest) returns (CreateMediaCoverUploadSessionResponse);
   rpc UploadMediaCoverObject(UploadMediaCoverObjectRequest) returns (UploadMediaCoverObjectResponse);
   rpc CompleteMediaCoverUploadSession(CompleteMediaCoverUploadSessionRequest) returns (CompleteMediaCoverUploadSessionResponse);
-  rpc GetMediaCoverObject(GetMediaCoverObjectRequest) returns (MediaCoverObjectResponse);
+  rpc GetMediaCoverObject(GetMediaCoverObjectRequest) returns (stream MediaCoverObjectResponse);
   rpc UpdateMediaCover(UpdateMediaCoverRequest) returns (EditMediaResponse);
   rpc ClearMediaCover(ClearMediaCoverRequest) returns (EditMediaResponse);
   rpc DeleteMedia(DeleteMediaRequest) returns (DeleteMediaResponse);

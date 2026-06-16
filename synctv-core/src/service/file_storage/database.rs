@@ -1,23 +1,24 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use futures::StreamExt;
 use sha2::{Digest, Sha256};
 
 use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
-        FileBlob, FileBlobCompression, FileBlobPart, FileByteRange, FileRangeRequest,
-        FileReferenceTarget, FileUploadSession, FileUploadSessionCreateResult,
-        FileUploadSessionKind, GetFileObject, NewStoredFile, StoreFileUpload,
-        StoreFileUploadResult,
+        FileBlob, FileBlobCompression, FileBlobPart, FileByteRange, FileObjectDownload,
+        FileObjectMetadata, FileRangeRequest, FileReferenceTarget, FileUploadSession,
+        FileUploadSessionCreateResult, FileUploadSessionKind, GetFileObject, NewStoredFile,
+        StoreFileUpload, StoreFileUploadResult,
     },
     repository::{
         FileStorageRepository, UpsertFileBlobPart, UpsertFileObject, UpsertFileUploadSession,
         UpsertFileUploadSessionPart,
     },
     service::file_storage::{
-        attach_file_ownership_proof_token, attach_prepared_file_urls, constant_time_eq,
-        database_file_namespace_base_path, database_file_object_url,
+        attach_file_ownership_proof_token, attach_prepared_file_urls, collect_file_object_download,
+        constant_time_eq, database_file_namespace_base_path, database_file_object_url,
         decode_database_file_object_key, encode_database_file_object_key, file_object_key,
         file_ownership_proof_digest, file_part_manifest_digest, file_reuse_grant,
         file_upload_token_for_object_key, mark_upload_session_ownership_proof_verified,
@@ -90,62 +91,70 @@ impl DatabaseFileStorageService {
         object_key: &str,
         range: Option<FileRangeRequest>,
     ) -> Result<Vec<u8>> {
-        let object = self
+        let encoded_object_key = encode_database_file_object_key(object_key);
+        let read_token = super::database_file_read_token(
+            &self.storage_backend,
+            object_key,
+            &self.upload_token_secret,
+        )?;
+        Ok(collect_file_object_download(
+            self.get_object_stream(GetFileObject {
+                encoded_object_key,
+                read_token,
+                range,
+            })
+            .await?,
+        )
+        .await?
+        .data)
+    }
+
+    async fn object_download(&self, request: GetFileObject) -> Result<FileObjectDownload> {
+        let object_key = decode_database_file_object_key(&request.encoded_object_key)?;
+        validate_database_file_read_token(
+            &self.storage_backend,
+            &object_key,
+            &request.read_token,
+            &self.upload_token_secret,
+        )?;
+        let Some(object) = self
             .repository
-            .get_object(&self.storage_backend, object_key)
+            .get_object(&self.storage_backend, &object_key)
             .await?
-            .ok_or_else(|| Error::NotFound("File object not found".to_string()))?;
-        let range = match range {
-            Some(range) => super::resolve_file_range(Some(range), object.size_bytes)?,
-            None => Some(FileByteRange {
-                start: 0,
-                end_inclusive: object.size_bytes - 1,
-            }),
+        else {
+            return Err(Error::NotFound("File object not found".to_string()));
         };
-        let range = range.expect("range is populated above");
+        let range = super::resolve_file_range(request.range, object.size_bytes)?;
+        let read_range = range.unwrap_or(FileByteRange {
+            start: 0,
+            end_inclusive: object.size_bytes - 1,
+        });
         let parts = self
             .repository
             .list_blob_parts_overlapping_range(
                 &self.storage_backend,
-                object_key,
-                range.start,
-                range.end_inclusive,
+                &object_key,
+                read_range.start,
+                read_range.end_inclusive,
             )
             .await?;
-        if parts.is_empty() {
-            return Err(Error::NotFound("File object not found".to_string()));
-        }
-        let mut data = Vec::new();
-        for part in parts {
-            let part_data = decompress_blob_part(part).await?;
-            let part_start_absolute = part_data.offset_bytes;
-            let part_end_absolute = part_data
-                .offset_bytes
-                .checked_add(part_data.size_bytes)
-                .ok_or_else(|| Error::Internal("file blob part offset overflow".to_string()))?;
-            let read_start_absolute = range.start.max(part_start_absolute);
-            let read_end_absolute = (range.end_inclusive + 1).min(part_end_absolute);
-            if read_end_absolute <= read_start_absolute {
-                continue;
-            }
-            let part_start = read_start_absolute - part_start_absolute;
-            let part_end_exclusive = read_end_absolute - part_start_absolute;
-            let start = usize::try_from(part_start)
-                .map_err(|_| Error::Internal("file range start is invalid".to_string()))?;
-            let end = usize::try_from(part_end_exclusive)
-                .map_err(|_| Error::Internal("file range end is invalid".to_string()))?;
-            data.extend_from_slice(
-                part_data.data.get(start..end).ok_or_else(|| {
-                    Error::Internal("file range does not fit blob part".to_string())
-                })?,
-            );
-        }
-        if payload_len_i64(data.len())? != range.size_bytes() {
-            return Err(Error::Internal(
-                "file range read returned an unexpected size".to_string(),
-            ));
-        }
-        Ok(data)
+        ensure_database_parts_cover_range(&parts, read_range)?;
+        let metadata = FileObjectMetadata {
+            storage_backend: self.storage_backend.clone(),
+            object_key,
+            mime_type: object.mime_type,
+            size_bytes: read_range.size_bytes(),
+            total_size_bytes: object.size_bytes,
+            content_manifest_sha256: object.content_manifest_sha256,
+            compression: FileBlobCompression::None,
+            range,
+            metadata: object.metadata,
+            created_at: object.created_at,
+        };
+        let stream = futures::stream::iter(parts)
+            .then(move |part| async move { database_part_chunk(part, read_range).await })
+            .boxed();
+        Ok(FileObjectDownload { metadata, stream })
     }
 
     async fn finalize_upload_object(
@@ -248,6 +257,69 @@ struct DecompressedBlobPart {
     offset_bytes: i64,
     size_bytes: i64,
     data: Vec<u8>,
+}
+
+fn range_end_exclusive(range: FileByteRange) -> Result<i64> {
+    range
+        .end_inclusive
+        .checked_add(1)
+        .ok_or_else(|| Error::Internal("file range end overflow".to_string()))
+}
+
+fn ensure_database_parts_cover_range(parts: &[FileBlobPart], range: FileByteRange) -> Result<()> {
+    if parts.is_empty() {
+        return Err(Error::Internal(
+            "file object has no readable blob parts".to_string(),
+        ));
+    }
+    let end_exclusive = range_end_exclusive(range)?;
+    let mut expected = range.start;
+    for part in parts {
+        let part_end = part
+            .offset_bytes
+            .checked_add(part.size_bytes)
+            .ok_or_else(|| Error::Internal("file blob part offset overflow".to_string()))?;
+        if part_end <= expected {
+            continue;
+        }
+        if part.offset_bytes > expected {
+            return Err(Error::Internal(
+                "file object is missing one or more blob parts".to_string(),
+            ));
+        }
+        expected = part_end.min(end_exclusive);
+        if expected >= end_exclusive {
+            return Ok(());
+        }
+    }
+    Err(Error::Internal(
+        "file object is missing one or more blob parts".to_string(),
+    ))
+}
+
+async fn database_part_chunk(part: FileBlobPart, range: FileByteRange) -> Result<bytes::Bytes> {
+    let part_data = decompress_blob_part(part).await?;
+    let part_start_absolute = part_data.offset_bytes;
+    let part_end_absolute = part_data
+        .offset_bytes
+        .checked_add(part_data.size_bytes)
+        .ok_or_else(|| Error::Internal("file blob part offset overflow".to_string()))?;
+    let read_start_absolute = range.start.max(part_start_absolute);
+    let read_end_absolute = range_end_exclusive(range)?.min(part_end_absolute);
+    if read_end_absolute <= read_start_absolute {
+        return Ok(bytes::Bytes::new());
+    }
+    let part_start = read_start_absolute - part_start_absolute;
+    let part_end_exclusive = read_end_absolute - part_start_absolute;
+    let start = usize::try_from(part_start)
+        .map_err(|_| Error::Internal("file range start is invalid".to_string()))?;
+    let end = usize::try_from(part_end_exclusive)
+        .map_err(|_| Error::Internal("file range end is invalid".to_string()))?;
+    let slice = part_data
+        .data
+        .get(start..end)
+        .ok_or_else(|| Error::Internal("file range does not fit blob part".to_string()))?;
+    Ok(bytes::Bytes::copy_from_slice(slice))
 }
 
 fn database_upload_max_size_bytes(policy_max_size_bytes: i64) -> i64 {
@@ -1051,36 +1123,10 @@ impl FileStorageService for DatabaseFileStorageService {
     }
 
     async fn get_object(&self, request: GetFileObject) -> Result<FileBlob> {
-        let object_key = decode_database_file_object_key(&request.encoded_object_key)?;
-        validate_database_file_read_token(
-            &self.storage_backend,
-            &object_key,
-            &request.read_token,
-            &self.upload_token_secret,
-        )?;
-        let Some(object) = self
-            .repository
-            .get_object(&self.storage_backend, &object_key)
-            .await?
-        else {
-            return Err(Error::NotFound("File object not found".to_string()));
-        };
-        let range = super::resolve_file_range(request.range, object.size_bytes)?;
-        let data = self
-            .load_range_data(&object_key, range.map(FileRangeRequest::Exact))
-            .await?;
-        Ok(FileBlob {
-            storage_backend: self.storage_backend.clone(),
-            object_key,
-            mime_type: object.mime_type,
-            size_bytes: range.map_or(object.size_bytes, crate::models::FileByteRange::size_bytes),
-            total_size_bytes: object.size_bytes,
-            content_manifest_sha256: object.content_manifest_sha256,
-            compression: FileBlobCompression::None,
-            range,
-            data,
-            metadata: object.metadata,
-            created_at: object.created_at,
-        })
+        collect_file_object_download(self.object_download(request).await?).await
+    }
+
+    async fn get_object_stream(&self, request: GetFileObject) -> Result<FileObjectDownload> {
+        self.object_download(request).await
     }
 }

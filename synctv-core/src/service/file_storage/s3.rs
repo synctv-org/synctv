@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, fmt::Write as _, sync::Arc};
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use hmac::{Hmac, KeyInit, Mac};
 use opendal::{services::S3, Operator};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
@@ -11,25 +12,26 @@ use sha2::{Digest, Sha256};
 use crate::{
     models::{
         CompleteFileUploadPart, CompleteFileUploadSession, CompleteFileUploadSessionResult,
-        CreateFileUploadSession, FileBlob, FileBlobCompression, FileOwnershipProofRange,
-        FileReferenceTarget, FileUploadManifestPart, FileUploadPartUrl, FileUploadSession,
-        FileUploadSessionCreateResult, FileUploadSessionKind, GetFileObject, NewStoredFile,
-        StoreFileUpload, StoreFileUploadResult,
+        CreateFileUploadSession, FileBlob, FileBlobCompression, FileObjectDownload,
+        FileObjectMetadata, FileOwnershipProofRange, FileReferenceTarget, FileUploadManifestPart,
+        FileUploadPartUrl, FileUploadSession, FileUploadSessionCreateResult, FileUploadSessionKind,
+        GetFileObject, NewStoredFile, StoreFileUpload, StoreFileUploadResult,
     },
     repository::{
         FileStorageRepository, UpsertFileObject, UpsertFileUploadSession,
         UpsertFileUploadSessionPart,
     },
     service::file_storage::{
-        attach_file_ownership_proof_token, attach_prepared_file_urls, constant_time_eq,
-        database_file_object_url, decode_database_file_object_key, encode_database_file_object_key,
-        file_object_key, file_ownership_proof_digest, file_part_manifest_digest, file_reuse_grant,
-        file_storage_object_base_path, mark_upload_session_ownership_proof_verified,
-        new_public_file_id, optional_file_storage_public_url, optional_payload_bool,
-        payload_len_i64, register_upload_session_reference, strip_internal_file_metadata,
-        upload_manifest_metadata, upload_manifest_parts_from_metadata, upload_media_type,
-        upload_session_metadata, upload_session_metadata_with_manifest,
-        upload_session_parts_progress, upload_session_progress, upload_session_public_file_id,
+        attach_file_ownership_proof_token, attach_prepared_file_urls, collect_file_object_download,
+        constant_time_eq, database_file_object_url, decode_database_file_object_key,
+        encode_database_file_object_key, file_object_key, file_ownership_proof_digest,
+        file_part_manifest_digest, file_reuse_grant, file_storage_object_base_path,
+        mark_upload_session_ownership_proof_verified, new_public_file_id,
+        optional_file_storage_public_url, optional_payload_bool, payload_len_i64,
+        register_upload_session_reference, strip_internal_file_metadata, upload_manifest_metadata,
+        upload_manifest_parts_from_metadata, upload_media_type, upload_session_metadata,
+        upload_session_metadata_with_manifest, upload_session_parts_progress,
+        upload_session_progress, upload_session_public_file_id,
         validate_create_file_upload_session, validate_database_file_read_token,
         validate_database_file_upload_token, validate_file_mime_type, validate_file_reuse_grant,
         validate_s3_file_storage_config, validate_stored_files, validate_upload_range,
@@ -102,6 +104,8 @@ pub struct S3CompatibleFileStorageService {
     http_client: reqwest::Client,
     #[cfg(test)]
     test_multipart_upload_id: Option<String>,
+    #[cfg(test)]
+    test_force_stat_error: bool,
 }
 
 impl S3CompatibleFileStorageService {
@@ -122,6 +126,8 @@ impl S3CompatibleFileStorageService {
             http_client: reqwest::Client::new(),
             #[cfg(test)]
             test_multipart_upload_id: None,
+            #[cfg(test)]
+            test_force_stat_error: false,
         })
     }
 
@@ -134,6 +140,12 @@ impl S3CompatibleFileStorageService {
     #[cfg(test)]
     pub(crate) fn with_test_multipart_upload_id(mut self, upload_id: impl Into<String>) -> Self {
         self.test_multipart_upload_id = Some(upload_id.into());
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn with_test_force_stat_error(mut self) -> Self {
+        self.test_force_stat_error = true;
         self
     }
 
@@ -405,6 +417,154 @@ impl S3CompatibleFileStorageService {
             ));
         }
         Ok(())
+    }
+
+    async fn stat_object(&self, object_key: &str) -> Option<opendal::Metadata> {
+        #[cfg(test)]
+        if self.test_force_stat_error {
+            return None;
+        }
+        match self.operator.stat(object_key).await {
+            Ok(metadata) => Some(metadata),
+            Err(error) => {
+                tracing::debug!(
+                    storage_backend = %self.config.storage_backend,
+                    object_key,
+                    error = %error,
+                    "S3 object stat failed; falling back to object read path"
+                );
+                None
+            }
+        }
+    }
+
+    async fn object_download(&self, request: GetFileObject) -> Result<FileObjectDownload> {
+        let object_key = decode_database_file_object_key(&request.encoded_object_key)?;
+        validate_database_file_read_token(
+            &self.config.storage_backend,
+            &object_key,
+            &request.read_token,
+            &self.config.upload_token_secret,
+        )?;
+        let object = if let Some(repository) = self.repository.as_ref() {
+            repository
+                .get_object(&self.config.storage_backend, &object_key)
+                .await?
+        } else {
+            None
+        };
+        let stat = if object.is_some() {
+            None
+        } else {
+            self.stat_object(&object_key).await
+        };
+        let total_size_bytes = object.as_ref().map(|object| object.size_bytes).or_else(|| {
+            stat.as_ref()
+                .and_then(|stat| i64::try_from(stat.content_length()).ok())
+        });
+        let Some(total_size_bytes) = total_size_bytes else {
+            if request.range.is_some() {
+                return Err(Error::InvalidInput(
+                    "file range requires known object size".to_string(),
+                ));
+            }
+            let data = self
+                .operator
+                .read(&object_key)
+                .await
+                .map_err(|error| Error::NotFound(format!("File object not found: {error}")))?;
+            let size_bytes = payload_len_i64(data.len())?;
+            let mime_type = object
+                .as_ref()
+                .map(|object| object.mime_type.clone())
+                .or_else(|| {
+                    stat.as_ref()
+                        .and_then(|stat| stat.content_type().map(ToString::to_string))
+                })
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let content_manifest_sha256 = object
+                .as_ref()
+                .map(|object| object.content_manifest_sha256.clone())
+                .unwrap_or_default();
+            let metadata_json = object
+                .as_ref().map_or_else(|| serde_json::Value::Object(Default::default()), |object| object.metadata.clone());
+            let created_at = object
+                .as_ref().map_or_else(Utc::now, |object| object.created_at);
+            return Ok(FileObjectDownload {
+                metadata: FileObjectMetadata {
+                    storage_backend: self.config.storage_backend.clone(),
+                    object_key,
+                    mime_type,
+                    size_bytes,
+                    total_size_bytes: size_bytes,
+                    content_manifest_sha256,
+                    compression: FileBlobCompression::None,
+                    range: None,
+                    metadata: metadata_json,
+                    created_at,
+                },
+                stream: futures::stream::once(async move { Ok(data.to_bytes()) }).boxed(),
+            });
+        };
+        let range = super::resolve_file_range(request.range, total_size_bytes)?;
+        let read_range = range.unwrap_or(crate::models::FileByteRange {
+            start: 0,
+            end_inclusive: total_size_bytes - 1,
+        });
+        let start = u64::try_from(read_range.start)
+            .map_err(|_| Error::InvalidInput("file range is invalid".to_string()))?;
+        let end = read_range
+            .end_inclusive
+            .checked_add(1)
+            .and_then(|end| u64::try_from(end).ok())
+            .ok_or_else(|| Error::InvalidInput("file range is invalid".to_string()))?;
+        let mime_type = object
+            .as_ref()
+            .map(|object| object.mime_type.clone())
+            .or_else(|| {
+                stat.as_ref()
+                    .and_then(|stat| stat.content_type().map(ToString::to_string))
+            })
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        let content_manifest_sha256 = object
+            .as_ref()
+            .map(|object| object.content_manifest_sha256.clone())
+            .unwrap_or_default();
+        let metadata_json = object
+            .as_ref().map_or_else(|| serde_json::Value::Object(Default::default()), |object| object.metadata.clone());
+        let created_at = object
+            .as_ref().map_or_else(Utc::now, |object| object.created_at);
+        let reader = self
+            .operator
+            .reader(&object_key)
+            .await
+            .map_err(|error| Error::NotFound(format!("File object not found: {error}")))?;
+        let bytes_stream = reader
+            .into_bytes_stream(start..end)
+            .await
+            .map_err(|error| Error::NotFound(format!("File object not found: {error}")))?;
+        let stream = bytes_stream
+            .map(|chunk| {
+                chunk.map_err(|error| {
+                    Error::Internal(format!("failed to read S3 file object stream: {error}"))
+                })
+            })
+            .boxed();
+        Ok(FileObjectDownload {
+            metadata: FileObjectMetadata {
+                storage_backend: self.config.storage_backend.clone(),
+                object_key,
+                mime_type,
+                size_bytes: read_range.size_bytes(),
+                total_size_bytes,
+                content_manifest_sha256,
+                compression: FileBlobCompression::None,
+                range,
+                metadata: metadata_json,
+                created_at,
+            },
+            stream,
+        })
     }
 
     fn s3_url(&self, object_key: &str, query: &[(&str, &str)]) -> Result<url::Url> {
@@ -1408,86 +1568,11 @@ impl FileStorageService for S3CompatibleFileStorageService {
     }
 
     async fn get_object(&self, request: GetFileObject) -> Result<FileBlob> {
-        let object_key = decode_database_file_object_key(&request.encoded_object_key)?;
-        validate_database_file_read_token(
-            &self.config.storage_backend,
-            &object_key,
-            &request.read_token,
-            &self.config.upload_token_secret,
-        )?;
-        let object = if let Some(repository) = self.repository.as_ref() {
-            repository
-                .get_object(&self.config.storage_backend, &object_key)
-                .await?
-        } else {
-            None
-        };
-        let metadata = self.operator.stat(&object_key).await.ok();
-        let total_size_bytes = object.as_ref().map(|object| object.size_bytes).or_else(|| {
-            metadata
-                .as_ref()
-                .and_then(|metadata| i64::try_from(metadata.content_length()).ok())
-        });
-        let range = match total_size_bytes {
-            Some(total_size_bytes) => super::resolve_file_range(request.range, total_size_bytes)?,
-            None => request.range.and_then(|range| match range {
-                crate::models::FileRangeRequest::Exact(range) => Some(range),
-                crate::models::FileRangeRequest::From { start } if start >= 0 => {
-                    Some(crate::models::FileByteRange {
-                        start,
-                        end_inclusive: i64::MAX - 1,
-                    })
-                }
-                _ => None,
-            }),
-        };
-        let bytes = match range {
-            Some(range) => {
-                let start = u64::try_from(range.start)
-                    .map_err(|_| Error::InvalidInput("file range is invalid".to_string()))?;
-                let end = u64::try_from(range.end_inclusive + 1)
-                    .map_err(|_| Error::InvalidInput("file range is invalid".to_string()))?;
-                self.operator
-                    .read_with(&object_key)
-                    .range(start..end)
-                    .await
-                    .map_err(|error| Error::NotFound(format!("File object not found: {error}")))?
-                    .to_vec()
-            }
-            None => self
-                .operator
-                .read(&object_key)
-                .await
-                .map_err(|error| Error::NotFound(format!("File object not found: {error}")))?
-                .to_vec(),
-        };
-        let total_size_bytes = total_size_bytes.unwrap_or(payload_len_i64(bytes.len())?);
-        let mime_type = object
-            .as_ref()
-            .map(|object| object.mime_type.clone())
-            .or_else(|| {
-                metadata
-                    .as_ref()
-                    .and_then(opendal::Metadata::content_type)
-                    .map(ToString::to_string)
-            })
-            .unwrap_or_else(|| "application/octet-stream".to_string());
-        let content_manifest_sha256 = object
-            .map(|object| object.content_manifest_sha256)
-            .unwrap_or_default();
-        Ok(FileBlob {
-            storage_backend: self.config.storage_backend.clone(),
-            object_key,
-            mime_type,
-            size_bytes: payload_len_i64(bytes.len())?,
-            total_size_bytes,
-            content_manifest_sha256,
-            compression: FileBlobCompression::None,
-            range,
-            data: bytes,
-            metadata: serde_json::Value::Object(Default::default()),
-            created_at: Utc::now(),
-        })
+        collect_file_object_download(self.object_download(request).await?).await
+    }
+
+    async fn get_object_stream(&self, request: GetFileObject) -> Result<FileObjectDownload> {
+        self.object_download(request).await
     }
 }
 

@@ -2,6 +2,7 @@ use tonic::{Request, Response, Status};
 
 use super::super::{map_api_error, ClientServiceImpl};
 use crate::impls::EndpointRateLimitCategory;
+use futures::StreamExt;
 use synctv_proto::client::*;
 
 pub(super) async fn create_chat_attachment_upload_session(
@@ -66,10 +67,16 @@ pub(super) async fn complete_chat_attachment_upload_session(
 pub(super) async fn get_chat_attachment_object(
     service: &ClientServiceImpl,
     request: Request<GetChatAttachmentObjectRequest>,
-) -> Result<Response<ChatAttachmentObjectResponse>, Status> {
+) -> Result<
+    Response<
+        <ClientServiceImpl as room_service_server::RoomService>::GetChatAttachmentObjectStream,
+    >,
+    Status,
+> {
     let metadata = service.request_metadata(&request)?;
     let req = request.into_inner();
-    let response = service
+    let room_id = req.room_id.clone();
+    let download = service
         .client_api
         .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, move || {
             let client_api = service.client_api.clone();
@@ -77,7 +84,10 @@ pub(super) async fn get_chat_attachment_object(
         })
         .await
         .map_err(map_api_error)?;
-    Ok(Response::new(response))
+    let stream =
+        crate::impls::client::file_download::chat_attachment_chunk_stream(room_id, download)
+            .map(|result| result.map_err(map_api_error));
+    Ok(Response::new(Box::pin(stream)))
 }
 
 pub(super) async fn get_chat_history(

@@ -3,8 +3,9 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
-        FileBlob, FileReferenceTarget, FileUploadSessionCreateResult, GetFileObject, NewStoredFile,
-        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
+        FileBlob, FileObjectDownload, FileReferenceTarget, FileUploadSessionCreateResult,
+        GetFileObject, NewStoredFile, StoreFileUpload, StoreFileUploadResult,
+        SubmittedFileReference, SubmittedFileReferenceKind,
     },
     service::file_storage::{
         database_file_read_token_storage_backend, file_upload_token_storage_backend,
@@ -238,6 +239,14 @@ impl FileStorageService for RoutedFileStorageService {
         self.registry
             .backend(&backend_name)?
             .get_object(request)
+            .await
+    }
+
+    async fn get_object_stream(&self, request: GetFileObject) -> Result<FileObjectDownload> {
+        let backend_name = database_file_read_token_storage_backend(&request.read_token)?;
+        self.registry
+            .backend(&backend_name)?
+            .get_object_stream(request)
             .await
     }
 }

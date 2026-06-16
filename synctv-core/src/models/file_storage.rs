@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
@@ -69,6 +70,46 @@ pub struct FileBlob {
     pub data: Vec<u8>,
     pub metadata: JsonValue,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileObjectMetadata {
+    pub storage_backend: String,
+    pub object_key: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub total_size_bytes: i64,
+    pub content_manifest_sha256: String,
+    pub compression: FileBlobCompression,
+    pub range: Option<FileByteRange>,
+    pub metadata: JsonValue,
+    pub created_at: DateTime<Utc>,
+}
+
+impl FileObjectMetadata {
+    #[must_use]
+    pub fn empty_blob(&self) -> FileBlob {
+        FileBlob {
+            storage_backend: self.storage_backend.clone(),
+            object_key: self.object_key.clone(),
+            mime_type: self.mime_type.clone(),
+            size_bytes: self.size_bytes,
+            total_size_bytes: self.total_size_bytes,
+            content_manifest_sha256: self.content_manifest_sha256.clone(),
+            compression: self.compression,
+            range: self.range,
+            data: Vec::new(),
+            metadata: self.metadata.clone(),
+            created_at: self.created_at,
+        }
+    }
+}
+
+pub type FileObjectStream = BoxStream<'static, crate::Result<bytes::Bytes>>;
+
+pub struct FileObjectDownload {
+    pub metadata: FileObjectMetadata,
+    pub stream: FileObjectStream,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

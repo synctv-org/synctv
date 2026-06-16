@@ -398,7 +398,7 @@ pub async fn get_user_avatar_object(
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let executor = state.shared_api_runtime.client_api.clone();
     let client_api = state.shared_api_runtime.client_api.clone();
-    let object = executor
+    let download = executor
         .execute_public_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
@@ -406,16 +406,7 @@ pub async fn get_user_avatar_object(
         )
         .await
         .map_err(super::error::map_api_error)?;
-    super::file_blob_response(
-        super::object_response_blob(
-            object.mime_type,
-            object.content_manifest_sha256,
-            object.data,
-            object.content_range,
-            object.total_size_bytes,
-        ),
-        None,
-    )
+    super::file_object_download_response(download, None)
 }
 
 #[cfg_attr(

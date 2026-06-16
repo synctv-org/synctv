@@ -1,3 +1,6 @@
+use std::pin::Pin;
+
+use futures::StreamExt;
 use tonic::{Request, Response, Status};
 
 use super::{map_api_error, ClientServiceImpl};
@@ -26,10 +29,15 @@ use synctv_proto::client::{
     UserAvatarObjectResponse,
 };
 
+type UserAvatarObjectStream =
+    Pin<Box<dyn futures::Stream<Item = Result<UserAvatarObjectResponse, Status>> + Send + 'static>>;
+
 #[tonic::async_trait]
 // Tonic generated service traits require `Result<Response<_>, tonic::Status>`.
 #[allow(clippy::result_large_err)]
 impl UserService for ClientServiceImpl {
+    type GetUserAvatarObjectStream = UserAvatarObjectStream;
+
     async fn logout(
         &self,
         request: Request<LogoutRequest>,
@@ -170,10 +178,10 @@ impl UserService for ClientServiceImpl {
     async fn get_user_avatar_object(
         &self,
         request: Request<GetUserAvatarObjectRequest>,
-    ) -> Result<Response<UserAvatarObjectResponse>, Status> {
+    ) -> Result<Response<Self::GetUserAvatarObjectStream>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
-        let response = self
+        let download = self
             .client_api
             .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, move || {
                 let client_api = self.client_api.clone();
@@ -181,7 +189,9 @@ impl UserService for ClientServiceImpl {
             })
             .await
             .map_err(map_api_error)?;
-        Ok(Response::new(response))
+        let stream = crate::impls::client::file_download::avatar_chunk_stream(download)
+            .map(|result| result.map_err(map_api_error));
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn update_user_avatar(

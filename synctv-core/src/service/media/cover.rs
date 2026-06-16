@@ -3,7 +3,7 @@ use serde_json::Value as JsonValue;
 use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
-        FileBlob, FileRangeRequest, FileUploadManifestPart, FileUploadRange,
+        FileBlob, FileObjectDownload, FileRangeRequest, FileUploadManifestPart, FileUploadRange,
         FileUploadSessionCreateResult, GetFileObject, Media, MediaId, RoomId, StoreFileUpload,
         StoreFileUploadResult, SubmittedFileReference, UserId,
     },
@@ -132,6 +132,23 @@ impl MediaService {
             .as_ref()
             .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
             .get_object(GetFileObject {
+                encoded_object_key: encoded_object_key.to_string(),
+                read_token: read_token.to_string(),
+                range,
+            })
+            .await
+    }
+
+    pub async fn get_media_cover_object_stream(
+        &self,
+        encoded_object_key: &str,
+        read_token: &str,
+        range: Option<FileRangeRequest>,
+    ) -> Result<FileObjectDownload> {
+        self.file_storage_service
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
+            .get_object_stream(GetFileObject {
                 encoded_object_key: encoded_object_key.to_string(),
                 read_token: read_token.to_string(),
                 range,

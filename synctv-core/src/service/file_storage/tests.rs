@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use futures::TryStreamExt;
 use sha2::{Digest, Sha256};
 
 use super::*;
@@ -280,6 +281,18 @@ fn database_object_read_url_parts(
         object_url.as_deref(),
         "database object url should exist",
     ))
+}
+
+fn backend_object_read_url_parts(
+    storage_backend: &str,
+    object_key: &str,
+    secret: &str,
+) -> (String, String) {
+    let object_url = ok(
+        database_file_object_url("/api/test/objects", storage_backend, object_key, secret),
+        "backend object url should build",
+    );
+    object_url_parts(&object_url)
 }
 
 #[test]
@@ -1806,6 +1819,103 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
 }
 
 #[tokio::test]
+async fn database_storage_streams_completed_blob_parts_without_single_buffer() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let storage = DatabaseFileStorageService::new_with_compression_config(
+        "database",
+        repository,
+        "test-file-storage-secret",
+        DatabaseFileStorageCompressionConfig {
+            algorithm: FileBlobCompression::None,
+            min_size_bytes: 1,
+            min_savings_percent: 0,
+        },
+    );
+    let mut payload = Vec::with_capacity(12 * 1024 * 1024);
+    payload.extend(vec![b'a'; 8 * 1024 * 1024]);
+    payload.extend(vec![b'b'; 4 * 1024 * 1024]);
+    let policy = large_test_upload_policy(payload_size(&payload), "image/png");
+    let (request, _) = upload_request(UploadRequestInput {
+        user_id: UserId::expect_positive(1),
+        storage_scope: "users/1/avatars",
+        client_file_id: "avatar-stream",
+        filename: None,
+        mime_type: "image/png",
+        payload: &payload,
+        width: Some(16),
+        height: Some(16),
+        metadata: serde_json::Value::Object(Default::default()),
+        policy,
+    });
+    let session = ok(
+        storage.create_upload_session(request).await,
+        "upload session should be created",
+    );
+    let (encoded_object_key, _) = object_url_parts(some(
+        session.upload_url.as_deref(),
+        "upload url should be returned",
+    ));
+    let upload_token = some(
+        session
+            .upload_headers
+            .get(FILE_UPLOAD_TOKEN_HEADER)
+            .map(String::as_str),
+        "upload token should exist",
+    );
+    let split = usize::try_from(session.part_size_bytes).expect("part size should fit");
+    let mut completed = None;
+    for (index, chunk) in payload.chunks(split).enumerate() {
+        let start = i64::try_from(index * split).expect("start should fit");
+        let result = ok(
+            storage
+                .store_upload(StoreFileUpload {
+                    encoded_object_key: encoded_object_key.clone(),
+                    upload_token: upload_token.to_string(),
+                    content_type: Some("image/png".to_string()),
+                    range: Some(FileUploadRange {
+                        start,
+                        end_inclusive: start + payload_size(chunk) - 1,
+                        total_size: payload_size(&payload),
+                    }),
+                    data: chunk.to_vec(),
+                })
+                .await,
+            "upload part should store",
+        );
+        if let StoreFileUploadResult::Complete(blob) = result {
+            completed = Some(blob);
+        }
+    }
+    let blob = some(completed, "multipart upload should complete");
+    let (read_encoded_object_key, read_token) =
+        database_object_read_url_parts(&storage, "database", &blob.object_key);
+    let download = ok(
+        storage
+            .get_object_stream(GetFileObject {
+                encoded_object_key: read_encoded_object_key,
+                read_token,
+                range: None,
+            })
+            .await,
+        "completed object should stream",
+    );
+    assert_eq!(download.metadata.size_bytes, payload_size(&payload));
+    let chunks = ok(
+        download.stream.try_collect::<Vec<_>>().await,
+        "stream chunks should read",
+    );
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].len(), 8 * 1024 * 1024);
+    assert_eq!(chunks[1].len(), 4 * 1024 * 1024);
+    let collected = chunks
+        .into_iter()
+        .flat_map(std::iter::IntoIterator::into_iter)
+        .collect::<Vec<_>>();
+    assert_eq!(collected, payload);
+}
+
+#[tokio::test]
 async fn database_storage_resumable_fingerprint_is_scoped_to_uploader_and_scope() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -2148,6 +2258,89 @@ async fn s3_storage_multipart_session_returns_native_part_urls() {
     assert_eq!(session.part_urls[0].upload_method, "PUT");
     assert!(session.part_urls[0].upload_url.contains("X-Amz-Signature="));
     assert_eq!(upload_id, "test-upload-id");
+}
+
+#[tokio::test]
+async fn s3_storage_streams_range_from_backend_proxy_path() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let operator = ok(
+        opendal::Operator::new(opendal::services::Memory::default())
+            .map(opendal::OperatorBuilder::finish),
+        "memory operator should build",
+    );
+    let storage = ok(
+        S3CompatibleFileStorageService::new_with_repository(
+            S3FileStorageConfig {
+                endpoint: "http://s3.invalid".to_string(),
+                access_key_id: "test-access-key".to_string(),
+                secret_access_key: "test-secret-key".to_string(),
+                bucket: "synctv-test".to_string(),
+                region: "us-east-1".to_string(),
+                base_path: "files".to_string(),
+                public_base_url: Some("https://cdn.example.test".to_string()),
+                upload_expires_seconds: 900,
+                storage_backend: "s3_public".to_string(),
+                upload_token_secret: "test-file-storage-secret".to_string(),
+            },
+            Some(repository.clone()),
+        ),
+        "s3 storage should build",
+    )
+    .with_operator(operator.clone())
+    .with_test_force_stat_error();
+    let object_key = "files/users/1/avatars/avatar-s3-stream.png";
+    let payload = b"0123456789abcdef".to_vec();
+    ok(
+        operator
+            .write_with(object_key, payload.clone())
+            .content_type("image/png")
+            .await,
+        "S3 object should be written",
+    );
+    let content_manifest_sha256 = hex::encode(Sha256::digest(&payload));
+    ok(
+        repository
+            .upsert_object(UpsertFileObject {
+                storage_backend: "s3_public",
+                object_key,
+                mime_type: "image/png",
+                size_bytes: payload_size(&payload),
+                content_manifest_sha256: &content_manifest_sha256,
+                metadata: &serde_json::Value::Object(Default::default()),
+            })
+            .await,
+        "S3 object metadata should be inserted",
+    );
+    let (encoded_object_key, read_token) =
+        backend_object_read_url_parts("s3_public", object_key, "test-file-storage-secret");
+    let requested = FileByteRange {
+        start: 4,
+        end_inclusive: 11,
+    };
+    let download = ok(
+        storage
+            .get_object_stream(GetFileObject {
+                encoded_object_key,
+                read_token,
+                range: Some(FileRangeRequest::Exact(requested)),
+            })
+            .await,
+        "S3 object range should stream",
+    );
+    assert_eq!(download.metadata.range, Some(requested));
+    assert_eq!(download.metadata.size_bytes, requested.size_bytes());
+    assert_eq!(download.metadata.total_size_bytes, payload_size(&payload));
+    assert_eq!(download.metadata.mime_type, "image/png");
+    let chunks = ok(
+        download.stream.try_collect::<Vec<_>>().await,
+        "S3 stream should read",
+    );
+    let collected = chunks
+        .into_iter()
+        .flat_map(std::iter::IntoIterator::into_iter)
+        .collect::<Vec<_>>();
+    assert_eq!(collected, payload[4..12]);
 }
 
 #[tokio::test]

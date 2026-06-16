@@ -1,8 +1,8 @@
 use crate::{
     models::{
-        CompleteFileUploadSession, CompleteFileUploadSessionResult, FileBlob, FileRangeRequest,
-        FileUploadRange, FileUploadSessionCreateResult, GetFileObject, Room, RoomId,
-        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, UserId,
+        CompleteFileUploadSession, CompleteFileUploadSessionResult, FileBlob, FileObjectDownload,
+        FileRangeRequest, FileUploadRange, FileUploadSessionCreateResult, GetFileObject, Room,
+        RoomId, StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, UserId,
     },
     service::{
         file_storage::FileStorageContext, room_cover_upload_policy, FileStorageCleanupOrigin,
@@ -112,6 +112,23 @@ impl RoomService {
             .as_ref()
             .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
             .get_object(GetFileObject {
+                encoded_object_key: encoded_object_key.to_string(),
+                read_token: read_token.to_string(),
+                range,
+            })
+            .await
+    }
+
+    pub async fn get_room_cover_object_stream(
+        &self,
+        encoded_object_key: &str,
+        read_token: &str,
+        range: Option<FileRangeRequest>,
+    ) -> Result<FileObjectDownload> {
+        self.room_file_storage_service
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
+            .get_object_stream(GetFileObject {
                 encoded_object_key: encoded_object_key.to_string(),
                 read_token: read_token.to_string(),
                 range,

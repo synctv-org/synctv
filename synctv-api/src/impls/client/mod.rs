@@ -16,6 +16,7 @@
 mod auth;
 pub(crate) use auth::login_outcome_to_proto;
 pub use auth::LogoutOutcome;
+pub(crate) mod file_download;
 pub(crate) mod media;
 mod member;
 pub(crate) mod passkey;

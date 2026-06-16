@@ -26,12 +26,14 @@ pub mod providers;
 use crate::realtime_fanout::RealtimeFanoutService;
 use crate::runtime::RealtimeEventService;
 use axum::{
+    body::Body,
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     middleware as axum_middleware,
     response::IntoResponse,
     routing::{get, post},
     Router,
 };
+use futures::StreamExt;
 use std::sync::{Arc, LazyLock};
 use synctv_core::provider::proxy::ProxyServices;
 use synctv_core::provider::ProviderSet;
@@ -191,72 +193,45 @@ pub(crate) fn file_range_request_to_proto(
     synctv_proto::client::FileRangeRequest { range: Some(range) }
 }
 
-pub(crate) fn proto_file_byte_range_to_core(
-    range: synctv_proto::client::FileByteRange,
-) -> synctv_core::models::FileByteRange {
-    synctv_core::models::FileByteRange {
-        start: range.start,
-        end_inclusive: range.end_inclusive,
-    }
-}
-
-pub(crate) fn object_response_blob(
-    mime_type: String,
-    content_manifest_sha256: String,
-    data: Vec<u8>,
-    content_range: Option<synctv_proto::client::FileByteRange>,
-    total_size_bytes: i64,
-) -> synctv_core::models::FileBlob {
-    let size_bytes = i64::try_from(data.len()).unwrap_or(i64::MAX);
-    let total_size_bytes = if total_size_bytes > 0 {
-        total_size_bytes
-    } else {
-        size_bytes
-    };
-    synctv_core::models::FileBlob {
-        storage_backend: String::new(),
-        object_key: String::new(),
-        mime_type,
-        size_bytes,
-        total_size_bytes,
-        content_manifest_sha256,
-        compression: synctv_core::models::FileBlobCompression::None,
-        range: content_range.map(proto_file_byte_range_to_core),
-        data,
-        metadata: serde_json::Value::Object(Default::default()),
-        created_at: chrono::Utc::now(),
-    }
-}
-
-pub(crate) fn file_blob_response(
-    blob: synctv_core::models::FileBlob,
+pub(crate) fn file_object_download_response(
+    download: synctv_core::models::FileObjectDownload,
     cache_control: Option<&'static str>,
 ) -> AppResult<axum::response::Response> {
-    let mut response = (StatusCode::OK, blob.data).into_response();
+    let metadata = download.metadata;
+    let body_stream = download.stream.map(|chunk| {
+        chunk.map_err(|error| {
+            let app_error = AppError::from(error);
+            std::io::Error::other(app_error.message)
+        })
+    });
+    let mut response = (StatusCode::OK, Body::from_stream(body_stream)).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_str(&blob.mime_type)
+        HeaderValue::from_str(&metadata.mime_type)
             .map_err(|_| AppError::internal_server_error("Invalid file content type"))?,
     );
     response
         .headers_mut()
         .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    if let Ok(value) = HeaderValue::from_str(&metadata.size_bytes.to_string()) {
+        response.headers_mut().insert(header::CONTENT_LENGTH, value);
+    }
     if let Some(cache_control) = cache_control {
         response.headers_mut().insert(
             header::CACHE_CONTROL,
             HeaderValue::from_static(cache_control),
         );
     }
-    if let Ok(value) = HeaderValue::from_str(&blob.content_manifest_sha256) {
+    if let Ok(value) = HeaderValue::from_str(&metadata.content_manifest_sha256) {
         response.headers_mut().insert(
             HeaderName::from_static("x-synctv-content-manifest-sha256"),
             value,
         );
     }
-    if let Some(range) = blob.range {
+    if let Some(range) = metadata.range {
         let start = range.start;
         let end = range.end_inclusive;
-        let content_range = format!("bytes {start}-{end}/{}", blob.total_size_bytes);
+        let content_range = format!("bytes {start}-{end}/{}", metadata.total_size_bytes);
         *response.status_mut() = StatusCode::PARTIAL_CONTENT;
         if let Ok(value) = HeaderValue::from_str(&content_range) {
             response.headers_mut().insert(header::CONTENT_RANGE, value);

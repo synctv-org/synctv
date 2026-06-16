@@ -187,6 +187,32 @@ impl RoomService for ClientServiceImpl {
     type WatchChatEventsStream = std::pin::Pin<
         Box<dyn tokio_stream::Stream<Item = Result<WatchChatEventsEvent, Status>> + Send + 'static>,
     >;
+    type GetChatAttachmentObjectStream = std::pin::Pin<
+        Box<
+            dyn futures::Stream<Item = Result<ChatAttachmentObjectResponse, Status>>
+                + Send
+                + 'static,
+        >,
+    >;
+    type GetRoomCoverObjectStream = std::pin::Pin<
+        Box<
+            dyn futures::Stream<
+                    Item = Result<synctv_proto::client::RoomCoverObjectResponse, Status>,
+                > + Send
+                + 'static,
+        >,
+    >;
+    type GetMediaCoverObjectStream = std::pin::Pin<
+        Box<dyn futures::Stream<Item = Result<MediaCoverObjectResponse, Status>> + Send + 'static>,
+    >;
+    type GetPlaylistCoverObjectStream = std::pin::Pin<
+        Box<
+            dyn futures::Stream<
+                    Item = Result<synctv_proto::client::PlaylistCoverObjectResponse, Status>,
+                > + Send
+                + 'static,
+        >,
+    >;
 
     async fn create_web_socket_ticket(
         &self,
@@ -268,7 +294,7 @@ impl RoomService for ClientServiceImpl {
     async fn get_chat_attachment_object(
         &self,
         request: Request<GetChatAttachmentObjectRequest>,
-    ) -> Result<Response<ChatAttachmentObjectResponse>, Status> {
+    ) -> Result<Response<Self::GetChatAttachmentObjectStream>, Status> {
         chat::get_chat_attachment_object(self, request).await
     }
 
@@ -437,7 +463,7 @@ impl RoomService for ClientServiceImpl {
     async fn get_room_cover_object(
         &self,
         request: Request<synctv_proto::client::GetRoomCoverObjectRequest>,
-    ) -> Result<Response<synctv_proto::client::RoomCoverObjectResponse>, Status> {
+    ) -> Result<Response<Self::GetRoomCoverObjectStream>, Status> {
         media::get_room_cover_object(self, request).await
     }
 
@@ -472,7 +498,7 @@ impl RoomService for ClientServiceImpl {
     async fn get_media_cover_object(
         &self,
         request: Request<GetMediaCoverObjectRequest>,
-    ) -> Result<Response<MediaCoverObjectResponse>, Status> {
+    ) -> Result<Response<Self::GetMediaCoverObjectStream>, Status> {
         media::get_media_cover_object(self, request).await
     }
 
@@ -516,7 +542,7 @@ impl RoomService for ClientServiceImpl {
     async fn get_playlist_cover_object(
         &self,
         request: Request<synctv_proto::client::GetPlaylistCoverObjectRequest>,
-    ) -> Result<Response<synctv_proto::client::PlaylistCoverObjectResponse>, Status> {
+    ) -> Result<Response<Self::GetPlaylistCoverObjectStream>, Status> {
         media::get_playlist_cover_object(self, request).await
     }
 

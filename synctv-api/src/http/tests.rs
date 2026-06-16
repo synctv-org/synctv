@@ -6,6 +6,7 @@ use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 use axum::{routing::get, Router};
 use bytes::Bytes;
+use futures::StreamExt;
 use http_body_util::BodyExt as _;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -100,23 +101,31 @@ fn optional_file_range_parses_standard_byte_ranges() -> TestResult {
 
 #[tokio::test]
 async fn file_blob_response_sets_partial_content_headers() -> TestResult {
-    let blob = synctv_core::models::FileBlob {
-        storage_backend: "database".to_string(),
-        object_key: "object".to_string(),
-        mime_type: "text/plain".to_string(),
-        size_bytes: 4,
-        total_size_bytes: 10,
-        content_manifest_sha256: "a".repeat(64),
-        compression: synctv_core::models::FileBlobCompression::None,
-        range: Some(synctv_core::models::FileByteRange {
-            start: 2,
-            end_inclusive: 5,
-        }),
-        data: b"cdef".to_vec(),
-        metadata: serde_json::Value::Object(Default::default()),
-        created_at: chrono::Utc::now(),
+    let download = synctv_core::models::FileObjectDownload {
+        metadata: synctv_core::models::FileObjectMetadata {
+            storage_backend: "database".to_string(),
+            object_key: "object".to_string(),
+            mime_type: "text/plain".to_string(),
+            size_bytes: 4,
+            total_size_bytes: 10,
+            content_manifest_sha256: "a".repeat(64),
+            compression: synctv_core::models::FileBlobCompression::None,
+            range: Some(synctv_core::models::FileByteRange {
+                start: 2,
+                end_inclusive: 5,
+            }),
+            metadata: serde_json::Value::Object(Default::default()),
+            created_at: chrono::Utc::now(),
+        },
+        stream: futures::stream::once(async {
+            Ok::<_, synctv_core::Error>(Bytes::from_static(b"cdef"))
+        })
+        .boxed(),
     };
-    let response = app_ok(super::file_blob_response(blob, Some("private, max-age=1")))?;
+    let response = app_ok(super::file_object_download_response(
+        download,
+        Some("private, max-age=1"),
+    ))?;
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
         response.headers().get(header::CONTENT_RANGE),
@@ -138,6 +147,67 @@ async fn file_blob_response_sets_partial_content_headers() -> TestResult {
         .to_bytes();
     assert_eq!(body, Bytes::from_static(b"cdef"));
     Ok(())
+}
+
+#[tokio::test]
+async fn file_object_download_response_sets_streaming_headers() -> TestResult {
+    let download = synctv_core::models::FileObjectDownload {
+        metadata: synctv_core::models::FileObjectMetadata {
+            storage_backend: "database".to_string(),
+            object_key: "object".to_string(),
+            mime_type: "text/plain".to_string(),
+            size_bytes: 4,
+            total_size_bytes: 4,
+            content_manifest_sha256: "b".repeat(64),
+            compression: synctv_core::models::FileBlobCompression::None,
+            range: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            created_at: chrono::Utc::now(),
+        },
+        stream: futures::stream::iter([
+            Ok::<_, synctv_core::Error>(Bytes::from_static(b"ab")),
+            Ok(Bytes::from_static(b"cd")),
+        ])
+        .boxed(),
+    };
+    let response = app_ok(super::file_object_download_response(download, None))?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CONTENT_LENGTH),
+        Some(&HeaderValue::from_static("4"))
+    );
+    assert_eq!(
+        response.headers().get(header::ACCEPT_RANGES),
+        Some(&HeaderValue::from_static("bytes"))
+    );
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|error| test_error(error.to_string()))?
+        .to_bytes();
+    assert_eq!(body, Bytes::from_static(b"abcd"));
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn legacy_blob_fixture() -> synctv_core::models::FileBlob {
+    synctv_core::models::FileBlob {
+        storage_backend: "database".to_string(),
+        object_key: "object".to_string(),
+        mime_type: "text/plain".to_string(),
+        size_bytes: 4,
+        total_size_bytes: 10,
+        content_manifest_sha256: "a".repeat(64),
+        compression: synctv_core::models::FileBlobCompression::None,
+        range: Some(synctv_core::models::FileByteRange {
+            start: 2,
+            end_inclusive: 5,
+        }),
+        data: b"cdef".to_vec(),
+        metadata: serde_json::Value::Object(Default::default()),
+        created_at: chrono::Utc::now(),
+    }
 }
 
 fn http_test_database() -> synctv_core_testing::TestDatabase {

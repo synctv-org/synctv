@@ -505,17 +505,15 @@ impl ClientApiImpl {
     pub async fn get_room_cover_object(
         &self,
         req: synctv_proto::client::GetRoomCoverObjectRequest,
-    ) -> Result<synctv_proto::client::RoomCoverObjectResponse, ApiError> {
-        let blob = self
-            .room_service
-            .get_room_cover_object_range(
+    ) -> Result<synctv_core::models::FileObjectDownload, ApiError> {
+        self.room_service
+            .get_room_cover_object_stream(
                 &req.encoded_object_key,
                 &req.token,
                 proto_file_range_request(req.range),
             )
             .await
-            .map_err(ApiError::from)?;
-        Ok(room_cover_object_to_proto(&blob))
+            .map_err(ApiError::from)
     }
 
     pub async fn update_room_cover(
@@ -1746,7 +1744,7 @@ impl ClientApiImpl {
     pub async fn get_chat_attachment_object(
         &self,
         req: synctv_proto::client::GetChatAttachmentObjectRequest,
-    ) -> Result<synctv_proto::client::ChatAttachmentObjectResponse, ApiError> {
+    ) -> Result<synctv_core::models::FileObjectDownload, ApiError> {
         if !req.room_id.trim().is_empty() {
             let _room_id = self.parse_room_id(&req.room_id)?;
         }
@@ -1754,15 +1752,14 @@ impl ClientApiImpl {
             .chat_service
             .as_ref()
             .ok_or_else(chat_service_unavailable_error)?;
-        let blob = chat_service
-            .get_attachment_object_range(
+        chat_service
+            .get_attachment_object_stream(
                 &req.encoded_object_key,
                 &req.token,
                 proto_file_range_request(req.range),
             )
             .await
-            .map_err(ApiError::from)?;
-        Ok(chat_attachment_object_to_proto(&req.room_id, &blob))
+            .map_err(ApiError::from)
     }
 
     pub async fn edit_chat_message_for_actor(

@@ -1468,18 +1468,16 @@ impl ClientApiImpl {
     pub async fn get_media_cover_object(
         &self,
         req: synctv_proto::client::GetMediaCoverObjectRequest,
-    ) -> Result<synctv_proto::client::MediaCoverObjectResponse, ApiError> {
-        let blob = self
-            .room_service
+    ) -> Result<synctv_core::models::FileObjectDownload, ApiError> {
+        self.room_service
             .media_service()
-            .get_media_cover_object_range(
+            .get_media_cover_object_stream(
                 &req.encoded_object_key,
                 &req.token,
                 proto_file_range_request(req.range),
             )
             .await
-            .map_err(ApiError::from)?;
-        Ok(media_cover_object_to_proto(&blob))
+            .map_err(ApiError::from)
     }
 
     pub async fn update_media_cover(

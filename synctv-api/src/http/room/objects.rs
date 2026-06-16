@@ -400,7 +400,7 @@ pub async fn get_chat_attachment_object(
         token: query.token,
         range: range.map(super::super::file_range_request_to_proto),
     };
-    let object = execute_public_endpoint(
+    let download = execute_public_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
@@ -408,14 +408,8 @@ pub async fn get_chat_attachment_object(
         move |client_api| async move { client_api.get_chat_attachment_object(req).await },
     )
     .await?;
-    super::super::file_blob_response(
-        super::super::object_response_blob(
-            object.mime_type,
-            object.content_manifest_sha256,
-            object.data,
-            object.content_range,
-            object.total_size_bytes,
-        ),
+    super::super::file_object_download_response(
+        download,
         Some("private, max-age=31536000, immutable"),
     )
 }
@@ -495,7 +489,7 @@ pub async fn get_media_cover_object(
         token: query.token,
         range: range.map(super::super::file_range_request_to_proto),
     };
-    let object = execute_public_endpoint(
+    let download = execute_public_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
@@ -503,14 +497,8 @@ pub async fn get_media_cover_object(
         move |client_api| async move { client_api.get_media_cover_object(req).await },
     )
     .await?;
-    super::super::file_blob_response(
-        super::super::object_response_blob(
-            object.mime_type,
-            object.content_manifest_sha256,
-            object.data,
-            object.content_range,
-            object.total_size_bytes,
-        ),
+    super::super::file_object_download_response(
+        download,
         Some("private, max-age=31536000, immutable"),
     )
 }
@@ -586,7 +574,7 @@ pub async fn get_room_cover_object(
         token: query.token,
         range: range.map(super::super::file_range_request_to_proto),
     };
-    let object = execute_public_endpoint(
+    let download = execute_public_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
@@ -594,14 +582,8 @@ pub async fn get_room_cover_object(
         move |client_api| async move { client_api.get_room_cover_object(req).await },
     )
     .await?;
-    super::super::file_blob_response(
-        super::super::object_response_blob(
-            object.mime_type,
-            object.content_manifest_sha256,
-            object.data,
-            object.content_range,
-            object.total_size_bytes,
-        ),
+    super::super::file_object_download_response(
+        download,
         Some("private, max-age=31536000, immutable"),
     )
 }
@@ -677,7 +659,7 @@ pub async fn get_playlist_cover_object(
         token: query.token,
         range: range.map(super::super::file_range_request_to_proto),
     };
-    let object = execute_public_endpoint(
+    let download = execute_public_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
@@ -685,14 +667,8 @@ pub async fn get_playlist_cover_object(
         move |client_api| async move { client_api.get_playlist_cover_object(req).await },
     )
     .await?;
-    super::super::file_blob_response(
-        super::super::object_response_blob(
-            object.mime_type,
-            object.content_manifest_sha256,
-            object.data,
-            object.content_range,
-            object.total_size_bytes,
-        ),
+    super::super::file_object_download_response(
+        download,
         Some("private, max-age=31536000, immutable"),
     )
 }

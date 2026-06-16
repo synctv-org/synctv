@@ -595,17 +595,15 @@ impl ClientApiImpl {
     pub async fn get_user_avatar_object(
         &self,
         req: synctv_proto::client::GetUserAvatarObjectRequest,
-    ) -> Result<synctv_proto::client::UserAvatarObjectResponse, ApiError> {
-        let blob = self
-            .user_service
-            .get_avatar_object_range(
+    ) -> Result<synctv_core::models::FileObjectDownload, ApiError> {
+        self.user_service
+            .get_avatar_object_stream(
                 &req.encoded_object_key,
                 &req.token,
                 proto_file_range_request(req.range),
             )
             .await
-            .map_err(ApiError::from)?;
-        Ok(avatar_object_to_proto(&blob))
+            .map_err(ApiError::from)
     }
 
     pub async fn update_user_avatar(

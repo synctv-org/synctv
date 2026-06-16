@@ -487,6 +487,7 @@ pub struct GrpcServerConfig<'a> {
     pub config: &'a Config,
     pub jwt_service: JwtService,
     pub user_service: Arc<CoreUserService>,
+    pub read_pool: Option<sqlx::PgPool>,
     pub user_cache: Arc<synctv_core::cache::UserCache>,
     pub room_service: Arc<CoreRoomService>,
     pub event_service: Arc<dyn RealtimeEventService>,
@@ -538,6 +539,7 @@ pub struct GrpcServerConfig<'a> {
 
 struct FallbackHttpAppStateDeps {
     user_service: Arc<CoreUserService>,
+    read_pool: Option<sqlx::PgPool>,
     user_cache: Arc<synctv_core::cache::UserCache>,
     room_service: Arc<CoreRoomService>,
     event_service: Arc<dyn RealtimeEventService>,
@@ -602,6 +604,7 @@ async fn build_fallback_http_app_state(
         crate::http::RouterConfig {
             config: deps.config,
             user_service: deps.user_service,
+            read_pool: deps.read_pool,
             user_cache: deps.user_cache,
             room_service: deps.room_service,
             content_filter: deps.content_filter,
@@ -649,6 +652,7 @@ async fn build_axum_router_with_health(
         config,
         jwt_service,
         user_service,
+        read_pool,
         user_cache,
         room_service,
         event_service,
@@ -694,6 +698,7 @@ async fn build_axum_router_with_health(
             .ok_or_else(|| anyhow::anyhow!("gRPC fallback HTTP state requires ProvidersManager"))?;
         build_fallback_http_app_state(FallbackHttpAppStateDeps {
             user_service: user_service.clone(),
+            read_pool: read_pool.clone(),
             user_cache: user_cache.clone(),
             room_service: room_service.clone(),
             event_service: event_service.clone(),
@@ -1404,6 +1409,7 @@ mod tests {
         ));
         Ok(ClientApiImpl::new_with_runtime(
             crate::impls::ClientApiConfig {
+                read_pool: None,
                 user_service,
                 room_service,
                 connection_service: connection_manager,
@@ -1696,6 +1702,7 @@ mod tests {
         let fallback_config = Arc::new(fallback_config);
         let http_state = build_fallback_http_app_state(FallbackHttpAppStateDeps {
             user_service: context.user_service,
+            read_pool: None,
             user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
                 128,
                 60,

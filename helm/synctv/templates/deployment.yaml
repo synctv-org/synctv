@@ -188,6 +188,19 @@ spec:
               value: {{ include "synctv.postgresql.database" . | quote }}
             - name: SYNCTV_DATABASE_USER
               value: {{ include "synctv.postgresql.appUsername" . | quote }}
+            {{- if include "synctv.database.useSecretReadUrlEnv" . }}
+            - name: SYNCTV_DATABASE_READ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_DATABASE_READ_URL
+            {{- end }}
+            {{- if include "synctv.postgresql.hasAutoReadReplica" . }}
+            - name: SYNCTV_DATABASE_READ_HOST
+              value: {{ include "synctv.postgresql.readHost" . | quote }}
+            - name: SYNCTV_DATABASE_READ_PORT
+              value: {{ include "synctv.postgresql.port" . | quote }}
+            {{- end }}
             - name: SYNCTV_REDIS_HOST
               value: {{ include "synctv.redis.host" . | quote }}
             - name: SYNCTV_REDIS_PORT

@@ -498,6 +498,7 @@ fn test_app_state_with_rate_limits(
             "test:user:".to_string(),
         )),
         user_service,
+        read_pool: None,
         room_service,
         content_filter: ContentFilter::new(),
         provider_instance_manager,
@@ -825,6 +826,7 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
             "test:user:".to_string(),
         )),
         room_service,
+        read_pool: None,
         content_filter: ContentFilter::new(),
         provider_instance_manager,
         user_provider_credential_repository: Arc::new(

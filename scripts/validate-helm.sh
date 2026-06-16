@@ -91,6 +91,37 @@ assert_no_certificate_common_name() {
   ' "$file"
 }
 
+assert_env_secret_key_ref() {
+  local file="$1"
+  local env_name="$2"
+  local secret_key="$3"
+  ruby -ryaml -e '
+    file, env_name, secret_key = ARGV
+    docs = YAML.load_stream(File.read(file)).compact
+    containers = docs.flat_map do |doc|
+      next [] unless ["Deployment", "StatefulSet"].include?(doc["kind"])
+      doc.dig("spec", "template", "spec", "containers") || []
+    end
+    env = containers.flat_map { |container| container["env"] || [] }
+    entry = env.find { |item| item["name"] == env_name }
+    abort("env #{env_name.inspect} was not rendered in #{file}") unless entry
+    actual = entry.dig("valueFrom", "secretKeyRef", "key")
+    abort("env #{env_name.inspect} secret key expected #{secret_key.inspect}, got #{actual.inspect}") unless actual == secret_key
+  ' "$file" "$env_name" "$secret_key"
+}
+
+assert_secret_string_data_key() {
+  local file="$1"
+  local key="$2"
+  ruby -ryaml -e '
+    file, key = ARGV
+    docs = YAML.load_stream(File.read(file)).compact
+    secrets = docs.select { |doc| doc["kind"] == "Secret" }
+    found = secrets.any? { |secret| secret.fetch("stringData", {}).key?(key) }
+    abort("Secret stringData key #{key.inspect} was not rendered in #{file}") unless found
+  ' "$file" "$key"
+}
+
 assert_security_rendering() {
   local file="$1"
   ruby -ryaml -e '
@@ -187,6 +218,12 @@ helm template synctv "$chart_dir" \
   --set config.security.ssrf.allowedIpRanges[0]=10.0.8.0/24 \
   >"$tmp_dir/security.yaml"
 
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set secrets.database.readUrl=postgresql://reader:secret@postgres-read:5432/synctv \
+  --set config.database.useSecretReadUrl=true \
+  >"$tmp_dir/secret-read-url.yaml"
+
 if helm template synctv "$chart_dir" \
   --namespace "$namespace" \
   --set replicaCount=2 \
@@ -199,6 +236,13 @@ if helm template synctv "$chart_dir" \
   --set autoscaling.enabled=true \
   >"$tmp_dir/standalone-hpa.yaml" 2>"$tmp_dir/standalone-hpa.err"; then
   fail "autoscaling beyond one pod without cluster mode must fail validation"
+fi
+
+if helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set config.database.useSecretReadUrl=true \
+  >"$tmp_dir/missing-secret-read-url.yaml" 2>"$tmp_dir/missing-secret-read-url.err"; then
+  fail "config.database.useSecretReadUrl=true without existingSecret or secrets.database.readUrl must fail validation"
 fi
 
 helm template synctv "$chart_dir" \
@@ -244,6 +288,8 @@ helm template synctv "$chart_dir" \
 assert_service "$tmp_dir/loadbalancer-stun.yaml" synctv-stun LoadBalancer
 
 assert_security_rendering "$tmp_dir/security.yaml"
+assert_env_secret_key_ref "$tmp_dir/secret-read-url.yaml" SYNCTV_DATABASE_READ_URL SYNCTV_DATABASE_READ_URL
+assert_secret_string_data_key "$tmp_dir/secret-read-url.yaml" SYNCTV_DATABASE_READ_URL
 assert_no_resource_named "$tmp_dir/kubeblocks-no-bootstrap.yaml" bootstrap-postgresql-app-db
 assert_max_service_name_len "$tmp_dir/long-release.yaml" 63
 assert_no_certificate_common_name "$tmp_dir/long-release.yaml"

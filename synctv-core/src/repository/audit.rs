@@ -72,12 +72,28 @@ pub struct AuditLogQuery {
 #[derive(Clone)]
 pub struct AuditLogRepository {
     pool: PgPool,
+    read_pool: Option<PgPool>,
 }
 
 impl AuditLogRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            read_pool: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            pool,
+            read_pool: Some(read_pool),
+        }
+    }
+
+    fn eventually_consistent_pool(&self) -> &PgPool {
+        self.read_pool.as_ref().unwrap_or(&self.pool)
     }
 
     /// Append the shared WHERE clause filters to a `QueryBuilder`.
@@ -127,16 +143,14 @@ impl AuditLogRepository {
     pub async fn list(&self, query: &AuditLogQuery) -> Result<(Vec<AuditLogRow>, i64)> {
         let default_from = Utc::now() - chrono::Duration::days(90);
         let effective_from = query.from.unwrap_or(default_from);
+        let pool = self.eventually_consistent_pool();
 
         // ── Count query ───────────────────────────────────────────────────────
         let mut count_builder: QueryBuilder<Postgres> =
             QueryBuilder::new("SELECT COUNT(*) FROM audit_logs WHERE ");
         Self::push_filters(&mut count_builder, query, effective_from);
 
-        let total: i64 = count_builder
-            .build_query_scalar()
-            .fetch_one(&self.pool)
-            .await?;
+        let total: i64 = count_builder.build_query_scalar().fetch_one(pool).await?;
 
         // ── List query ────────────────────────────────────────────────────────
         let mut list_builder: QueryBuilder<Postgres> = QueryBuilder::new(
@@ -155,7 +169,7 @@ impl AuditLogRepository {
 
         let rows = list_builder
             .build_query_as::<AuditLogDbRow>()
-            .fetch_all(&self.pool)
+            .fetch_all(pool)
             .await?
             .into_iter()
             .map(TryInto::try_into)

@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use reqwest::Client;
-use sqlx::PgPool;
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::io::BufReader;
@@ -25,6 +24,7 @@ use synctv_api::impls::{AdminApiImpl, ClientApiImpl};
 use synctv_api::realtime_fanout::RealtimeFanoutService;
 use synctv_api::runtime::RealtimeEventService;
 use synctv_core::{
+    bootstrap::DatabasePools,
     cache::UserCache,
     config::absolute_display_path,
     repository::UserProviderCredentialRepository,
@@ -77,6 +77,7 @@ impl LivestreamShutdown for LivestreamState {
 #[derive(Clone)]
 pub struct Services {
     pub user_service: Arc<UserService>,
+    pub read_pool: sqlx::PgPool,
     pub room_service: Arc<RoomService>,
     pub jwt_service: synctv_core::service::JwtService,
     pub realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
@@ -119,7 +120,7 @@ pub struct SyncTvServer {
     config: Config,
     services: Services,
     livestream_state: Option<LivestreamState>,
-    pool: PgPool,
+    database_pools: DatabasePools,
     lifecycle_controller: Arc<ManagementLifecycleController>,
     api_handle: Option<JoinHandle<anyhow::Result<()>>>,
     metrics_handle: Option<JoinHandle<anyhow::Result<()>>>,
@@ -968,14 +969,14 @@ impl SyncTvServer {
         config: Config,
         services: Services,
         livestream_state: Option<LivestreamState>,
-        pool: PgPool,
+        database_pools: DatabasePools,
         lifecycle_controller: Arc<ManagementLifecycleController>,
     ) -> Self {
         Self {
             config,
             services,
             livestream_state,
-            pool,
+            database_pools,
             lifecycle_controller,
             api_handle: None,
             metrics_handle: None,
@@ -1053,9 +1054,9 @@ impl SyncTvServer {
                     coordinator,
                 )
                 .await;
-                info!("Closing database connection pool after startup failure...");
-                self.pool.close().await;
-                info!("Database pool closed after startup failure");
+                info!("Closing database connection pools after startup failure...");
+                self.database_pools.close().await;
+                info!("Database pools closed after startup failure");
                 return Err(err);
             }
         };
@@ -1090,9 +1091,9 @@ impl SyncTvServer {
                     coordinator,
                 )
                 .await;
-                info!("Closing database connection pool after startup failure...");
-                self.pool.close().await;
-                info!("Database pool closed after startup failure");
+                info!("Closing database connection pools after startup failure...");
+                self.database_pools.close().await;
+                info!("Database pools closed after startup failure");
                 return Err(err);
             }
         };
@@ -1125,9 +1126,9 @@ impl SyncTvServer {
                         coordinator,
                     )
                     .await;
-                    info!("Closing database connection pool after startup failure...");
-                    self.pool.close().await;
-                    info!("Database pool closed after startup failure");
+                    info!("Closing database connection pools after startup failure...");
+                    self.database_pools.close().await;
+                    info!("Database pools closed after startup failure");
                     return Err(err);
                 }
             };
@@ -1162,9 +1163,9 @@ impl SyncTvServer {
                         coordinator,
                     )
                     .await;
-                    info!("Closing database connection pool after startup failure...");
-                    self.pool.close().await;
-                    info!("Database pool closed after startup failure");
+                    info!("Closing database connection pools after startup failure...");
+                    self.database_pools.close().await;
+                    info!("Database pools closed after startup failure");
                     return Err(err);
                 }
             };
@@ -1210,9 +1211,9 @@ impl SyncTvServer {
                     },
                 )
                 .await;
-                info!("Closing database connection pool after startup failure...");
-                self.pool.close().await;
-                info!("Database pool closed after startup failure");
+                info!("Closing database connection pools after startup failure...");
+                self.database_pools.close().await;
+                info!("Database pools closed after startup failure");
                 return Err(err);
             }
         }
@@ -1461,10 +1462,10 @@ impl SyncTvServer {
                 .await;
         }
 
-        // Close the database connection pool (after audit flush and settings task)
-        info!("Closing database connection pool...");
-        self.pool.close().await;
-        info!("Database pool closed");
+        // Close the database connection pools (after audit flush and settings task)
+        info!("Closing database connection pools...");
+        self.database_pools.close().await;
+        info!("Database pools closed");
 
         info!("SyncTV server shut down complete");
         if let Some(result) = unexpected_exit {
@@ -1552,6 +1553,7 @@ impl SyncTvServer {
             config,
             jwt_service: self.services.jwt_service.clone(),
             user_service: self.services.user_service.clone(),
+            read_pool: Some(self.services.read_pool.clone()),
             user_cache: self.services.user_cache.clone(),
             room_service: self.services.room_service.clone(),
             event_service: self.services.realtime_event_service.clone(),
@@ -1607,6 +1609,7 @@ impl SyncTvServer {
             synctv_api::http::RouterConfig {
                 config: Arc::new(self.config.clone()),
                 user_service: self.services.user_service.clone(),
+                read_pool: Some(self.services.read_pool.clone()),
                 user_cache: self.services.user_cache.clone(),
                 room_service: self.services.room_service.clone(),
                 content_filter: self.services.content_filter.clone(),
@@ -2050,6 +2053,7 @@ mod tests {
             synctv_api::http::create_app_state_from_config(synctv_api::http::RouterConfig {
                 config: config.clone(),
                 user_service,
+                read_pool: None,
                 user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
                     128,
                     60,

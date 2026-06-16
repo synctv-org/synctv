@@ -23,6 +23,13 @@ impl ReviewService {
         }
     }
 
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            repository: ReviewRepository::new_with_read_pool(pool, read_pool),
+        }
+    }
+
     pub async fn load_user_registration(
         &self,
         request_id: UserId,

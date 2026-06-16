@@ -615,6 +615,7 @@ async fn make_admin_api_for_delete_user_test(
     (
         AdminApiImpl::new_with_runtime(
             AdminApiConfig {
+                read_pool: None,
                 room_service,
                 user_service,
                 settings_service,
@@ -726,6 +727,7 @@ async fn make_admin_api_with_livestream_for_test(
     (
         AdminApiImpl::new_with_runtime(
             AdminApiConfig {
+                read_pool: None,
                 room_service,
                 user_service,
                 settings_service,
@@ -2451,6 +2453,7 @@ async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fai
     let failing_fanout = Arc::new(FailingRealtimeFanout::default());
     let admin_api = AdminApiImpl::new_with_runtime(
         AdminApiConfig {
+            read_pool: None,
             room_service: admin_api.room_service.clone(),
             user_service: admin_api.user_service.clone(),
             settings_service: admin_api.settings_service.clone(),
@@ -3970,6 +3973,7 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
         ));
     let admin_api = AdminApiImpl::new_with_runtime(
         AdminApiConfig {
+            read_pool: None,
             room_service,
             user_service,
             settings_service,

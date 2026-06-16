@@ -248,6 +248,8 @@ static X_FORWARDED_PROTO: LazyLock<HeaderName> =
 pub struct RouterConfig {
     pub config: Arc<synctv_core::Config>,
     pub user_service: Arc<UserService>,
+    /// Eventually consistent PostgreSQL pool for read-only API views.
+    pub read_pool: Option<sqlx::PgPool>,
     pub user_cache: Arc<synctv_core::cache::UserCache>,
     pub room_service: Arc<RoomService>,
     pub content_filter: synctv_core::service::ContentFilter,
@@ -525,6 +527,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
     let client_api = Arc::new(crate::impls::ClientApiImpl::new_with_runtime(
         crate::impls::ClientApiConfig {
             user_service: config.user_service.clone(),
+            read_pool: config.read_pool.clone(),
             room_service: config.room_service.clone(),
             connection_service: config.connection_manager.clone(),
             config: config.config.clone(),
@@ -573,6 +576,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
             crate::impls::AdminApiConfig {
                 room_service: config.room_service.clone(),
                 user_service: config.user_service.clone(),
+                read_pool: config.read_pool.clone(),
                 settings_service: settings_svc.clone(),
                 settings_registry: config.settings_registry.clone(),
                 email_service: email_svc,

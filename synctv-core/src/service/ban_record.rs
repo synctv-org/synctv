@@ -19,6 +19,13 @@ impl BanRecordService {
         }
     }
 
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            repository: BanRecordRepository::new_with_read_pool(pool, read_pool),
+        }
+    }
+
     pub async fn list(&self, query: &BanRecordListQuery) -> Result<BanRecordPage> {
         self.repository.list(query).await
     }

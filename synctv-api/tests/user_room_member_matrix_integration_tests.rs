@@ -91,6 +91,7 @@ fn make_client_api(
 
     ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
+            read_pool: None,
             user_service,
             room_service,
             connection_service: connection_manager,
@@ -147,6 +148,7 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
 
     AdminApiImpl::new_with_runtime(
         AdminApiConfig {
+            read_pool: None,
             room_service: Arc::new(room_service),
             user_service,
             settings_service,

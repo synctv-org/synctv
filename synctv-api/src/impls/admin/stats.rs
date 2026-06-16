@@ -46,9 +46,12 @@ impl AdminApiImpl {
             total_media_res,
             presence_res,
         ) = tokio::join!(
-            self.user_service.list_users(&query_all),
-            self.user_service.list_users(&query_active),
-            self.user_service.list_users(&query_banned),
+            self.user_service
+                .list_users_eventually_consistent(&query_all),
+            self.user_service
+                .list_users_eventually_consistent(&query_active),
+            self.user_service
+                .list_users_eventually_consistent(&query_banned),
             self.room_service.list_rooms(&room_query_all),
             self.room_service.list_rooms(&room_query_active),
             self.room_service.list_rooms(&room_query_banned),

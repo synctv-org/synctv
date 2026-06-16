@@ -486,10 +486,13 @@ impl S3CompatibleFileStorageService {
                 .as_ref()
                 .map(|object| object.content_manifest_sha256.clone())
                 .unwrap_or_default();
-            let metadata_json = object
-                .as_ref().map_or_else(|| serde_json::Value::Object(Default::default()), |object| object.metadata.clone());
+            let metadata_json = object.as_ref().map_or_else(
+                || serde_json::Value::Object(Default::default()),
+                |object| object.metadata.clone(),
+            );
             let created_at = object
-                .as_ref().map_or_else(Utc::now, |object| object.created_at);
+                .as_ref()
+                .map_or_else(Utc::now, |object| object.created_at);
             return Ok(FileObjectDownload {
                 metadata: FileObjectMetadata {
                     storage_backend: self.config.storage_backend.clone(),
@@ -530,10 +533,13 @@ impl S3CompatibleFileStorageService {
             .as_ref()
             .map(|object| object.content_manifest_sha256.clone())
             .unwrap_or_default();
-        let metadata_json = object
-            .as_ref().map_or_else(|| serde_json::Value::Object(Default::default()), |object| object.metadata.clone());
+        let metadata_json = object.as_ref().map_or_else(
+            || serde_json::Value::Object(Default::default()),
+            |object| object.metadata.clone(),
+        );
         let created_at = object
-            .as_ref().map_or_else(Utc::now, |object| object.created_at);
+            .as_ref()
+            .map_or_else(Utc::now, |object| object.created_at);
         let reader = self
             .operator
             .reader(&object_key)

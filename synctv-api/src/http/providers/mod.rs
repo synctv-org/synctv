@@ -1337,6 +1337,7 @@ mod tests {
             crate::http::create_router_with_state_from_config(crate::http::RouterConfig {
                 config: Arc::new(synctv_core::Config::default()),
                 user_service,
+                read_pool: None,
                 user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
                     128,
                     60,

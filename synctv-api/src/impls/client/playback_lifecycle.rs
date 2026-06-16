@@ -827,6 +827,7 @@ mod tests {
 
         ClientApiImpl::new_with_runtime(
             crate::impls::ClientApiConfig {
+                read_pool: None,
                 user_service,
                 room_service,
                 connection_service: Arc::new(synctv_realtime::sync::ConnectionManager::default()),

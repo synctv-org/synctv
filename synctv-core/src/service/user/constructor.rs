@@ -77,9 +77,13 @@ impl UserService {
             brute_force,
             password_complexity,
         } = dependencies;
+        let repository = runtime.read_pool.clone().map_or_else(
+            || UserRepository::new(pool.clone()),
+            |read_pool| UserRepository::new_with_read_pool(pool.clone(), read_pool),
+        );
 
         Self {
-            repository: UserRepository::new(pool.clone()),
+            repository,
             user_email_repository: UserEmailRepository::new(pool.clone()),
             user_password_repository: UserPasswordRepository::new(pool.clone()),
             email_bind_repository: EmailBindRepository::new(pool.clone()),

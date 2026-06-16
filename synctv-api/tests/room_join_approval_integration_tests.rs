@@ -63,6 +63,7 @@ fn make_client_api(
 
     synctv_api::impls::ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
+            read_pool: None,
             user_service,
             room_service,
             connection_service: connection_manager,

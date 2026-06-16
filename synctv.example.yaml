@@ -181,6 +181,13 @@ database:
   # `user` is accepted as a config-file alias for `username`;
   # SYNCTV_DATABASE_USER is accepted as an env alias for SYNCTV_DATABASE_USERNAME.
   url: "postgresql://synctv:synctv@localhost:5432/synctv"
+  # Optional read-only replica URL for explicitly allowlisted eventually-consistent reads.
+  # Strong reads, writes, transactions, cache rebuilds, and migrations always use `url`.
+  # read_url: "postgresql://synctv:synctv@localhost:5432/synctv"
+  # read_url_file: "/run/secrets/database_read_url"
+  # Or reuse the primary username/password/database and override only the read endpoint.
+  # read_host: "postgres-read.local"
+  # read_port: 5432
   # url_file: "/run/secrets/database_url"
   # host: "localhost"
   # port: 5432

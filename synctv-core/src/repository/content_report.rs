@@ -45,12 +45,28 @@ pub struct ContentReportPage {
 #[derive(Clone)]
 pub struct ContentReportRepository {
     pool: PgPool,
+    read_pool: Option<PgPool>,
 }
 
 impl ContentReportRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            read_pool: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            pool,
+            read_pool: Some(read_pool),
+        }
+    }
+
+    fn eventually_consistent_pool(&self) -> &PgPool {
+        self.read_pool.as_ref().unwrap_or(&self.pool)
     }
 
     pub async fn create(
@@ -144,6 +160,7 @@ impl ContentReportRepository {
         let target_member_user_id = query.target_member_user_id.map(|id| id.as_i64());
         let scope = i16::from(query.scope);
         let search = normalize_search(&query.search);
+        let pool = self.eventually_consistent_pool();
 
         let total = sqlx::query_scalar!(
             r#"
@@ -209,7 +226,7 @@ impl ContentReportRepository {
             scope,
             search.as_deref(),
         )
-        .fetch_one(&self.pool)
+        .fetch_one(pool)
         .await?;
 
         let rows = sqlx::query_as!(
@@ -310,7 +327,7 @@ impl ContentReportRepository {
             query.limit,
             query.offset,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         Ok(ContentReportPage { rows, total })

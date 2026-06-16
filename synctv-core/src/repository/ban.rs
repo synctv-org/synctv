@@ -57,18 +57,35 @@ pub struct BanRecordPage {
 #[derive(Clone)]
 pub struct BanRecordRepository {
     pool: PgPool,
+    read_pool: Option<PgPool>,
 }
 
 impl BanRecordRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            read_pool: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            pool,
+            read_pool: Some(read_pool),
+        }
+    }
+
+    fn eventually_consistent_pool(&self) -> &PgPool {
+        self.read_pool.as_ref().unwrap_or(&self.pool)
     }
 
     pub async fn list(&self, query: &BanRecordListQuery) -> Result<BanRecordPage> {
         let target_type = query.target_type.map(BanRecordTargetType::discriminator);
         let user_id = query.user_id.map(|id| id.as_i64());
         let room_id = query.room_id.map(|id| id.as_i64());
+        let pool = self.eventually_consistent_pool();
         let total = sqlx::query_scalar!(
             r#"
             SELECT COUNT(*) AS "total!" FROM (
@@ -90,7 +107,7 @@ impl BanRecordRepository {
             user_id,
             room_id
         )
-        .fetch_one(&self.pool)
+        .fetch_one(pool)
         .await?;
 
         let rows = sqlx::query_as!(
@@ -143,7 +160,7 @@ impl BanRecordRepository {
             query.limit,
             query.offset
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         Ok(BanRecordPage { rows, total })

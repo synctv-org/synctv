@@ -10,7 +10,7 @@ use synctv_core::{
     repository::ProviderInstanceRepository,
     Error,
 };
-use synctv_core_testing::{create_test_pool, err, ok, some};
+use synctv_core_testing::{create_test_pool, create_test_pool_with_db_and_label, err, ok, some};
 
 fn provider_codes(providers: &[ProviderType]) -> Vec<i16> {
     providers
@@ -220,6 +220,40 @@ async fn test_delete_referenced_provider_instance_is_rejected() {
         matches!(&error, Error::InvalidInput(message) if message.contains("still referenced")),
         "expected referenced instance delete to be rejected clearly, got: {error}"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_enabled_connection_inputs_read_from_primary_pool() {
+    let (_primary_container, primary_pool) =
+        create_test_pool_with_db_and_label("synctv_test", "provider-primary").await;
+    let (_read_container, read_pool) =
+        create_test_pool_with_db_and_label("synctv_test", "provider-read").await;
+
+    let primary_repo = ProviderInstanceRepository::new(primary_pool.clone());
+    let read_repo = ProviderInstanceRepository::new(read_pool.clone());
+    ok(
+        primary_repo
+            .create(&make_instance("primary_enabled_instance", None, None))
+            .await,
+        "primary provider instance should be created",
+    );
+    ok(
+        read_repo
+            .create(&make_instance("stale_read_instance", None, None))
+            .await,
+        "stale read provider instance should be created",
+    );
+
+    let repo = ProviderInstanceRepository::new_with_read_pool(primary_pool.clone(), read_pool);
+    let enabled = ok(
+        repo.get_all_enabled().await,
+        "enabled provider instances should be loaded",
+    );
+    let names: Vec<_> = enabled.into_iter().map(|instance| instance.name).collect();
+    assert_eq!(names, vec!["primary_enabled_instance".to_string()]);
+
+    primary_pool.close().await;
 }
 
 // ─── create and read with encryption ─────────────────────────────────

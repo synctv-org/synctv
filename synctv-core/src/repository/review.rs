@@ -103,6 +103,7 @@ pub struct ReviewPage<T> {
 #[derive(Clone)]
 pub struct ReviewRepository {
     pool: PgPool,
+    read_pool: Option<PgPool>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -161,7 +162,22 @@ impl TryFrom<UserRegistrationReviewRow> for UserRegistrationReviewRecord {
 impl ReviewRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            read_pool: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            pool,
+            read_pool: Some(read_pool),
+        }
+    }
+
+    fn eventually_consistent_pool(&self) -> &PgPool {
+        self.read_pool.as_ref().unwrap_or(&self.pool)
     }
 
     pub async fn load_user_registration(
@@ -210,6 +226,7 @@ impl ReviewRepository {
             .as_deref()
             .map(escape_ilike)
             .unwrap_or_default();
+        let pool = self.eventually_consistent_pool();
         let total_count = sqlx::query_scalar!(
             r#"
             SELECT COUNT(*)
@@ -220,7 +237,7 @@ impl ReviewRepository {
             i16::from(query.status),
             &search
         )
-        .fetch_one(&self.pool)
+        .fetch_one(pool)
         .await?;
         let total = count_value(total_count, "user registration review total")?;
 
@@ -256,7 +273,7 @@ impl ReviewRepository {
             query.limit,
             query.offset
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         let rows = rows
@@ -418,6 +435,7 @@ impl ReviewRepository {
             .as_deref()
             .map(escape_ilike)
             .unwrap_or_default();
+        let pool = self.eventually_consistent_pool();
         let total_count = sqlx::query_scalar!(
             r#"
             SELECT COUNT(*)
@@ -430,7 +448,7 @@ impl ReviewRepository {
             query.requested_by.map(|id| id.as_i64()),
             &search
         )
-        .fetch_one(&self.pool)
+        .fetch_one(pool)
         .await?;
         let total = count_value(total_count, "room creation review total")?;
 
@@ -461,7 +479,7 @@ impl ReviewRepository {
             query.limit,
             query.offset
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         Ok(ReviewPage { rows, total })
@@ -656,6 +674,7 @@ impl ReviewRepository {
             .as_deref()
             .map(escape_ilike)
             .unwrap_or_default();
+        let pool = self.eventually_consistent_pool();
         let total_count = sqlx::query_scalar!(
             r#"
             SELECT COUNT(*)
@@ -672,7 +691,7 @@ impl ReviewRepository {
             query.user_id.map(|id| id.as_i64()),
             &search
         )
-        .fetch_one(&self.pool)
+        .fetch_one(pool)
         .await?;
         let total = count_value(total_count, "room join review total")?;
 
@@ -707,7 +726,7 @@ impl ReviewRepository {
             query.limit,
             query.offset
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         Ok(ReviewPage { rows, total })

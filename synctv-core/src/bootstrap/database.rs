@@ -29,61 +29,135 @@ pub async fn init_database(config: &Config) -> Result<DatabaseInit> {
 #[derive(Debug)]
 pub struct DatabaseInit {
     pub pool: PgPool,
+    pub pools: DatabasePools,
     pub metrics_task: Option<JoinHandle<()>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DatabasePools {
+    primary: PgPool,
+    read: PgPool,
+    dedicated_read_pool: bool,
+}
+
+impl DatabasePools {
+    #[must_use]
+    pub fn new(primary: PgPool, read: Option<PgPool>) -> Self {
+        let dedicated_read_pool = read.is_some();
+        let read = read.unwrap_or_else(|| primary.clone());
+        Self {
+            primary,
+            read,
+            dedicated_read_pool,
+        }
+    }
+
+    #[must_use]
+    pub const fn primary(&self) -> &PgPool {
+        &self.primary
+    }
+
+    #[must_use]
+    pub const fn read(&self) -> &PgPool {
+        &self.read
+    }
+
+    #[must_use]
+    pub fn primary_pool(&self) -> PgPool {
+        self.primary.clone()
+    }
+
+    #[must_use]
+    pub fn read_pool(&self) -> PgPool {
+        self.read.clone()
+    }
+
+    #[must_use]
+    pub fn has_dedicated_read_pool(&self) -> bool {
+        self.dedicated_read_pool
+    }
+
+    pub async fn close(&self) {
+        if self.has_dedicated_read_pool() {
+            self.read.close().await;
+        }
+        self.primary.close().await;
+    }
 }
 
 /// Initialize database connection pool with an optional `CancellationToken`
 /// for graceful shutdown of the background pool metrics task.
 ///
-/// If `cancel` is `None`, the metrics task runs until the process exits.
+/// If `cancel` is `None`, no metrics task is spawned.
 pub async fn init_database_with_cancel(
     config: &Config,
     cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<DatabaseInit> {
-    let database_url = config.database_url();
+    init_database_inner(config, cancel, false).await
+}
 
-    // Log only host/port, not credentials
-    let masked_url = mask_database_url(&database_url);
-    info!("Connecting to database: {}", masked_url);
+/// Initialize the primary database pool plus the configured read-replica pool.
+///
+/// This is the application startup path. Primary-only maintenance commands use
+/// [`init_database_with_cancel`] so replica availability cannot block
+/// migrations or status checks.
+pub async fn init_database_with_read_pool_and_cancel(
+    config: &Config,
+    cancel: Option<tokio_util::sync::CancellationToken>,
+) -> Result<DatabaseInit> {
+    init_database_inner(config, cancel, true).await
+}
 
+async fn init_database_inner(
+    config: &Config,
+    cancel: Option<tokio_util::sync::CancellationToken>,
+    include_read_pool: bool,
+) -> Result<DatabaseInit> {
     let statement_timeout_ms = DB_QUERY_TIMEOUT.as_millis();
     let pg_client_min_messages =
         pg_client_min_messages_for_level(crate::logging::effective_log_level(&config.logging)?);
 
-    let pool: PgPool = PgPoolOptions::new()
-        .max_connections(config.database.max_connections)
-        .min_connections(config.database.min_connections)
-        .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
-        .idle_timeout(Duration::from_secs(config.database.idle_timeout_seconds))
-        .max_lifetime(Duration::from_secs(config.database.max_lifetime_seconds))
-        .after_connect(move |conn, _meta| {
-            Box::pin(async move {
-                apply_session_settings(conn, statement_timeout_ms, pg_client_min_messages).await?;
-                Ok(())
-            })
-        })
-        .after_release(move |conn, _meta| {
-            Box::pin(async move {
-                apply_session_settings(conn, statement_timeout_ms, pg_client_min_messages).await?;
-                Ok(true)
-            })
-        })
-        .connect(&database_url)
-        .await
-        .map_err(|e| {
-            error!("Failed to connect to database: {}", e);
-            anyhow::anyhow!("Database connection failed: {e}")
-        })?;
+    let database_url = config.database_url();
+    let pool = connect_database_pool(
+        &database_url,
+        "primary",
+        config,
+        statement_timeout_ms,
+        pg_client_min_messages,
+        false,
+    )
+    .await?;
+    let read_pool = match (include_read_pool, config.database_read_url()) {
+        (true, Some(read_database_url)) => Some(
+            connect_database_pool(
+                &read_database_url,
+                "read",
+                config,
+                statement_timeout_ms,
+                pg_client_min_messages,
+                true,
+            )
+            .await?,
+        ),
+        _ => None,
+    };
+    let pools = DatabasePools::new(pool.clone(), read_pool);
 
-    // Set database pool metrics
-    crate::metrics::database::DB_POOL_SIZE_MAX.set(i64::from(config.database.max_connections));
+    let pool_count = if pools.has_dedicated_read_pool() {
+        2
+    } else {
+        1
+    };
+    let max_connections_per_pool = config.database.max_connections;
+    let max_connections_total = max_connections_per_pool.saturating_mul(pool_count);
+    crate::metrics::database::DB_POOL_SIZE_MAX.set(i64::from(max_connections_total));
 
     // Spawn periodic task to update pool usage metrics only when the caller
     // supplies a cancellation token and can therefore manage the task
     // lifecycle. Starting the task without any shutdown hook would leak it for
     // the rest of the process lifetime while it continues to hold the pool.
     let metrics_task = cancel.map(|token| {
-        let pool_clone = pool.clone();
+        let pools = pools.clone();
         crate::spawn::spawn_monitored("db_pool_metrics", async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(15));
             loop {
@@ -94,17 +168,9 @@ pub async fn init_database_with_cancel(
                     }
                     _ = ticker.tick() => {}
                 }
-                let size = pool_clone.size();
-                let idle = u32::try_from(pool_clone.num_idle()).unwrap_or(u32::MAX);
-                let active = size.saturating_sub(idle);
-                crate::metrics::database::DB_CONNECTIONS_ACTIVE.set(i64::from(active));
-                crate::metrics::database::DB_CONNECTIONS_IDLE.set(i64::from(idle));
-                let max = u32::try_from(crate::metrics::database::DB_POOL_SIZE_MAX.get())
-                    .unwrap_or_default();
-                if max > 0 {
-                    crate::metrics::database::DB_POOL_UTILIZATION
-                        .with_label_values(&["main"])
-                        .set(f64::from(active) / f64::from(max));
+                record_database_pool_metrics(&pools, max_connections_per_pool);
+                if pools.has_dedicated_read_pool() {
+                    record_pool_utilization("read", pools.read(), max_connections_per_pool);
                 }
             }
         })
@@ -112,13 +178,105 @@ pub async fn init_database_with_cancel(
 
     info!("Database connected successfully");
 
-    Ok(DatabaseInit { pool, metrics_task })
+    Ok(DatabaseInit {
+        pool,
+        pools,
+        metrics_task,
+    })
+}
+
+async fn connect_database_pool(
+    database_url: &str,
+    role: &'static str,
+    config: &Config,
+    statement_timeout_ms: u128,
+    pg_client_min_messages: &'static str,
+    read_only: bool,
+) -> Result<PgPool> {
+    let masked_url = mask_database_url(database_url);
+    info!(database_role = role, "Connecting to database: {masked_url}");
+
+    let pool: PgPool = PgPoolOptions::new()
+        .max_connections(config.database.max_connections)
+        .min_connections(config.database.min_connections)
+        .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
+        .idle_timeout(Duration::from_secs(config.database.idle_timeout_seconds))
+        .max_lifetime(Duration::from_secs(config.database.max_lifetime_seconds))
+        .after_connect(move |conn, _meta| {
+            Box::pin(async move {
+                apply_session_settings(
+                    conn,
+                    statement_timeout_ms,
+                    pg_client_min_messages,
+                    read_only,
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .after_release(move |conn, _meta| {
+            Box::pin(async move {
+                apply_session_settings(
+                    conn,
+                    statement_timeout_ms,
+                    pg_client_min_messages,
+                    read_only,
+                )
+                .await?;
+                Ok(true)
+            })
+        })
+        .connect(database_url)
+        .await
+        .map_err(|e| {
+            error!(database_role = role, "Failed to connect to database: {}", e);
+            anyhow::anyhow!("{role} database connection failed: {e}")
+        })?;
+    Ok(pool)
+}
+
+fn record_database_pool_metrics(pools: &DatabasePools, max_connections_per_pool: u32) {
+    let primary = pool_connection_counts(pools.primary());
+    let read = if pools.has_dedicated_read_pool() {
+        pool_connection_counts(pools.read())
+    } else {
+        PoolConnectionCounts::default()
+    };
+
+    crate::metrics::database::DB_CONNECTIONS_ACTIVE
+        .set(i64::from(primary.active.saturating_add(read.active)));
+    crate::metrics::database::DB_CONNECTIONS_IDLE
+        .set(i64::from(primary.idle.saturating_add(read.idle)));
+    record_pool_utilization("primary", pools.primary(), max_connections_per_pool);
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PoolConnectionCounts {
+    active: u32,
+    idle: u32,
+}
+
+fn pool_connection_counts(pool: &PgPool) -> PoolConnectionCounts {
+    let size = pool.size();
+    let idle = u32::try_from(pool.num_idle()).unwrap_or(u32::MAX);
+    let active = size.saturating_sub(idle);
+    PoolConnectionCounts { active, idle }
+}
+
+fn record_pool_utilization(role: &'static str, pool: &PgPool, max_connections_per_pool: u32) {
+    let active = pool_connection_counts(pool).active;
+    if max_connections_per_pool > 0 {
+        crate::metrics::database::DB_POOL_UTILIZATION
+            .with_label_values(&[role])
+            .set(f64::from(active) / f64::from(max_connections_per_pool));
+    }
 }
 
 async fn apply_session_settings(
     conn: &mut sqlx::PgConnection,
     statement_timeout_ms: u128,
     client_min_messages: &'static str,
+    read_only: bool,
 ) -> std::result::Result<(), sqlx::Error> {
     conn.execute(trusted_dynamic_sql(format!(
         "SET statement_timeout = {statement_timeout_ms}"
@@ -128,6 +286,10 @@ async fn apply_session_settings(
         "SET client_min_messages = '{client_min_messages}'"
     )))
     .await?;
+    if read_only {
+        conn.execute("SET default_transaction_read_only = on")
+            .await?;
+    }
     Ok(())
 }
 
@@ -444,6 +606,70 @@ mod tests {
             "init_database must not spawn an unmanaged metrics task"
         );
         db_init.pool.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn init_database_uses_primary_only_even_when_read_url_is_configured() {
+        let (_postgres, database_url) = synctv_core_testing::create_test_database_url_with_label(
+            "synctv_test",
+            "init-primary-only",
+        )
+        .await;
+
+        let config = crate::Config {
+            database: crate::config::DatabaseConfig {
+                url: database_url,
+                read_url: "postgresql://synctv:wrong@127.0.0.1:1/synctv".to_string(),
+                max_connections: 5,
+                min_connections: 1,
+                connect_timeout_seconds: 1,
+                idle_timeout_seconds: 600,
+                max_lifetime_seconds: 1800,
+                ..crate::config::DatabaseConfig::default()
+            },
+            ..crate::Config::default()
+        };
+
+        let db_init = init_database(&config)
+            .await
+            .checked("primary-only init should ignore unavailable read pool");
+        assert!(!db_init.pools.has_dedicated_read_pool());
+        db_init.pool.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn init_database_with_read_pool_requires_configured_read_pool() {
+        let (_postgres, database_url) = synctv_core_testing::create_test_database_url_with_label(
+            "synctv_test",
+            "init-with-read",
+        )
+        .await;
+
+        let config = crate::Config {
+            database: crate::config::DatabaseConfig {
+                url: database_url,
+                read_url: "postgresql://synctv:wrong@127.0.0.1:1/synctv".to_string(),
+                max_connections: 5,
+                min_connections: 1,
+                connect_timeout_seconds: 1,
+                idle_timeout_seconds: 600,
+                max_lifetime_seconds: 1800,
+                ..crate::config::DatabaseConfig::default()
+            },
+            ..crate::Config::default()
+        };
+
+        let error = init_database_with_read_pool_and_cancel(&config, None)
+            .await
+            .failed("application init should surface unavailable read pool");
+        assert!(
+            error
+                .to_string()
+                .contains("read database connection failed"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

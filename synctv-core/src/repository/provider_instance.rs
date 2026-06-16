@@ -101,6 +101,7 @@ fn provider_type_codes(providers: &[String]) -> Result<Vec<i16>> {
 #[derive(Clone)]
 pub struct ProviderInstanceRepository {
     pool: PgPool,
+    read_pool: Option<PgPool>,
     encryption: Option<CredentialEncryption>,
 }
 
@@ -108,6 +109,7 @@ impl std::fmt::Debug for ProviderInstanceRepository {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProviderInstanceRepository")
             .field("pool", &"PgPool")
+            .field("read_pool", &self.read_pool.as_ref().map(|_| "PgPool"))
             .field("encryption", &self.encryption.is_some())
             .finish()
     }
@@ -251,6 +253,17 @@ impl ProviderInstanceRepository {
     pub const fn new(pool: PgPool) -> Self {
         Self {
             pool,
+            read_pool: None,
+            encryption: None,
+        }
+    }
+
+    /// Create a new repository with a dedicated pool for eventually-consistent reads.
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            pool,
+            read_pool: Some(read_pool),
             encryption: None,
         }
     }
@@ -260,8 +273,31 @@ impl ProviderInstanceRepository {
     pub const fn new_with_encryption(pool: PgPool, encryption: CredentialEncryption) -> Self {
         Self {
             pool,
+            read_pool: None,
             encryption: Some(encryption),
         }
+    }
+
+    /// Create a new encrypted repository with a dedicated pool for eventually-consistent reads.
+    #[must_use]
+    pub const fn new_with_encryption_and_read_pool(
+        pool: PgPool,
+        read_pool: PgPool,
+        encryption: CredentialEncryption,
+    ) -> Self {
+        Self {
+            pool,
+            read_pool: Some(read_pool),
+            encryption: Some(encryption),
+        }
+    }
+
+    fn eventually_consistent_pool(&self) -> &PgPool {
+        self.read_pool.as_ref().unwrap_or(&self.pool)
+    }
+
+    fn primary_pool(&self) -> &PgPool {
+        &self.pool
     }
 
     fn encrypt_field(&self, plaintext: Option<&str>) -> Result<Option<String>> {
@@ -319,13 +355,21 @@ impl ProviderInstanceRepository {
             ORDER BY created_at DESC
             ",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.eventually_consistent_pool())
         .await?;
         self.decrypt_instance_rows(rows)
     }
 
     /// Get all enabled provider instances (sensitive fields decrypted)
     pub async fn get_all_enabled(&self) -> Result<Vec<ProviderInstance>> {
+        self.get_all_enabled_from_primary().await
+    }
+
+    /// Get all enabled provider instances from the primary database.
+    ///
+    /// These rows contain connection-building inputs and secrets. Reading them
+    /// from a lagging replica can cache stale enabled credentials.
+    pub async fn get_all_enabled_from_primary(&self) -> Result<Vec<ProviderInstance>> {
         let rows = sqlx::query_as!(
             ProviderInstanceRow,
             r"
@@ -336,7 +380,7 @@ impl ProviderInstanceRepository {
             ORDER BY created_at DESC
             ",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.primary_pool())
         .await?;
         self.decrypt_instance_rows(rows)
     }
@@ -380,7 +424,7 @@ impl ProviderInstanceRepository {
         Self::push_list_filters(&mut count_builder, query)?;
         let total = count_builder
             .build_query_scalar::<i64>()
-            .fetch_one(&self.pool)
+            .fetch_one(self.eventually_consistent_pool())
             .await?;
 
         let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT ");
@@ -395,13 +439,21 @@ impl ProviderInstanceRepository {
 
         let rows = builder
             .build_query_as::<ProviderInstanceRow>()
-            .fetch_all(&self.pool)
+            .fetch_all(self.eventually_consistent_pool())
             .await?;
         Ok((self.decrypt_instance_rows(rows)?, total))
     }
 
     /// Get instances that support a specific provider type (sensitive fields decrypted)
     pub async fn find_by_provider(&self, provider: &str) -> Result<Vec<ProviderInstance>> {
+        self.find_by_provider_from_primary(provider).await
+    }
+
+    /// Get enabled instances that support a provider type from the primary database.
+    pub async fn find_by_provider_from_primary(
+        &self,
+        provider: &str,
+    ) -> Result<Vec<ProviderInstance>> {
         let rows = sqlx::query_as!(
             ProviderInstanceRow,
             r"
@@ -412,7 +464,7 @@ impl ProviderInstanceRepository {
             ",
             provider_type_code(provider)?,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.primary_pool())
         .await?;
         self.decrypt_instance_rows(rows)
     }

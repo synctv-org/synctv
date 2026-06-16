@@ -227,6 +227,7 @@ mod permissions {
         );
         let client_api = ClientApiImpl::new_with_runtime(
             synctv_api::impls::ClientApiConfig {
+                read_pool: None,
                 user_service: user_service.clone(),
                 room_service: room_service.clone(),
                 connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),

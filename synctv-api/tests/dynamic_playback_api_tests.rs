@@ -441,6 +441,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
 
     let client_api = ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
+            read_pool: None,
             user_service,
             room_service: room_service.clone(),
             connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
@@ -588,6 +589,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
 
     let client_api = ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
+            read_pool: None,
             user_service,
             room_service: room_service.clone(),
             connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
@@ -694,6 +696,7 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
 
     let client_api = ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
+            read_pool: None,
             user_service,
             room_service: room_service.clone(),
             connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
@@ -813,6 +816,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
     ));
     let client_api = ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
+            read_pool: None,
             user_service,
             room_service,
             connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
@@ -910,6 +914,7 @@ async fn test_get_playback_without_active_media_returns_idle_playback_info() {
 
     let client_api = ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
+            read_pool: None,
             user_service,
             room_service,
             connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
@@ -997,6 +1002,7 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
 
     let client_api = ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
+            read_pool: None,
             user_service,
             room_service: room_service.clone(),
             connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
@@ -1097,6 +1103,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
 
     let client_api = ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
+            read_pool: None,
             user_service,
             room_service: room_service.clone(),
             connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
@@ -1211,6 +1218,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
 
     let client_api = ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
+            read_pool: None,
             user_service,
             room_service,
             connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),

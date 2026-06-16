@@ -16,6 +16,8 @@ Default:
 ```yaml
 database:
   url: "postgresql://synctv:synctv@localhost:5432/synctv"
+  # Optional; used only for allowlisted eventually-consistent reads.
+  read_url: "postgresql://synctv:synctv@postgres-read:5432/synctv"
 ```
 
 For production, prefer a secret file:
@@ -23,6 +25,7 @@ For production, prefer a secret file:
 ```yaml
 database:
   url_file: "/run/secrets/database_url"
+  read_url_file: "/run/secrets/database_read_url"
 ```
 
 Environment variables:
@@ -30,7 +33,15 @@ Environment variables:
 ```bash
 SYNCTV_DATABASE_URL=postgresql://synctv:password@postgres:5432/synctv
 SYNCTV_DATABASE_URL_FILE=/run/secrets/database_url
+SYNCTV_DATABASE_READ_URL=postgresql://synctv:password@postgres-read:5432/synctv
+SYNCTV_DATABASE_READ_URL_FILE=/run/secrets/database_read_url
+SYNCTV_DATABASE_READ_HOST=postgres-read
+SYNCTV_DATABASE_READ_PORT=5432
 ```
+
+`read_url` has highest priority. You can also configure only `read_host` / `SYNCTV_DATABASE_READ_HOST`; SyncTV reuses the primary username, password, and database name, swaps the host, and reuses the primary port when `read_port` is empty.
+
+`read_url` / `read_host` is used only by explicitly allowlisted list/discovery queries. Writes, transactions, migrations, permission checks, cache rebuilds, and authentication security paths always use the primary connection.
 
 ## Split Database Configuration
 
@@ -43,6 +54,8 @@ database:
   username: "synctv"
   password_file: "/run/secrets/database_password"
   name: "synctv"
+  read_host: "postgres-read.example.com"
+  read_port: 5432
 ```
 
 If split fields are used without `database.url`, SyncTV clears the default URL and builds the connection from the split fields. `user` is accepted as a YAML alias for `username`; `SYNCTV_DATABASE_USER` is accepted as an environment alias for `SYNCTV_DATABASE_USERNAME`.

@@ -198,6 +198,8 @@ Notes:
 - PostgreSQL connects to `<cluster>-postgresql-postgresql:5432` by default
 - PostgreSQL uses `<cluster>-postgresql-account-postgres` only as the bootstrap system account
 - SyncTV bootstraps and then runs as `postgresql.kubeblocks.appUsername` against `postgresql.kubeblocks.database`
+- When `postgresql.kubeblocks.replicas > 1` and no explicit read URL Secret is configured, the chart creates `<cluster>-postgresql-read` for secondary pods and injects `SYNCTV_DATABASE_READ_HOST` / `SYNCTV_DATABASE_READ_PORT`
+- SyncTV routes only allowlisted eventually-consistent reads to the read pool; strong reads, writes, migrations, and cache rebuilds use the primary connection
 - Redis connects to `<cluster>-redis-redis:6379` by default
 - Redis uses `<cluster>-redis-account-default` by default
 - PostgreSQL and Redis secret keys are fixed as `username` / `password`
@@ -210,14 +212,14 @@ Notes:
 
 The chart renders a config file mounted at `/config/synctv.yaml` and injects sensitive values plus connection details through `SYNCTV_` environment variables.
 
-The application currently uses split database/Redis configuration rather than relying only on a single DSN:
+The application uses split database/Redis configuration so credentials can stay in Secrets while the chart controls service endpoints:
 
 | Section | Description |
 |---------|-------------|
 | `config.server` | API bind address, CORS, proxy settings, and gRPC transport settings |
 | `config.publicIds` | Optional sqids settings for public API IDs |
 | `config.management` | Management endpoint settings |
-| `config.database` | Pool settings; actual host/port/user/password come from env vars |
+| `config.database` | Pool settings; actual host/port/user/password and optional read URL come from env vars |
 | `config.redis` | Redis timeouts, pipeline buffer, key prefix, and deployment mode; connection details come from env vars |
 | `config.cluster` | Cluster coordination and discovery settings |
 | `config.jwt` | Token durations; signing secret comes from a secret |
@@ -276,6 +278,7 @@ permissions.
 When using `existingSecret`, provide these keys with current names:
 
 - `SYNCTV_DATABASE_PASSWORD` unless PostgreSQL is in KubeBlocks mode
+- `SYNCTV_DATABASE_READ_URL` when `config.database.useSecretReadUrl=true`
 - `SYNCTV_REDIS_PASSWORD` when Redis uses standard mode; provide it in external mode only when the external Redis requires password authentication; do not provide it for KubeBlocks mode
 - `SYNCTV_JWT_SECRET`
 - `SYNCTV_CLUSTER_SECRET`

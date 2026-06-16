@@ -283,7 +283,7 @@ impl AdminApiImpl {
 
         let (users, total) = self
             .user_service
-            .list_users(&query)
+            .list_users_eventually_consistent(&query)
             .await
             .map_err(ApiError::from)?;
 
@@ -651,7 +651,7 @@ impl AdminApiImpl {
 
         let (users, total) = self
             .user_service
-            .list_admins(&query)
+            .list_admins_eventually_consistent(&query)
             .await
             .map_err(ApiError::from)?;
 

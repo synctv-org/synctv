@@ -81,6 +81,7 @@ pub const LOCAL_MANAGEMENT_ACTOR_USER_ID: UserId = UserId::MAX;
 pub struct AdminApiConfig {
     pub room_service: Arc<RoomService>,
     pub user_service: Arc<UserService>,
+    pub read_pool: Option<sqlx::PgPool>,
     pub settings_service: Arc<SettingsService>,
     pub settings_registry: Option<Arc<SettingsRegistry>>,
     pub email_service: Arc<EmailService>,
@@ -166,6 +167,7 @@ impl AdminApiImpl {
         let AdminApiConfig {
             room_service,
             user_service,
+            read_pool,
             settings_service,
             settings_registry,
             email_service,
@@ -178,10 +180,20 @@ impl AdminApiImpl {
             public_id_codec,
         } = config;
 
-        let review_service = Arc::new(ReviewService::new(user_service.pool().clone()));
-        let ban_record_service = Arc::new(BanRecordService::new(user_service.pool().clone()));
-        let content_report_service =
-            Arc::new(ContentReportService::new(user_service.pool().clone()));
+        let read_pool =
+            read_pool.unwrap_or_else(|| user_service.eventually_consistent_pool().clone());
+        let review_service = Arc::new(ReviewService::new_with_read_pool(
+            user_service.pool().clone(),
+            read_pool.clone(),
+        ));
+        let ban_record_service = Arc::new(BanRecordService::new_with_read_pool(
+            user_service.pool().clone(),
+            read_pool.clone(),
+        ));
+        let content_report_service = Arc::new(ContentReportService::new_with_read_pool(
+            user_service.pool().clone(),
+            read_pool,
+        ));
         let realtime_fanout = runtime.realtime_fanout;
         let realtime_event_service = runtime.realtime_event_service;
         let room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());

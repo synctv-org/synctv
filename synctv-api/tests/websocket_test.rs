@@ -968,6 +968,7 @@ mod websocket_e2e {
         let router_config = synctv_api::http::RouterConfig {
             config,
             user_service: user_service.clone(),
+            read_pool: None,
             user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
                 128,
                 60,

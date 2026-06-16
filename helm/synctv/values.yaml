@@ -374,6 +374,9 @@ config:
 
   ## DatabaseConfig (url composed from secrets; these are for connection pool)
   database:
+    ## Set true when existingSecret provides SYNCTV_DATABASE_READ_URL.
+    ## The actual read replica DSN belongs in secrets.database.readUrl or the external Secret.
+    useSecretReadUrl: false
     maxConnections: 20
     minConnections: 5
     connectTimeoutSeconds: 10
@@ -664,6 +667,12 @@ secrets:
     ## Leave empty to auto-generate a secure 32-character random password (recommended)
     ## On upgrades, the existing password is preserved automatically
     password: ""
+    ## Optional read-only replica DSN injected via SYNCTV_DATABASE_READ_URL.
+    ## Strong reads, writes, migrations, and cache rebuilds use the primary URL.
+    ## In kubeblocks mode with replicas > 1, the chart auto-injects
+    ## SYNCTV_DATABASE_READ_HOST / SYNCTV_DATABASE_READ_PORT through a secondary
+    ## Service when this explicit URL is empty.
+    readUrl: ""
 
   ## Redis password injected via SYNCTV_REDIS_PASSWORD
   redis:

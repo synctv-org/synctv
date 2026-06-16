@@ -18,7 +18,7 @@ use synctv_cluster::leader::{build_managed_leader_runtime, LeaderRuntime, Leader
 use synctv_core::{
     bootstrap::{
         bootstrap_root_user,
-        database::init_database_with_cancel,
+        database::{init_database_with_read_pool_and_cancel, DatabasePools},
         has_any_admin_users, init_redis,
         services::{init_services_with_options, InitServicesOptions},
     },
@@ -61,6 +61,7 @@ use crate::shutdown::{
 struct Infrastructure {
     config: Config,
     pool: PgPool,
+    database_pools: DatabasePools,
     shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     cluster_coordination_provider: Option<Arc<dyn ClusterCoordinationProvider>>,
     node_id: String,
@@ -276,7 +277,7 @@ type AsyncOnceTaskFactory = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Se
 /// The assembled application, ready to be started.
 pub struct Application {
     config: Config,
-    pool: PgPool,
+    database_pools: DatabasePools,
     services: Services,
     livestream_state: Option<LivestreamState>,
     shutdown: ShutdownCoordinator,
@@ -702,7 +703,7 @@ impl Application {
             self.config,
             self.services,
             self.livestream_state,
-            self.pool,
+            self.database_pools,
             Arc::new(ManagementLifecycleController::new()),
         );
         Box::pin(server.start_with_coordinator(self.shutdown)).await
@@ -720,7 +721,7 @@ impl Application {
             self.config,
             self.services,
             self.livestream_state,
-            self.pool,
+            self.database_pools,
             Arc::new(ManagementLifecycleController::new()),
         );
         server
@@ -758,15 +759,18 @@ impl Application {
 
         // Database (with cancellable pool metrics task)
         let db_metrics_cancel = shutdown.register_token("db_pool_metrics");
-        let db_init = init_database_with_cancel(&config, Some(db_metrics_cancel)).await?;
+        let db_init =
+            init_database_with_read_pool_and_cancel(&config, Some(db_metrics_cancel)).await?;
         if let Some(task) = db_init.metrics_task {
             shutdown.register_task("db_pool_metrics", task);
         }
         let pool = db_init.pool;
+        let database_pools = db_init.pools;
 
         Ok(Infrastructure {
             config,
             pool,
+            database_pools,
             shared_runtime,
             cluster_coordination_provider,
             node_id,
@@ -872,6 +876,7 @@ impl Application {
                 ssrf_guard: infra.config.security.ssrf_guard(),
                 credential_encryption_key_override,
                 realtime_outbox: Some(runtime_plan.realtime_outbox()),
+                read_pool: Some(infra.database_pools.read_pool()),
             },
         )
         .await?;
@@ -1476,6 +1481,7 @@ impl Application {
     ) -> Self {
         let services = Services {
             user_service: core.services.user_service.clone(),
+            read_pool: infra.database_pools.read_pool(),
             room_service: core.services.room_service.clone(),
             jwt_service: core.services.jwt_service.clone(),
             realtime_fanout_service: cluster.realtime_fanout_service,
@@ -1517,7 +1523,7 @@ impl Application {
 
         Self {
             config: infra.config,
-            pool: infra.pool,
+            database_pools: infra.database_pools,
             services,
             livestream_state: servers.livestream_state,
             shutdown,

@@ -119,6 +119,18 @@ spec:
       ports:
         - protocol: TCP
           port: {{ include "synctv.postgresql.port" . }}
+    {{- if include "synctv.postgresql.hasAutoReadReplica" . }}
+    # Allow KubeBlocks PostgreSQL read replicas
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ include "synctv.postgresql.kubeblocks.clusterName" . | quote }}
+              apps.kubeblocks.io/component-name: "postgresql"
+              kubeblocks.io/role: "secondary"
+      ports:
+        - protocol: TCP
+          port: {{ include "synctv.postgresql.port" . }}
+    {{- end }}
     # Allow Redis
     - to:
         {{- if eq (include "synctv.redis.mode" .) "external" }}

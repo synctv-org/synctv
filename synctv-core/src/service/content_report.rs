@@ -35,6 +35,17 @@ impl ContentReportService {
         }
     }
 
+    #[must_use]
+    pub fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            reports: ContentReportRepository::new_with_read_pool(pool.clone(), read_pool),
+            rooms: RoomRepository::new(pool.clone()),
+            users: UserRepository::new(pool.clone()),
+            members: RoomMemberRepository::new(pool.clone()),
+            chat: ChatRepository::new(pool),
+        }
+    }
+
     pub async fn create_report(&self, mut request: CreateContentReport) -> Result<ContentReport> {
         normalize_report_text(&mut request)?;
         let chat_message_created_at = self.validate_target(&request.target).await?;

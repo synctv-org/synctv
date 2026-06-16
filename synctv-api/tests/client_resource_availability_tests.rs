@@ -177,6 +177,7 @@ async fn create_client_api_fixture() -> ClientApiFixture {
 
     let client_api = ClientApiImpl::new_with_runtime(
         synctv_api::impls::ClientApiConfig {
+            read_pool: None,
             user_service,
             room_service,
             connection_service,

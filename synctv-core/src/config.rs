@@ -40,6 +40,20 @@ fn process_env(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
+fn mask_url_password_for_debug(url: &str) -> String {
+    let Some(at_pos) = url.find('@') else {
+        return url.to_string();
+    };
+    let Some(colon_pos) = url[..at_pos].rfind(':') else {
+        return url.to_string();
+    };
+    let scheme_end = url.find("://").map_or(0, |p| p + 3);
+    if colon_pos <= scheme_end {
+        return url.to_string();
+    }
+    format!("{}:****@{}", &url[..colon_pos], &url[at_pos + 1..])
+}
+
 #[cfg(all(unix, not(target_os = "macos")))]
 fn absolute_env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
@@ -316,6 +330,7 @@ fn supports_secret_file_reference(current_path: &str, base_key: &str) -> bool {
             | "metrics.auth.bearer_token"
             | "database.password"
             | "database.url"
+            | "database.read_url"
             | "redis.password"
             | "redis.url"
             | "jwt.secret"
@@ -990,6 +1005,9 @@ impl ServerConfig {
 #[serde(default)]
 pub struct DatabaseConfig {
     pub url: String,
+    pub read_url: String,
+    pub read_host: String,
+    pub read_port: u16,
     pub host: String,
     pub port: u16,
     pub username: String,
@@ -1004,29 +1022,11 @@ pub struct DatabaseConfig {
 
 impl std::fmt::Debug for DatabaseConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Mask password in database URL if present
-        let masked_url = if let Some(at_pos) = self.url.find('@') {
-            if let Some(colon_pos) = self.url[..at_pos].rfind(':') {
-                let scheme_end = self.url.find("://").map_or(0, |p| p + 3);
-                if colon_pos > scheme_end {
-                    // Has password - mask it
-                    format!(
-                        "{}:****@{}",
-                        &self.url[..colon_pos],
-                        &self.url[at_pos + 1..]
-                    )
-                } else {
-                    self.url.clone()
-                }
-            } else {
-                self.url.clone()
-            }
-        } else {
-            self.url.clone()
-        };
-
         f.debug_struct("DatabaseConfig")
-            .field("url", &masked_url)
+            .field("url", &mask_url_password_for_debug(&self.url))
+            .field("read_url", &mask_url_password_for_debug(&self.read_url))
+            .field("read_host", &self.read_host)
+            .field("read_port", &self.read_port)
             .field("host", &self.host)
             .field("port", &self.port)
             .field("username", &self.username)
@@ -1045,6 +1045,9 @@ impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             url: "postgresql://synctv:synctv@localhost:5432/synctv".to_string(),
+            read_url: String::new(),
+            read_host: String::new(),
+            read_port: 0,
             host: String::new(),
             port: 0,
             username: String::new(),

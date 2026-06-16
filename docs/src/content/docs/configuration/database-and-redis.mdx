@@ -16,6 +16,8 @@ PostgreSQL 是 SyncTV 的主持久化存储。用户、房间、播放列表、�
 ```yaml
 database:
   url: "postgresql://synctv:synctv@localhost:5432/synctv"
+  # 可选，只用于白名单内的最终一致读
+  read_url: "postgresql://synctv:synctv@postgres-read:5432/synctv"
 ```
 
 生产环境使用 secret file：
@@ -23,6 +25,7 @@ database:
 ```yaml
 database:
   url_file: "/run/secrets/database_url"
+  read_url_file: "/run/secrets/database_read_url"
 ```
 
 环境变量：
@@ -30,7 +33,15 @@ database:
 ```bash
 SYNCTV_DATABASE_URL=postgresql://synctv:password@postgres:5432/synctv
 SYNCTV_DATABASE_URL_FILE=/run/secrets/database_url
+SYNCTV_DATABASE_READ_URL=postgresql://synctv:password@postgres-read:5432/synctv
+SYNCTV_DATABASE_READ_URL_FILE=/run/secrets/database_read_url
+SYNCTV_DATABASE_READ_HOST=postgres-read
+SYNCTV_DATABASE_READ_PORT=5432
 ```
+
+`read_url` 优先级最高。也可以只配置 `read_host` / `SYNCTV_DATABASE_READ_HOST`，SyncTV 会复用主库连接里的用户名、密码和库名，只替换 host，并在 `read_port` 为空时复用主库端口。
+
+`read_url` / `read_host` 仅用于显式标记为最终一致的列表/发现类查询。写入、事务、迁移、权限检查、缓存重建和认证安全路径始终使用主库连接。
 
 ## 拆分数据库配置
 
@@ -41,6 +52,8 @@ database:
   username: "synctv"
   password_file: "/run/secrets/database_password"
   name: "synctv"
+  read_host: "postgres-read.example.com"
+  read_port: 5432
 ```
 
 使用拆分字段且没有显式 `database.url` 时，SyncTV 会清空默认 URL 并从拆分字段构建连接。YAML 中 `user` 是 `username` 的别名；环境变量 `SYNCTV_DATABASE_USER` 是 `SYNCTV_DATABASE_USERNAME` 的别名。

@@ -240,6 +240,50 @@ KubeBlocks PostgreSQL cluster name
 {{- end }}
 
 {{/*
+KubeBlocks PostgreSQL secondary read service name managed by this chart
+*/}}
+{{- define "synctv.postgresql.kubeblocks.readServiceName" -}}
+{{- include "synctv.nameWithSuffix" (list (include "synctv.postgresql.kubeblocks.clusterName" .) "postgresql-read") -}}
+{{- end }}
+
+{{/*
+Whether the chart should expose KubeBlocks secondaries as a read pool endpoint.
+*/}}
+{{- define "synctv.postgresql.hasAutoReadReplica" -}}
+{{- $replicas := int (.Values.postgresql.kubeblocks.replicas | default 2) -}}
+{{- $hasSecretReadUrl := or (and .Values.existingSecret .Values.config.database.useSecretReadUrl) (and (not .Values.existingSecret) .Values.secrets.database.readUrl) -}}
+{{- if and (eq (include "synctv.postgresql.mode" .) "kubeblocks") (gt $replicas 1) (not $hasSecretReadUrl) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Whether the application container should read SYNCTV_DATABASE_READ_URL from a Secret.
+Chart-managed Secrets can only be referenced when secrets.database.readUrl renders the key.
+External Secrets are trusted to provide the key when useSecretReadUrl=true.
+*/}}
+{{- define "synctv.database.useSecretReadUrlEnv" -}}
+{{- if .Values.existingSecret -}}
+  {{- if .Values.config.database.useSecretReadUrl -}}
+true
+  {{- end -}}
+{{- else if .Values.secrets.database.readUrl -}}
+true
+{{- else if .Values.config.database.useSecretReadUrl -}}
+{{- fail "config.database.useSecretReadUrl=true requires existingSecret with SYNCTV_DATABASE_READ_URL or secrets.database.readUrl for the chart-managed Secret" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+PostgreSQL read connection host for SyncTV.
+*/}}
+{{- define "synctv.postgresql.readHost" -}}
+{{- if include "synctv.postgresql.hasAutoReadReplica" . -}}
+{{- include "synctv.postgresql.kubeblocks.readServiceName" . -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 KubeBlocks Redis cluster name
 */}}
 {{- define "synctv.redis.kubeblocks.clusterName" -}}

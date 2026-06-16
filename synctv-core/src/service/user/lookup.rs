@@ -24,6 +24,14 @@ impl UserService {
         self.repository.list(query).await
     }
 
+    pub async fn list_users_eventually_consistent(
+        &self,
+        query: &crate::models::UserListQuery,
+    ) -> Result<(Vec<User>, i64)> {
+        query.pagination.validate()?;
+        self.repository.list_eventually_consistent(query).await
+    }
+
     pub async fn list_admins(
         &self,
         query: &crate::models::UserListQuery,
@@ -32,9 +40,24 @@ impl UserService {
         self.repository.list_admins(query).await
     }
 
+    pub async fn list_admins_eventually_consistent(
+        &self,
+        query: &crate::models::UserListQuery,
+    ) -> Result<(Vec<User>, i64)> {
+        query.pagination.validate()?;
+        self.repository
+            .list_admins_eventually_consistent(query)
+            .await
+    }
+
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
         self.repository.pool()
+    }
+
+    #[must_use]
+    pub fn eventually_consistent_pool(&self) -> &PgPool {
+        self.repository.eventually_consistent_pool()
     }
 
     #[must_use]

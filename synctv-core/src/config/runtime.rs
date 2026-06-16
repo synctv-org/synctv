@@ -248,6 +248,38 @@ impl Config {
         )
     }
 
+    /// Get optional read-only database URL.
+    #[must_use]
+    pub fn database_read_url(&self) -> Option<String> {
+        let read_url = self.database.read_url.trim();
+        if !read_url.is_empty() {
+            return Some(read_url.to_string());
+        }
+        let read_host = self.database.read_host.trim();
+        if read_host.is_empty() {
+            return None;
+        }
+        let primary_url = self.database_url();
+        if primary_url.trim().is_empty() {
+            return None;
+        }
+        let Ok(mut url) = url::Url::parse(&primary_url) else {
+            return None;
+        };
+        if url.set_host(Some(read_host)).is_err() {
+            return None;
+        }
+        let read_port = if self.database.read_port == 0 {
+            self.database.port
+        } else {
+            self.database.read_port
+        };
+        if read_port != 0 && url.set_port(Some(read_port)).is_err() {
+            return None;
+        }
+        Some(url.to_string())
+    }
+
     /// Get Redis URL
     #[must_use]
     pub fn redis_url(&self) -> String {

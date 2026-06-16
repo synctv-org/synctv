@@ -59,18 +59,35 @@ impl From<UserListRow> for User {
 #[derive(Clone)]
 pub struct UserRepository {
     pool: PgPool,
+    read_pool: Option<PgPool>,
 }
 
 impl UserRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            read_pool: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            pool,
+            read_pool: Some(read_pool),
+        }
     }
 
     /// Get the database pool
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    #[must_use]
+    pub fn eventually_consistent_pool(&self) -> &PgPool {
+        self.read_pool.as_ref().unwrap_or(&self.pool)
     }
 
     /// Create a new user.
@@ -837,6 +854,7 @@ impl UserRepository {
         &self,
         query: &UserListQuery,
         role_scope: UserListRoleScope,
+        pool: &PgPool,
     ) -> Result<(Vec<User>, i64)> {
         let limit = query.pagination.limit_i64()?;
         let offset = query.pagination.offset_i64()?;
@@ -849,10 +867,7 @@ impl UserRepository {
             role_scope,
             search_pattern.as_deref(),
         );
-        let count: i64 = count_builder
-            .build_query_scalar()
-            .fetch_one(&self.pool)
-            .await?;
+        let count: i64 = count_builder.build_query_scalar().fetch_one(pool).await?;
 
         let mut list_builder = QueryBuilder::<Postgres>::new(
             "SELECT \
@@ -882,7 +897,7 @@ impl UserRepository {
             .push_bind(offset);
         let rows = list_builder
             .build_query_as::<UserListRow>()
-            .fetch_all(&self.pool)
+            .fetch_all(pool)
             .await?;
         let users = rows.into_iter().map(User::from).collect();
 
@@ -891,14 +906,40 @@ impl UserRepository {
 
     /// List users with pagination
     pub async fn list(&self, query: &UserListQuery) -> Result<(Vec<User>, i64)> {
-        self.list_with_role_scope(query, UserListRoleScope::All)
+        self.list_with_role_scope(query, UserListRoleScope::All, &self.pool)
             .await
+    }
+
+    /// List users with pagination on the eventually consistent read pool.
+    pub async fn list_eventually_consistent(
+        &self,
+        query: &UserListQuery,
+    ) -> Result<(Vec<User>, i64)> {
+        self.list_with_role_scope(
+            query,
+            UserListRoleScope::All,
+            self.eventually_consistent_pool(),
+        )
+        .await
     }
 
     /// List admin-capable users (root + admin) with pagination.
     pub async fn list_admins(&self, query: &UserListQuery) -> Result<(Vec<User>, i64)> {
-        self.list_with_role_scope(query, UserListRoleScope::Admins)
+        self.list_with_role_scope(query, UserListRoleScope::Admins, &self.pool)
             .await
+    }
+
+    /// List admin-capable users on the eventually consistent read pool.
+    pub async fn list_admins_eventually_consistent(
+        &self,
+        query: &UserListQuery,
+    ) -> Result<(Vec<User>, i64)> {
+        self.list_with_role_scope(
+            query,
+            UserListRoleScope::Admins,
+            self.eventually_consistent_pool(),
+        )
+        .await
     }
 
     /// Check if username exists

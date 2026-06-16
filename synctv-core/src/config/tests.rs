@@ -918,6 +918,11 @@ fn test_from_file_resolves_typed_secret_file_references_relative_to_config_path(
         "postgresql://synctv:secret@db.example.com:5432/synctv\n",
     )
     .checked("database url file should be written");
+    std::fs::write(
+        config_dir.join("database.read.url"),
+        "postgresql://synctv:secret@db-ro.example.com:5432/synctv\n",
+    )
+    .checked("database read url file should be written");
     std::fs::write(config_dir.join("database.password"), "database-password\n")
         .checked("database password file should be written");
     std::fs::write(
@@ -958,6 +963,7 @@ metrics:
     basic_password_file: "./metrics.password"
 database:
   url_file: "./database.url"
+  read_url_file: "./database.read.url"
   password_file: "./database.password"
 redis:
   url_file: "./redis.url"
@@ -996,6 +1002,10 @@ bootstrap:
     assert_eq!(
         config.database.url,
         "postgresql://synctv:secret@db.example.com:5432/synctv"
+    );
+    assert_eq!(
+        config.database.read_url,
+        "postgresql://synctv:secret@db-ro.example.com:5432/synctv"
     );
     assert_eq!(config.database.password, "database-password");
     assert_eq!(config.redis.url, "redis://:secret@redis.example.com:6379/0");
@@ -2031,6 +2041,10 @@ fn test_from_env_loads_top_level_secret_file_overrides() {
         "database.url",
         "postgresql://synctv:secret@db.example.com:5432/synctv",
     );
+    let database_read_url = write_secret(
+        "database.read.url",
+        "postgresql://synctv:secret@db-ro.example.com:5432/synctv",
+    );
     let database_password = write_secret("database.password", "database-password-from-env-file");
     let redis_url = write_secret("redis.url", "redis://:secret@redis.example.com:6379/0");
     let redis_password = write_secret("redis.password", "redis-password-from-env-file");
@@ -2068,6 +2082,10 @@ fn test_from_env_loads_top_level_secret_file_overrides() {
         (
             "SYNCTV_DATABASE_URL_FILE",
             database_url.to_str().checked("utf-8 path"),
+        ),
+        (
+            "SYNCTV_DATABASE_READ_URL_FILE",
+            database_read_url.to_str().checked("utf-8 path"),
         ),
         (
             "SYNCTV_DATABASE_PASSWORD_FILE",
@@ -2114,6 +2132,10 @@ fn test_from_env_loads_top_level_secret_file_overrides() {
         config.database.url,
         "postgresql://synctv:secret@db.example.com:5432/synctv"
     );
+    assert_eq!(
+        config.database.read_url,
+        "postgresql://synctv:secret@db-ro.example.com:5432/synctv"
+    );
     assert_eq!(config.database.password, "database-password-from-env-file");
     assert_eq!(config.redis.url, "redis://:secret@redis.example.com:6379/0");
     assert_eq!(config.redis.password, "redis-password-from-env-file");
@@ -2145,12 +2167,14 @@ fn test_from_env_builds_database_and_redis_urls_from_split_config() {
     let config = Config::from_env_map(&env_map(&[
         ("SYNCTV_DATABASE_HOST", "db.example.com"),
         ("SYNCTV_DATABASE_PORT", "5433"),
-        ("SYNCTV_DATABASE_USERNAME", "synctv"),
+        ("SYNCTV_DATABASE_USER", "synctv"),
         (
             "SYNCTV_DATABASE_PASSWORD_FILE",
             database_password.to_str().checked("utf-8 path"),
         ),
         ("SYNCTV_DATABASE_NAME", "synctv_prod"),
+        ("SYNCTV_DATABASE_READ_HOST", "db-ro.example.com"),
+        ("SYNCTV_DATABASE_READ_PORT", "5434"),
         ("SYNCTV_REDIS_HOST", "redis.example.com"),
         ("SYNCTV_REDIS_PORT", "6380"),
         ("SYNCTV_REDIS_USERNAME", "cache-user"),
@@ -2168,10 +2192,64 @@ fn test_from_env_builds_database_and_redis_urls_from_split_config() {
         config.database_url(),
         "postgresql://synctv:pg-password@db.example.com:5433/synctv_prod"
     );
+    assert_eq!(
+        config.database_read_url(),
+        Some("postgresql://synctv:pg-password@db-ro.example.com:5434/synctv_prod".to_string())
+    );
     assert_eq!(config.redis.username, "cache-user");
     assert_eq!(
         config.redis_url(),
         "redis://cache-user:redis-password@redis.example.com:6380/7"
+    );
+}
+
+#[test]
+fn test_database_read_host_uses_primary_port_when_read_port_is_empty() {
+    let mut config = Config::default();
+    config.database.url.clear();
+    config.database.host = "db.example.com".to_string();
+    config.database.port = 5433;
+    config.database.username = "synctv".to_string();
+    config.database.password = "pg-password".to_string();
+    config.database.name = "synctv_prod".to_string();
+    config.database.read_host = "db-ro.example.com".to_string();
+    config.database.read_port = 0;
+
+    assert_eq!(
+        config.database_read_url(),
+        Some("postgresql://synctv:pg-password@db-ro.example.com:5433/synctv_prod".to_string())
+    );
+}
+
+#[test]
+fn test_database_user_env_alias_overrides_config_file_username() {
+    let temp_dir = tempdir().checked("temp dir should be created");
+    let config_path = temp_dir.path().join("synctv.yaml");
+    std::fs::write(
+        &config_path,
+        r#"
+database:
+  host: "db.example.com"
+  port: 5432
+  username: "file-user"
+  password: "file-password"
+  name: "synctv"
+jwt:
+  secret: "12345678901234567890123456789012"
+"#,
+    )
+    .checked("config file should be written");
+
+    let config = Config::load_with_env_map(
+        Some(config_path.to_str().checked("utf-8 path")),
+        &env_map(&[("SYNCTV_DATABASE_USER", "env-user")]),
+    )
+    .checked("config should load with database user alias");
+
+    assert_eq!(config.database.username, "env-user");
+    assert_eq!(
+        config.database_url(),
+        "postgresql://env-user:file-password@db.example.com:5432/synctv"
     );
 }
 

@@ -86,6 +86,7 @@ use synctv_realtime::sync::ConnectionRuntime;
 /// Groups all dependencies into a single struct to avoid `too_many_arguments`.
 pub struct ClientApiConfig {
     pub user_service: Arc<UserService>,
+    pub read_pool: Option<sqlx::PgPool>,
     pub room_service: Arc<RoomService>,
     pub chat_service: Option<Arc<ChatService>>,
     pub connection_service: Arc<dyn ConnectionRuntime>,
@@ -634,9 +635,17 @@ impl ClientApiImpl {
 
     #[must_use]
     pub fn new_with_runtime(config: ClientApiConfig, runtime: ClientApiRuntime) -> Self {
-        let review_service = Arc::new(ReviewService::new(config.user_service.pool().clone()));
-        let content_report_service = Arc::new(ContentReportService::new(
+        let read_pool = config
+            .read_pool
+            .clone()
+            .unwrap_or_else(|| config.user_service.eventually_consistent_pool().clone());
+        let review_service = Arc::new(ReviewService::new_with_read_pool(
             config.user_service.pool().clone(),
+            read_pool.clone(),
+        ));
+        let content_report_service = Arc::new(ContentReportService::new_with_read_pool(
+            config.user_service.pool().clone(),
+            read_pool,
         ));
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             config.jwt_service.clone(),

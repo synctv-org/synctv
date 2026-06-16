@@ -146,6 +146,7 @@ pub struct InitServicesOptions {
     pub ssrf_guard: synctv_common::ssrf::SsrfGuard,
     pub credential_encryption_key_override: Option<String>,
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+    pub read_pool: Option<PgPool>,
 }
 
 impl Default for InitServicesOptions {
@@ -155,6 +156,7 @@ impl Default for InitServicesOptions {
             ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
             credential_encryption_key_override: None,
             realtime_outbox: None,
+            read_pool: None,
         }
     }
 }
@@ -178,6 +180,7 @@ impl std::fmt::Debug for InitServicesOptions {
                 "realtime_outbox",
                 &self.realtime_outbox.as_ref().map(|_| "<injected>"),
             )
+            .field("read_pool", &self.read_pool.as_ref().map(|_| "<injected>"))
             .finish()
     }
 }
@@ -344,6 +347,7 @@ pub async fn init_services_with_options(
     options: InitServicesOptions,
 ) -> Result<Services, anyhow::Error> {
     info!("Initializing services...");
+    let read_pool = options.read_pool.clone().unwrap_or_else(|| pool.clone());
 
     let cluster_mode = config.cluster_runtime_enabled();
 
@@ -452,12 +456,18 @@ pub async fn init_services_with_options(
     let provider_instance_repo = match &credential_encryption {
         Some(enc) => {
             info!("ProviderInstanceRepository initialized with encryption enabled");
-            Arc::new(ProviderInstanceRepository::new_with_encryption(
-                pool.clone(),
-                enc.clone(),
-            ))
+            Arc::new(
+                ProviderInstanceRepository::new_with_encryption_and_read_pool(
+                    pool.clone(),
+                    read_pool.clone(),
+                    enc.clone(),
+                ),
+            )
         }
-        None => Arc::new(ProviderInstanceRepository::new(pool.clone())),
+        None => Arc::new(ProviderInstanceRepository::new_with_read_pool(
+            pool.clone(),
+            read_pool.clone(),
+        )),
     };
     info!("ProviderInstanceRepository initialized");
 
@@ -801,6 +811,7 @@ pub async fn init_services_with_options(
             version_fence: version_fence.clone(),
             permission_service: Some(user_permission_service),
             file_storage_service: Some(user_avatar_file_storage),
+            read_pool: Some(read_pool.clone()),
         },
     ));
     info!("UserService initialized with construction-time dependencies");

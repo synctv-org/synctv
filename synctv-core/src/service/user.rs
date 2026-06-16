@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use sqlx::PgPool;
+
 use crate::{
     cache::{
         CacheInvalidationRuntime, ConsistencyCoordinator, KeyBuilder, UsernameCache,
@@ -89,6 +91,7 @@ pub struct UserServiceRuntimeOptions {
     pub permission_service: Option<PermissionService>,
     pub version_fence: Arc<dyn VersionFenceStore>,
     pub file_storage_service: Option<Arc<dyn FileStorageService>>,
+    pub read_pool: Option<PgPool>,
 }
 
 impl UserServiceRuntimeOptions {
@@ -114,6 +117,7 @@ impl UserServiceRuntimeOptions {
             permission_service: None,
             version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
             file_storage_service: None,
+            read_pool: None,
         }
     }
 }

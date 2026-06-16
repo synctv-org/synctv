@@ -1,8 +1,6 @@
 use prost::Message;
 use sha2::{Digest, Sha256};
-use synctv_core::models::{
-    ChatEventKind, ChatMessageEvent, ChatMessageStatus, NewStoredFile, RoomPlaybackState,
-};
+use synctv_core::models::{ChatEventKind, ChatMessageEvent, ChatMessageStatus, RoomPlaybackState};
 
 use synctv_proto::client::{ClientMessage, ServerMessage};
 
@@ -694,8 +692,6 @@ pub(crate) fn core_chat_attachment_to_proto(
 ) -> Result<synctv_proto::client::ChatAttachment, String> {
     Ok(synctv_proto::client::ChatAttachment {
         id: attachment.id.clone(),
-        storage_backend: attachment.storage_backend.clone(),
-        object_key: attachment.object_key.clone(),
         url: required_chat_attachment_url(attachment)?,
         mime_type: required_chat_attachment_mime_type(attachment)?,
         size_bytes: required_chat_attachment_size_bytes(attachment)?,
@@ -708,6 +704,10 @@ pub(crate) fn core_chat_attachment_to_proto(
         .map_err(|error| error.to_string())?,
         filename: attachment.filename.clone().unwrap_or_default(),
         kind: chat_attachment_kind_to_proto(attachment.kind) as i32,
+        reuse_token: attachment.reuse_token.clone().unwrap_or_default(),
+        reuse_expires_at: attachment
+            .reuse_expires_at
+            .map(|expires_at| expires_at.timestamp()),
     })
 }
 
@@ -765,38 +765,6 @@ pub(crate) fn chat_attachment_kind_to_proto(
             synctv_proto::client::ChatAttachmentKind::Image
         }
     }
-}
-
-pub(crate) fn proto_chat_attachment_kind_from_mime_type(
-    mime_type: &str,
-) -> synctv_proto::client::ChatAttachmentKind {
-    if mime_type.trim().to_ascii_lowercase().starts_with("image/") {
-        synctv_proto::client::ChatAttachmentKind::Image
-    } else {
-        synctv_proto::client::ChatAttachmentKind::File
-    }
-}
-
-pub(crate) fn proto_chat_attachment_to_core(
-    attachment: &synctv_proto::client::ChatAttachment,
-) -> Result<NewStoredFile, String> {
-    let metadata = if attachment.metadata.is_empty() {
-        serde_json::Value::Object(Default::default())
-    } else {
-        serde_json::from_slice(&attachment.metadata).map_err(|error| error.to_string())?
-    };
-    Ok(NewStoredFile {
-        filename: (!attachment.filename.trim().is_empty()).then(|| attachment.filename.clone()),
-        id: attachment.id.clone(),
-        storage_backend: attachment.storage_backend.clone(),
-        object_key: attachment.object_key.clone(),
-        url: (!attachment.url.trim().is_empty()).then(|| attachment.url.clone()),
-        mime_type: (!attachment.mime_type.trim().is_empty()).then(|| attachment.mime_type.clone()),
-        size_bytes: (attachment.size_bytes > 0).then_some(attachment.size_bytes),
-        width: (attachment.width > 0).then_some(attachment.width),
-        height: (attachment.height > 0).then_some(attachment.height),
-        metadata,
-    })
 }
 
 /// Binary codec for proto messages

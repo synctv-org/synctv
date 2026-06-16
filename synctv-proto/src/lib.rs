@@ -2179,20 +2179,35 @@ mod tests {
                 "content":"",
                 "client_message_id":"client-message-2",
                 "attachments":[{
-                    "id":"attachment-1",
-                    "storage_backend":"database",
-                    "object_key":"chat/attachments/one.png",
-                    "url":"https://example.test/attachment.png",
-                    "mime_type":"image/png",
-                    "size_bytes":"68",
-                    "width":1,
-                    "height":1
+                    "id":"attachment-1"
                 }]
             }"#,
         )
         .expect("Chat attachment send should allow omitted attachment metadata");
         assert_eq!(decoded.attachments.len(), 1);
-        assert!(decoded.attachments[0].metadata.is_empty());
+        assert_eq!(decoded.attachments[0].id, "attachment-1");
+        assert_eq!(
+            decoded.attachments[0].kind,
+            crate::client::ChatAttachmentReferenceKind::Unspecified as i32
+        );
+
+        let decoded: crate::client::SendChatMessageRequest = serde_json::from_str(
+            r#"{
+                "content":"",
+                "client_message_id":"client-message-3",
+                "attachments":[{
+                    "id":"reuse-token",
+                    "kind":2
+                }]
+            }"#,
+        )
+        .expect("Chat attachment send should allow reuse references");
+        assert_eq!(decoded.attachments.len(), 1);
+        assert_eq!(decoded.attachments[0].id, "reuse-token");
+        assert_eq!(
+            decoded.attachments[0].kind,
+            crate::client::ChatAttachmentReferenceKind::Reuse as i32
+        );
 
         let decoded: crate::client::EditChatMessageRequest = serde_json::from_str(
             r#"{

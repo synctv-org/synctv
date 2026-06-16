@@ -2333,10 +2333,9 @@ impl ChatRepository {
             let kind = attachment
                 .mime_type
                 .as_deref()
-                .map(ChatAttachmentKind::from_mime_type)
-                .unwrap_or(ChatAttachmentKind::File);
+                .map_or(ChatAttachmentKind::File, ChatAttachmentKind::from_mime_type);
             let row = sqlx::query_as::<_, ChatAttachment>(
-                r#"
+                r"
                 INSERT INTO chat_message_attachments (
                     id, kind, room_id, message_id, message_created_at, filename,
                     storage_backend, object_key, url, mime_type, size_bytes, width, height, metadata
@@ -2357,7 +2356,7 @@ impl ChatRepository {
                           height,
                           metadata,
                           created_at
-                "#,
+                ",
             )
             .bind(&attachment.id)
             .bind(kind)
@@ -2725,7 +2724,7 @@ impl ChatRepository {
         message_created_at: DateTime<Utc>,
     ) -> Result<Vec<ChatAttachment>> {
         let attachments = sqlx::query_as::<_, ChatAttachment>(
-            r#"
+            r"
             SELECT id,
                    kind,
                    room_id,
@@ -2744,7 +2743,7 @@ impl ChatRepository {
             FROM chat_message_attachments
             WHERE message_id = $1 AND message_created_at = $2
             ORDER BY created_at ASC, id ASC
-            "#,
+            ",
         )
         .bind(message_id)
         .bind(message_created_at)
@@ -2863,7 +2862,7 @@ impl ChatRepository {
         message_created_at: DateTime<Utc>,
     ) -> Result<Vec<ChatAttachment>> {
         let attachments = sqlx::query_as::<_, ChatAttachment>(
-            r#"
+            r"
             SELECT id,
                    kind,
                    room_id,
@@ -2882,7 +2881,7 @@ impl ChatRepository {
             FROM chat_message_attachments
             WHERE message_id = $1 AND message_created_at = $2
             ORDER BY created_at ASC, id ASC
-            "#,
+            ",
         )
         .bind(message_id)
         .bind(message_created_at)
@@ -2903,7 +2902,7 @@ impl ChatRepository {
         let ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
         let created_ats: Vec<DateTime<Utc>> = messages.iter().map(|m| m.created_at).collect();
         let attachments = sqlx::query_as::<_, ChatAttachment>(
-            r#"
+            r"
             SELECT a.id,
                    a.kind,
                    a.room_id,
@@ -2923,7 +2922,7 @@ impl ChatRepository {
             JOIN unnest($1::bigint[], $2::timestamptz[]) AS m(id, created_at)
               ON a.message_id = m.id AND a.message_created_at = m.created_at
             ORDER BY a.message_created_at DESC, a.message_id DESC, a.created_at ASC, a.id ASC
-            "#,
+            ",
         )
         .bind(&ids)
         .bind(&created_ats)

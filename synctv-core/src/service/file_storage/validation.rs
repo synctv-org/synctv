@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::{
     models::{
         CreateFileUploadSession, FileUploadPolicy, NewStoredFile, FILE_ID_MAX_CHARS,
-        FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+        FILE_OBJECT_KEY_MAX_CHARS, FILE_SHA256_HEX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
     },
     service::file_storage::{S3FileStorageConfig, FILE_OWNERSHIP_PROOF_KEY, FILE_UPLOAD_TOKEN_KEY},
     Error, Result,
@@ -120,16 +120,19 @@ pub(crate) fn validate_create_file_upload_session(request: &CreateFileUploadSess
             "file dimensions must be positive".to_string(),
         ));
     }
-    let Some(checksum) = &request.checksum_sha256 else {
-        return Err(Error::InvalidInput(
-            "checksum_sha256 is required for file uploads".to_string(),
-        ));
-    };
-    let valid = checksum.len() == 64 && checksum.chars().all(|c| c.is_ascii_hexdigit());
-    if !valid {
-        return Err(Error::InvalidInput(
-            "checksum_sha256 must be a 64-character hex string".to_string(),
-        ));
+    for part in &request.parts {
+        let valid = part.checksum_sha256.len() == FILE_SHA256_HEX_CHARS
+            && part.checksum_sha256.chars().all(|c| c.is_ascii_hexdigit());
+        if !valid {
+            return Err(Error::InvalidInput(
+                "file upload part checksum_sha256 must be a 64-character hex string".to_string(),
+            ));
+        }
+        if part.part_number <= 0 || part.offset_bytes < 0 || part.size_bytes <= 0 {
+            return Err(Error::InvalidInput(
+                "file upload manifest part number, offset, and size are invalid".to_string(),
+            ));
+        }
     }
     if !request.metadata.is_object() {
         return Err(Error::InvalidInput(
@@ -182,10 +185,14 @@ pub(super) fn validate_s3_file_storage_config(config: &S3FileStorageConfig) -> R
         || config.secret_access_key.trim().is_empty()
         || config.bucket.trim().is_empty()
         || config.region.trim().is_empty()
+        || config
+            .public_base_url
+            .as_deref()
+            .is_none_or(|url| url.trim().is_empty())
         || config.upload_token_secret.trim().is_empty()
     {
         return Err(Error::InvalidInput(
-            "S3 file storage requires endpoint, bucket, region, access_key_id, secret_access_key, and upload_token_secret"
+            "S3 file storage requires endpoint, bucket, region, access_key_id, secret_access_key, public_base_url, and upload_token_secret"
                 .to_string(),
         ));
     }
@@ -196,11 +203,7 @@ pub(super) fn validate_s3_file_storage_config(config: &S3FileStorageConfig) -> R
     }
     url::Url::parse(config.endpoint.trim())
         .map_err(|error| Error::InvalidInput(format!("Invalid S3 endpoint: {error}")))?;
-    if let Some(public_base_url) = config
-        .public_base_url
-        .as_deref()
-        .filter(|url| !url.trim().is_empty())
-    {
+    if let Some(public_base_url) = config.public_base_url.as_deref() {
         url::Url::parse(public_base_url.trim())
             .map_err(|error| Error::InvalidInput(format!("Invalid S3 public_base_url: {error}")))?;
     }

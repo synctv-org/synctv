@@ -233,10 +233,12 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `file_storage.upload_token_secret` | secret string | `""` | Signing secret for file upload/read tokens; empty value derives from `jwt.secret` at startup |
 | `file_storage.unreferenced_object_retention_seconds` | seconds | `86400` | Grace period before uploaded objects with no active product reference are cleaned; `0` disables orphan cleanup |
 | `file_storage.backends.<name>.type` | `disabled`, `database`, or `s3` | `disabled` | Registered backend implementation type |
-| `file_storage.backends.<name>.database.compression` | `none`, `lz4`, or `zstd` | `zstd` | Compression algorithm used by `type: "database"` backends for bytes stored in PostgreSQL `file_blobs` |
-| `file_storage.backends.<name>.s3.*` | S3 config | default S3 fields | S3-compatible settings for backends with `type: "s3"` |
+| `file_storage.backends.<name>.database.compression` | `none`, `lz4`, or `zstd` | `zstd` | Compression algorithm used by `type: "database"` backends for persisted `file_blob_parts` segments |
+| `file_storage.backends.<name>.database.compression_min_size_bytes` | bytes | `4096` | Minimum original payload size before compression is attempted |
+| `file_storage.backends.<name>.database.compression_min_savings_percent` | `0` to `100` | `10` | Minimum saved percentage required before compressed bytes are stored |
+| `file_storage.backends.<name>.s3.*` | S3 config | default S3 fields | S3-compatible settings for backends with `type: "s3"`; `public_base_url` is required for readable file URLs after upload or ownership proof validation |
 
-Clients provide `checksum_sha256` in upload-session requests. The selected backend stores content-addressed objects by `(storage_backend, checksum_sha256, size_bytes)`, so duplicate files return `upload_required=false` with an ownership proof challenge. Reads and cleanup use each object's stored `storage_backend`, allowing product data to mix backends across configuration changes.
+Upload sessions use a server-provided part plan: clients first request `FileUploadPlan` with empty `parts`, hash every planned part with SHA-256, then submit `FileUploadManifestPart[]`. SyncTV computes `content_manifest_sha256` from the canonical manifest and uses it for instant-upload object lookup and unfinished resumable-session lookup. Database backends persist fixed `file_blob_parts` segments and serve HTTP Range requests directly from those segments, decompressing only the parts that overlap the requested byte range. S3 backends use native multipart uploads with presigned part URLs, sign `x-amz-checksum-sha256` into each part URL, and validate object identity from the recorded part manifest at completion without reading GB-scale objects back from S3. Duplicate objects return `upload_required=false` with an ownership proof challenge; readable URLs are signed after proof validation and business-reference persistence.
 
 ### File Storage Examples
 

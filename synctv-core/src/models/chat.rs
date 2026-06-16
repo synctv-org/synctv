@@ -4,7 +4,10 @@ use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
-use super::id::{MediaId, PlaylistId, RoomId, UserId};
+use super::{
+    file_storage::FileUploadManifestPart,
+    id::{MediaId, PlaylistId, RoomId, UserId},
+};
 
 pub const CHAT_CLIENT_MESSAGE_ID_MAX_CHARS: usize = 128;
 pub const CHAT_CLIENT_OPERATION_ID_MAX_CHARS: usize = 128;
@@ -216,6 +219,12 @@ pub struct ChatAttachment {
     pub height: Option<i32>,
     pub metadata: JsonValue,
     pub created_at: DateTime<Utc>,
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub reuse_token: Option<String>,
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub reuse_expires_at: Option<DateTime<Utc>>,
 }
 
 impl ChatAttachment {
@@ -246,7 +255,7 @@ pub struct CreateChatAttachmentUploadSession {
     pub size_bytes: i64,
     pub width: Option<i32>,
     pub height: Option<i32>,
-    pub checksum_sha256: Option<String>,
+    pub parts: Vec<FileUploadManifestPart>,
     pub metadata: JsonValue,
 }
 
@@ -257,7 +266,6 @@ pub struct ChatAttachmentUploadSession {
     pub ownership_proof_required: bool,
     pub ownership_proof_nonce: Option<String>,
     pub ownership_proof_ranges: Vec<super::file_storage::FileOwnershipProofRange>,
-    pub ownership_proof_metadata_key: Option<String>,
     pub upload_url: Option<String>,
     pub upload_method: Option<String>,
     pub upload_headers: BTreeMap<String, String>,
@@ -289,7 +297,7 @@ pub struct SendChatMessage {
     pub message_type: ChatMessageType,
     pub reply_to_message_id: Option<i64>,
     pub metadata: JsonValue,
-    pub attachments: Vec<super::file_storage::NewStoredFile>,
+    pub attachments: Vec<super::file_storage::SubmittedFileReference>,
     pub mentions: Vec<ChatMentionInput>,
 }
 

@@ -31,8 +31,8 @@ use synctv_core::{
 };
 use synctv_proto::client::{
     CreateChatAttachmentUploadSessionRequest, DeleteChatMessageRequest, EditChatMessageRequest,
-    GetChatHistoryRequest, GetChatMessageContextRequest, GetChatMessageRequest,
-    GetChatReadStateRequest, MarkChatReadRequest, SendChatMessageRequest,
+    FileUploadManifestPart, GetChatHistoryRequest, GetChatMessageContextRequest,
+    GetChatMessageRequest, GetChatReadStateRequest, MarkChatReadRequest, SendChatMessageRequest,
 };
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
@@ -254,7 +254,14 @@ async fn test_chat_write_endpoints_require_signed_in_user_and_chat_permission() 
                     size_bytes: 10,
                     width: 1,
                     height: 1,
-                    checksum_sha256: "abc".to_string(),
+                    parts: vec![FileUploadManifestPart {
+                        part_number: 1,
+                        offset_bytes: 0,
+                        size_bytes: 10,
+                        checksum_sha256:
+                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                .to_string(),
+                    }],
                     metadata: br#"{"source":"test"}"#.to_vec(),
                 },
             )

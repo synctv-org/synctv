@@ -246,7 +246,8 @@ The chart creates separate Services for application traffic:
 Important transport defaults:
 
 - `config.server.grpcCompressionEnabled=true` enables gzip negotiation for public gRPC traffic and cluster gRPC calls.
-- `config.fileStorage.backends.<name>.database.compression=zstd` controls PostgreSQL file blob compression for database file-storage backends; allowed values are `none`, `lz4`, and `zstd`.
+- `config.fileStorage.backends.<name>.database.compression=zstd` controls PostgreSQL `file_blob_parts` compression for database file-storage backends; `compressionMinSizeBytes` gates small payloads and `compressionMinSavingsPercent=10` stores raw bytes when compression saves less than 10%. Database file storage uses permanent segments and serves HTTP Range from those segments.
+- `config.fileStorage.backends.<name>.s3.publicBaseUrl` is required for S3 file-storage backends because clients receive readable file URLs after upload or ownership proof validation. S3 file storage uses native multipart direct uploads for resumable GB-scale objects.
 - To expose the built-in STUN server, set `stunService.enabled=true`, use `stunService.type=LoadBalancer` or `NodePort`, and set `config.webrtc.stunExternalAddr` to the public client-reachable address.
 - `config.redis.responseTimeoutSeconds=5` bounds how long a Redis command can wait for a response.
 - `config.redis.pipelineBufferSize=512` controls the Redis connection manager pipeline buffer for bursty short-command workloads.

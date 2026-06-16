@@ -4,7 +4,9 @@ use crate::impls::ApiError;
 use crate::realtime_lifecycle::DeletedRoomAfterCommitFanout;
 use std::collections::HashMap;
 use synctv_core::models::EmailTokenType;
-use synctv_core::models::{FileBlob, FileUploadSession, NewStoredFile, PageParams, RoomId, UserId};
+use synctv_core::models::{
+    FileBlob, FileUploadSession, NewStoredFile, PageParams, RoomId, StoreFileUploadResult, UserId,
+};
 use synctv_core::service::{
     AuthFactorMethod, SensitiveVerificationChallenge, SensitiveVerificationOutcome,
     TokenAuthContext,
@@ -15,7 +17,12 @@ use synctv_proto::client::{
 };
 
 use super::convert::{stored_file_reference_to_media_cover, try_user_to_proto};
-use super::media::{required_stored_file_fields, upload_session_fields};
+use super::media::{
+    complete_upload_response_fields, complete_upload_session_request, file_byte_range_to_proto,
+    proto_file_range_request, proto_file_upload_range, proto_upload_manifest_parts,
+    upload_session_fields, uploaded_parts_response_fields,
+};
+use super::media::{file_upload_reference_to_proto, required_file_upload_reference};
 use super::ClientApiImpl;
 
 const USER_ROOM_DELETION_PAGE_SIZE: u32 = 100;
@@ -134,49 +141,10 @@ fn sensitive_start_outcome_to_proto(
     }
 }
 
-fn new_file_to_avatar_proto(
+fn upload_session_avatar_proto(
     file: &NewStoredFile,
-) -> Result<synctv_proto::client::UserAvatar, ApiError> {
-    let fields = required_stored_file_fields(file, "user avatar metadata")?;
-    Ok(synctv_proto::client::UserAvatar {
-        id: file.id.clone(),
-        storage_backend: file.storage_backend.clone(),
-        object_key: file.object_key.clone(),
-        url: fields.url,
-        mime_type: fields.mime_type,
-        size_bytes: fields.size_bytes,
-        width: fields.width,
-        height: fields.height,
-        metadata: fields.metadata,
-    })
-}
-
-fn avatar_proto_to_new_file(
-    avatar: synctv_proto::client::UserAvatar,
-) -> Result<NewStoredFile, ApiError> {
-    let metadata = if avatar.metadata.is_empty() {
-        serde_json::Value::Object(Default::default())
-    } else {
-        serde_json::from_slice(&avatar.metadata)
-            .map_err(|error| ApiError::InvalidInput(format!("Invalid avatar metadata: {error}")))?
-    };
-    if !metadata.is_object() {
-        return Err(ApiError::InvalidInput(
-            "Avatar metadata must be a JSON object".to_string(),
-        ));
-    }
-    Ok(NewStoredFile {
-        filename: None,
-        id: avatar.id,
-        storage_backend: avatar.storage_backend,
-        object_key: avatar.object_key,
-        url: (!avatar.url.trim().is_empty()).then_some(avatar.url),
-        mime_type: (!avatar.mime_type.trim().is_empty()).then_some(avatar.mime_type),
-        size_bytes: (avatar.size_bytes > 0).then_some(avatar.size_bytes),
-        width: (avatar.width > 0).then_some(avatar.width),
-        height: (avatar.height > 0).then_some(avatar.height),
-        metadata,
-    })
+) -> Result<synctv_proto::client::FileUploadReference, ApiError> {
+    file_upload_reference_to_proto(file)
 }
 
 fn avatar_upload_session_to_proto(
@@ -184,7 +152,7 @@ fn avatar_upload_session_to_proto(
 ) -> Result<synctv_proto::client::UserAvatarUploadSession, ApiError> {
     let fields = upload_session_fields(&session)?;
     Ok(synctv_proto::client::UserAvatarUploadSession {
-        avatar: Some(new_file_to_avatar_proto(&session.file)?),
+        avatar_reference: Some(upload_session_avatar_proto(&session.file)?),
         upload_required: session.upload_required,
         upload_url: fields.upload_url,
         upload_method: fields.upload_method,
@@ -203,16 +171,54 @@ fn avatar_upload_session_to_proto(
                 },
             )
             .collect(),
-        ownership_proof_metadata_key: fields.ownership_proof_metadata_key,
+        resumable: session.resumable,
+        part_size_bytes: session.part_size_bytes,
+        uploaded_size_bytes: session.uploaded_size_bytes,
+        uploaded_parts: session.uploaded_parts,
+        upload_id: session.upload_id,
+        part_urls: session
+            .part_urls
+            .into_iter()
+            .map(|part_url| synctv_proto::client::FileUploadPartUrl {
+                part_number: part_url.part_number,
+                offset_bytes: part_url.offset_bytes,
+                size_bytes: part_url.size_bytes,
+                upload_url: part_url.upload_url,
+                upload_method: part_url.upload_method,
+                upload_headers: part_url.upload_headers.into_iter().collect(),
+                expires_at: part_url.expires_at.map(|expires_at| expires_at.timestamp()),
+            })
+            .collect(),
+        upload_token: fields.upload_token,
+        encoded_object_key: session.encoded_object_key,
     })
+}
+
+fn avatar_upload_create_result_to_proto(
+    result: synctv_core::models::FileUploadSessionCreateResult,
+) -> Result<synctv_proto::client::CreateUserAvatarUploadSessionResponse, ApiError> {
+    use synctv_proto::client::create_user_avatar_upload_session_response::Result as ProtoResult;
+    Ok(
+        synctv_proto::client::CreateUserAvatarUploadSessionResponse {
+            result: Some(match result {
+                synctv_core::models::FileUploadSessionCreateResult::Plan(plan) => {
+                    ProtoResult::Plan(super::media::file_upload_plan_to_proto(plan))
+                }
+                synctv_core::models::FileUploadSessionCreateResult::Session(session) => {
+                    ProtoResult::Session(avatar_upload_session_to_proto(session)?)
+                }
+            }),
+        },
+    )
 }
 
 fn avatar_object_to_proto(blob: &FileBlob) -> synctv_proto::client::UserAvatarObjectResponse {
     synctv_proto::client::UserAvatarObjectResponse {
-        object_key: blob.object_key.clone(),
         mime_type: blob.mime_type.clone(),
-        checksum_sha256: blob.checksum_sha256.clone(),
+        content_manifest_sha256: blob.content_manifest_sha256.clone(),
         data: blob.data.clone(),
+        content_range: blob.range.map(file_byte_range_to_proto),
+        total_size_bytes: blob.total_size_bytes,
     }
 }
 
@@ -357,8 +363,6 @@ impl ClientApiImpl {
             let file = stored_file_reference_to_media_cover(&file, url.as_deref())?;
             proto.avatar = Some(synctv_proto::client::UserAvatar {
                 id: file.id,
-                storage_backend: file.storage_backend,
-                object_key: file.object_key,
                 url: file.url,
                 mime_type: file.mime_type,
                 size_bytes: file.size_bytes,
@@ -524,18 +528,13 @@ impl ClientApiImpl {
                     size_bytes: req.size_bytes,
                     width: (req.width > 0).then_some(req.width),
                     height: (req.height > 0).then_some(req.height),
-                    checksum_sha256: (!req.checksum_sha256.trim().is_empty())
-                        .then_some(req.checksum_sha256),
+                    parts: proto_upload_manifest_parts(req.parts),
                     metadata,
                 },
             )
             .await
             .map_err(ApiError::from)?;
-        Ok(
-            synctv_proto::client::CreateUserAvatarUploadSessionResponse {
-                session: Some(avatar_upload_session_to_proto(session)?),
-            },
-        )
+        avatar_upload_create_result_to_proto(session)
     }
 
     pub async fn upload_user_avatar_object(
@@ -548,13 +547,49 @@ impl ClientApiImpl {
                 &req.encoded_object_key,
                 &req.token,
                 req.content_type.as_deref(),
+                proto_file_upload_range(req.content_range),
                 req.data,
             )
             .await
             .map_err(ApiError::from)?;
+        let (complete, uploaded_size_bytes, uploaded_parts) = uploaded_parts_response_fields(&blob);
         Ok(synctv_proto::client::UploadUserAvatarObjectResponse {
-            object: Some(avatar_object_to_proto(&blob)),
+            object: match blob {
+                StoreFileUploadResult::Complete(blob) => Some(avatar_object_to_proto(&blob)),
+                StoreFileUploadResult::PartAccepted { .. } => None,
+            },
+            complete,
+            uploaded_size_bytes,
+            uploaded_parts,
         })
+    }
+
+    pub async fn complete_user_avatar_upload_session(
+        &self,
+        req: synctv_proto::client::CompleteUserAvatarUploadSessionRequest,
+    ) -> Result<synctv_proto::client::CompleteUserAvatarUploadSessionResponse, ApiError> {
+        let result = self
+            .user_service
+            .complete_avatar_upload_session(complete_upload_session_request(
+                &req.file_id,
+                req.encoded_object_key,
+                req.token,
+                req.upload_id,
+                &req.ownership_proof,
+                req.parts,
+            ))
+            .await
+            .map_err(ApiError::from)?;
+        let (complete, uploaded_size_bytes, uploaded_parts) =
+            complete_upload_response_fields(&result);
+        Ok(
+            synctv_proto::client::CompleteUserAvatarUploadSessionResponse {
+                object: result.object.as_ref().map(avatar_object_to_proto),
+                complete,
+                uploaded_size_bytes,
+                uploaded_parts,
+            },
+        )
     }
 
     pub async fn get_user_avatar_object(
@@ -563,7 +598,11 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::UserAvatarObjectResponse, ApiError> {
         let blob = self
             .user_service
-            .get_avatar_object(&req.encoded_object_key, &req.token)
+            .get_avatar_object_range(
+                &req.encoded_object_key,
+                &req.token,
+                proto_file_range_request(req.range),
+            )
             .await
             .map_err(ApiError::from)?;
         Ok(avatar_object_to_proto(&blob))
@@ -574,12 +613,10 @@ impl ClientApiImpl {
         user_id: &UserId,
         req: synctv_proto::client::UpdateUserAvatarRequest,
     ) -> Result<synctv_proto::client::GetProfileResponse, ApiError> {
-        let avatar = req
-            .avatar
-            .ok_or_else(|| ApiError::InvalidInput("avatar is required".to_string()))?;
+        let avatar = required_file_upload_reference(req.avatar_reference, "avatar_reference")?;
         let updated = self
             .user_service
-            .update_avatar(user_id, avatar_proto_to_new_file(avatar)?)
+            .update_avatar(user_id, avatar)
             .await
             .map_err(ApiError::from)?;
         Ok(synctv_proto::client::GetProfileResponse {

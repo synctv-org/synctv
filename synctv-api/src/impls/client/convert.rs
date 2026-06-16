@@ -248,8 +248,6 @@ pub(crate) fn stored_file_reference_to_resource_cover(
     url: Option<&str>,
 ) -> Result<synctv_proto::client::ResourceCover, crate::impls::ApiError> {
     Ok(synctv_proto::client::ResourceCover {
-        storage_backend: file.storage_backend.clone(),
-        object_key: file.object_key.clone(),
         url: required_cover_url(url, "resource cover")?,
         metadata: json_to_vec(&file.metadata, "resource cover metadata")?,
     })
@@ -261,8 +259,6 @@ pub(crate) fn stored_file_reference_to_media_cover(
 ) -> Result<synctv_proto::client::MediaCover, crate::impls::ApiError> {
     Ok(synctv_proto::client::MediaCover {
         id: file.file_reference_id.to_string(),
-        storage_backend: file.storage_backend.clone(),
-        object_key: file.object_key.clone(),
         url: required_cover_url(url, "media cover")?,
         mime_type: file.mime_type.clone(),
         size_bytes: file.size_bytes,
@@ -1295,10 +1291,10 @@ mod tests {
         StoredFileReference {
             file_reference_id: 7,
             storage_backend: "database".to_string(),
-            object_key: "covers/video.png".to_string(),
+            object_key: "covers/media.png".to_string(),
             mime_type: "image/png".to_string(),
             size_bytes: 1234,
-            checksum_sha256: "checksum".to_string(),
+            content_manifest_sha256: "a".repeat(64),
             metadata,
             created_at: Utc::now(),
             validated_at: None,
@@ -1314,7 +1310,7 @@ mod tests {
 
         let cover = api_ok(stored_file_reference_to_media_cover(
             &file,
-            Some("https://cdn.example.com/covers/video.png"),
+            Some("https://cdn.example.com/covers/media.png"),
         ))?;
 
         assert_eq!(cover.width, 1920);
@@ -1331,7 +1327,7 @@ mod tests {
 
         let error = stored_file_reference_to_media_cover(
             &file,
-            Some("https://cdn.example.com/covers/video.png"),
+            Some("https://cdn.example.com/covers/media.png"),
         )
         .expect_err("invalid media cover dimensions should fail");
 

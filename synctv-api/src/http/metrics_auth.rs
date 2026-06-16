@@ -71,7 +71,7 @@ impl MetricsAccessController {
             MetricsAuthMode::BearerToken => Self::authorize_bearer(metrics, headers),
             MetricsAuthMode::Basic => Self::authorize_basic(metrics, headers),
             MetricsAuthMode::Kubernetes => {
-                self.authorize_kubernetes(metrics, headers, path, method)
+                Self::authorize_kubernetes(metrics, headers, path, method)
             }
         }
     }
@@ -145,7 +145,6 @@ impl MetricsAccessController {
 
     #[cfg(not(feature = "k8s"))]
     fn authorize_kubernetes(
-        &self,
         _metrics: &MetricsConfig,
         _headers: &HeaderMap,
         _path: &str,

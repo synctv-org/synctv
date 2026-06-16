@@ -147,7 +147,12 @@ mod tests {
             size_bytes,
             width: Some(320),
             height: Some(180),
-            checksum_sha256: Some("a".repeat(64)),
+            parts: vec![crate::models::FileUploadManifestPart {
+                part_number: 1,
+                offset_bytes: 0,
+                size_bytes,
+                checksum_sha256: "a".repeat(64),
+            }],
             metadata: serde_json::json!({}),
             policy,
         }

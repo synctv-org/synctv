@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::{
     cache::CacheInvalidationRuntime,
     models::{
-        MediaId, PlaylistId, ReviewRequestId, Room, RoomId, RoomPermissionSet, RoomPlaybackState,
-        RoomRole, RoomSettings, UserId, UserRole,
+        FileUploadManifestPart, MediaId, PlaylistId, ReviewRequestId, Room, RoomId,
+        RoomPermissionSet, RoomPlaybackState, RoomRole, RoomSettings, UserId, UserRole,
     },
     repository::{
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
@@ -24,7 +24,7 @@ pub struct CreateRoomCoverUploadSession {
     pub size_bytes: i64,
     pub width: Option<i32>,
     pub height: Option<i32>,
-    pub checksum_sha256: Option<String>,
+    pub parts: Vec<FileUploadManifestPart>,
     pub metadata: serde_json::Value,
 }
 

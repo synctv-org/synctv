@@ -17,9 +17,12 @@ use crate::{
         ChatHistoryPage, ChatMessage, ChatMessageContext, ChatMessageEvent, ChatMessageEventLog,
         ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType,
         ChatMessageWithAttachments, ChatPlaybackMessagesQuery, ChatReactionUsersCursor,
-        ChatReactionUsersPage, ChatReadStateWithUnread, CreateChatAttachmentUploadSession,
-        DeleteChatMessage, EditChatMessage, FileBlob, FileUploadSession, MarkChatRead, RoomId,
-        SendChatMessage, SetChatReaction, UserId,
+        ChatReactionUsersPage, ChatReadStateWithUnread, CompleteFileUploadSession,
+        CompleteFileUploadSessionResult, CreateChatAttachmentUploadSession, DeleteChatMessage,
+        EditChatMessage, FileBlob, FileRangeRequest, FileUploadRange,
+        FileUploadSessionCreateResult, GetFileObject, MarkChatRead, RoomId, SendChatMessage,
+        SetChatReaction, StoreFileUpload, StoreFileUploadResult, SubmittedFileReference,
+        SubmittedFileReferenceKind, UserId,
     },
     repository::{
         ChatMessageOperationIdempotency, ChatRepository, DeleteChatMessageEventRequest,
@@ -152,7 +155,7 @@ impl ChatService {
     pub async fn create_attachment_upload_session(
         &self,
         request: CreateChatAttachmentUploadSession,
-    ) -> Result<FileUploadSession> {
+    ) -> Result<FileUploadSessionCreateResult> {
         self.permission_service
             .check_permission(
                 &request.room_id,
@@ -178,10 +181,26 @@ impl ChatService {
         encoded_object_key: &str,
         upload_token: &str,
         content_type: Option<&str>,
+        range: Option<FileUploadRange>,
         data: Vec<u8>,
-    ) -> Result<FileBlob> {
+    ) -> Result<StoreFileUploadResult> {
         self.file_storage_service
-            .store_upload_object(encoded_object_key, upload_token, content_type, data)
+            .store_upload(StoreFileUpload {
+                encoded_object_key: encoded_object_key.to_string(),
+                upload_token: upload_token.to_string(),
+                content_type: content_type.map(str::to_string),
+                range,
+                data,
+            })
+            .await
+    }
+
+    pub async fn complete_attachment_upload_session(
+        &self,
+        request: CompleteFileUploadSession,
+    ) -> Result<CompleteFileUploadSessionResult> {
+        self.file_storage_service
+            .complete_upload_session(request)
             .await
     }
 
@@ -190,8 +209,22 @@ impl ChatService {
         encoded_object_key: &str,
         read_token: &str,
     ) -> Result<FileBlob> {
+        self.get_attachment_object_range(encoded_object_key, read_token, None)
+            .await
+    }
+
+    pub async fn get_attachment_object_range(
+        &self,
+        encoded_object_key: &str,
+        read_token: &str,
+        range: Option<FileRangeRequest>,
+    ) -> Result<FileBlob> {
         self.file_storage_service
-            .get_object(encoded_object_key, read_token)
+            .get_object(GetFileObject {
+                encoded_object_key: encoded_object_key.to_string(),
+                read_token: read_token.to_string(),
+                range,
+            })
             .await
     }
 
@@ -279,7 +312,7 @@ impl ChatService {
 
         validate_client_message_id(request.client_message_id.as_deref())?;
         validate_chat_metadata(&request.metadata)?;
-        validate_chat_attachments(&request.attachments)?;
+        validate_submitted_chat_attachments(&request.attachments)?;
         normalize_chat_mentions(&request.content, &mut request.mentions)?;
         if request.content.trim().is_empty() && request.attachments.is_empty() {
             return Err(Error::InvalidInput(
@@ -352,19 +385,19 @@ impl ChatService {
         }
 
         let storage_scope = chat_file_storage_scope(room_id, user_id);
-        request.attachments = self
-            .file_storage_service
-            .prepare_files(
-                FileStorageContext {
-                    user_id,
-                    storage_scope: &storage_scope,
-                    client_request_id: request.client_message_id.as_deref(),
-                },
-                request.attachments,
+        let upload_policy = super::chat_attachment_upload_policy();
+        let mut attachments = self
+            .prepare_submitted_chat_attachments(
+                user_id,
+                room_id,
+                &storage_scope,
+                &upload_policy.database_object_route_prefix,
+                request.client_message_id.as_deref(),
+                std::mem::take(&mut request.attachments),
             )
             .await?;
-        validate_chat_attachments(&request.attachments)?;
-        strip_internal_chat_attachment_metadata(&mut request.attachments);
+        validate_chat_attachments(&attachments)?;
+        strip_internal_chat_attachment_metadata(&mut attachments);
 
         let reply_to_message_created_at = self
             .ensure_reply_target_visible(&room_id, request.reply_to_message_id)
@@ -381,13 +414,13 @@ impl ChatService {
                 .filter_chat(&request.content)
                 .map_err(|e| Error::InvalidInput(format!("Content filter error: {e}")))?
         };
-        if filtered_content.trim().is_empty() && request.attachments.is_empty() {
+        if filtered_content.trim().is_empty() && attachments.is_empty() {
             return Err(Error::InvalidInput(
                 "empty chat message: content or attachment is required".to_string(),
             ));
         }
         request.content = filtered_content.clone();
-        if !request.attachments.is_empty() {
+        if !attachments.is_empty() {
             request.message_type = ChatMessageType::Attachment;
         }
 
@@ -406,7 +439,7 @@ impl ChatService {
             .chat_repository
             .insert_message_event_idempotent(
                 &message,
-                &request.attachments,
+                &attachments,
                 &request.mentions,
                 &request_hash,
                 &event_id,
@@ -499,9 +532,12 @@ impl ChatService {
         include_deleted: bool,
         viewer_user_id: Option<&UserId>,
     ) -> Result<(Vec<ChatMessageWithAttachments>, Option<ChatHistoryCursor>)> {
-        self.chat_repository
+        let (mut messages, cursor) = self
+            .chat_repository
             .list_by_room_cursor_for_viewer(room_id, cursor, limit, include_deleted, viewer_user_id)
-            .await
+            .await?;
+        self.attach_reuse_grants_for_viewer(&mut messages, viewer_user_id)?;
+        Ok((messages, cursor))
     }
 
     pub async fn get_history_page_with_attachments_for_viewer(
@@ -512,9 +548,12 @@ impl ChatService {
         include_deleted: bool,
         viewer_user_id: Option<&UserId>,
     ) -> Result<ChatHistoryPage> {
-        self.chat_repository
+        let mut page = self
+            .chat_repository
             .list_history_page_for_viewer(room_id, cursor, limit, include_deleted, viewer_user_id)
-            .await
+            .await?;
+        self.attach_reuse_grants_for_viewer(&mut page.messages, viewer_user_id)?;
+        Ok(page)
     }
 
     pub async fn get_playback_messages_with_attachments(
@@ -531,9 +570,12 @@ impl ChatService {
         viewer_user_id: Option<&UserId>,
     ) -> Result<Vec<ChatMessageWithAttachments>> {
         let query = validate_chat_playback_query(query)?;
-        self.chat_repository
+        let mut messages = self
+            .chat_repository
             .list_playback_messages_for_viewer(&query, viewer_user_id)
-            .await
+            .await?;
+        self.attach_reuse_grants_for_viewer(&mut messages, viewer_user_id)?;
+        Ok(messages)
     }
 
     pub async fn get_message_with_attachments(
@@ -561,7 +603,9 @@ impl ChatService {
         if message.message.status == ChatMessageStatus::Deleted && !include_deleted {
             return Err(Error::NotFound("Message not found".to_string()));
         }
-        Ok(message)
+        let mut messages = vec![message];
+        self.attach_reuse_grants_for_viewer(&mut messages, viewer_user_id)?;
+        Ok(messages.remove(0))
     }
 
     pub async fn get_message_context(
@@ -592,7 +636,8 @@ impl ChatService {
         include_deleted: bool,
         viewer_user_id: Option<&UserId>,
     ) -> Result<ChatMessageContext> {
-        self.chat_repository
+        let mut context = self
+            .chat_repository
             .list_context_around_message_for_viewer(
                 room_id,
                 message_id,
@@ -602,7 +647,14 @@ impl ChatService {
                 viewer_user_id,
             )
             .await?
-            .ok_or_else(|| Error::NotFound("Message not found".to_string()))
+            .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+        self.attach_reuse_grants_for_viewer(&mut context.before, viewer_user_id)?;
+        self.attach_reuse_grants_for_viewer(
+            std::slice::from_mut(&mut context.anchor),
+            viewer_user_id,
+        )?;
+        self.attach_reuse_grants_for_viewer(&mut context.after, viewer_user_id)?;
+        Ok(context)
     }
 
     pub async fn get_events_after(
@@ -1483,6 +1535,140 @@ impl ChatService {
                 "failed to write chat delete audit log"
             );
         }
+    }
+
+    fn attach_reuse_grants_for_viewer(
+        &self,
+        messages: &mut [ChatMessageWithAttachments],
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<()> {
+        let Some(viewer_user_id) = viewer_user_id.copied() else {
+            return Ok(());
+        };
+        for message in messages {
+            attach_chat_attachment_reuse_grants(
+                self.file_storage_service.as_ref(),
+                viewer_user_id,
+                &mut message.attachments,
+            )?;
+        }
+        Ok(())
+    }
+
+    async fn prepare_submitted_chat_attachments(
+        &self,
+        user_id: UserId,
+        target_room_id: RoomId,
+        storage_scope: &str,
+        database_object_route_prefix: &str,
+        client_request_id: Option<&str>,
+        attachments: Vec<SubmittedFileReference>,
+    ) -> Result<Vec<crate::models::NewStoredFile>> {
+        let mut upload_references = Vec::new();
+        let mut reuse_files = Vec::new();
+        for reference in attachments {
+            match reference.kind {
+                SubmittedFileReferenceKind::Upload => upload_references.push(reference),
+                SubmittedFileReferenceKind::Reuse => {
+                    reuse_files.push(
+                        self.prepare_chat_reuse_attachment(target_room_id, user_id, &reference)
+                            .await?,
+                    );
+                }
+            }
+        }
+
+        let context = FileStorageContext {
+            user_id,
+            storage_scope,
+            database_object_route_prefix,
+            client_request_id,
+        };
+        let mut prepared = self
+            .file_storage_service
+            .prepare_submitted_files(context, upload_references)
+            .await?;
+        let mut prepared_reuse = self
+            .file_storage_service
+            .prepare_files(context, reuse_files)
+            .await?;
+        prepared.append(&mut prepared_reuse);
+        Ok(prepared)
+    }
+
+    async fn prepare_chat_reuse_attachment(
+        &self,
+        target_room_id: RoomId,
+        user_id: UserId,
+        reference: &SubmittedFileReference,
+    ) -> Result<crate::models::NewStoredFile> {
+        let storage_scope = chat_file_storage_scope(target_room_id, user_id);
+        let upload_policy = super::chat_attachment_upload_policy();
+        let grant = self
+            .file_storage_service
+            .validate_reuse_grant(
+                reference.id.trim(),
+                FileStorageContext {
+                    user_id,
+                    storage_scope: &storage_scope,
+                    database_object_route_prefix: &upload_policy.database_object_route_prefix,
+                    client_request_id: None,
+                },
+            )
+            .await?;
+        if grant.source_kind != CHAT_ATTACHMENT_REUSE_SOURCE_KIND {
+            return Err(Error::InvalidInput(
+                "file reuse token is not valid for chat attachments".to_string(),
+            ));
+        }
+        let (source_room_id, source_message_id, source_created_at_micros, source_attachment_id) =
+            parse_chat_attachment_reuse_source_id(&grant.source_id)?;
+        if source_room_id != target_room_id {
+            return Err(Error::Authorization(
+                "Chat attachment reuse is limited to the source room".to_string(),
+            ));
+        }
+        self.permission_service
+            .check_permission(
+                &source_room_id,
+                &user_id,
+                crate::models::RoomPermission::VIEW_CHAT_HISTORY,
+            )
+            .await?;
+        let source = self
+            .chat_repository
+            .get_with_attachments_by_room_and_id_for_viewer(
+                &source_room_id,
+                source_message_id,
+                Some(&user_id),
+            )
+            .await?
+            .ok_or_else(|| Error::NotFound("Source chat attachment not found".to_string()))?;
+        if source.message.status == ChatMessageStatus::Deleted {
+            return Err(Error::NotFound(
+                "Source chat attachment not found".to_string(),
+            ));
+        }
+        let source_attachment = source
+            .attachments
+            .iter()
+            .find(|attachment| {
+                attachment.id == source_attachment_id
+                    && attachment.message_created_at.timestamp_micros() == source_created_at_micros
+            })
+            .ok_or_else(|| Error::NotFound("Source chat attachment not found".to_string()))?;
+        Ok(crate::models::NewStoredFile {
+            id: format!("att_{}", synctv_common::snanoid!(24)),
+            filename: source_attachment.filename.clone(),
+            storage_backend: source_attachment.storage_backend.clone(),
+            object_key: source_attachment.object_key.clone(),
+            url: None,
+            mime_type: source_attachment.mime_type.clone(),
+            size_bytes: source_attachment.size_bytes,
+            width: source_attachment.width,
+            height: source_attachment.height,
+            metadata: source_attachment.metadata.clone(),
+        })
     }
 }
 

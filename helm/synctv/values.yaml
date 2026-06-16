@@ -469,7 +469,9 @@ config:
 
   ## FileStorageConfig
   ## The built-in "disabled" backend always exists. Database backends store
-  ## object bytes in PostgreSQL file_blobs; compression accepts none, lz4, zstd.
+  ## object bytes as permanent PostgreSQL file_blob_parts segments and support
+  ## HTTP Range reads; compression accepts none, lz4, zstd. S3 backends use
+  ## native multipart upload URLs for resumable direct uploads.
   ## S3 backend accessKeyId / secretAccessKey are rendered into the generated
   ## config file, so prefer existingConfigMap for externally managed S3 secrets.
   fileStorage:
@@ -486,6 +488,8 @@ config:
     #     type: "database"
     #     database:
     #       compression: "zstd"
+    #       compressionMinSizeBytes: 4096
+    #       compressionMinSavingsPercent: 10
     #   s3_public:
     #     type: "s3"
     #     s3:

@@ -2,18 +2,22 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::service::file_storage::{
-    file_content_object_key, file_ownership_proof_digest, file_storage_object_base_path,
-    file_storage_public_url, ownership_proof_chunks_from_bytes,
-    validate_create_file_upload_session, DatabaseFileStorageService,
+    file_object_key, file_ownership_proof_digest, file_part_manifest_digest,
+    file_storage_object_base_path, file_storage_public_url, ownership_proof_chunks_from_bytes,
+    upload_session_part_size, validate_create_file_upload_session, DatabaseFileStorageService,
     S3CompatibleFileStorageService, S3FileStorageConfig, FILE_OWNERSHIP_PROOF_KEY,
     FILE_UPLOAD_TOKEN_HEADER, FILE_UPLOAD_TOKEN_KEY,
 };
 use crate::{
     cache::{KeyBuilder, UsernameCache},
-    models::{ChatReadState, CreateFileUploadSession, NewStoredFile, SignupMethod, User},
+    models::{
+        ChatMentionInput, ChatReadState, CreateFileUploadSession, FileUploadManifestPart,
+        FileUploadSession, FileUploadSessionCreateResult, NewStoredFile, SignupMethod,
+        SubmittedFileReference, User,
+    },
     repository::{
         FileStorageRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
-        UserRepository,
+        UpsertFileObject, UserRepository,
     },
     service::{
         auth::JwtService, chat_attachment_upload_policy, BruteForceProtection,
@@ -25,6 +29,38 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Barrier;
 
 const TEST_FILE_STORAGE_SCOPE: &str = "rooms/1/users/1";
+
+fn single_manifest_part(
+    size_bytes: i64,
+    checksum_sha256: impl Into<String>,
+) -> Vec<FileUploadManifestPart> {
+    vec![FileUploadManifestPart {
+        part_number: 1,
+        offset_bytes: 0,
+        size_bytes,
+        checksum_sha256: checksum_sha256.into(),
+    }]
+}
+
+fn single_part_manifest_digest(size_bytes: i64, checksum_sha256: &str) -> String {
+    file_part_manifest_digest(
+        size_bytes,
+        upload_session_part_size(MAX_CHAT_ATTACHMENT_SIZE_BYTES),
+        [(1, size_bytes, checksum_sha256)],
+    )
+    .expect("manifest digest should build")
+}
+
+fn expect_upload_session(
+    result: FileUploadSessionCreateResult,
+    context: &str,
+) -> FileUploadSession {
+    result.into_session().unwrap_or_else(|| {
+        std::panic::panic_any(format!(
+            "{context}: expected upload session, got upload plan"
+        ))
+    })
+}
 
 fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
     match result {
@@ -76,6 +112,86 @@ fn object_url_parts(upload_url: &str) -> (String, String) {
     (encoded_object_key, read_token)
 }
 
+fn submitted_file_reference(file: &NewStoredFile) -> SubmittedFileReference {
+    ok(
+        crate::service::submitted_file_reference_from_session_file(file),
+        "submitted file reference should build",
+    )
+}
+
+async fn send_database_chat_attachment(
+    service: &ChatService,
+    room_id: RoomId,
+    user_id: UserId,
+    client_message_id: &str,
+    client_attachment_id: &str,
+    payload: &[u8],
+) -> ChatMessageEventOutcome {
+    let session = expect_upload_session(
+        ok(
+            service
+                .create_attachment_upload_session(CreateChatAttachmentUploadSession {
+                    room_id,
+                    user_id,
+                    client_attachment_id: Some(client_attachment_id.to_string()),
+                    filename: Some(format!("{client_attachment_id}.webp")),
+                    mime_type: "image/webp".to_string(),
+                    size_bytes: i64::try_from(payload.len()).expect("payload length fits i64"),
+                    width: Some(640),
+                    height: Some(480),
+                    parts: single_manifest_part(
+                        i64::try_from(payload.len()).expect("payload length fits i64"),
+                        hex::encode(Sha256::digest(payload)),
+                    ),
+                    metadata: serde_json::Value::Object(Default::default()),
+                })
+                .await,
+            "attachment upload session should be created",
+        ),
+        "attachment upload session should be created",
+    );
+    let upload_url = some(
+        session.upload_url.as_deref(),
+        "database upload url should be returned",
+    );
+    let (encoded_object_key, _) = object_url_parts(upload_url);
+    let upload_token = some(
+        session
+            .upload_headers
+            .get(FILE_UPLOAD_TOKEN_HEADER)
+            .map(String::as_str),
+        "database upload token header should be returned",
+    );
+    ok(
+        service
+            .store_attachment_upload_object(
+                &encoded_object_key,
+                upload_token,
+                Some("image/webp"),
+                None,
+                payload.to_vec(),
+            )
+            .await,
+        "attachment object should upload",
+    );
+    ok(
+        service
+            .send_message_event_outcome(SendChatMessage {
+                room_id,
+                user_id,
+                client_message_id: Some(client_message_id.to_string()),
+                content: String::new(),
+                message_type: ChatMessageType::Attachment,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                attachments: vec![submitted_file_reference(&session.file)],
+                mentions: Vec::new(),
+            })
+            .await,
+        "attachment message should be stored",
+    )
+}
+
 #[derive(Debug)]
 struct PrefixingFileStorageService;
 
@@ -88,13 +204,14 @@ impl FileStorageService for PrefixingFileStorageService {
     async fn create_upload_session(
         &self,
         mut request: CreateFileUploadSession,
-    ) -> Result<FileUploadSession> {
+    ) -> Result<FileUploadSessionCreateResult> {
         validate_create_file_upload_session(&request)?;
         let id = request
             .client_file_id
             .take()
             .unwrap_or_else(|| "custom-attachment".to_string());
-        Ok(FileUploadSession {
+        let encoded_object_key = format!("encoded-{id}");
+        Ok(FileUploadSessionCreateResult::Session(FileUploadSession {
             file: NewStoredFile {
                 filename: None,
                 id: id.clone(),
@@ -107,17 +224,23 @@ impl FileStorageService for PrefixingFileStorageService {
                 height: request.height,
                 metadata: request.metadata,
             },
+            encoded_object_key,
             upload_required: true,
             ownership_proof_required: false,
             ownership_proof_nonce: None,
             ownership_proof_ranges: Vec::new(),
-            ownership_proof_metadata_key: None,
             upload_url: Some(format!("https://upload.invalid/{id}")),
             upload_method: Some("PUT".to_string()),
             upload_headers: Default::default(),
             expires_at: Some(Utc::now()),
             max_size_bytes: MAX_CHAT_ATTACHMENT_SIZE_BYTES,
-        })
+            resumable: true,
+            part_size_bytes: 4 * 1024 * 1024,
+            uploaded_size_bytes: 0,
+            uploaded_parts: Vec::new(),
+            upload_id: None,
+            part_urls: Vec::new(),
+        }))
     }
 
     async fn prepare_files(
@@ -137,6 +260,32 @@ impl FileStorageService for PrefixingFileStorageService {
                 attachment
             })
             .collect())
+    }
+
+    async fn prepare_submitted_files(
+        &self,
+        context: FileStorageContext<'_>,
+        attachments: Vec<SubmittedFileReference>,
+    ) -> Result<Vec<NewStoredFile>> {
+        assert!(context.user_id.as_i64() > 0);
+        assert!(!context.storage_scope.is_empty());
+        let files = attachments
+            .into_iter()
+            .map(|attachment| NewStoredFile {
+                filename: None,
+                id: attachment.id.clone(),
+                storage_backend: "test-storage".to_string(),
+                object_key: format!("submitted/{}", attachment.id),
+                url: Some(format!("https://cdn.invalid/{}", attachment.id)),
+                mime_type: Some("image/webp".to_string()),
+                size_bytes: Some(128),
+                width: Some(640),
+                height: Some(480),
+                metadata: serde_json::Value::Object(Default::default()),
+            })
+            .collect::<Vec<_>>();
+        validate_chat_attachments(&files)?;
+        Ok(files)
     }
 }
 
@@ -155,13 +304,14 @@ impl FileStorageService for RecordingFileStorageService {
     async fn create_upload_session(
         &self,
         mut request: CreateFileUploadSession,
-    ) -> Result<FileUploadSession> {
+    ) -> Result<FileUploadSessionCreateResult> {
         validate_create_file_upload_session(&request)?;
         let id = request
             .client_file_id
             .take()
             .unwrap_or_else(|| "custom-attachment".to_string());
-        Ok(FileUploadSession {
+        let encoded_object_key = format!("encoded-{id}");
+        Ok(FileUploadSessionCreateResult::Session(FileUploadSession {
             file: NewStoredFile {
                 filename: None,
                 id: id.clone(),
@@ -174,17 +324,23 @@ impl FileStorageService for RecordingFileStorageService {
                 height: request.height,
                 metadata: request.metadata,
             },
+            encoded_object_key,
             upload_required: true,
             ownership_proof_required: false,
             ownership_proof_nonce: None,
             ownership_proof_ranges: Vec::new(),
-            ownership_proof_metadata_key: None,
             upload_url: Some(format!("https://upload.invalid/{id}")),
             upload_method: Some("PUT".to_string()),
             upload_headers: Default::default(),
             expires_at: Some(Utc::now()),
             max_size_bytes: MAX_CHAT_ATTACHMENT_SIZE_BYTES,
-        })
+            resumable: true,
+            part_size_bytes: 4 * 1024 * 1024,
+            uploaded_size_bytes: 0,
+            uploaded_parts: Vec::new(),
+            upload_id: None,
+            part_urls: Vec::new(),
+        }))
     }
 
     async fn prepare_files(
@@ -204,6 +360,32 @@ impl FileStorageService for RecordingFileStorageService {
                 attachment
             })
             .collect())
+    }
+
+    async fn prepare_submitted_files(
+        &self,
+        context: FileStorageContext<'_>,
+        attachments: Vec<SubmittedFileReference>,
+    ) -> Result<Vec<NewStoredFile>> {
+        assert!(context.user_id.as_i64() > 0);
+        assert!(!context.storage_scope.is_empty());
+        let files = attachments
+            .into_iter()
+            .map(|attachment| NewStoredFile {
+                filename: None,
+                id: attachment.id.clone(),
+                storage_backend: "test-storage".to_string(),
+                object_key: format!("submitted/{}", attachment.id),
+                url: Some(format!("https://cdn.invalid/{}", attachment.id)),
+                mime_type: Some("image/webp".to_string()),
+                size_bytes: Some(128),
+                width: Some(640),
+                height: Some(480),
+                metadata: serde_json::Value::Object(Default::default()),
+            })
+            .collect::<Vec<_>>();
+        validate_chat_attachments(&files)?;
+        Ok(files)
     }
 
     async fn delete_files(
@@ -523,6 +705,7 @@ async fn disabled_file_storage_rejects_images() {
             FileStorageContext {
                 user_id: UserId::expect_positive(1),
                 storage_scope: TEST_FILE_STORAGE_SCOPE,
+                database_object_route_prefix: "/api/test/objects",
                 client_request_id: Some("client-1"),
             },
             vec![NewStoredFile {
@@ -612,7 +795,7 @@ async fn disabled_file_storage_rejects_upload_session() {
             size_bytes: 1024,
             width: Some(640),
             height: Some(480),
-            checksum_sha256: Some("a".repeat(64)),
+            parts: single_manifest_part(1024, "a".repeat(64)),
             metadata: serde_json::json!({"blurhash": "abc"}),
             policy: chat_attachment_upload_policy(),
         })
@@ -630,6 +813,7 @@ async fn disabled_file_storage_rejects_prepared_images() {
             FileStorageContext {
                 user_id: UserId::expect_positive(2),
                 storage_scope: TEST_FILE_STORAGE_SCOPE,
+                database_object_route_prefix: "/api/test/objects",
                 client_request_id: Some("client-1"),
             },
             vec![NewStoredFile {
@@ -691,7 +875,8 @@ async fn database_file_storage_roundtrips_uploaded_object() {
         Arc::new(FileStorageRepository::new(pool.clone())),
         "database-attachment-secret",
     );
-    let expected_checksum = hex::encode(Sha256::digest(b"data"));
+    let part_checksum = hex::encode(Sha256::digest(b"data"));
+    let expected_manifest_digest = single_part_manifest_digest(4, &part_checksum);
     let session = ok(
         service
             .create_upload_session(CreateFileUploadSession {
@@ -703,20 +888,21 @@ async fn database_file_storage_roundtrips_uploaded_object() {
                 size_bytes: 4,
                 width: Some(16),
                 height: Some(16),
-                checksum_sha256: Some(expected_checksum.clone()),
+                parts: single_manifest_part(4, part_checksum.clone()),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
             })
             .await,
         "database upload session should be created",
     );
+    let session = expect_upload_session(session, "database upload session should be created");
     assert_eq!(session.file.storage_backend, "database");
     assert_eq!(session.upload_method.as_deref(), Some("PUT"));
     let upload_url = some(
         session.upload_url.as_deref(),
         "database upload url should be returned",
     );
-    let (encoded_object_key, read_token) = object_url_parts(upload_url);
+    let (encoded_object_key, _) = object_url_parts(upload_url);
     let upload_token = some(
         session
             .upload_headers
@@ -737,9 +923,23 @@ async fn database_file_storage_roundtrips_uploaded_object() {
     );
     assert_eq!(stored.object_key, session.file.object_key);
     assert_eq!(stored.data, b"data");
-    assert_eq!(stored.checksum_sha256, expected_checksum);
+    assert_eq!(stored.content_manifest_sha256, expected_manifest_digest);
+    let final_url = ok(
+        service.object_url("database", &stored.object_key, "/api/test/objects"),
+        "database object url should build",
+    );
+    let (read_encoded_object_key, read_token) = object_url_parts(some(
+        final_url.as_deref(),
+        "database object url should exist",
+    ));
     let loaded = ok(
-        service.get_object(&encoded_object_key, &read_token).await,
+        service
+            .get_object(GetFileObject {
+                encoded_object_key: read_encoded_object_key,
+                read_token,
+                range: None,
+            })
+            .await,
         "database attachment object should load",
     );
     assert_eq!(loaded.data, b"data");
@@ -749,6 +949,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
                 FileStorageContext {
                     user_id: user.id,
                     storage_scope: TEST_FILE_STORAGE_SCOPE,
+                    database_object_route_prefix: "/api/test/objects",
                     client_request_id: Some("database-attachment-message"),
                 },
                 vec![session.file],
@@ -757,8 +958,9 @@ async fn database_file_storage_roundtrips_uploaded_object() {
         "uploaded database image should prepare",
     );
     assert_eq!(prepared.len(), 1);
+    assert!(prepared[0].url.is_some());
 
-    let mut reuse_session = ok(
+    let reuse_session = ok(
         service
             .create_upload_session(CreateFileUploadSession {
                 storage_scope: TEST_FILE_STORAGE_SCOPE.to_string(),
@@ -769,15 +971,20 @@ async fn database_file_storage_roundtrips_uploaded_object() {
                 size_bytes: 4,
                 width: Some(16),
                 height: Some(16),
-                checksum_sha256: Some(expected_checksum),
+                parts: single_manifest_part(4, part_checksum.clone()),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
             })
             .await,
         "database upload session should reuse existing object",
     );
+    let mut reuse_session = expect_upload_session(
+        reuse_session,
+        "database upload session should reuse existing object",
+    );
     assert!(!reuse_session.upload_required);
     assert!(reuse_session.ownership_proof_required);
+    assert!(reuse_session.file.url.is_none());
     assert_eq!(reuse_session.file.object_key, stored.object_key);
     let nonce = some(
         reuse_session.ownership_proof_nonce.as_deref(),
@@ -790,6 +997,8 @@ async fn database_file_storage_roundtrips_uploaded_object() {
     let proof = file_ownership_proof_digest(
         nonce,
         &reuse_session.ownership_proof_ranges,
+        &stored.content_manifest_sha256,
+        stored.size_bytes,
         chunks.iter().map(Vec::as_slice),
     );
     some(
@@ -800,12 +1009,13 @@ async fn database_file_storage_roundtrips_uploaded_object() {
         FILE_OWNERSHIP_PROOF_KEY.to_string(),
         serde_json::Value::String(proof),
     );
-    ok(
+    let prepared = ok(
         service
             .prepare_files(
                 FileStorageContext {
                     user_id: user.id,
                     storage_scope: TEST_FILE_STORAGE_SCOPE,
+                    database_object_route_prefix: "/api/test/objects",
                     client_request_id: Some("database-attachment-reuse-message"),
                 },
                 vec![reuse_session.file],
@@ -813,6 +1023,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
             .await,
         "reused database image should prepare with ownership proof",
     );
+    assert!(prepared[0].url.is_some());
 }
 
 #[tokio::test]
@@ -871,7 +1082,7 @@ async fn database_file_storage_rejects_checksum_mismatch() {
                 size_bytes: 4,
                 width: Some(16),
                 height: Some(16),
-                checksum_sha256: Some(hex::encode(Sha256::digest(b"data"))),
+                parts: single_manifest_part(4, hex::encode(Sha256::digest(b"data"))),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
             })
@@ -905,8 +1116,13 @@ async fn database_file_storage_rejects_checksum_mismatch() {
 
 #[tokio::test]
 async fn image_upload_session_requires_checksum() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
     let service = ok(
-        S3CompatibleFileStorageService::new(test_s3_file_storage_config()),
+        S3CompatibleFileStorageService::new_with_repository(
+            test_s3_file_storage_config(),
+            Some(repository),
+        ),
         "S3 file storage config should be valid",
     );
 
@@ -920,21 +1136,33 @@ async fn image_upload_session_requires_checksum() {
             size_bytes: 2048,
             width: Some(800),
             height: Some(600),
-            checksum_sha256: None,
+            parts: Vec::new(),
             metadata: serde_json::Value::Object(Default::default()),
             policy: chat_attachment_upload_policy(),
         })
         .await;
 
-    assert!(matches!(result, Err(Error::InvalidInput(_))));
+    assert!(matches!(result, Ok(FileUploadSessionCreateResult::Plan(_))));
 }
 
 #[tokio::test]
 async fn s3_file_storage_rejects_tampered_upload_session_image() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let operator = ok(
+        Operator::new(opendal::services::Memory::default()),
+        "memory operator should build",
+    )
+    .finish();
     let service = ok(
-        S3CompatibleFileStorageService::new(test_s3_file_storage_config()),
+        S3CompatibleFileStorageService::new_with_repository(
+            test_s3_file_storage_config(),
+            Some(repository),
+        ),
         "S3 file storage config should be valid",
-    );
+    )
+    .with_operator(operator)
+    .with_test_multipart_upload_id("test-upload-id");
     let session = ok(
         service
             .create_upload_session(CreateFileUploadSession {
@@ -946,13 +1174,14 @@ async fn s3_file_storage_rejects_tampered_upload_session_image() {
                 size_bytes: 1024,
                 width: Some(640),
                 height: Some(480),
-                checksum_sha256: Some("b".repeat(64)),
+                parts: single_manifest_part(1024, "b".repeat(64)),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
             })
             .await,
         "upload session should be created",
     );
+    let session = expect_upload_session(session, "upload session should be created");
     let mut tampered = session.file;
     tampered.object_key = "files/rooms/1/chat/2/other-image.webp".to_string();
 
@@ -961,6 +1190,7 @@ async fn s3_file_storage_rejects_tampered_upload_session_image() {
             FileStorageContext {
                 user_id: UserId::expect_positive(2),
                 storage_scope: TEST_FILE_STORAGE_SCOPE,
+                database_object_route_prefix: "/api/test/objects",
                 client_request_id: Some("client-1"),
             },
             vec![tampered],
@@ -986,11 +1216,23 @@ fn test_s3_file_storage_config() -> S3FileStorageConfig {
 }
 
 #[tokio::test]
-async fn s3_file_storage_creates_presigned_upload_session() {
+async fn s3_file_storage_creates_resumable_upload_session() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let operator = ok(
+        Operator::new(opendal::services::Memory::default()),
+        "memory operator should build",
+    )
+    .finish();
     let service = ok(
-        S3CompatibleFileStorageService::new(test_s3_file_storage_config()),
+        S3CompatibleFileStorageService::new_with_repository(
+            test_s3_file_storage_config(),
+            Some(repository),
+        ),
         "S3 file storage config should be valid",
-    );
+    )
+    .with_operator(operator)
+    .with_test_multipart_upload_id("test-upload-id");
     let session = ok(
         service
             .create_upload_session(CreateFileUploadSession {
@@ -1002,7 +1244,7 @@ async fn s3_file_storage_creates_presigned_upload_session() {
                 size_bytes: 2048,
                 width: Some(800),
                 height: Some(600),
-                checksum_sha256: Some("a".repeat(64)),
+                parts: single_manifest_part(2048, "a".repeat(64)),
                 metadata: serde_json::json!({"blurhash": "abc"}),
                 policy: chat_attachment_upload_policy(),
             })
@@ -1012,6 +1254,13 @@ async fn s3_file_storage_creates_presigned_upload_session() {
 
     assert!(session.upload_required);
     assert_eq!(session.upload_method.as_deref(), Some("PUT"));
+    let upload_url = some(
+        session.upload_url.as_deref(),
+        "S3 upload session should expose a backend-mediated upload url",
+    );
+    let (encoded_object_key, read_token) = object_url_parts(upload_url);
+    assert_eq!(encoded_object_key, session.encoded_object_key);
+    assert!(read_token.starts_with("v1."));
     assert_eq!(
         session
             .upload_headers
@@ -1019,7 +1268,13 @@ async fn s3_file_storage_creates_presigned_upload_session() {
             .map(String::as_str),
         Some("image/png")
     );
-    assert_eq!(session.file.id, "client-image-1");
+    assert!(session
+        .upload_headers
+        .get(FILE_UPLOAD_TOKEN_HEADER)
+        .map(String::as_str)
+        .is_some());
+    assert_eq!(session.upload_id.as_deref(), Some("test-upload-id"));
+    assert!(session.file.id.starts_with("file_"));
     assert_eq!(session.file.storage_backend, "s3");
     assert!(session
         .file
@@ -1027,10 +1282,14 @@ async fn s3_file_storage_creates_presigned_upload_session() {
         .get(FILE_UPLOAD_TOKEN_KEY)
         .and_then(serde_json::Value::as_str)
         .is_some());
-    assert!(session
-        .file
-        .object_key
-        .starts_with("files/chat/attachments/sha256/aa/aa/"));
+    let content_manifest_sha256 = file_part_manifest_digest(
+        2048,
+        upload_session_part_size(MAX_CHAT_ATTACHMENT_SIZE_BYTES),
+        [(1, 2048, "a".repeat(64).as_str())],
+    )
+    .expect("manifest digest should build");
+    let expected_prefix = format!("files/chat/attachments/manifest/{content_manifest_sha256}.png");
+    assert_eq!(session.file.object_key, expected_prefix);
     let expected_public_url = format!(
         "https://cdn.example.com/files/synctv-files/{}",
         session.file.object_key
@@ -1039,25 +1298,38 @@ async fn s3_file_storage_creates_presigned_upload_session() {
         session.file.url.as_deref(),
         Some(expected_public_url.as_str())
     );
-    let upload_url = some(session.upload_url, "upload URL should be returned");
-    assert!(upload_url.starts_with(&format!(
-        "https://s3.example.com/synctv-files/{}?",
-        session.file.object_key
-    )));
-    assert!(upload_url.contains("X-Amz-Algorithm=AWS4-HMAC-SHA256"));
-    assert!(upload_url.contains("X-Amz-Credential=test-access-key%2F"));
-    assert!(upload_url.contains("X-Amz-SignedHeaders="));
-    assert!(upload_url.contains("X-Amz-Signature="));
+    assert!(session.resumable);
+    assert_eq!(
+        session.part_size_bytes,
+        upload_session_part_size(MAX_CHAT_ATTACHMENT_SIZE_BYTES)
+    );
+    assert_eq!(session.uploaded_size_bytes, 0);
+    assert!(session.uploaded_parts.is_empty());
+    assert_eq!(session.part_urls.len(), 1);
+    assert_eq!(session.part_urls[0].part_number, 1);
+    assert_eq!(session.part_urls[0].upload_method, "PUT");
     assert!(session.expires_at.is_some());
     assert_eq!(session.max_size_bytes, MAX_CHAT_ATTACHMENT_SIZE_BYTES);
 }
 
 #[tokio::test]
-async fn image_upload_sessions_reuse_content_object_key_for_reused_client_ids() {
+async fn image_upload_sessions_resume_pending_session_for_reused_client_ids() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let operator = ok(
+        Operator::new(opendal::services::Memory::default()),
+        "memory operator should build",
+    )
+    .finish();
     let service = ok(
-        S3CompatibleFileStorageService::new(test_s3_file_storage_config()),
+        S3CompatibleFileStorageService::new_with_repository(
+            test_s3_file_storage_config(),
+            Some(repository),
+        ),
         "S3 file storage config should be valid",
-    );
+    )
+    .with_operator(operator)
+    .with_test_multipart_upload_id("test-upload-id");
     let first = ok(
         service
             .create_upload_session(CreateFileUploadSession {
@@ -1069,7 +1341,7 @@ async fn image_upload_sessions_reuse_content_object_key_for_reused_client_ids() 
                 size_bytes: 2048,
                 width: Some(800),
                 height: Some(600),
-                checksum_sha256: Some("c".repeat(64)),
+                parts: single_manifest_part(2048, "c".repeat(64)),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
             })
@@ -1087,7 +1359,7 @@ async fn image_upload_sessions_reuse_content_object_key_for_reused_client_ids() 
                 size_bytes: 2048,
                 width: Some(800),
                 height: Some(600),
-                checksum_sha256: Some("c".repeat(64)),
+                parts: single_manifest_part(2048, "c".repeat(64)),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
             })
@@ -1095,9 +1367,11 @@ async fn image_upload_sessions_reuse_content_object_key_for_reused_client_ids() 
         "second upload session should be created",
     );
 
-    assert_eq!(first.file.id, "image-1");
-    assert_eq!(second.file.id, "image-1");
+    assert!(first.file.id.starts_with("file_"));
+    assert!(second.file.id.starts_with("file_"));
+    assert_eq!(first.file.id, second.file.id);
     assert_eq!(first.file.object_key, second.file.object_key);
+    assert_eq!(first.upload_id, second.upload_id);
 }
 
 #[tokio::test]
@@ -1106,10 +1380,13 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
     let repository = Arc::new(FileStorageRepository::new(pool));
     let config = test_s3_file_storage_config();
     let policy = chat_attachment_upload_policy();
-    let checksum = hex::encode(Sha256::digest(b"data"));
-    let object_key = file_content_object_key(
+    let part_checksum = hex::encode(Sha256::digest(b"data"));
+    let content_manifest_sha256 = single_part_manifest_digest(4, &part_checksum);
+    let object_key = file_object_key(
         &file_storage_object_base_path(&config.base_path, &policy.storage_namespace),
-        &checksum,
+        "manifest",
+        &content_manifest_sha256,
+        "image/webp",
     );
     let operator = ok(
         Operator::new(opendal::services::Memory::default()),
@@ -1122,14 +1399,14 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
     );
     ok(
         repository
-            .upsert_object(
-                "s3",
-                &object_key,
-                "image/webp",
-                4,
-                &checksum,
-                &serde_json::Value::Object(Default::default()),
-            )
+            .upsert_object(UpsertFileObject {
+                storage_backend: "s3",
+                object_key: &object_key,
+                mime_type: "image/webp",
+                size_bytes: 4,
+                content_manifest_sha256: &content_manifest_sha256,
+                metadata: &serde_json::Value::Object(Default::default()),
+            })
             .await,
         "object registry should be written",
     );
@@ -1139,7 +1416,7 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
     )
     .with_operator(operator);
 
-    let mut session = ok(
+    let session = ok(
         service
             .create_upload_session(CreateFileUploadSession {
                 storage_scope: TEST_FILE_STORAGE_SCOPE.to_string(),
@@ -1150,13 +1427,15 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
                 size_bytes: 4,
                 width: Some(16),
                 height: Some(16),
-                checksum_sha256: Some(checksum),
+                parts: single_manifest_part(4, part_checksum.clone()),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
             })
             .await,
         "registered S3 object should create reuse session",
     );
+    let mut session =
+        expect_upload_session(session, "registered S3 object should create reuse session");
     assert!(!session.upload_required);
     assert!(session.ownership_proof_required);
     assert_eq!(session.file.object_key, object_key);
@@ -1171,6 +1450,8 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
     let proof = file_ownership_proof_digest(
         nonce,
         &session.ownership_proof_ranges,
+        &content_manifest_sha256,
+        i64::try_from(b"data".len()).expect("payload size should fit"),
         chunks.iter().map(Vec::as_slice),
     );
     some(
@@ -1182,12 +1463,15 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
         serde_json::Value::String(proof),
     );
 
-    ok(
+    assert!(session.file.url.is_none());
+
+    let prepared = ok(
         service
             .prepare_files(
                 FileStorageContext {
                     user_id: UserId::expect_positive(9),
                     storage_scope: TEST_FILE_STORAGE_SCOPE,
+                    database_object_route_prefix: "/api/test/objects",
                     client_request_id: Some("s3-reuse"),
                 },
                 vec![session.file],
@@ -1195,6 +1479,7 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
             .await,
         "S3 reuse should prepare with ownership proof",
     );
+    assert!(prepared[0].url.is_some());
 }
 
 #[test]
@@ -1208,7 +1493,7 @@ fn s3_public_url_uses_url_path_segment_encoding() {
 
     assert_eq!(
         url,
-        "https://cdn.example.com/files/bucket%20with%20spaces/chat%20images/with%20%23%20and%20%3F.png"
+        "https://cdn.example.com/files/bucket%20with%20spaces/chat%20attachments/with%20%23%20and%20%3F.png"
     );
 }
 
@@ -1233,6 +1518,7 @@ async fn s3_file_storage_rejects_unexpected_backend_on_send() {
             FileStorageContext {
                 user_id: UserId::expect_positive(1),
                 storage_scope: TEST_FILE_STORAGE_SCOPE,
+                database_object_route_prefix: "/api/test/objects",
                 client_request_id: Some("client-1"),
             },
             vec![NewStoredFile {
@@ -1321,7 +1607,7 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
                 size_bytes: 1024,
                 width: Some(640),
                 height: Some(480),
-                checksum_sha256: Some(hex::encode(Sha256::digest(&payload))),
+                parts: single_manifest_part(1024, hex::encode(Sha256::digest(&payload))),
                 metadata: serde_json::json!({"blurhash": "abc"}),
             })
             .await,
@@ -1346,6 +1632,7 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
                 &encoded_object_key,
                 upload_token,
                 Some("image/webp"),
+                None,
                 payload,
             )
             .await,
@@ -1362,7 +1649,7 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
                 message_type: ChatMessageType::Attachment,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                attachments: vec![session.file],
+                attachments: vec![submitted_file_reference(&session.file)],
                 mentions: Vec::new(),
             })
             .await,
@@ -1377,6 +1664,507 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
     assert_eq!(
         attachment.metadata.get("blurhash").and_then(|v| v.as_str()),
         Some("abc")
+    );
+}
+
+#[tokio::test]
+async fn attachment_message_does_not_require_inline_content_reference() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let username_cache =
+        UsernameCache::local_only("test:chat:attachment-inline-free:".to_string(), 100, 60);
+    let service = test_chat_service_with_file_storage(
+        &pool,
+        username_cache.clone(),
+        Arc::new(PrefixingFileStorageService),
+    );
+    let user_repository = Arc::new(UserRepository::new(pool.clone()));
+    let user = ok(
+        user_repository
+            .create(&User::new(
+                "chat_attachment_inline_free_user".to_string(),
+                SignupMethod::Password,
+            ))
+            .await,
+        "user should be created",
+    );
+    ok(
+        username_cache.set(&user.id, &user.username).await,
+        "username cache should write",
+    );
+    let room_service = ok(
+        RoomService::new_for_tests(
+            pool.clone(),
+            (*test_user_service(
+                &pool,
+                UsernameCache::local_only(
+                    "test:chat:attachment-inline-free:room:".to_string(),
+                    100,
+                    60,
+                ),
+            ))
+            .clone(),
+        ),
+        "room service should build",
+    );
+    let (room, _) = ok(
+        room_service
+            .create_room(
+                "Attachment Inline Free Room".to_string(),
+                String::new(),
+                user.id,
+                None,
+                None,
+            )
+            .await,
+        "room should be created",
+    );
+    ok(
+        FileStorageRepository::new(pool.clone())
+            .upsert_object(UpsertFileObject {
+                storage_backend: "test-storage",
+                object_key: "submitted/attachment-inline-free",
+                mime_type: "image/webp",
+                size_bytes: 128,
+                content_manifest_sha256: &"a".repeat(64),
+                metadata: &serde_json::Value::Object(Default::default()),
+            })
+            .await,
+        "attachment object should be registered",
+    );
+
+    let event = ok(
+        service
+            .send_message_event(SendChatMessage {
+                room_id: room.id,
+                user_id: user.id,
+                client_message_id: Some("attachment-inline-free".to_string()),
+                content: String::new(),
+                message_type: ChatMessageType::Attachment,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                attachments: vec![SubmittedFileReference {
+                    id: "attachment-inline-free".to_string(),
+                    kind: crate::models::SubmittedFileReferenceKind::Upload,
+                }],
+                mentions: Vec::new(),
+            })
+            .await,
+        "attachment-only message should be stored",
+    );
+
+    assert!(event.message.message.content.is_empty());
+    assert_eq!(event.message.attachments.len(), 1);
+}
+
+#[tokio::test]
+async fn visible_chat_attachment_can_be_reused_without_uploading_bytes() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repository = Arc::new(UserRepository::new(pool.clone()));
+    let owner = ok(
+        user_repository
+            .create(&User::new(
+                "chat_reuse_owner".to_string(),
+                SignupMethod::Password,
+            ))
+            .await,
+        "owner should be created",
+    );
+    let member = ok(
+        user_repository
+            .create(&User::new(
+                "chat_reuse_member".to_string(),
+                SignupMethod::Password,
+            ))
+            .await,
+        "member should be created",
+    );
+    let room_service = ok(
+        RoomService::new_for_tests(
+            pool.clone(),
+            (*test_user_service(
+                &pool,
+                UsernameCache::local_only("test:chat:reuse:room:".to_string(), 100, 60),
+            ))
+            .clone(),
+        ),
+        "room service should build",
+    );
+    let (room, _) = ok(
+        room_service
+            .create_room(
+                "Attachment Reuse Room".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+        "room should be created",
+    );
+    ok(
+        room_service.join_room(room.id, member.id, None).await,
+        "member should join room",
+    );
+    let service = test_chat_service_with_file_storage(
+        &pool,
+        UsernameCache::local_only("test:chat:reuse:".to_string(), 100, 60),
+        Arc::new(DatabaseFileStorageService::new(
+            "database",
+            Arc::new(FileStorageRepository::new(pool.clone())),
+            "chat-attachment-reuse-secret",
+        )),
+    );
+
+    let original = send_database_chat_attachment(
+        &service,
+        room.id,
+        owner.id,
+        "original-reuse-message",
+        "original-reuse-attachment",
+        b"original image bytes",
+    )
+    .await;
+    let original_attachment = some(
+        original.event.message.attachments.first(),
+        "original attachment should exist",
+    );
+
+    let (history, _) = ok(
+        service
+            .get_history_with_attachments_for_viewer(&room.id, None, 10, false, Some(&member.id))
+            .await,
+        "member history should load",
+    );
+    let reuse_token = some(
+        history
+            .iter()
+            .flat_map(|message| message.attachments.iter())
+            .find(|attachment| attachment.id == original_attachment.id)
+            .and_then(|attachment| attachment.reuse_token.clone()),
+        "visible attachment should include a reuse token",
+    );
+    let token_payload = {
+        let encoded = some(
+            reuse_token.split('.').nth(1),
+            "reuse token should contain encoded payload",
+        );
+        let payload = ok(
+            <base64::engine::GeneralPurpose as base64::Engine>::decode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                encoded,
+            ),
+            "reuse token payload should decode",
+        );
+        ok(
+            serde_json::from_slice::<serde_json::Value>(&payload),
+            "reuse token payload should be JSON",
+        )
+    };
+    assert!(token_payload.get("source_id").is_some());
+    assert!(token_payload.get("storage_backend").is_none());
+    assert!(token_payload.get("object_key").is_none());
+
+    let reused = ok(
+        service
+            .send_message_event(SendChatMessage {
+                room_id: room.id,
+                user_id: member.id,
+                client_message_id: Some("reused-attachment-message".to_string()),
+                content: String::new(),
+                message_type: ChatMessageType::Attachment,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                attachments: vec![crate::service::submitted_file_reference_from_reuse_token(
+                    reuse_token,
+                )],
+                mentions: Vec::new(),
+            })
+            .await,
+        "member should reuse visible attachment",
+    );
+
+    let reused_attachment = some(
+        reused.message.attachments.first(),
+        "reused attachment should exist",
+    );
+    assert_ne!(reused_attachment.id, original_attachment.id);
+    assert_eq!(
+        reused_attachment.storage_backend,
+        original_attachment.storage_backend
+    );
+    assert_eq!(reused_attachment.object_key, original_attachment.object_key);
+    assert_eq!(reused_attachment.mime_type, original_attachment.mime_type);
+    assert_eq!(reused_attachment.size_bytes, original_attachment.size_bytes);
+}
+
+#[tokio::test]
+async fn chat_attachment_reuse_token_requires_source_room_visibility() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repository = Arc::new(UserRepository::new(pool.clone()));
+    let owner = ok(
+        user_repository
+            .create(&User::new(
+                "chat_reuse_private_owner".to_string(),
+                SignupMethod::Password,
+            ))
+            .await,
+        "owner should be created",
+    );
+    let member = ok(
+        user_repository
+            .create(&User::new(
+                "chat_reuse_private_member".to_string(),
+                SignupMethod::Password,
+            ))
+            .await,
+        "member should be created",
+    );
+    let outsider = ok(
+        user_repository
+            .create(&User::new(
+                "chat_reuse_private_outsider".to_string(),
+                SignupMethod::Password,
+            ))
+            .await,
+        "outsider should be created",
+    );
+    let room_service = ok(
+        RoomService::new_for_tests(
+            pool.clone(),
+            (*test_user_service(
+                &pool,
+                UsernameCache::local_only("test:chat:reuse-private:room:".to_string(), 100, 60),
+            ))
+            .clone(),
+        ),
+        "room service should build",
+    );
+    let (source_room, _) = ok(
+        room_service
+            .create_room(
+                "Attachment Reuse Source".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+        "source room should be created",
+    );
+    ok(
+        room_service
+            .join_room(source_room.id, member.id, None)
+            .await,
+        "member should join source room",
+    );
+    let (target_room, _) = ok(
+        room_service
+            .create_room(
+                "Attachment Reuse Target".to_string(),
+                String::new(),
+                outsider.id,
+                None,
+                None,
+            )
+            .await,
+        "target room should be created",
+    );
+    let service = test_chat_service_with_file_storage(
+        &pool,
+        UsernameCache::local_only("test:chat:reuse-private:".to_string(), 100, 60),
+        Arc::new(DatabaseFileStorageService::new(
+            "database",
+            Arc::new(FileStorageRepository::new(pool.clone())),
+            "chat-attachment-reuse-private-secret",
+        )),
+    );
+
+    let original = send_database_chat_attachment(
+        &service,
+        source_room.id,
+        owner.id,
+        "private-reuse-message",
+        "private-reuse-attachment",
+        b"private image bytes",
+    )
+    .await;
+    let original_attachment = some(
+        original.event.message.attachments.first(),
+        "original attachment should exist",
+    );
+    let (history, _) = ok(
+        service
+            .get_history_with_attachments_for_viewer(
+                &source_room.id,
+                None,
+                10,
+                false,
+                Some(&member.id),
+            )
+            .await,
+        "member history should load",
+    );
+    let reuse_token = some(
+        history
+            .iter()
+            .flat_map(|message| message.attachments.iter())
+            .find(|attachment| attachment.id == original_attachment.id)
+            .and_then(|attachment| attachment.reuse_token.clone()),
+        "visible attachment should include a reuse token",
+    );
+
+    let outsider_result = service
+        .send_message_event(SendChatMessage {
+            room_id: source_room.id,
+            user_id: outsider.id,
+            client_message_id: Some("outsider-reuse-message".to_string()),
+            content: String::new(),
+            message_type: ChatMessageType::Attachment,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            attachments: vec![crate::service::submitted_file_reference_from_reuse_token(
+                reuse_token.clone(),
+            )],
+            mentions: Vec::new(),
+        })
+        .await;
+    assert!(matches!(
+        outsider_result,
+        Err(Error::InvalidInput(_) | Error::Authorization(_))
+    ));
+
+    let cross_room_result = service
+        .send_message_event(SendChatMessage {
+            room_id: target_room.id,
+            user_id: outsider.id,
+            client_message_id: Some("cross-room-reuse-message".to_string()),
+            content: String::new(),
+            message_type: ChatMessageType::Attachment,
+            reply_to_message_id: None,
+            metadata: serde_json::Value::Object(Default::default()),
+            attachments: vec![crate::service::submitted_file_reference_from_reuse_token(
+                reuse_token,
+            )],
+            mentions: Vec::new(),
+        })
+        .await;
+    assert!(matches!(
+        cross_room_result,
+        Err(Error::InvalidInput(_) | Error::Authorization(_))
+    ));
+}
+
+#[tokio::test]
+async fn chat_mentions_must_point_to_inline_at_token() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let username_cache =
+        UsernameCache::local_only("test:chat:mention-inline-required:".to_string(), 100, 60);
+    let service = test_chat_service(&pool, username_cache.clone());
+    let user_repository = Arc::new(UserRepository::new(pool.clone()));
+    let sender = ok(
+        user_repository
+            .create(&User::new(
+                "chat_mention_sender".to_string(),
+                SignupMethod::Password,
+            ))
+            .await,
+        "sender should be created",
+    );
+    let mentioned = ok(
+        user_repository
+            .create(&User::new(
+                "chat_mention_target".to_string(),
+                SignupMethod::Password,
+            ))
+            .await,
+        "mentioned user should be created",
+    );
+    ok(
+        username_cache.set(&sender.id, &sender.username).await,
+        "sender cache should write",
+    );
+    ok(
+        username_cache.set(&mentioned.id, &mentioned.username).await,
+        "mentioned cache should write",
+    );
+    let room_service = ok(
+        RoomService::new_for_tests(
+            pool.clone(),
+            (*test_user_service(
+                &pool,
+                UsernameCache::local_only(
+                    "test:chat:mention-inline-required:room:".to_string(),
+                    100,
+                    60,
+                ),
+            ))
+            .clone(),
+        ),
+        "room service should build",
+    );
+    let (room, _) = ok(
+        room_service
+            .create_room(
+                "Mention Inline Required Room".to_string(),
+                String::new(),
+                sender.id,
+                None,
+                None,
+            )
+            .await,
+        "room should be created",
+    );
+    ok(
+        room_service.join_room(room.id, mentioned.id, None).await,
+        "mentioned user should join room",
+    );
+
+    let out_of_range = err(
+        service
+            .send_message_event(SendChatMessage {
+                room_id: room.id,
+                user_id: sender.id,
+                client_message_id: Some("mention-out-of-range".to_string()),
+                content: String::new(),
+                message_type: ChatMessageType::Text,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                attachments: Vec::new(),
+                mentions: vec![ChatMentionInput {
+                    user_id: mentioned.id,
+                    start: 0,
+                    length: 7,
+                }],
+            })
+            .await,
+        "mention without content should fail",
+    );
+    assert!(
+        matches!(out_of_range, Error::InvalidInput(message) if message.contains("range exceeds content length"))
+    );
+
+    let missing_at = err(
+        service
+            .send_message_event(SendChatMessage {
+                room_id: room.id,
+                user_id: sender.id,
+                client_message_id: Some("mention-missing-at".to_string()),
+                content: "hello target".to_string(),
+                message_type: ChatMessageType::Text,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                attachments: Vec::new(),
+                mentions: vec![ChatMentionInput {
+                    user_id: mentioned.id,
+                    start: 0,
+                    length: 5,
+                }],
+            })
+            .await,
+        "mention without @ token should fail",
+    );
+    assert!(
+        matches!(missing_at, Error::InvalidInput(message) if message.contains("must start with @"))
     );
 }
 
@@ -1428,14 +2216,14 @@ async fn custom_file_storage_can_normalize_attachment_metadata() {
     );
     ok(
         FileStorageRepository::new(pool.clone())
-            .upsert_object(
-                "test-storage",
-                "normalized/raw/attachment.webp",
-                "image/webp",
-                123,
-                &hex::encode(Sha256::digest(b"raw/attachment.webp")),
-                &serde_json::Value::Object(Default::default()),
-            )
+            .upsert_object(UpsertFileObject {
+                storage_backend: "test-storage",
+                object_key: "submitted/attachment-storage-1",
+                mime_type: "image/webp",
+                size_bytes: 123,
+                content_manifest_sha256: &hex::encode(Sha256::digest(b"raw/attachment.webp")),
+                metadata: &serde_json::Value::Object(Default::default()),
+            })
             .await,
         "normalized attachment object should be registered",
     );
@@ -1450,17 +2238,9 @@ async fn custom_file_storage_can_normalize_attachment_metadata() {
                 message_type: ChatMessageType::Attachment,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                attachments: vec![NewStoredFile {
-                    filename: None,
+                attachments: vec![SubmittedFileReference {
                     id: "attachment-storage-1".to_string(),
-                    storage_backend: "client".to_string(),
-                    object_key: "raw/attachment.webp".to_string(),
-                    url: None,
-                    mime_type: Some("image/webp".to_string()),
-                    size_bytes: Some(123),
-                    width: Some(640),
-                    height: Some(480),
-                    metadata: serde_json::Value::Object(Default::default()),
+                    kind: crate::models::SubmittedFileReferenceKind::Upload,
                 }],
                 mentions: Vec::new(),
             })
@@ -1473,7 +2253,7 @@ async fn custom_file_storage_can_normalize_attachment_metadata() {
         "attachment should be present",
     );
     assert_eq!(attachment.storage_backend, "test-storage");
-    assert_eq!(attachment.object_key, "normalized/raw/attachment.webp");
+    assert_eq!(attachment.object_key, "submitted/attachment-storage-1");
     assert_eq!(
         attachment.url.as_deref(),
         Some("https://cdn.invalid/attachment-storage-1")
@@ -1527,14 +2307,16 @@ async fn deleting_attachment_message_releases_attachment_objects() {
     );
     ok(
         FileStorageRepository::new(pool.clone())
-            .upsert_object(
-                "test-storage",
-                "normalized/raw/delete-attachment.webp",
-                "image/webp",
-                123,
-                &hex::encode(Sha256::digest(b"raw/delete-attachment.webp")),
-                &serde_json::Value::Object(Default::default()),
-            )
+            .upsert_object(UpsertFileObject {
+                storage_backend: "test-storage",
+                object_key: "submitted/delete-attachment-1",
+                mime_type: "image/webp",
+                size_bytes: 123,
+                content_manifest_sha256: &hex::encode(Sha256::digest(
+                    b"raw/delete-attachment.webp",
+                )),
+                metadata: &serde_json::Value::Object(Default::default()),
+            })
             .await,
         "normalized attachment object should be registered",
     );
@@ -1549,17 +2331,9 @@ async fn deleting_attachment_message_releases_attachment_objects() {
                 message_type: ChatMessageType::Attachment,
                 reply_to_message_id: None,
                 metadata: serde_json::Value::Object(Default::default()),
-                attachments: vec![NewStoredFile {
-                    filename: None,
+                attachments: vec![SubmittedFileReference {
                     id: "delete-attachment-1".to_string(),
-                    storage_backend: "client".to_string(),
-                    object_key: "raw/delete-attachment.webp".to_string(),
-                    url: None,
-                    mime_type: Some("image/webp".to_string()),
-                    size_bytes: Some(123),
-                    width: Some(640),
-                    height: Some(480),
-                    metadata: serde_json::Value::Object(Default::default()),
+                    kind: crate::models::SubmittedFileReferenceKind::Upload,
                 }],
                 mentions: Vec::new(),
             })
@@ -1588,7 +2362,7 @@ async fn deleting_attachment_message_releases_attachment_objects() {
     .clone();
     assert_eq!(
         deleted_object_keys,
-        vec!["normalized/raw/delete-attachment.webp".to_string()]
+        vec!["submitted/delete-attachment-1".to_string()]
     );
     let deleted_origins = ok(storage.deleted_origins.lock(), "deleted origins lock").clone();
     assert_eq!(deleted_origins, vec!["reference_released".to_string()]);

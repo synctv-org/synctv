@@ -2,8 +2,10 @@ use serde_json::Value as JsonValue;
 
 use crate::{
     models::{
-        CreateFileUploadSession, FileBlob, FileUploadSession, Media, MediaId, NewStoredFile,
-        RoomId, UserId,
+        CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
+        FileBlob, FileRangeRequest, FileUploadManifestPart, FileUploadRange,
+        FileUploadSessionCreateResult, GetFileObject, Media, MediaId, RoomId, StoreFileUpload,
+        StoreFileUploadResult, SubmittedFileReference, UserId,
     },
     service::{
         media::{ensure_media_creator_can_edit, MediaService},
@@ -21,7 +23,7 @@ pub struct CreateMediaCoverUploadSession {
     pub size_bytes: i64,
     pub width: Option<i32>,
     pub height: Option<i32>,
-    pub checksum_sha256: Option<String>,
+    pub parts: Vec<FileUploadManifestPart>,
     pub metadata: JsonValue,
 }
 
@@ -40,7 +42,7 @@ impl MediaService {
         media_id: MediaId,
         user_id: UserId,
         request: CreateMediaCoverUploadSession,
-    ) -> Result<FileUploadSession> {
+    ) -> Result<FileUploadSessionCreateResult> {
         let storage = self.file_storage_service.as_ref().ok_or_else(|| {
             Error::InvalidInput("file storage is not configured for media covers".to_string())
         })?;
@@ -68,7 +70,7 @@ impl MediaService {
                 size_bytes: request.size_bytes,
                 width: request.width,
                 height: request.height,
-                checksum_sha256: request.checksum_sha256,
+                parts: request.parts,
                 metadata: request.metadata,
                 policy: media_cover_upload_policy(),
             })
@@ -80,14 +82,34 @@ impl MediaService {
         encoded_object_key: &str,
         upload_token: &str,
         content_type: Option<&str>,
+        range: Option<FileUploadRange>,
         data: Vec<u8>,
-    ) -> Result<FileBlob> {
+    ) -> Result<StoreFileUploadResult> {
         self.file_storage_service
             .as_ref()
             .ok_or_else(|| {
                 Error::InvalidInput("file storage is not configured for media covers".to_string())
             })?
-            .store_upload_object(encoded_object_key, upload_token, content_type, data)
+            .store_upload(StoreFileUpload {
+                encoded_object_key: encoded_object_key.to_string(),
+                upload_token: upload_token.to_string(),
+                content_type: content_type.map(str::to_string),
+                range,
+                data,
+            })
+            .await
+    }
+
+    pub async fn complete_media_cover_upload_session(
+        &self,
+        request: CompleteFileUploadSession,
+    ) -> Result<CompleteFileUploadSessionResult> {
+        self.file_storage_service
+            .as_ref()
+            .ok_or_else(|| {
+                Error::InvalidInput("file storage is not configured for media covers".to_string())
+            })?
+            .complete_upload_session(request)
             .await
     }
 
@@ -96,10 +118,24 @@ impl MediaService {
         encoded_object_key: &str,
         read_token: &str,
     ) -> Result<FileBlob> {
+        self.get_media_cover_object_range(encoded_object_key, read_token, None)
+            .await
+    }
+
+    pub async fn get_media_cover_object_range(
+        &self,
+        encoded_object_key: &str,
+        read_token: &str,
+        range: Option<FileRangeRequest>,
+    ) -> Result<FileBlob> {
         self.file_storage_service
             .as_ref()
             .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
-            .get_object(encoded_object_key, read_token)
+            .get_object(GetFileObject {
+                encoded_object_key: encoded_object_key.to_string(),
+                read_token: read_token.to_string(),
+                range,
+            })
             .await
     }
 
@@ -108,7 +144,7 @@ impl MediaService {
         room_id: RoomId,
         media_id: MediaId,
         user_id: UserId,
-        file: NewStoredFile,
+        file: SubmittedFileReference,
     ) -> Result<Media> {
         let storage = self.file_storage_service.as_ref().ok_or_else(|| {
             Error::InvalidInput("file storage is not configured for media covers".to_string())
@@ -129,11 +165,13 @@ impl MediaService {
             .await?;
 
         let storage_scope = media_cover_storage_scope(room_id, media_id);
+        let upload_policy = media_cover_upload_policy();
         let prepared = storage
-            .prepare_files(
+            .prepare_submitted_files(
                 FileStorageContext {
                     user_id,
                     storage_scope: &storage_scope,
+                    database_object_route_prefix: &upload_policy.database_object_route_prefix,
                     client_request_id: None,
                 },
                 vec![file],

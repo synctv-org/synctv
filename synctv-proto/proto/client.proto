@@ -48,6 +48,7 @@ service UserService {
   rpc SetUsername(SetUsernameRequest) returns (SetUsernameResponse);
   rpc CreateUserAvatarUploadSession(CreateUserAvatarUploadSessionRequest) returns (CreateUserAvatarUploadSessionResponse);
   rpc UploadUserAvatarObject(UploadUserAvatarObjectRequest) returns (UploadUserAvatarObjectResponse);
+  rpc CompleteUserAvatarUploadSession(CompleteUserAvatarUploadSessionRequest) returns (CompleteUserAvatarUploadSessionResponse);
   rpc GetUserAvatarObject(GetUserAvatarObjectRequest) returns (UserAvatarObjectResponse);
   rpc UpdateUserAvatar(UpdateUserAvatarRequest) returns (GetProfileResponse);
   rpc ClearUserAvatar(ClearUserAvatarRequest) returns (GetProfileResponse);
@@ -117,9 +118,11 @@ service RoomService {
   rpc WatchChatEvents(WatchChatEventsRequest) returns (stream WatchChatEventsEvent);
   rpc CreateChatAttachmentUploadSession(CreateChatAttachmentUploadSessionRequest) returns (CreateChatAttachmentUploadSessionResponse);
   rpc UploadChatAttachmentObject(UploadChatAttachmentObjectRequest) returns (UploadChatAttachmentObjectResponse);
+  rpc CompleteChatAttachmentUploadSession(CompleteChatAttachmentUploadSessionRequest) returns (CompleteChatAttachmentUploadSessionResponse);
   rpc GetChatAttachmentObject(GetChatAttachmentObjectRequest) returns (ChatAttachmentObjectResponse);
   rpc CreateRoomCoverUploadSession(CreateRoomCoverUploadSessionRequest) returns (CreateRoomCoverUploadSessionResponse);
   rpc UploadRoomCoverObject(UploadRoomCoverObjectRequest) returns (UploadRoomCoverObjectResponse);
+  rpc CompleteRoomCoverUploadSession(CompleteRoomCoverUploadSessionRequest) returns (CompleteRoomCoverUploadSessionResponse);
   rpc GetRoomCoverObject(GetRoomCoverObjectRequest) returns (RoomCoverObjectResponse);
   rpc UpdateRoomCover(UpdateRoomCoverRequest) returns (GetRoomResponse);
   rpc ClearRoomCover(ClearRoomCoverRequest) returns (GetRoomResponse);
@@ -149,6 +152,7 @@ service RoomService {
   rpc UpdatePlaylist(UpdatePlaylistRequest) returns (UpdatePlaylistResponse);
   rpc CreatePlaylistCoverUploadSession(CreatePlaylistCoverUploadSessionRequest) returns (CreatePlaylistCoverUploadSessionResponse);
   rpc UploadPlaylistCoverObject(UploadPlaylistCoverObjectRequest) returns (UploadPlaylistCoverObjectResponse);
+  rpc CompletePlaylistCoverUploadSession(CompletePlaylistCoverUploadSessionRequest) returns (CompletePlaylistCoverUploadSessionResponse);
   rpc GetPlaylistCoverObject(GetPlaylistCoverObjectRequest) returns (PlaylistCoverObjectResponse);
   rpc UpdatePlaylistCover(UpdatePlaylistCoverRequest) returns (UpdatePlaylistResponse);
   rpc ClearPlaylistCover(ClearPlaylistCoverRequest) returns (UpdatePlaylistResponse);
@@ -161,6 +165,7 @@ service RoomService {
   rpc GetMedia(GetMediaRequest) returns (Media);
   rpc CreateMediaCoverUploadSession(CreateMediaCoverUploadSessionRequest) returns (CreateMediaCoverUploadSessionResponse);
   rpc UploadMediaCoverObject(UploadMediaCoverObjectRequest) returns (UploadMediaCoverObjectResponse);
+  rpc CompleteMediaCoverUploadSession(CompleteMediaCoverUploadSessionRequest) returns (CompleteMediaCoverUploadSessionResponse);
   rpc GetMediaCoverObject(GetMediaCoverObjectRequest) returns (MediaCoverObjectResponse);
   rpc UpdateMediaCover(UpdateMediaCoverRequest) returns (EditMediaResponse);
   rpc ClearMediaCover(ClearMediaCoverRequest) returns (EditMediaResponse);
@@ -300,10 +305,8 @@ message Playlist {
 }
 
 message ResourceCover {
-  string storage_backend = 1;
-  string object_key = 2;
-  string url = 3;
-  bytes metadata = 4; // JSON object.
+  string url = 1;
+  bytes metadata = 2; // JSON object.
 }
 
 enum ResourceAvailability {
@@ -2408,7 +2411,7 @@ message ChatMessageSend {
   string display_position = 2; // Optional chat presentation placement, e.g. "scroll", "top", "bottom".
   string display_color = 3; // Optional chat presentation color, e.g. "#FFFFFF".
   string client_message_id = 4; // Client-generated idempotency key for normal chat messages.
-  repeated ChatAttachment attachments = 5;
+  repeated ChatAttachmentReference attachments = 5;
   string reply_to_message_id = 6;
   bytes metadata = 7; // JSON object.
   repeated ChatMentionInput mentions = 8;
@@ -2501,18 +2504,29 @@ enum ChatAttachmentKind {
   CHAT_ATTACHMENT_KIND_IMAGE = 2;
 }
 
+enum ChatAttachmentReferenceKind {
+  CHAT_ATTACHMENT_REFERENCE_KIND_UNSPECIFIED = 0;
+  CHAT_ATTACHMENT_REFERENCE_KIND_UPLOAD = 1;
+  CHAT_ATTACHMENT_REFERENCE_KIND_REUSE = 2;
+}
+
 message ChatAttachment {
   string id = 1;
-  string storage_backend = 2;
-  string object_key = 3;
-  string url = 4;
-  string mime_type = 5;
-  int64 size_bytes = 6;
-  int32 width = 7;
-  int32 height = 8;
-  bytes metadata = 9; // JSON object.
-  string filename = 10;
-  ChatAttachmentKind kind = 11;
+  string url = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+  int32 width = 5;
+  int32 height = 6;
+  bytes metadata = 7; // JSON object.
+  string filename = 8;
+  ChatAttachmentKind kind = 9;
+  string reuse_token = 10;
+  optional int64 reuse_expires_at = 11;
+}
+
+message ChatAttachmentReference {
+  string id = 1;
+  ChatAttachmentReferenceKind kind = 2;
 }
 
 message CreateChatAttachmentUploadSessionRequest {
@@ -2521,13 +2535,53 @@ message CreateChatAttachmentUploadSessionRequest {
   int64 size_bytes = 3;
   int32 width = 4;
   int32 height = 5;
-  string checksum_sha256 = 6;
+  repeated FileUploadManifestPart parts = 6;
   bytes metadata = 7; // JSON object.
   string filename = 8;
 }
 
+message FileUploadManifestPart {
+  int32 part_number = 1;
+  int64 offset_bytes = 2;
+  int64 size_bytes = 3;
+  string checksum_sha256 = 4;
+}
+
+message FileUploadPlanPart {
+  int32 part_number = 1;
+  int64 offset_bytes = 2;
+  int64 size_bytes = 3;
+}
+
+message FileUploadPlan {
+  string checksum_algorithm = 1;
+  int64 part_size_bytes = 2;
+  repeated FileUploadPlanPart parts = 3;
+}
+
+message FileUploadPartUrl {
+  int32 part_number = 1;
+  int64 offset_bytes = 2;
+  int64 size_bytes = 3;
+  string upload_url = 4;
+  string upload_method = 5;
+  map<string, string> upload_headers = 6;
+  optional int64 expires_at = 7;
+}
+
+message CompleteFileUploadPart {
+  int32 part_number = 1;
+  string etag = 2;
+  int64 size_bytes = 3;
+  string checksum_sha256 = 4;
+}
+
+message FileUploadReference {
+  string id = 1;
+}
+
 message ChatAttachmentUploadSession {
-  ChatAttachment attachment = 1;
+  ChatAttachmentReference attachment_reference = 1;
   bool upload_required = 2;
   optional string upload_url = 3;
   optional string upload_method = 4;
@@ -2537,7 +2591,14 @@ message ChatAttachmentUploadSession {
   bool ownership_proof_required = 8;
   optional string ownership_proof_nonce = 9;
   repeated ChatAttachmentOwnershipProofRange ownership_proof_ranges = 10;
-  optional string ownership_proof_metadata_key = 11;
+  bool resumable = 12;
+  int64 part_size_bytes = 13;
+  int64 uploaded_size_bytes = 14;
+  repeated int32 uploaded_parts = 15;
+  optional string upload_id = 16;
+  repeated FileUploadPartUrl part_urls = 17;
+  string upload_token = 18;
+  string encoded_object_key = 19;
 }
 
 message ChatAttachmentOwnershipProofRange {
@@ -2546,7 +2607,29 @@ message ChatAttachmentOwnershipProofRange {
 }
 
 message CreateChatAttachmentUploadSessionResponse {
-  ChatAttachmentUploadSession session = 1;
+  oneof result {
+    FileUploadPlan plan = 1;
+    ChatAttachmentUploadSession session = 2;
+  }
+}
+
+message FileUploadRange {
+  int64 start = 1;
+  int64 end_inclusive = 2;
+  int64 total_size = 3;
+}
+
+message FileByteRange {
+  int64 start = 1;
+  int64 end_inclusive = 2;
+}
+
+message FileRangeRequest {
+  oneof range {
+    FileByteRange exact = 1;
+    int64 from_start = 2;
+    int64 suffix_length = 3;
+  }
 }
 
 message UploadChatAttachmentObjectRequest {
@@ -2555,36 +2638,57 @@ message UploadChatAttachmentObjectRequest {
   string token = 3;
   optional string content_type = 4;
   bytes data = 5;
+  optional FileUploadRange content_range = 6;
 }
 
 message GetChatAttachmentObjectRequest {
   string room_id = 1;
   string encoded_object_key = 2;
   string token = 3;
+  optional FileRangeRequest range = 4;
 }
 
 message ChatAttachmentObjectResponse {
   string room_id = 1;
-  string object_key = 2;
-  string mime_type = 3;
-  string checksum_sha256 = 4;
-  bytes data = 5;
+  string mime_type = 2;
+  string content_manifest_sha256 = 3;
+  bytes data = 4;
+  optional FileByteRange content_range = 5;
+  int64 total_size_bytes = 6;
 }
 
 message UploadChatAttachmentObjectResponse {
   ChatAttachmentObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message CompleteChatAttachmentUploadSessionRequest {
+  string room_id = 1;
+  string encoded_object_key = 2;
+  string token = 3;
+  optional string upload_id = 4;
+  repeated CompleteFileUploadPart parts = 5;
+  string file_id = 6;
+  string ownership_proof = 7;
+}
+
+message CompleteChatAttachmentUploadSessionResponse {
+  ChatAttachmentObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
 }
 
 message UserAvatar {
   string id = 1;
-  string storage_backend = 2;
-  string object_key = 3;
-  string url = 4;
-  string mime_type = 5;
-  int64 size_bytes = 6;
-  int32 width = 7;
-  int32 height = 8;
-  bytes metadata = 9; // JSON object.
+  string url = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+  int32 width = 5;
+  int32 height = 6;
+  bytes metadata = 7; // JSON object.
 }
 
 message CreateUserAvatarUploadSessionRequest {
@@ -2593,12 +2697,12 @@ message CreateUserAvatarUploadSessionRequest {
   int64 size_bytes = 3;
   int32 width = 4;
   int32 height = 5;
-  string checksum_sha256 = 6;
+  repeated FileUploadManifestPart parts = 6;
   bytes metadata = 7; // JSON object.
 }
 
 message UserAvatarUploadSession {
-  UserAvatar avatar = 1;
+  FileUploadReference avatar_reference = 1;
   bool upload_required = 2;
   optional string upload_url = 3;
   optional string upload_method = 4;
@@ -2608,7 +2712,14 @@ message UserAvatarUploadSession {
   bool ownership_proof_required = 8;
   optional string ownership_proof_nonce = 9;
   repeated UserAvatarOwnershipProofRange ownership_proof_ranges = 10;
-  optional string ownership_proof_metadata_key = 11;
+  bool resumable = 12;
+  int64 part_size_bytes = 13;
+  int64 uploaded_size_bytes = 14;
+  repeated int32 uploaded_parts = 15;
+  optional string upload_id = 16;
+  repeated FileUploadPartUrl part_urls = 17;
+  string upload_token = 18;
+  string encoded_object_key = 19;
 }
 
 message UserAvatarOwnershipProofRange {
@@ -2617,7 +2728,10 @@ message UserAvatarOwnershipProofRange {
 }
 
 message CreateUserAvatarUploadSessionResponse {
-  UserAvatarUploadSession session = 1;
+  oneof result {
+    FileUploadPlan plan = 1;
+    UserAvatarUploadSession session = 2;
+  }
 }
 
 message UploadUserAvatarObjectRequest {
@@ -2625,52 +2739,70 @@ message UploadUserAvatarObjectRequest {
   string token = 2;
   optional string content_type = 3;
   bytes data = 4;
+  optional FileUploadRange content_range = 5;
 }
 
 message GetUserAvatarObjectRequest {
   string encoded_object_key = 1;
   string token = 2;
+  optional FileRangeRequest range = 3;
 }
 
 message UserAvatarObjectResponse {
-  string object_key = 1;
-  string mime_type = 2;
-  string checksum_sha256 = 3;
-  bytes data = 4;
+  string mime_type = 1;
+  string content_manifest_sha256 = 2;
+  bytes data = 3;
+  optional FileByteRange content_range = 4;
+  int64 total_size_bytes = 5;
 }
 
 message UploadUserAvatarObjectResponse {
   UserAvatarObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message CompleteUserAvatarUploadSessionRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string upload_id = 3;
+  repeated CompleteFileUploadPart parts = 4;
+  string file_id = 5;
+  string ownership_proof = 6;
+}
+
+message CompleteUserAvatarUploadSessionResponse {
+  UserAvatarObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
 }
 
 message UpdateUserAvatarRequest {
-  UserAvatar avatar = 1;
+  FileUploadReference avatar_reference = 1;
 }
 
 message ClearUserAvatarRequest {}
 
 message FileCover {
   string id = 1;
-  string storage_backend = 2;
-  string object_key = 3;
-  string url = 4;
-  string mime_type = 5;
-  int64 size_bytes = 6;
-  int32 width = 7;
-  int32 height = 8;
-  bytes metadata = 9; // JSON object.
+  string url = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+  int32 width = 5;
+  int32 height = 6;
+  bytes metadata = 7; // JSON object.
 }
 
 message MediaCover {
   string id = 1;
-  string storage_backend = 2;
-  string object_key = 3;
-  string url = 4;
-  string mime_type = 5;
-  int64 size_bytes = 6;
-  int32 width = 7;
-  int32 height = 8;
-  bytes metadata = 9; // JSON object.
+  string url = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+  int32 width = 5;
+  int32 height = 6;
+  bytes metadata = 7; // JSON object.
 }
 
 message CreateMediaCoverUploadSessionRequest {
@@ -2681,12 +2813,12 @@ message CreateMediaCoverUploadSessionRequest {
   int64 size_bytes = 5;
   int32 width = 6;
   int32 height = 7;
-  string checksum_sha256 = 8;
+  repeated FileUploadManifestPart parts = 8;
   bytes metadata = 9; // JSON object.
 }
 
 message MediaCoverUploadSession {
-  MediaCover cover = 1;
+  FileUploadReference cover_reference = 1;
   bool upload_required = 2;
   optional string upload_url = 3;
   optional string upload_method = 4;
@@ -2696,7 +2828,14 @@ message MediaCoverUploadSession {
   bool ownership_proof_required = 8;
   optional string ownership_proof_nonce = 9;
   repeated MediaCoverOwnershipProofRange ownership_proof_ranges = 10;
-  optional string ownership_proof_metadata_key = 11;
+  bool resumable = 12;
+  int64 part_size_bytes = 13;
+  int64 uploaded_size_bytes = 14;
+  repeated int32 uploaded_parts = 15;
+  optional string upload_id = 16;
+  repeated FileUploadPartUrl part_urls = 17;
+  string upload_token = 18;
+  string encoded_object_key = 19;
 }
 
 message MediaCoverOwnershipProofRange {
@@ -2705,7 +2844,10 @@ message MediaCoverOwnershipProofRange {
 }
 
 message CreateMediaCoverUploadSessionResponse {
-  MediaCoverUploadSession session = 1;
+  oneof result {
+    FileUploadPlan plan = 1;
+    MediaCoverUploadSession session = 2;
+  }
 }
 
 message UploadMediaCoverObjectRequest {
@@ -2713,28 +2855,50 @@ message UploadMediaCoverObjectRequest {
   string token = 2;
   optional string content_type = 3;
   bytes data = 4;
+  optional FileUploadRange content_range = 5;
 }
 
 message GetMediaCoverObjectRequest {
   string encoded_object_key = 1;
   string token = 2;
+  optional FileRangeRequest range = 3;
 }
 
 message MediaCoverObjectResponse {
-  string object_key = 1;
-  string mime_type = 2;
-  string checksum_sha256 = 3;
-  bytes data = 4;
+  string mime_type = 1;
+  string content_manifest_sha256 = 2;
+  bytes data = 3;
+  optional FileByteRange content_range = 4;
+  int64 total_size_bytes = 5;
 }
 
 message UploadMediaCoverObjectResponse {
   MediaCoverObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message CompleteMediaCoverUploadSessionRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string upload_id = 3;
+  repeated CompleteFileUploadPart parts = 4;
+  string file_id = 5;
+  string ownership_proof = 6;
+}
+
+message CompleteMediaCoverUploadSessionResponse {
+  MediaCoverObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
 }
 
 message UpdateMediaCoverRequest {
   string room_id = 1;
   string media_id = 2 [(buf.validate.field).string.min_len = 1];
-  MediaCover cover = 3;
+  FileUploadReference cover_reference = 3;
 }
 
 message ClearMediaCoverRequest {
@@ -2749,12 +2913,12 @@ message CreateRoomCoverUploadSessionRequest {
   int64 size_bytes = 4;
   int32 width = 5;
   int32 height = 6;
-  string checksum_sha256 = 7;
+  repeated FileUploadManifestPart parts = 7;
   bytes metadata = 8; // JSON object.
 }
 
 message RoomCoverUploadSession {
-  FileCover cover = 1;
+  FileUploadReference cover_reference = 1;
   bool upload_required = 2;
   optional string upload_url = 3;
   optional string upload_method = 4;
@@ -2764,11 +2928,21 @@ message RoomCoverUploadSession {
   bool ownership_proof_required = 8;
   optional string ownership_proof_nonce = 9;
   repeated FileOwnershipProofRange ownership_proof_ranges = 10;
-  optional string ownership_proof_metadata_key = 11;
+  bool resumable = 12;
+  int64 part_size_bytes = 13;
+  int64 uploaded_size_bytes = 14;
+  repeated int32 uploaded_parts = 15;
+  optional string upload_id = 16;
+  repeated FileUploadPartUrl part_urls = 17;
+  string upload_token = 18;
+  string encoded_object_key = 19;
 }
 
 message CreateRoomCoverUploadSessionResponse {
-  RoomCoverUploadSession session = 1;
+  oneof result {
+    FileUploadPlan plan = 1;
+    RoomCoverUploadSession session = 2;
+  }
 }
 
 message UploadRoomCoverObjectRequest {
@@ -2776,27 +2950,49 @@ message UploadRoomCoverObjectRequest {
   string token = 2;
   optional string content_type = 3;
   bytes data = 4;
+  optional FileUploadRange content_range = 5;
 }
 
 message GetRoomCoverObjectRequest {
   string encoded_object_key = 1;
   string token = 2;
+  optional FileRangeRequest range = 3;
 }
 
 message RoomCoverObjectResponse {
-  string object_key = 1;
-  string mime_type = 2;
-  string checksum_sha256 = 3;
-  bytes data = 4;
+  string mime_type = 1;
+  string content_manifest_sha256 = 2;
+  bytes data = 3;
+  optional FileByteRange content_range = 4;
+  int64 total_size_bytes = 5;
 }
 
 message UploadRoomCoverObjectResponse {
   RoomCoverObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message CompleteRoomCoverUploadSessionRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string upload_id = 3;
+  repeated CompleteFileUploadPart parts = 4;
+  string file_id = 5;
+  string ownership_proof = 6;
+}
+
+message CompleteRoomCoverUploadSessionResponse {
+  RoomCoverObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
 }
 
 message UpdateRoomCoverRequest {
   string room_id = 1;
-  FileCover cover = 2;
+  FileUploadReference cover_reference = 2;
 }
 
 message ClearRoomCoverRequest {
@@ -2811,12 +3007,12 @@ message CreatePlaylistCoverUploadSessionRequest {
   int64 size_bytes = 5;
   int32 width = 6;
   int32 height = 7;
-  string checksum_sha256 = 8;
+  repeated FileUploadManifestPart parts = 8;
   bytes metadata = 9; // JSON object.
 }
 
 message PlaylistCoverUploadSession {
-  FileCover cover = 1;
+  FileUploadReference cover_reference = 1;
   bool upload_required = 2;
   optional string upload_url = 3;
   optional string upload_method = 4;
@@ -2826,11 +3022,21 @@ message PlaylistCoverUploadSession {
   bool ownership_proof_required = 8;
   optional string ownership_proof_nonce = 9;
   repeated FileOwnershipProofRange ownership_proof_ranges = 10;
-  optional string ownership_proof_metadata_key = 11;
+  bool resumable = 12;
+  int64 part_size_bytes = 13;
+  int64 uploaded_size_bytes = 14;
+  repeated int32 uploaded_parts = 15;
+  optional string upload_id = 16;
+  repeated FileUploadPartUrl part_urls = 17;
+  string upload_token = 18;
+  string encoded_object_key = 19;
 }
 
 message CreatePlaylistCoverUploadSessionResponse {
-  PlaylistCoverUploadSession session = 1;
+  oneof result {
+    FileUploadPlan plan = 1;
+    PlaylistCoverUploadSession session = 2;
+  }
 }
 
 message UploadPlaylistCoverObjectRequest {
@@ -2838,28 +3044,50 @@ message UploadPlaylistCoverObjectRequest {
   string token = 2;
   optional string content_type = 3;
   bytes data = 4;
+  optional FileUploadRange content_range = 5;
 }
 
 message GetPlaylistCoverObjectRequest {
   string encoded_object_key = 1;
   string token = 2;
+  optional FileRangeRequest range = 3;
 }
 
 message PlaylistCoverObjectResponse {
-  string object_key = 1;
-  string mime_type = 2;
-  string checksum_sha256 = 3;
-  bytes data = 4;
+  string mime_type = 1;
+  string content_manifest_sha256 = 2;
+  bytes data = 3;
+  optional FileByteRange content_range = 4;
+  int64 total_size_bytes = 5;
 }
 
 message UploadPlaylistCoverObjectResponse {
   PlaylistCoverObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message CompletePlaylistCoverUploadSessionRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string upload_id = 3;
+  repeated CompleteFileUploadPart parts = 4;
+  string file_id = 5;
+  string ownership_proof = 6;
+}
+
+message CompletePlaylistCoverUploadSessionResponse {
+  PlaylistCoverObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
 }
 
 message UpdatePlaylistCoverRequest {
   string room_id = 1;
   string playlist_id = 2 [(buf.validate.field).string.min_len = 1];
-  FileCover cover = 3;
+  FileUploadReference cover_reference = 3;
 }
 
 message ClearPlaylistCoverRequest {
@@ -2958,7 +3186,7 @@ message UserNotification {
 message SendChatMessageRequest {
   string content = 1;
   string client_message_id = 2;
-  repeated ChatAttachment attachments = 3;
+  repeated ChatAttachmentReference attachments = 3;
   string reply_to_message_id = 4;
   bytes metadata = 5; // JSON object.
   string display_position = 6;

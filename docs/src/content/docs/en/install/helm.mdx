@@ -131,7 +131,7 @@ Why split them:
 
 `config.server.grpcCompressionEnabled` defaults to `true` and allows gRPC peers to negotiate gzip compression. Keep it enabled for cross-node calls, Ingress forwarding, and larger batch responses. Disable it only when gRPC traffic is local and CPU is tighter than bandwidth.
 
-`config.fileStorage.backends.<name>.database.compression` controls PostgreSQL `file_blobs` compression for database file-storage backends. It defaults to `zstd`; allowed values are `none`, `lz4`, and `zstd`.
+`config.fileStorage.backends.<name>.database.compression` controls PostgreSQL `file_blob_parts` compression for database file-storage backends. It defaults to `zstd`; `compressionMinSizeBytes` defaults to `4096`, and `compressionMinSavingsPercent` defaults to `10`, so low-value compression stores raw bytes. Database file storage uses permanent segments and serves HTTP Range from those segments. S3 file storage uses native multipart direct uploads for resumable GB-scale objects.
 
 `stunService.enabled` defaults to `false`. Enable it only when you expose the built-in STUN listener through a client-reachable `LoadBalancer` or `NodePort`, and set `config.webrtc.stunExternalAddr` to that public address. A `ClusterIP` STUN Service is only reachable inside the cluster and should not be advertised to public WebRTC clients.
 

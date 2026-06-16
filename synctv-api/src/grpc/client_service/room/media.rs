@@ -132,6 +132,23 @@ pub(super) async fn upload_room_cover_object(
     Ok(Response::new(response))
 }
 
+pub(super) async fn complete_room_cover_upload_session(
+    service: &ClientServiceImpl,
+    request: Request<synctv_proto::client::CompleteRoomCoverUploadSessionRequest>,
+) -> Result<Response<synctv_proto::client::CompleteRoomCoverUploadSessionResponse>, Status> {
+    let metadata = service.request_metadata(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .client_api
+        .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
+            let client_api = service.client_api.clone();
+            async move { client_api.complete_room_cover_upload_session(req).await }
+        })
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
 pub(super) async fn get_room_cover_object(
     service: &ClientServiceImpl,
     request: Request<synctv_proto::client::GetRoomCoverObjectRequest>,
@@ -206,6 +223,23 @@ pub(super) async fn upload_media_cover_object(
         .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
             let client_api = service.client_api.clone();
             async move { client_api.upload_media_cover_object(req).await }
+        })
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn complete_media_cover_upload_session(
+    service: &ClientServiceImpl,
+    request: Request<CompleteMediaCoverUploadSessionRequest>,
+) -> Result<Response<CompleteMediaCoverUploadSessionResponse>, Status> {
+    let metadata = service.request_metadata(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .client_api
+        .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
+            let client_api = service.client_api.clone();
+            async move { client_api.complete_media_cover_upload_session(req).await }
         })
         .await
         .map_err(map_api_error)?;
@@ -309,6 +343,23 @@ pub(super) async fn upload_playlist_cover_object(
         .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
             let client_api = service.client_api.clone();
             async move { client_api.upload_playlist_cover_object(req).await }
+        })
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn complete_playlist_cover_upload_session(
+    service: &ClientServiceImpl,
+    request: Request<synctv_proto::client::CompletePlaylistCoverUploadSessionRequest>,
+) -> Result<Response<synctv_proto::client::CompletePlaylistCoverUploadSessionResponse>, Status> {
+    let metadata = service.request_metadata(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .client_api
+        .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
+            let client_api = service.client_api.clone();
+            async move { client_api.complete_playlist_cover_upload_session(req).await }
         })
         .await
         .map_err(map_api_error)?;

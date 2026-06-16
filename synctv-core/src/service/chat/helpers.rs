@@ -1,22 +1,28 @@
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::{
     models::{
-        ChatMessage, ChatMessageEventLog, ChatPlaybackMessagesQuery, ChatReadState,
+        ChatAttachment, ChatMessage, ChatMessageEventLog, ChatPlaybackMessagesQuery, ChatReadState,
         CreateChatAttachmentUploadSession, CreateFileUploadSession, DeleteChatMessage,
-        EditChatMessage, NewStoredFile, RoomId, SendChatMessage, UserId,
-        CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
-        CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
-        CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+        EditChatMessage, NewStoredFile, RoomId, SendChatMessage, SubmittedFileReference,
+        SubmittedFileReferenceKind, UserId, CHAT_ATTACHMENT_FILENAME_MAX_CHARS,
+        CHAT_ATTACHMENT_ID_MAX_CHARS, CHAT_CLIENT_MESSAGE_ID_MAX_CHARS,
+        CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS,
+        FILE_STORAGE_BACKEND_MAX_CHARS,
     },
     Error, Result,
 };
 
 use super::MAX_CHAT_ATTACHMENTS_PER_MESSAGE;
-use crate::service::file_storage::{FILE_OWNERSHIP_PROOF_KEY, FILE_UPLOAD_TOKEN_KEY};
+use crate::service::file_storage::{
+    CreateFileReuseGrant, FileStorageService, FILE_OWNERSHIP_PROOF_KEY, FILE_UPLOAD_TOKEN_KEY,
+};
 use crate::service::file_upload_policies::chat_attachment_upload_policy;
+
+pub(super) const CHAT_ATTACHMENT_REUSE_SOURCE_KIND: &str = "chat_message_attachment";
+const CHAT_ATTACHMENT_REUSE_TOKEN_TTL_SECONDS: i64 = 3600;
 
 pub(super) fn max_messages_to_keep_count(max_messages: u64) -> Result<i32> {
     i32::try_from(max_messages)
@@ -198,7 +204,7 @@ pub(super) fn chat_attachment_upload_request_to_file_request(
         size_bytes: request.size_bytes,
         width: request.width,
         height: request.height,
-        checksum_sha256: request.checksum_sha256,
+        parts: request.parts,
         metadata: request.metadata,
         policy: chat_attachment_upload_policy(),
     }
@@ -311,6 +317,43 @@ pub(super) fn validate_chat_attachments(attachments: &[NewStoredFile]) -> Result
     Ok(())
 }
 
+pub(super) fn validate_submitted_chat_attachments(
+    attachments: &[SubmittedFileReference],
+) -> Result<()> {
+    if attachments.len() > MAX_CHAT_ATTACHMENTS_PER_MESSAGE {
+        return Err(Error::InvalidInput(format!(
+            "Chat messages support at most {MAX_CHAT_ATTACHMENTS_PER_MESSAGE} attachments"
+        )));
+    }
+    let mut attachment_ids = std::collections::HashSet::with_capacity(attachments.len());
+    for attachment in attachments {
+        match attachment.kind {
+            SubmittedFileReferenceKind::Upload => {
+                if attachment.id.trim().is_empty()
+                    || attachment.id.chars().count() > CHAT_ATTACHMENT_ID_MAX_CHARS
+                {
+                    return Err(Error::InvalidInput(format!(
+                        "attachment id must be between 1 and {CHAT_ATTACHMENT_ID_MAX_CHARS} characters"
+                    )));
+                }
+            }
+            SubmittedFileReferenceKind::Reuse => {
+                if attachment.id.trim().is_empty() || attachment.id.chars().count() > 4096 {
+                    return Err(Error::InvalidInput(
+                        "attachment reuse token must be between 1 and 4096 characters".to_string(),
+                    ));
+                }
+            }
+        }
+        if !attachment_ids.insert(attachment.id.as_str()) {
+            return Err(Error::InvalidInput(
+                "duplicate attachment id in one message".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn strip_internal_chat_attachment_metadata(attachments: &mut [NewStoredFile]) {
     for attachment in attachments {
         if let Some(metadata) = attachment.metadata.as_object_mut() {
@@ -318,6 +361,71 @@ pub(super) fn strip_internal_chat_attachment_metadata(attachments: &mut [NewStor
             metadata.remove(FILE_OWNERSHIP_PROOF_KEY);
         }
     }
+}
+
+pub(super) fn chat_attachment_reuse_source_id(attachment: &ChatAttachment) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        attachment.room_id.as_i64(),
+        attachment.message_id,
+        attachment.message_created_at.timestamp_micros(),
+        attachment.id
+    )
+}
+
+pub(super) fn parse_chat_attachment_reuse_source_id(
+    source_id: &str,
+) -> Result<(RoomId, i64, i64, String)> {
+    let mut parts = source_id.splitn(4, ':');
+    let room_id = parts
+        .next()
+        .and_then(|value| value.parse::<i64>().ok())
+        .map(RoomId::try_from)
+        .transpose()
+        .map_err(|_| Error::InvalidInput("invalid chat attachment reuse token".to_string()))?
+        .ok_or_else(|| Error::InvalidInput("invalid chat attachment reuse token".to_string()))?;
+    let message_id = parts
+        .next()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| Error::InvalidInput("invalid chat attachment reuse token".to_string()))?;
+    let message_created_at_micros = parts
+        .next()
+        .and_then(|value| value.parse::<i64>().ok())
+        .ok_or_else(|| Error::InvalidInput("invalid chat attachment reuse token".to_string()))?;
+    let attachment_id = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| Error::InvalidInput("invalid chat attachment reuse token".to_string()))?;
+    Ok((
+        room_id,
+        message_id,
+        message_created_at_micros,
+        attachment_id,
+    ))
+}
+
+pub(super) fn attach_chat_attachment_reuse_grants(
+    storage: &dyn FileStorageService,
+    viewer_user_id: UserId,
+    attachments: &mut [ChatAttachment],
+) -> Result<()> {
+    for attachment in attachments {
+        let expires_at = Utc::now() + Duration::seconds(CHAT_ATTACHMENT_REUSE_TOKEN_TTL_SECONDS);
+        let storage_scope = chat_file_storage_scope(attachment.room_id, viewer_user_id);
+        let grant = storage.create_reuse_grant(CreateFileReuseGrant {
+            user_id: viewer_user_id,
+            storage_scope: &storage_scope,
+            source_kind: CHAT_ATTACHMENT_REUSE_SOURCE_KIND,
+            source_id: &chat_attachment_reuse_source_id(attachment),
+            expires_at,
+        })?;
+        attachment.reuse_token = Some(grant.token);
+        attachment.reuse_expires_at = Some(grant.expires_at);
+    }
+    Ok(())
 }
 
 pub(super) fn chat_send_request_hash(request: &SendChatMessage) -> Result<String> {

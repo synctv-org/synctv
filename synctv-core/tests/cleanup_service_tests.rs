@@ -10,8 +10,8 @@ use std::sync::Arc;
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use synctv_core::models::{
-    CreateFileUploadSession, FileReferenceTarget, FileUploadSession, NewStoredFile, Room, RoomId,
-    RoomStatus, User, UserId, UserRole, UserStatus,
+    CreateFileUploadSession, FileReferenceTarget, FileUploadSessionCreateResult, NewStoredFile,
+    Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus,
 };
 use synctv_core::repository::{RoomRepository, UserRepository};
 use synctv_core::service::{
@@ -45,7 +45,7 @@ impl FileStorageService for RecordingFileStorageService {
     async fn create_upload_session(
         &self,
         _request: CreateFileUploadSession,
-    ) -> synctv_core::Result<FileUploadSession> {
+    ) -> synctv_core::Result<FileUploadSessionCreateResult> {
         Err(Error::Internal("not used".to_string()))
     }
 

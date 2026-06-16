@@ -4,6 +4,7 @@ use super::{map_api_error, ClientServiceImpl};
 use crate::impls::EndpointRateLimitCategory;
 use synctv_proto::client::{
     user_service_server::UserService, CloseAccountRequest, CloseAccountResponse,
+    CompleteUserAvatarUploadSessionRequest, CompleteUserAvatarUploadSessionResponse,
     ConfirmEmailBindRequest, ConfirmEmailBindResponse, CreateRoomRequest, CreateRoomResponse,
     CreateUserAvatarUploadSessionRequest, CreateUserAvatarUploadSessionResponse,
     DeletePasskeyRequest, DeletePasskeyResponse, FinishOpaquePasswordUpdateRequest,
@@ -143,6 +144,23 @@ impl UserService for ClientServiceImpl {
             .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
                 let client_api = self.client_api.clone();
                 async move { client_api.upload_user_avatar_object(req).await }
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn complete_user_avatar_upload_session(
+        &self,
+        request: Request<CompleteUserAvatarUploadSessionRequest>,
+    ) -> Result<Response<CompleteUserAvatarUploadSessionResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let response = self
+            .client_api
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
+                let client_api = self.client_api.clone();
+                async move { client_api.complete_user_avatar_upload_session(req).await }
             })
             .await
             .map_err(map_api_error)?;

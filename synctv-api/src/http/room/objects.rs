@@ -1,7 +1,7 @@
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -15,13 +15,54 @@ use super::types::{
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
+    CompleteChatAttachmentUploadSessionRequest, CompleteChatAttachmentUploadSessionResponse,
+    CompleteMediaCoverUploadSessionRequest, CompleteMediaCoverUploadSessionResponse,
+    CompletePlaylistCoverUploadSessionRequest, CompletePlaylistCoverUploadSessionResponse,
+    CompleteRoomCoverUploadSessionRequest, CompleteRoomCoverUploadSessionResponse,
     CreateChatAttachmentUploadSessionRequest, CreateChatAttachmentUploadSessionResponse,
     CreateMediaCoverUploadSessionRequest, CreateMediaCoverUploadSessionResponse,
     CreatePlaylistCoverUploadSessionRequest, CreatePlaylistCoverUploadSessionResponse,
     CreateRoomCoverUploadSessionRequest, CreateRoomCoverUploadSessionResponse, EditMediaResponse,
     GetRoomResponse, UpdateMediaCoverRequest, UpdatePlaylistCoverRequest, UpdatePlaylistResponse,
-    UpdateRoomCoverRequest,
+    UpdateRoomCoverRequest, UploadChatAttachmentObjectRequest,
 };
+
+fn file_upload_range_to_proto(
+    range: synctv_core::models::FileUploadRange,
+) -> synctv_proto::client::FileUploadRange {
+    synctv_proto::client::FileUploadRange {
+        start: range.start,
+        end_inclusive: range.end_inclusive,
+        total_size: range.total_size,
+    }
+}
+
+fn upload_response_headers(
+    complete: bool,
+    uploaded_size_bytes: i64,
+    uploaded_parts: &[i32],
+) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("x-synctv-upload-complete"),
+        HeaderValue::from_static(if complete { "true" } else { "false" }),
+    );
+    if let Ok(value) = HeaderValue::from_str(&uploaded_size_bytes.to_string()) {
+        headers.insert(
+            HeaderName::from_static("x-synctv-uploaded-size-bytes"),
+            value,
+        );
+    }
+    let uploaded_parts = uploaded_parts
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    if let Ok(value) = HeaderValue::from_str(&uploaded_parts) {
+        headers.insert(HeaderName::from_static("x-synctv-uploaded-parts"), value);
+    }
+    headers
+}
 
 pub async fn create_media_cover_upload_session(
     request_meta: RequestMetadata,
@@ -306,7 +347,7 @@ pub async fn upload_chat_attachment_object(
     Path(path): Path<ChatAttachmentObjectPath>,
     headers: HeaderMap,
     body: Bytes,
-) -> AppResult<StatusCode> {
+) -> AppResult<Response> {
     let upload_token = super::super::required_header_str(
         &headers,
         synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
@@ -316,68 +357,89 @@ pub async fn upload_chat_attachment_object(
     let encoded_object_key = path.encoded_object_key;
     let upload_token = upload_token.to_string();
     let content_type = content_type.map(str::to_string);
+    let range = super::super::optional_content_range(&headers)?;
     let data = body.to_vec();
-    execute_public_endpoint(
+    let req = UploadChatAttachmentObjectRequest {
+        room_id: String::new(),
+        encoded_object_key,
+        token: upload_token,
+        content_type,
+        data,
+        content_range: range.map(file_upload_range_to_proto),
+    };
+    let response = execute_public_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
         EndpointRateLimitScope::RoomChat,
-        move |client_api| async move {
-            let chat_service = client_api.chat_service.as_ref().ok_or_else(|| {
-                crate::impls::ApiError::ServiceUnavailable(
-                    "Chat service is unavailable".to_string(),
-                )
-            })?;
-            chat_service
-                .store_attachment_upload_object(
-                    &encoded_object_key,
-                    &upload_token,
-                    content_type.as_deref(),
-                    data,
-                )
-                .await
-                .map(|_| ())
-                .map_err(crate::impls::ApiError::from)
-        },
+        move |client_api| async move { client_api.upload_chat_attachment_object(req).await },
     )
     .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok((
+        upload_response_headers(
+            response.complete,
+            response.uploaded_size_bytes,
+            &response.uploaded_parts,
+        ),
+        StatusCode::NO_CONTENT,
+    )
+        .into_response())
 }
 
 pub async fn get_chat_attachment_object(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<ChatAttachmentObjectPath>,
+    headers: HeaderMap,
     Query(query): Query<ChatAttachmentObjectQuery>,
 ) -> AppResult<Response> {
-    let encoded_object_key = path.encoded_object_key;
-    let token = query.token;
-    let blob = execute_public_endpoint(
+    let range = super::super::optional_file_range(&headers)?;
+    let req = synctv_proto::client::GetChatAttachmentObjectRequest {
+        room_id: String::new(),
+        encoded_object_key: path.encoded_object_key,
+        token: query.token,
+        range: range.map(super::super::file_range_request_to_proto),
+    };
+    let object = execute_public_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
         EndpointRateLimitScope::RoomChat,
+        move |client_api| async move { client_api.get_chat_attachment_object(req).await },
+    )
+    .await?;
+    super::super::file_blob_response(
+        super::super::object_response_blob(
+            object.mime_type,
+            object.content_manifest_sha256,
+            object.data,
+            object.content_range,
+            object.total_size_bytes,
+        ),
+        Some("private, max-age=31536000, immutable"),
+    )
+}
+
+pub async fn complete_chat_attachment_upload_session(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<ChatAttachmentObjectPath>,
+    Json(mut req): Json<CompleteChatAttachmentUploadSessionRequest>,
+) -> AppResult<Json<CompleteChatAttachmentUploadSessionResponse>> {
+    req.encoded_object_key = path.encoded_object_key;
+    let response = execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomChat,
         move |client_api| async move {
-            let chat_service = client_api.chat_service.as_ref().ok_or_else(|| {
-                crate::impls::ApiError::ServiceUnavailable(
-                    "Chat service is unavailable".to_string(),
-                )
-            })?;
-            chat_service
-                .get_attachment_object(&encoded_object_key, &token)
+            client_api
+                .complete_chat_attachment_upload_session(req)
                 .await
-                .map_err(crate::impls::ApiError::from)
         },
     )
     .await?;
-    let headers = [
-        (header::CONTENT_TYPE, blob.mime_type),
-        (
-            header::CACHE_CONTROL,
-            "private, max-age=31536000, immutable".to_string(),
-        ),
-    ];
-    Ok((headers, blob.data).into_response())
+    Ok(Json(response))
 }
 
 pub async fn upload_media_cover_object(
@@ -386,20 +448,22 @@ pub async fn upload_media_cover_object(
     Path(path): Path<MediaCoverObjectPath>,
     headers: HeaderMap,
     body: Bytes,
-) -> AppResult<StatusCode> {
+) -> AppResult<Response> {
     let upload_token = super::super::required_header_str(
         &headers,
         synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
         "Missing file upload token",
     )?;
     let content_type = super::super::optional_header_str(&headers, &header::CONTENT_TYPE)?;
+    let range = super::super::optional_content_range(&headers)?;
     let req = synctv_proto::client::UploadMediaCoverObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: upload_token.to_string(),
         content_type: content_type.map(str::to_string),
+        content_range: range.map(file_upload_range_to_proto),
         data: body.to_vec(),
     };
-    execute_public_endpoint(
+    let response = execute_public_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
@@ -407,20 +471,31 @@ pub async fn upload_media_cover_object(
         move |client_api| async move { client_api.upload_media_cover_object(req).await },
     )
     .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok((
+        upload_response_headers(
+            response.complete,
+            response.uploaded_size_bytes,
+            &response.uploaded_parts,
+        ),
+        StatusCode::NO_CONTENT,
+    )
+        .into_response())
 }
 
 pub async fn get_media_cover_object(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<MediaCoverObjectPath>,
+    headers: HeaderMap,
     Query(query): Query<MediaCoverObjectQuery>,
 ) -> AppResult<Response> {
+    let range = super::super::optional_file_range(&headers)?;
     let req = synctv_proto::client::GetMediaCoverObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: query.token,
+        range: range.map(super::super::file_range_request_to_proto),
     };
-    let blob = execute_public_endpoint(
+    let object = execute_public_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
@@ -428,14 +503,34 @@ pub async fn get_media_cover_object(
         move |client_api| async move { client_api.get_media_cover_object(req).await },
     )
     .await?;
-    let headers = [
-        (header::CONTENT_TYPE, blob.mime_type),
-        (
-            header::CACHE_CONTROL,
-            "private, max-age=31536000, immutable".to_string(),
+    super::super::file_blob_response(
+        super::super::object_response_blob(
+            object.mime_type,
+            object.content_manifest_sha256,
+            object.data,
+            object.content_range,
+            object.total_size_bytes,
         ),
-    ];
-    Ok((headers, blob.data).into_response())
+        Some("private, max-age=31536000, immutable"),
+    )
+}
+
+pub async fn complete_media_cover_upload_session(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<MediaCoverObjectPath>,
+    Json(mut req): Json<CompleteMediaCoverUploadSessionRequest>,
+) -> AppResult<Json<CompleteMediaCoverUploadSessionResponse>> {
+    req.encoded_object_key = path.encoded_object_key;
+    let response = execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::MediaCover,
+        move |client_api| async move { client_api.complete_media_cover_upload_session(req).await },
+    )
+    .await?;
+    Ok(Json(response))
 }
 
 pub async fn upload_room_cover_object(
@@ -444,20 +539,22 @@ pub async fn upload_room_cover_object(
     Path(path): Path<RoomCoverObjectPath>,
     headers: HeaderMap,
     body: Bytes,
-) -> AppResult<StatusCode> {
+) -> AppResult<Response> {
     let upload_token = super::super::required_header_str(
         &headers,
         synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
         "Missing file upload token",
     )?;
     let content_type = super::super::optional_header_str(&headers, &header::CONTENT_TYPE)?;
+    let range = super::super::optional_content_range(&headers)?;
     let req = synctv_proto::client::UploadRoomCoverObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: upload_token.to_string(),
         content_type: content_type.map(str::to_string),
+        content_range: range.map(file_upload_range_to_proto),
         data: body.to_vec(),
     };
-    execute_public_endpoint(
+    let response = execute_public_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
@@ -465,20 +562,31 @@ pub async fn upload_room_cover_object(
         move |client_api| async move { client_api.upload_room_cover_object(req).await },
     )
     .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok((
+        upload_response_headers(
+            response.complete,
+            response.uploaded_size_bytes,
+            &response.uploaded_parts,
+        ),
+        StatusCode::NO_CONTENT,
+    )
+        .into_response())
 }
 
 pub async fn get_room_cover_object(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<RoomCoverObjectPath>,
+    headers: HeaderMap,
     Query(query): Query<RoomCoverObjectQuery>,
 ) -> AppResult<Response> {
+    let range = super::super::optional_file_range(&headers)?;
     let req = synctv_proto::client::GetRoomCoverObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: query.token,
+        range: range.map(super::super::file_range_request_to_proto),
     };
-    let blob = execute_public_endpoint(
+    let object = execute_public_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
@@ -486,14 +594,34 @@ pub async fn get_room_cover_object(
         move |client_api| async move { client_api.get_room_cover_object(req).await },
     )
     .await?;
-    let headers = [
-        (header::CONTENT_TYPE, blob.mime_type),
-        (
-            header::CACHE_CONTROL,
-            "private, max-age=31536000, immutable".to_string(),
+    super::super::file_blob_response(
+        super::super::object_response_blob(
+            object.mime_type,
+            object.content_manifest_sha256,
+            object.data,
+            object.content_range,
+            object.total_size_bytes,
         ),
-    ];
-    Ok((headers, blob.data).into_response())
+        Some("private, max-age=31536000, immutable"),
+    )
+}
+
+pub async fn complete_room_cover_upload_session(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomCoverObjectPath>,
+    Json(mut req): Json<CompleteRoomCoverUploadSessionRequest>,
+) -> AppResult<Json<CompleteRoomCoverUploadSessionResponse>> {
+    req.encoded_object_key = path.encoded_object_key;
+    let response = execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomCover,
+        move |client_api| async move { client_api.complete_room_cover_upload_session(req).await },
+    )
+    .await?;
+    Ok(Json(response))
 }
 
 pub async fn upload_playlist_cover_object(
@@ -502,20 +630,22 @@ pub async fn upload_playlist_cover_object(
     Path(path): Path<PlaylistCoverObjectPath>,
     headers: HeaderMap,
     body: Bytes,
-) -> AppResult<StatusCode> {
+) -> AppResult<Response> {
     let upload_token = super::super::required_header_str(
         &headers,
         synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
         "Missing file upload token",
     )?;
     let content_type = super::super::optional_header_str(&headers, &header::CONTENT_TYPE)?;
+    let range = super::super::optional_content_range(&headers)?;
     let req = synctv_proto::client::UploadPlaylistCoverObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: upload_token.to_string(),
         content_type: content_type.map(str::to_string),
+        content_range: range.map(file_upload_range_to_proto),
         data: body.to_vec(),
     };
-    execute_public_endpoint(
+    let response = execute_public_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
@@ -523,20 +653,31 @@ pub async fn upload_playlist_cover_object(
         move |client_api| async move { client_api.upload_playlist_cover_object(req).await },
     )
     .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok((
+        upload_response_headers(
+            response.complete,
+            response.uploaded_size_bytes,
+            &response.uploaded_parts,
+        ),
+        StatusCode::NO_CONTENT,
+    )
+        .into_response())
 }
 
 pub async fn get_playlist_cover_object(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<PlaylistCoverObjectPath>,
+    headers: HeaderMap,
     Query(query): Query<PlaylistCoverObjectQuery>,
 ) -> AppResult<Response> {
+    let range = super::super::optional_file_range(&headers)?;
     let req = synctv_proto::client::GetPlaylistCoverObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: query.token,
+        range: range.map(super::super::file_range_request_to_proto),
     };
-    let blob = execute_public_endpoint(
+    let object = execute_public_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
@@ -544,12 +685,35 @@ pub async fn get_playlist_cover_object(
         move |client_api| async move { client_api.get_playlist_cover_object(req).await },
     )
     .await?;
-    let headers = [
-        (header::CONTENT_TYPE, blob.mime_type),
-        (
-            header::CACHE_CONTROL,
-            "private, max-age=31536000, immutable".to_string(),
+    super::super::file_blob_response(
+        super::super::object_response_blob(
+            object.mime_type,
+            object.content_manifest_sha256,
+            object.data,
+            object.content_range,
+            object.total_size_bytes,
         ),
-    ];
-    Ok((headers, blob.data).into_response())
+        Some("private, max-age=31536000, immutable"),
+    )
+}
+
+pub async fn complete_playlist_cover_upload_session(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<PlaylistCoverObjectPath>,
+    Json(mut req): Json<CompletePlaylistCoverUploadSessionRequest>,
+) -> AppResult<Json<CompletePlaylistCoverUploadSessionResponse>> {
+    req.encoded_object_key = path.encoded_object_key;
+    let response =
+        execute_public_endpoint(
+            &state,
+            request_meta,
+            EndpointRateLimitCategory::Write,
+            EndpointRateLimitScope::PlaylistCover,
+            move |client_api| async move {
+                client_api.complete_playlist_cover_upload_session(req).await
+            },
+        )
+        .await?;
+    Ok(Json(response))
 }

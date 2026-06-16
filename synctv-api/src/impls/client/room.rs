@@ -6,7 +6,7 @@ use synctv_core::models::{
     ChatMentionInput, ChatMessageEvent, ChatMessageType, ChatMessageWithAttachments,
     ChatPlaybackMessagesQuery, CreateChatAttachmentUploadSession, MarkChatRead, PageParams,
     RoomListQuery, RoomListSortBy, RoomStatus, SendChatMessage, SetChatReaction, SortDirection,
-    UserId,
+    StoreFileUploadResult, UserId,
 };
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::room::ClientResourceAvailability;
@@ -16,12 +16,15 @@ use super::convert::{
     try_members_to_proto, try_playback_state_to_proto,
 };
 use super::media::{
-    file_cover_proto_to_stored_file, file_upload_session_to_room_cover_proto,
-    prepare_delete_entries_outbox_fanout, room_cover_object_to_proto,
+    complete_upload_response_fields, complete_upload_session_request,
+    prepare_delete_entries_outbox_fanout, proto_file_range_request, proto_file_upload_range,
+    proto_upload_manifest_parts, required_file_upload_reference, room_cover_object_to_proto,
+    room_cover_upload_create_result_to_proto, uploaded_parts_response_fields,
 };
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
 mod support;
+pub(crate) use support::parse_proto_chat_attachments;
 use support::*;
 pub(crate) use support::{chat_reaction_count, chat_reaction_summary_to_proto};
 
@@ -435,15 +438,13 @@ impl ClientApiImpl {
                     size_bytes: req.size_bytes,
                     width: (req.width > 0).then_some(req.width),
                     height: (req.height > 0).then_some(req.height),
-                    checksum_sha256: optional_trimmed_string(&req.checksum_sha256),
+                    parts: proto_upload_manifest_parts(req.parts),
                     metadata: parse_json_metadata(&req.metadata)?,
                 },
             )
             .await
             .map_err(ApiError::from)?;
-        Ok(synctv_proto::client::CreateRoomCoverUploadSessionResponse {
-            session: Some(file_upload_session_to_room_cover_proto(session)?),
-        })
+        room_cover_upload_create_result_to_proto(session)
     }
 
     pub async fn upload_room_cover_object(
@@ -456,13 +457,49 @@ impl ClientApiImpl {
                 &req.encoded_object_key,
                 &req.token,
                 req.content_type.as_deref(),
+                proto_file_upload_range(req.content_range),
                 req.data,
             )
             .await
             .map_err(ApiError::from)?;
+        let (complete, uploaded_size_bytes, uploaded_parts) = uploaded_parts_response_fields(&blob);
         Ok(synctv_proto::client::UploadRoomCoverObjectResponse {
-            object: Some(room_cover_object_to_proto(&blob)),
+            object: match blob {
+                StoreFileUploadResult::Complete(blob) => Some(room_cover_object_to_proto(&blob)),
+                StoreFileUploadResult::PartAccepted { .. } => None,
+            },
+            complete,
+            uploaded_size_bytes,
+            uploaded_parts,
         })
+    }
+
+    pub async fn complete_room_cover_upload_session(
+        &self,
+        req: synctv_proto::client::CompleteRoomCoverUploadSessionRequest,
+    ) -> Result<synctv_proto::client::CompleteRoomCoverUploadSessionResponse, ApiError> {
+        let result = self
+            .room_service
+            .complete_room_cover_upload_session(complete_upload_session_request(
+                &req.file_id,
+                req.encoded_object_key,
+                req.token,
+                req.upload_id,
+                &req.ownership_proof,
+                req.parts,
+            ))
+            .await
+            .map_err(ApiError::from)?;
+        let (complete, uploaded_size_bytes, uploaded_parts) =
+            complete_upload_response_fields(&result);
+        Ok(
+            synctv_proto::client::CompleteRoomCoverUploadSessionResponse {
+                object: result.object.as_ref().map(room_cover_object_to_proto),
+                complete,
+                uploaded_size_bytes,
+                uploaded_parts,
+            },
+        )
     }
 
     pub async fn get_room_cover_object(
@@ -471,7 +508,11 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::RoomCoverObjectResponse, ApiError> {
         let blob = self
             .room_service
-            .get_room_cover_object(&req.encoded_object_key, &req.token)
+            .get_room_cover_object_range(
+                &req.encoded_object_key,
+                &req.token,
+                proto_file_range_request(req.range),
+            )
             .await
             .map_err(ApiError::from)?;
         Ok(room_cover_object_to_proto(&blob))
@@ -485,12 +526,10 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::GetRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = self.parse_room_id(room_id)?;
-        let cover = req
-            .cover
-            .ok_or_else(|| ApiError::InvalidInput("cover is required".to_string()))?;
+        let cover = required_file_upload_reference(req.cover_reference, "cover_reference")?;
         let room = self
             .room_service
-            .update_room_cover(rid, *user_id, file_cover_proto_to_stored_file(cover)?)
+            .update_room_cover(rid, *user_id, cover)
             .await
             .map_err(ApiError::from)?;
         self.room_cache_fanout.publish_invalidation(&rid);
@@ -1625,23 +1664,21 @@ impl ClientApiImpl {
                 size_bytes: req.size_bytes,
                 width: (req.width > 0).then_some(req.width),
                 height: (req.height > 0).then_some(req.height),
-                checksum_sha256: optional_trimmed_string(&req.checksum_sha256),
+                parts: proto_upload_manifest_parts(req.parts),
                 metadata: parse_json_metadata(&req.metadata)?,
             })
             .await
             .map_err(ApiError::from)?;
-        Ok(
-            synctv_proto::client::CreateChatAttachmentUploadSessionResponse {
-                session: Some(upload_session_to_proto(session)?),
-            },
-        )
+        chat_attachment_upload_create_result_to_proto(session)
     }
 
     pub async fn upload_chat_attachment_object(
         &self,
         req: synctv_proto::client::UploadChatAttachmentObjectRequest,
     ) -> Result<synctv_proto::client::UploadChatAttachmentObjectResponse, ApiError> {
-        let _room_id = self.parse_room_id(&req.room_id)?;
+        if !req.room_id.trim().is_empty() {
+            let _room_id = self.parse_room_id(&req.room_id)?;
+        }
         let chat_service = self
             .chat_service
             .as_ref()
@@ -1651,26 +1688,78 @@ impl ClientApiImpl {
                 &req.encoded_object_key,
                 &req.token,
                 req.content_type.as_deref(),
+                proto_file_upload_range(req.content_range),
                 req.data,
             )
             .await
             .map_err(ApiError::from)?;
+        let (complete, uploaded_size_bytes, uploaded_parts) = uploaded_parts_response_fields(&blob);
         Ok(synctv_proto::client::UploadChatAttachmentObjectResponse {
-            object: Some(chat_attachment_object_to_proto(&req.room_id, &blob)),
+            object: match blob {
+                StoreFileUploadResult::Complete(blob) => {
+                    Some(chat_attachment_object_to_proto(&req.room_id, &blob))
+                }
+                StoreFileUploadResult::PartAccepted { .. } => None,
+            },
+            complete,
+            uploaded_size_bytes,
+            uploaded_parts,
         })
+    }
+
+    pub async fn complete_chat_attachment_upload_session(
+        &self,
+        req: synctv_proto::client::CompleteChatAttachmentUploadSessionRequest,
+    ) -> Result<synctv_proto::client::CompleteChatAttachmentUploadSessionResponse, ApiError> {
+        let room_id = req.room_id.clone();
+        let _room_id = self.parse_room_id(&room_id)?;
+        let chat_service = self
+            .chat_service
+            .as_ref()
+            .ok_or_else(chat_service_unavailable_error)?;
+        let result = chat_service
+            .complete_attachment_upload_session(complete_upload_session_request(
+                &req.file_id,
+                req.encoded_object_key,
+                req.token,
+                req.upload_id,
+                &req.ownership_proof,
+                req.parts,
+            ))
+            .await
+            .map_err(ApiError::from)?;
+        let (complete, uploaded_size_bytes, uploaded_parts) =
+            complete_upload_response_fields(&result);
+        Ok(
+            synctv_proto::client::CompleteChatAttachmentUploadSessionResponse {
+                object: result
+                    .object
+                    .as_ref()
+                    .map(|blob| chat_attachment_object_to_proto(&room_id, blob)),
+                complete,
+                uploaded_size_bytes,
+                uploaded_parts,
+            },
+        )
     }
 
     pub async fn get_chat_attachment_object(
         &self,
         req: synctv_proto::client::GetChatAttachmentObjectRequest,
     ) -> Result<synctv_proto::client::ChatAttachmentObjectResponse, ApiError> {
-        let _room_id = self.parse_room_id(&req.room_id)?;
+        if !req.room_id.trim().is_empty() {
+            let _room_id = self.parse_room_id(&req.room_id)?;
+        }
         let chat_service = self
             .chat_service
             .as_ref()
             .ok_or_else(chat_service_unavailable_error)?;
         let blob = chat_service
-            .get_attachment_object(&req.encoded_object_key, &req.token)
+            .get_attachment_object_range(
+                &req.encoded_object_key,
+                &req.token,
+                proto_file_range_request(req.range),
+            )
             .await
             .map_err(ApiError::from)?;
         Ok(chat_attachment_object_to_proto(&req.room_id, &blob))
@@ -2616,11 +2705,8 @@ mod tests {
     }
 
     #[test]
-    fn chat_attachment_proto_roundtrip_preserves_upload_token_metadata() -> TestResult {
-        let metadata = serde_json::json!({
-            "_synctv_upload_token": "v1.payload.signature",
-            "blurhash": "abc"
-        });
+    fn chat_attachment_display_proto_hides_upload_token_metadata() -> TestResult {
+        let metadata = serde_json::json!({"blurhash": "abc"});
         let attachment = synctv_core::models::NewStoredFile {
             filename: None,
             id: "attachment-1".to_string(),
@@ -2635,10 +2721,65 @@ mod tests {
         };
 
         let proto = api_ok(super::new_chat_attachment_to_proto(&attachment))?;
-        let parsed = api_ok(parse_proto_chat_attachments(&[proto]))?;
+
+        assert_eq!(proto.id, "attachment-1");
+        assert_eq!(
+            proto.url,
+            "https://cdn.example.test/rooms/1/chat/2/attachment-1.webp"
+        );
+        let proto_metadata: serde_json::Value =
+            serde_json::from_slice(&proto.metadata).expect("metadata should decode");
+        assert_eq!(proto_metadata, metadata);
+        Ok(())
+    }
+
+    #[test]
+    fn chat_attachment_upload_session_returns_submit_reference() -> TestResult {
+        let attachment = synctv_core::models::NewStoredFile {
+            filename: None,
+            id: "attachment-1".to_string(),
+            storage_backend: "database".to_string(),
+            object_key: "rooms/1/chat/2/attachment-1".to_string(),
+            url: None,
+            mime_type: Some("image/webp".to_string()),
+            size_bytes: Some(1024),
+            width: Some(640),
+            height: Some(480),
+            metadata: serde_json::json!({"_synctv_upload_token": "v1.payload.signature"}),
+        };
+
+        let proto = api_ok(super::upload_session_chat_attachment_to_proto(&attachment))?;
+        let parsed = api_ok(parse_proto_chat_attachments(std::slice::from_ref(&proto)))?;
+
+        assert_eq!(proto.id, "attachment-1");
+        assert_eq!(
+            proto.kind,
+            synctv_proto::client::ChatAttachmentReferenceKind::Upload as i32
+        );
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].id, "attachment-1");
+        assert!(matches!(
+            parsed[0].kind,
+            synctv_core::models::SubmittedFileReferenceKind::Upload
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn chat_attachment_reuse_reference_parses_to_core() -> TestResult {
+        let parsed = api_ok(parse_proto_chat_attachments(&[
+            synctv_proto::client::ChatAttachmentReference {
+                id: "reuse-token".to_string(),
+                kind: synctv_proto::client::ChatAttachmentReferenceKind::Reuse as i32,
+            },
+        ]))?;
 
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].metadata, metadata);
+        assert_eq!(parsed[0].id, "reuse-token");
+        assert!(matches!(
+            parsed[0].kind,
+            synctv_core::models::SubmittedFileReferenceKind::Reuse
+        ));
         Ok(())
     }
 
@@ -2655,24 +2796,83 @@ mod tests {
                 size_bytes: Some(1024),
                 width: Some(640),
                 height: Some(480),
-                metadata: serde_json::json!({}),
+                metadata: serde_json::json!({"_synctv_upload_token": "v1.payload.signature"}),
             },
+            encoded_object_key: "encoded-attachment-1".to_string(),
             upload_required: true,
             ownership_proof_required: false,
             ownership_proof_nonce: None,
             ownership_proof_ranges: Vec::new(),
-            ownership_proof_metadata_key: None,
             upload_url: Some("https://upload.example.test/attachment-1".to_string()),
             upload_method: None,
             upload_headers: Default::default(),
             expires_at: Some(chrono::Utc::now()),
             max_size_bytes: 1024 * 1024,
+            resumable: true,
+            part_size_bytes: 4 * 1024 * 1024,
+            uploaded_size_bytes: 0,
+            uploaded_parts: Vec::new(),
+            upload_id: None,
+            part_urls: Vec::new(),
         };
 
         assert!(matches!(
             super::upload_session_to_proto(session),
             Err(crate::impls::ApiError::Internal(message)) if message.contains("upload_method")
         ));
+    }
+
+    #[test]
+    fn chat_attachment_upload_session_accepts_multipart_upload_targets() {
+        let session = synctv_core::models::FileUploadSession {
+            file: synctv_core::models::NewStoredFile {
+                filename: None,
+                id: "attachment-1".to_string(),
+                storage_backend: "s3".to_string(),
+                object_key: "rooms/1/chat/2/attachment-1".to_string(),
+                url: None,
+                mime_type: Some("image/webp".to_string()),
+                size_bytes: Some(1024),
+                width: Some(640),
+                height: Some(480),
+                metadata: serde_json::json!({"_synctv_upload_token": "v1.payload.signature"}),
+            },
+            encoded_object_key: "encoded-attachment-1".to_string(),
+            upload_required: true,
+            ownership_proof_required: false,
+            ownership_proof_nonce: None,
+            ownership_proof_ranges: Vec::new(),
+            upload_url: Some("https://upload.example.test/attachment-1".to_string()),
+            upload_method: Some("PUT".to_string()),
+            upload_headers: Default::default(),
+            expires_at: Some(chrono::Utc::now()),
+            max_size_bytes: 1024 * 1024,
+            resumable: true,
+            part_size_bytes: 4 * 1024 * 1024,
+            uploaded_size_bytes: 0,
+            uploaded_parts: Vec::new(),
+            upload_id: Some("upload-id".to_string()),
+            part_urls: vec![synctv_core::models::FileUploadPartUrl {
+                part_number: 1,
+                offset_bytes: 0,
+                size_bytes: 1024,
+                upload_url: "https://upload.example.test/part-1".to_string(),
+                upload_method: "PUT".to_string(),
+                upload_headers: Default::default(),
+                expires_at: Some(chrono::Utc::now()),
+            }],
+        };
+
+        let proto = api_ok(super::upload_session_to_proto(session))
+            .expect("multipart upload session should convert");
+
+        assert_eq!(
+            proto.upload_url.as_deref(),
+            Some("https://upload.example.test/attachment-1")
+        );
+        assert_eq!(proto.upload_method.as_deref(), Some("PUT"));
+        assert_eq!(proto.part_urls.len(), 1);
+        assert_eq!(proto.part_urls[0].upload_method, "PUT");
     }
 
     #[test]

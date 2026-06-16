@@ -703,7 +703,7 @@ impl CleanupService {
 
         let attachments = if let Some(storage) = &self.file_storage_service {
             let attachments = sqlx::query_as::<_, ChatAttachment>(
-                r#"
+                r"
                 WITH ranked AS (
                     SELECT id, created_at,
                            ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC, id DESC) AS rn
@@ -733,7 +733,7 @@ impl CleanupService {
                 INNER JOIN candidates c
                     ON c.id = i.message_id AND c.created_at = i.message_created_at
                 ORDER BY i.message_created_at, i.message_id, i.created_at
-                "#,
+                ",
             )
             .bind(keep_count)
             .fetch_all(&self.pool)

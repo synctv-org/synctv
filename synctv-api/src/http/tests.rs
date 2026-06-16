@@ -3,7 +3,7 @@ use super::{
     register_all_routes, required_header_str, start_proxy_cache_lifecycle, RouterConfig,
 };
 use axum::body::Body;
-use axum::http::{HeaderMap, HeaderValue, Request, Response, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 use axum::{routing::get, Router};
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
@@ -63,6 +63,81 @@ where
         Ok(value) => value,
         Err(error) => std::panic::panic_any(format!("test fixture setup failed: {error}")),
     }
+}
+
+#[test]
+fn optional_file_range_parses_standard_byte_ranges() -> TestResult {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::RANGE, HeaderValue::from_static("bytes=10-19"));
+    let range = app_ok(super::optional_file_range(&headers))?;
+    assert!(matches!(
+        range,
+        Some(synctv_core::models::FileRangeRequest::Exact(
+            synctv_core::models::FileByteRange {
+                start: 10,
+                end_inclusive: 19,
+            },
+        ))
+    ));
+
+    headers.insert(header::RANGE, HeaderValue::from_static("bytes=10-"));
+    assert!(matches!(
+        app_ok(super::optional_file_range(&headers))?,
+        Some(synctv_core::models::FileRangeRequest::From { start: 10 })
+    ));
+
+    headers.insert(header::RANGE, HeaderValue::from_static("bytes=-20"));
+    assert!(matches!(
+        app_ok(super::optional_file_range(&headers))?,
+        Some(synctv_core::models::FileRangeRequest::Suffix { length: 20 })
+    ));
+
+    headers.insert(header::RANGE, HeaderValue::from_static("bytes=0-1,2-3"));
+    let error = app_err(super::optional_file_range(&headers))?;
+    assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    Ok(())
+}
+
+#[tokio::test]
+async fn file_blob_response_sets_partial_content_headers() -> TestResult {
+    let blob = synctv_core::models::FileBlob {
+        storage_backend: "database".to_string(),
+        object_key: "object".to_string(),
+        mime_type: "text/plain".to_string(),
+        size_bytes: 4,
+        total_size_bytes: 10,
+        content_manifest_sha256: "a".repeat(64),
+        compression: synctv_core::models::FileBlobCompression::None,
+        range: Some(synctv_core::models::FileByteRange {
+            start: 2,
+            end_inclusive: 5,
+        }),
+        data: b"cdef".to_vec(),
+        metadata: serde_json::Value::Object(Default::default()),
+        created_at: chrono::Utc::now(),
+    };
+    let response = app_ok(super::file_blob_response(blob, Some("private, max-age=1")))?;
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response.headers().get(header::CONTENT_RANGE),
+        Some(&HeaderValue::from_static("bytes 2-5/10"))
+    );
+    assert_eq!(
+        response.headers().get(header::ACCEPT_RANGES),
+        Some(&HeaderValue::from_static("bytes"))
+    );
+    assert_eq!(
+        response.headers().get(header::CACHE_CONTROL),
+        Some(&HeaderValue::from_static("private, max-age=1"))
+    );
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|error| test_error(error.to_string()))?
+        .to_bytes();
+    assert_eq!(body, Bytes::from_static(b"cdef"));
+    Ok(())
 }
 
 fn http_test_database() -> synctv_core_testing::TestDatabase {
@@ -1783,6 +1858,43 @@ async fn test_cors_preflight_allows_request_correlation_headers() -> TestResult 
 }
 
 #[tokio::test]
+async fn test_cors_preflight_allows_upload_and_range_headers() -> TestResult {
+    let mut config = synctv_core::Config::default();
+    config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
+
+    let app = Router::new()
+        .route("/test", get(|| async { "ok" }))
+        .layer(build_cors_layer(&config)?);
+
+    let request = test_request(
+        Request::builder()
+            .method("OPTIONS")
+            .uri("/test")
+            .header(axum::http::header::ORIGIN, "https://example.com")
+            .header(axum::http::header::ACCESS_CONTROL_REQUEST_METHOD, "PUT")
+            .header(
+                axum::http::header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "content-range, range, x-synctv-file-upload-token",
+            )
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let allowed_headers = response
+        .headers()
+        .get(axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS)
+        .ok_or_else(|| test_error("preflight should advertise upload headers"))?
+        .to_str()
+        .map_err(|error| test_error(error.to_string()))?
+        .to_ascii_lowercase();
+    assert!(allowed_headers.contains("content-range"));
+    assert!(allowed_headers.contains("range"));
+    assert!(allowed_headers.contains("x-synctv-file-upload-token"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_cors_actual_response_exposes_request_id_header() -> TestResult {
     let mut config = synctv_core::Config::default();
     config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
@@ -1811,6 +1923,41 @@ async fn test_cors_actual_response_exposes_request_id_header() -> TestResult {
         .map_err(|error| test_error(error.to_string()))?
         .to_ascii_lowercase();
     assert!(exposed_headers.contains("x-request-id"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_cors_actual_response_exposes_upload_and_range_headers() -> TestResult {
+    let mut config = synctv_core::Config::default();
+    config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
+
+    let app = Router::new()
+        .route("/test", get(|| async { "ok" }))
+        .layer(build_cors_layer(&config)?);
+
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/test")
+            .header(axum::http::header::ORIGIN, "https://example.com")
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let exposed_headers = response
+        .headers()
+        .get(axum::http::header::ACCESS_CONTROL_EXPOSE_HEADERS)
+        .ok_or_else(|| test_error("CORS response should expose upload and range headers"))?
+        .to_str()
+        .map_err(|error| test_error(error.to_string()))?
+        .to_ascii_lowercase();
+    assert!(exposed_headers.contains("x-synctv-upload-complete"));
+    assert!(exposed_headers.contains("x-synctv-uploaded-size-bytes"));
+    assert!(exposed_headers.contains("x-synctv-uploaded-parts"));
+    assert!(exposed_headers.contains("content-range"));
+    assert!(exposed_headers.contains("accept-ranges"));
+    assert!(exposed_headers.contains("x-synctv-content-manifest-sha256"));
     Ok(())
 }
 

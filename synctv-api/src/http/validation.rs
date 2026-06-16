@@ -102,7 +102,12 @@ mod tests {
                     "size_bytes":"1764839",
                     "width":256,
                     "height":256,
-                    "checksum_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "parts":[{
+                        "part_number":1,
+                        "offset_bytes":"0",
+                        "size_bytes":"1764839",
+                        "checksum_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }],
                     "metadata":{}
                 }"#,
         )?;

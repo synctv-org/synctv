@@ -79,7 +79,14 @@ gRPC 对应 `synctv.client.RoomService`：
 - 发送消息时服务端会记录当前播放上下文，包括 `playback_media_id`、`playback_playlist_id`、`playback_target`、`playback_target_hash` 和 `playback_position_seconds`。`GetChatPlaybackMessages` 可按当前播放对象和时间窗口读取历史聊天。
 - `expected_version` 用于编辑和删除的乐观锁。客户端持有旧版本时会收到冲突错误，应重新读取消息或上下文后再提交。
 - `metadata` 必须是 JSON object。空 metadata 可省略。
-- 文件和图片走 `CreateChatAttachmentUploadSession`，再把返回的 `ChatAttachment` 放进 `SendChatMessage.attachments`。请求必须带 `checksum_sha256`，服务端用全局内容寻址对象实现复用，并按 MIME 类型推断 `kind`；`upload_required=true` 时先按 `upload_url`、`upload_method`、`upload_headers` 上传对象；`ownership_proof_required=true` 时按返回的 `ownership_proof_nonce` 和 `ownership_proof_ranges` 从本地文件读取字节，计算 SHA-256 hex，并写入 `attachment.metadata[ownership_proof_metadata_key]` 后发送。proof 哈希输入顺序为 `synctv-file-ownership-proof-v1`、一个 `0x00` 字节、nonce UTF-8、每个 range 的 `offset` big-endian i64、`length` big-endian i32、range 字节。
+- 头像、媒体封面、房间封面和播放列表封面也使用上传会话返回的 `FileUploadReference`。更新接口提交 `avatar_reference` 或 `cover_reference`，其中只需要 `id`；`UserAvatar`、`MediaCover`、`FileCover`、`ResourceCover` 是服务端返回的展示模型，只用于渲染 URL、MIME、尺寸和 metadata。
+- 文件和图片走 `CreateChatAttachmentUploadSession`。会话返回 `attachment_reference`，客户端发送消息时把它放进 `SendChatMessage.attachments`。上传引用使用 `kind=UPLOAD`，`attachment_reference.id` 是客户端可见附件 id。`upload_token` 是上传会话传输 token，只用于对象上传和 `CompleteChatAttachmentUploadSession`。
+- 历史、单条消息和上下文接口返回的 `ChatAttachment` 会带 `reuse_token` 和 `reuse_expires_at`。用户复制、转发或再次发送已经可见的聊天附件时，提交 `ChatAttachmentReference { kind=REUSE, id=reuse_token }`。服务端会重新校验当前用户仍可查看源消息和源附件，并在新消息上创建新的业务引用；客户端无需下载源文件、计算全量 hash 或重新上传。
+- 秒传 ownership proof 用于“客户端声称自己本地拥有某个 `content_manifest_sha256` 对应的字节”的场景。聊天附件复用 token 用于“服务端已经授权当前用户看到这个附件”的场景，两条路径在发送消息时统一进入附件数量、MIME、大小和房间权限校验。
+- 附件是独立消息部件。消息正文可以为空，也可以完全不引用附件；前端可把 `ChatMessageReceive.attachments` 渲染在消息下方的附件区。`@` 成员提及是正文实体，必须在 `content` 中有对应的 `@token` 范围。
+- 创建上传会话先提交空 `parts`，服务端返回 `FileUploadPlan`，其中包含 `part_size_bytes` 和每个 part 的 `part_number`、`offset_bytes`、`size_bytes`。客户端按计划计算每片 SHA-256，再用同一个创建接口提交 `FileUploadManifestPart[]`。服务端根据 canonical manifest 计算 `content_manifest_sha256`，用于秒传命中和断点续传定位。
+- `upload_required=true` 时按会话返回值上传对象。Database 后端返回 `upload_url`，客户端按分片计划用 `Content-Range: bytes start-end/total` PUT 每片；S3 后端返回 `part_urls`，客户端逐个 PUT 到预签名 URL，并携带服务端签名要求的 `x-amz-checksum-sha256`。完成请求提交 `file_id=attachment_reference.id`、`token=session.upload_token`、`upload_id`、ownership proof 和每个 part 的 ETag、大小、SHA-256。服务端用已记录 part manifest 校验 `content_manifest_sha256`，S3 路径无需服务端下载对象。
+- `ownership_proof_required=true` 时按返回的 `ownership_proof_nonce` 和 `ownership_proof_ranges` 从本地文件读取字节，计算 SHA-256 hex，并把 `file_id`、`token` 和 `ownership_proof` 提交到完成上传会话接口。proof 哈希输入顺序为 `synctv-file-ownership-proof-v1`、一个 `0x00` 字节、nonce UTF-8、一个 `0x00` 字节、`content_manifest_sha256` 小写 ASCII、`size_bytes` big-endian i64、range 数量 big-endian u64、每个 range 的 `offset` big-endian i64、`length` big-endian i32、range 字节。
 - 聊天附件支持图片、音频、视频、常见文档、压缩包、纯文本、CSV、Markdown、JSON 和 PDF。图片附件带 `kind=image`，并可带 width/height 用于预览；其他附件带 `kind=file`。
 - 删除是软删除：历史和事件保留消息 id、版本、删除者和原因，内容与附件按删除视图隐藏。
 

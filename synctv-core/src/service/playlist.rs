@@ -11,8 +11,10 @@ use std::sync::Arc;
 
 use crate::{
     models::{
-        normalize_provider_instance_name_owned, FileReferenceTarget, FileUploadSession,
-        NewStoredFile, Playlist, PlaylistId, RoomId, UserId,
+        normalize_provider_instance_name_owned, CompleteFileUploadSession,
+        CompleteFileUploadSessionResult, FileRangeRequest, FileReferenceTarget,
+        FileUploadManifestPart, FileUploadSessionCreateResult, GetFileObject, Playlist, PlaylistId,
+        RoomId, SubmittedFileReference, UserId,
     },
     provider::{provider_requires_credential_repo, ProviderContext, SourceConfig},
     repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
@@ -93,7 +95,7 @@ pub struct CreatePlaylistCoverUploadSession {
     pub size_bytes: i64,
     pub width: Option<i32>,
     pub height: Option<i32>,
-    pub checksum_sha256: Option<String>,
+    pub parts: Vec<FileUploadManifestPart>,
     pub metadata: JsonValue,
 }
 
@@ -765,7 +767,7 @@ impl PlaylistService {
         playlist_id: PlaylistId,
         user_id: UserId,
         request: CreatePlaylistCoverUploadSession,
-    ) -> Result<FileUploadSession> {
+    ) -> Result<FileUploadSessionCreateResult> {
         let storage = self.file_storage_service.as_ref().ok_or_else(|| {
             Error::InvalidInput("file storage is not configured for playlist covers".to_string())
         })?;
@@ -793,7 +795,7 @@ impl PlaylistService {
                 size_bytes: request.size_bytes,
                 width: request.width,
                 height: request.height,
-                checksum_sha256: request.checksum_sha256,
+                parts: request.parts,
                 metadata: request.metadata,
                 policy: playlist_cover_upload_policy(),
             })
@@ -805,8 +807,9 @@ impl PlaylistService {
         encoded_object_key: &str,
         upload_token: &str,
         content_type: Option<&str>,
+        range: Option<crate::models::FileUploadRange>,
         data: Vec<u8>,
-    ) -> Result<crate::models::FileBlob> {
+    ) -> Result<crate::models::StoreFileUploadResult> {
         self.file_storage_service
             .as_ref()
             .ok_or_else(|| {
@@ -814,7 +817,28 @@ impl PlaylistService {
                     "file storage is not configured for playlist covers".to_string(),
                 )
             })?
-            .store_upload_object(encoded_object_key, upload_token, content_type, data)
+            .store_upload(crate::models::StoreFileUpload {
+                encoded_object_key: encoded_object_key.to_string(),
+                upload_token: upload_token.to_string(),
+                content_type: content_type.map(str::to_string),
+                range,
+                data,
+            })
+            .await
+    }
+
+    pub async fn complete_cover_upload_session(
+        &self,
+        request: CompleteFileUploadSession,
+    ) -> Result<CompleteFileUploadSessionResult> {
+        self.file_storage_service
+            .as_ref()
+            .ok_or_else(|| {
+                Error::InvalidInput(
+                    "file storage is not configured for playlist covers".to_string(),
+                )
+            })?
+            .complete_upload_session(request)
             .await
     }
 
@@ -823,10 +847,24 @@ impl PlaylistService {
         encoded_object_key: &str,
         read_token: &str,
     ) -> Result<crate::models::FileBlob> {
+        self.get_cover_object_range(encoded_object_key, read_token, None)
+            .await
+    }
+
+    pub async fn get_cover_object_range(
+        &self,
+        encoded_object_key: &str,
+        read_token: &str,
+        range: Option<FileRangeRequest>,
+    ) -> Result<crate::models::FileBlob> {
         self.file_storage_service
             .as_ref()
             .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
-            .get_object(encoded_object_key, read_token)
+            .get_object(GetFileObject {
+                encoded_object_key: encoded_object_key.to_string(),
+                read_token: read_token.to_string(),
+                range,
+            })
             .await
     }
 
@@ -835,7 +873,7 @@ impl PlaylistService {
         room_id: RoomId,
         playlist_id: PlaylistId,
         user_id: UserId,
-        file: NewStoredFile,
+        file: SubmittedFileReference,
     ) -> Result<Playlist> {
         let storage = self.file_storage_service.as_ref().ok_or_else(|| {
             Error::InvalidInput("file storage is not configured for playlist covers".to_string())
@@ -856,11 +894,13 @@ impl PlaylistService {
             .await?;
 
         let storage_scope = playlist_cover_storage_scope(room_id, playlist_id);
+        let upload_policy = playlist_cover_upload_policy();
         let prepared = storage
-            .prepare_files(
+            .prepare_submitted_files(
                 FileStorageContext {
                     user_id,
                     storage_scope: &storage_scope,
+                    database_object_route_prefix: &upload_policy.database_object_route_prefix,
                     client_request_id: None,
                 },
                 vec![file],

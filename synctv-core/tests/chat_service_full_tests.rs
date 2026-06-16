@@ -14,13 +14,14 @@ use synctv_core::{
     models::{
         room_settings::ChatEnabled, AuditAction, AuditTargetType, ChatEventKind, ChatMessage,
         ChatMessageStatus, ChatMessageType, DeleteChatMessage, EditChatMessage,
-        FileBlobCompression, FileReferenceTarget, NewStoredFile, RoomAdminPermissionBits,
-        RoomMemberPermissionBits, RoomSettings, SendChatMessage, User, UserId, UserRole,
-        UserStatus,
+        FileBlobCompression, FileReferenceTarget, FileUploadManifestPart,
+        FileUploadSessionCreateResult, NewStoredFile, RoomAdminPermissionBits,
+        RoomMemberPermissionBits, RoomSettings, SendChatMessage, SubmittedFileReference, User,
+        UserId, UserRole, UserStatus,
     },
     repository::{
         ChatRepository, FileStorageRepository, RoomMemberRepository, RoomRepository,
-        RoomSettingsRepository, UpsertFileBlob, UserRepository,
+        RoomSettingsRepository, UpsertFileBlob, UpsertFileObject, UserRepository,
     },
     service::{
         auth::{BruteForceProtection, JwtService},
@@ -199,10 +200,65 @@ async fn upload_chat_attachment_file(
             encoded_object_key,
             upload_token,
             Some("image/webp"),
+            None,
             payload,
         )
         .await
         .checked("database attachment object should store");
+}
+
+fn manifest_parts_from_payload(
+    payload: &[u8],
+    plan: &synctv_core::models::FileUploadPlan,
+) -> Vec<FileUploadManifestPart> {
+    plan.parts
+        .iter()
+        .map(|part| {
+            let start = usize::try_from(part.offset_bytes).checked("part offset should fit");
+            let len = usize::try_from(part.size_bytes).checked("part size should fit");
+            let end = start.checked_add(len).checked("part range should fit");
+            FileUploadManifestPart {
+                part_number: part.part_number,
+                offset_bytes: part.offset_bytes,
+                size_bytes: part.size_bytes,
+                checksum_sha256: hex::encode(sha2::Sha256::digest(&payload[start..end])),
+            }
+        })
+        .collect()
+}
+
+async fn create_chat_attachment_upload_session_for_payload(
+    chat_service: &ChatService,
+    mut request: synctv_core::models::CreateChatAttachmentUploadSession,
+    payload: &[u8],
+) -> synctv_core::models::FileUploadSession {
+    request.parts = Vec::new();
+    let plan = match chat_service
+        .create_attachment_upload_session(request.clone())
+        .await
+        .checked("chat attachment upload plan should be returned")
+    {
+        FileUploadSessionCreateResult::Plan(plan) => plan,
+        FileUploadSessionCreateResult::Session(_) => {
+            panic!("chat attachment upload should return a plan before manifest parts")
+        }
+    };
+    request.parts = manifest_parts_from_payload(payload, &plan);
+    match chat_service
+        .create_attachment_upload_session(request)
+        .await
+        .checked("chat attachment upload session should be returned")
+    {
+        FileUploadSessionCreateResult::Session(session) => session,
+        FileUploadSessionCreateResult::Plan(_) => {
+            panic!("chat attachment upload should return a session after manifest parts")
+        }
+    }
+}
+
+fn submitted_file_reference(file: &NewStoredFile) -> SubmittedFileReference {
+    synctv_core::service::submitted_file_reference_from_session_file(file)
+        .checked("submitted file reference should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -1895,8 +1951,9 @@ async fn test_attachment_message_history_returns_attachment_metadata() {
         .checked("test operation should succeed");
 
     let payload = b"image-1".to_vec();
-    let session = chat_service
-        .create_attachment_upload_session(synctv_core::models::CreateChatAttachmentUploadSession {
+    let session = create_chat_attachment_upload_session_for_payload(
+        &chat_service,
+        synctv_core::models::CreateChatAttachmentUploadSession {
             room_id: room.id,
             user_id: creator.id,
             client_attachment_id: Some("image-1".to_string()),
@@ -1905,11 +1962,12 @@ async fn test_attachment_message_history_returns_attachment_metadata() {
             size_bytes: i64::try_from(payload.len()).checked("test operation should succeed"),
             width: Some(640),
             height: Some(480),
-            checksum_sha256: Some(hex::encode(sha2::Sha256::digest(&payload))),
+            parts: Vec::new(),
             metadata: serde_json::json!({"blurhash": "abc"}),
-        })
-        .await
-        .checked("test operation should succeed");
+        },
+        &payload,
+    )
+    .await;
     upload_chat_attachment_file(&chat_service, &session, payload).await;
 
     let event = chat_service
@@ -1921,7 +1979,7 @@ async fn test_attachment_message_history_returns_attachment_metadata() {
             message_type: ChatMessageType::Attachment,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            attachments: vec![session.file],
+            attachments: vec![submitted_file_reference(&session.file)],
             mentions: Vec::new(),
         })
         .await
@@ -1938,7 +1996,7 @@ async fn test_attachment_message_history_returns_attachment_metadata() {
     );
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].attachments.len(), 1);
-    assert_eq!(history[0].attachments[0].id, "image-1");
+    assert_eq!(history[0].attachments[0].id, session.file.id);
     assert_eq!(
         history[0].attachments[0].mime_type.as_deref(),
         Some("image/webp")
@@ -1971,14 +2029,14 @@ async fn test_reused_chat_attachment_object_keeps_storage_until_last_reference_i
         .await
         .checked("test operation should succeed");
     file_repo
-        .upsert_object(
-            "database",
+        .upsert_object(UpsertFileObject {
+            storage_backend: "database",
             object_key,
-            "image/webp",
-            i64::try_from(payload.len()).checked("test operation should succeed"),
-            &checksum_sha256,
-            &metadata,
-        )
+            mime_type: "image/webp",
+            size_bytes: i64::try_from(payload.len()).checked("test operation should succeed"),
+            content_manifest_sha256: &checksum_sha256,
+            metadata: &metadata,
+        })
         .await
         .checked("test operation should succeed");
 
@@ -2131,8 +2189,9 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
         .checked("test operation should succeed");
 
     let payload = b"idempotent-attachment-1".to_vec();
-    let session = chat_service
-        .create_attachment_upload_session(synctv_core::models::CreateChatAttachmentUploadSession {
+    let session = create_chat_attachment_upload_session_for_payload(
+        &chat_service,
+        synctv_core::models::CreateChatAttachmentUploadSession {
             room_id: room.id,
             user_id: creator.id,
             client_attachment_id: Some("idempotent-attachment-1".to_string()),
@@ -2141,11 +2200,12 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
             size_bytes: i64::try_from(payload.len()).checked("test operation should succeed"),
             width: Some(640),
             height: Some(480),
-            checksum_sha256: Some(hex::encode(sha2::Sha256::digest(&payload))),
+            parts: Vec::new(),
             metadata: serde_json::json!({"blurhash": "abc"}),
-        })
-        .await
-        .checked("test operation should succeed");
+        },
+        &payload,
+    )
+    .await;
     upload_chat_attachment_file(&chat_service, &session, payload).await;
 
     let mut request = SendChatMessage {
@@ -2156,7 +2216,7 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
         message_type: ChatMessageType::Attachment,
         reply_to_message_id: None,
         metadata: serde_json::Value::Object(Default::default()),
-        attachments: vec![session.file],
+        attachments: vec![submitted_file_reference(&session.file)],
         mentions: Vec::new(),
     };
 
@@ -2175,12 +2235,13 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
     assert_eq!(replay.event.message.attachments.len(), 1);
     assert_eq!(
         replay.event.message.attachments[0].object_key,
-        request.attachments[0].object_key
+        session.file.object_key
     );
 
     let changed_payload = b"idempotent-attachment-2".to_vec();
-    let changed_session = chat_service
-        .create_attachment_upload_session(synctv_core::models::CreateChatAttachmentUploadSession {
+    let changed_session = create_chat_attachment_upload_session_for_payload(
+        &chat_service,
+        synctv_core::models::CreateChatAttachmentUploadSession {
             room_id: room.id,
             user_id: creator.id,
             client_attachment_id: Some("idempotent-attachment-2".to_string()),
@@ -2190,13 +2251,14 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
                 .checked("test operation should succeed"),
             width: Some(640),
             height: Some(480),
-            checksum_sha256: Some(hex::encode(sha2::Sha256::digest(&changed_payload))),
+            parts: Vec::new(),
             metadata: serde_json::json!({"blurhash": "abc"}),
-        })
-        .await
-        .checked("test operation should succeed");
+        },
+        &changed_payload,
+    )
+    .await;
     upload_chat_attachment_file(&chat_service, &changed_session, changed_payload).await;
-    request.attachments[0] = changed_session.file;
+    request.attachments[0] = submitted_file_reference(&changed_session.file);
     let changed = chat_service
         .send_message_event_outcome(request)
         .await
@@ -2309,8 +2371,9 @@ async fn test_deleted_attachment_message_history_hides_attachment_metadata() {
         .checked("test operation should succeed");
 
     let payload = b"deleted-attachment-1".to_vec();
-    let session = chat_service
-        .create_attachment_upload_session(synctv_core::models::CreateChatAttachmentUploadSession {
+    let session = create_chat_attachment_upload_session_for_payload(
+        &chat_service,
+        synctv_core::models::CreateChatAttachmentUploadSession {
             room_id: room.id,
             user_id: creator.id,
             client_attachment_id: Some("deleted-attachment-1".to_string()),
@@ -2319,11 +2382,12 @@ async fn test_deleted_attachment_message_history_hides_attachment_metadata() {
             size_bytes: i64::try_from(payload.len()).checked("test operation should succeed"),
             width: Some(640),
             height: Some(480),
-            checksum_sha256: Some(hex::encode(sha2::Sha256::digest(&payload))),
+            parts: Vec::new(),
             metadata: serde_json::json!({"blurhash": "abc"}),
-        })
-        .await
-        .checked("test operation should succeed");
+        },
+        &payload,
+    )
+    .await;
     upload_chat_attachment_file(&chat_service, &session, payload).await;
 
     let event = chat_service
@@ -2335,7 +2399,7 @@ async fn test_deleted_attachment_message_history_hides_attachment_metadata() {
             message_type: ChatMessageType::Attachment,
             reply_to_message_id: None,
             metadata: serde_json::Value::Object(Default::default()),
-            attachments: vec![session.file],
+            attachments: vec![submitted_file_reference(&session.file)],
             mentions: Vec::new(),
         })
         .await

@@ -33,6 +33,9 @@ pub enum Error {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
+    #[error("Range not satisfiable: total size {total_size}")]
+    RangeNotSatisfiable { total_size: i64 },
+
     #[error("Rate limited: {0}")]
     RateLimited(String),
 
@@ -220,6 +223,7 @@ impl From<Error> for tonic::Status {
             Error::Authentication(msg) => Self::unauthenticated(msg),
             Error::Authorization(msg) => Self::permission_denied(msg),
             Error::InvalidInput(msg) => Self::invalid_argument(msg),
+            Error::RangeNotSatisfiable { .. } => Self::invalid_argument(err.to_string()),
             Error::AlreadyExists(msg) => Self::already_exists(msg),
             Error::Conflict(msg) | Error::LockConflict(msg) => Self::aborted(msg),
             Error::RateLimited(msg) => Self::resource_exhausted(msg),

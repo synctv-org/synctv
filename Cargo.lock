@@ -6392,6 +6392,7 @@ dependencies = [
  "opendal",
  "parking_lot",
  "paste",
+ "percent-encoding",
  "prometheus",
  "rand 0.10.1",
  "rand 0.8.6",

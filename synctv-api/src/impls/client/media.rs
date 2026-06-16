@@ -6,10 +6,12 @@ use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use synctv_core::models::{
-    FileBlob, FileUploadSession, MediaId, MediaListQuery as CoreMediaListQuery,
+    CompleteFileUploadPart, CompleteFileUploadSession, CompleteFileUploadSessionResult, FileBlob,
+    FileUploadManifestPart, FileUploadPartUrl, FileUploadPlan, FileUploadSession,
+    FileUploadSessionCreateResult, MediaId, MediaListQuery as CoreMediaListQuery,
     MediaListSortBy as CoreMediaListSortBy, NewStoredFile, Playlist,
     PlaylistListQuery as CorePlaylistListQuery, PlaylistListSortBy as CorePlaylistListSortBy,
-    RoomId, SortDirection as CoreSortDirection, UserId,
+    RoomId, SortDirection as CoreSortDirection, StoreFileUploadResult, UserId,
 };
 use synctv_core::provider::DynamicListQuery;
 use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
@@ -24,7 +26,9 @@ use synctv_core::service::room::{
 };
 use synctv_core::service::MediaService;
 
-use super::convert::{json_to_vec, try_playlist_path_node_to_proto};
+#[cfg(test)]
+use super::convert::json_to_vec;
+use super::convert::try_playlist_path_node_to_proto;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::media_fanout::{MediaFanoutService, PreparedMediaRemovedFanout};
 use crate::playback_fanout::{PlaybackFanoutService, PreparedPlaybackStateFanout};
@@ -56,6 +60,7 @@ pub(crate) fn parse_json_metadata(bytes: &[u8]) -> Result<serde_json::Value, Api
     Ok(metadata)
 }
 
+#[cfg(test)]
 pub(crate) struct RequiredStoredFileFields {
     pub url: String,
     pub mime_type: String,
@@ -65,6 +70,7 @@ pub(crate) struct RequiredStoredFileFields {
     pub metadata: Vec<u8>,
 }
 
+#[cfg(test)]
 pub(crate) fn required_stored_file_fields(
     file: &NewStoredFile,
     metadata_field: &'static str,
@@ -82,6 +88,7 @@ pub(crate) fn required_stored_file_fields(
     })
 }
 
+#[cfg(test)]
 fn required_stored_file_url(file: &NewStoredFile) -> Result<String, ApiError> {
     let url = file
         .url
@@ -94,6 +101,7 @@ fn required_stored_file_url(file: &NewStoredFile) -> Result<String, ApiError> {
     Ok(url.to_string())
 }
 
+#[cfg(test)]
 fn required_stored_file_mime_type(file: &NewStoredFile) -> Result<String, ApiError> {
     let mime_type = file
         .mime_type
@@ -108,6 +116,7 @@ fn required_stored_file_mime_type(file: &NewStoredFile) -> Result<String, ApiErr
     Ok(mime_type.to_string())
 }
 
+#[cfg(test)]
 fn required_stored_file_size_bytes(file: &NewStoredFile) -> Result<i64, ApiError> {
     match file.size_bytes {
         Some(size_bytes) if size_bytes > 0 => Ok(size_bytes),
@@ -117,6 +126,7 @@ fn required_stored_file_size_bytes(file: &NewStoredFile) -> Result<i64, ApiError
     }
 }
 
+#[cfg(test)]
 fn stored_file_dimension(value: Option<i32>, field: &'static str) -> Result<i32, ApiError> {
     match value {
         Some(value) if value > 0 => Ok(value),
@@ -132,13 +142,167 @@ pub(crate) struct UploadSessionFields {
     pub upload_method: Option<String>,
     pub expires_at: Option<i64>,
     pub ownership_proof_nonce: Option<String>,
-    pub ownership_proof_metadata_key: Option<String>,
+    pub upload_token: String,
+}
+
+pub(crate) fn proto_file_upload_range(
+    range: Option<synctv_proto::client::FileUploadRange>,
+) -> Option<synctv_core::models::FileUploadRange> {
+    range.map(|range| synctv_core::models::FileUploadRange {
+        start: range.start,
+        end_inclusive: range.end_inclusive,
+        total_size: range.total_size,
+    })
+}
+
+pub(crate) fn proto_file_range_request(
+    range: Option<synctv_proto::client::FileRangeRequest>,
+) -> Option<synctv_core::models::FileRangeRequest> {
+    use synctv_proto::client::file_range_request::Range;
+
+    range.and_then(|range| {
+        range.range.map(|range| match range {
+            Range::Exact(range) => {
+                synctv_core::models::FileRangeRequest::Exact(synctv_core::models::FileByteRange {
+                    start: range.start,
+                    end_inclusive: range.end_inclusive,
+                })
+            }
+            Range::FromStart(start) => synctv_core::models::FileRangeRequest::From { start },
+            Range::SuffixLength(length) => synctv_core::models::FileRangeRequest::Suffix { length },
+        })
+    })
+}
+
+pub(crate) fn file_byte_range_to_proto(
+    range: synctv_core::models::FileByteRange,
+) -> synctv_proto::client::FileByteRange {
+    synctv_proto::client::FileByteRange {
+        start: range.start,
+        end_inclusive: range.end_inclusive,
+    }
+}
+
+pub(crate) fn uploaded_parts_response_fields(
+    result: &StoreFileUploadResult,
+) -> (bool, i64, Vec<i32>) {
+    match result {
+        StoreFileUploadResult::Complete(blob) => (true, blob.size_bytes, Vec::new()),
+        StoreFileUploadResult::PartAccepted {
+            uploaded_size_bytes,
+            uploaded_parts,
+        } => (false, *uploaded_size_bytes, uploaded_parts.clone()),
+    }
+}
+
+pub(crate) fn complete_upload_response_fields(
+    result: &CompleteFileUploadSessionResult,
+) -> (bool, i64, Vec<i32>) {
+    (
+        result.object.is_some(),
+        result.uploaded_size_bytes,
+        result.uploaded_parts.clone(),
+    )
+}
+
+fn file_upload_part_url_to_proto(
+    part_url: FileUploadPartUrl,
+) -> synctv_proto::client::FileUploadPartUrl {
+    synctv_proto::client::FileUploadPartUrl {
+        part_number: part_url.part_number,
+        offset_bytes: part_url.offset_bytes,
+        size_bytes: part_url.size_bytes,
+        upload_url: part_url.upload_url,
+        upload_method: part_url.upload_method,
+        upload_headers: part_url.upload_headers.into_iter().collect(),
+        expires_at: part_url.expires_at.map(|expires_at| expires_at.timestamp()),
+    }
+}
+
+pub(crate) fn proto_upload_manifest_parts(
+    parts: Vec<synctv_proto::client::FileUploadManifestPart>,
+) -> Vec<FileUploadManifestPart> {
+    parts
+        .into_iter()
+        .map(|part| FileUploadManifestPart {
+            part_number: part.part_number,
+            offset_bytes: part.offset_bytes,
+            size_bytes: part.size_bytes,
+            checksum_sha256: part.checksum_sha256,
+        })
+        .collect()
+}
+
+pub(crate) fn file_upload_plan_to_proto(
+    plan: FileUploadPlan,
+) -> synctv_proto::client::FileUploadPlan {
+    synctv_proto::client::FileUploadPlan {
+        checksum_algorithm: plan.checksum_algorithm,
+        part_size_bytes: plan.part_size_bytes,
+        parts: plan
+            .parts
+            .into_iter()
+            .map(|part| synctv_proto::client::FileUploadPlanPart {
+                part_number: part.part_number,
+                offset_bytes: part.offset_bytes,
+                size_bytes: part.size_bytes,
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn proto_complete_upload_parts(
+    parts: Vec<synctv_proto::client::CompleteFileUploadPart>,
+) -> Vec<CompleteFileUploadPart> {
+    parts
+        .into_iter()
+        .map(|part| CompleteFileUploadPart {
+            part_number: part.part_number,
+            etag: part.etag,
+            size_bytes: part.size_bytes,
+            checksum_sha256: optional_trimmed_string(&part.checksum_sha256),
+        })
+        .collect()
+}
+
+pub(crate) fn complete_upload_session_request(
+    file_id: &str,
+    encoded_object_key: String,
+    token: String,
+    upload_id: Option<String>,
+    ownership_proof: &str,
+    parts: Vec<synctv_proto::client::CompleteFileUploadPart>,
+) -> CompleteFileUploadSession {
+    CompleteFileUploadSession {
+        file_id: optional_trimmed_string(file_id),
+        encoded_object_key,
+        upload_token: token,
+        upload_id,
+        ownership_proof: optional_trimmed_string(ownership_proof),
+        parts: proto_complete_upload_parts(parts),
+    }
 }
 
 pub(crate) fn upload_session_fields(
     session: &FileUploadSession,
 ) -> Result<UploadSessionFields, ApiError> {
-    let (upload_url, upload_method, expires_at) = if session.upload_required {
+    let upload_token = synctv_core::service::upload_token_from_session_file(&session.file)
+        .map_err(ApiError::from)?;
+    let expires_at = if session.upload_required {
+        Some(
+            session
+                .expires_at
+                .ok_or_else(|| {
+                    ApiError::Internal(
+                        "upload session marked upload_required is missing expires_at".to_string(),
+                    )
+                })?
+                .timestamp(),
+        )
+    } else {
+        None
+    };
+    let (upload_url, upload_method) = if session.upload_required {
         (
             Some(required_upload_session_string(
                 session.upload_url.as_deref(),
@@ -148,36 +312,18 @@ pub(crate) fn upload_session_fields(
                 session.upload_method.as_deref(),
                 "upload_method",
             )?),
-            Some(
-                session
-                    .expires_at
-                    .ok_or_else(|| {
-                        ApiError::Internal(
-                            "upload session marked upload_required is missing expires_at"
-                                .to_string(),
-                        )
-                    })?
-                    .timestamp(),
-            ),
-        )
-    } else {
-        (None, None, None)
-    };
-
-    let (ownership_proof_nonce, ownership_proof_metadata_key) = if session.ownership_proof_required
-    {
-        (
-            Some(required_upload_session_string(
-                session.ownership_proof_nonce.as_deref(),
-                "ownership_proof_nonce",
-            )?),
-            Some(required_upload_session_string(
-                session.ownership_proof_metadata_key.as_deref(),
-                "ownership_proof_metadata_key",
-            )?),
         )
     } else {
         (None, None)
+    };
+
+    let ownership_proof_nonce = if session.ownership_proof_required {
+        Some(required_upload_session_string(
+            session.ownership_proof_nonce.as_deref(),
+            "ownership_proof_nonce",
+        )?)
+    } else {
+        None
     };
 
     Ok(UploadSessionFields {
@@ -185,7 +331,7 @@ pub(crate) fn upload_session_fields(
         upload_method,
         expires_at,
         ownership_proof_nonce,
-        ownership_proof_metadata_key,
+        upload_token,
     })
 }
 
@@ -204,14 +350,13 @@ fn required_upload_session_string(
     Ok(value.to_string())
 }
 
+#[cfg(test)]
 pub(crate) fn stored_file_to_file_cover_proto(
     file: &NewStoredFile,
 ) -> Result<synctv_proto::client::FileCover, ApiError> {
     let fields = required_stored_file_fields(file, "file cover metadata")?;
     Ok(synctv_proto::client::FileCover {
         id: file.id.clone(),
-        storage_backend: file.storage_backend.clone(),
-        object_key: file.object_key.clone(),
         url: fields.url,
         mime_type: fields.mime_type,
         size_bytes: fields.size_bytes,
@@ -221,63 +366,50 @@ pub(crate) fn stored_file_to_file_cover_proto(
     })
 }
 
-pub(crate) fn file_cover_proto_to_stored_file(
-    cover: synctv_proto::client::FileCover,
-) -> Result<NewStoredFile, ApiError> {
-    Ok(NewStoredFile {
-        filename: None,
-        id: cover.id,
-        storage_backend: cover.storage_backend,
-        object_key: cover.object_key,
-        url: optional_trimmed_string(&cover.url),
-        mime_type: optional_trimmed_string(&cover.mime_type),
-        size_bytes: (cover.size_bytes > 0).then_some(cover.size_bytes),
-        width: (cover.width > 0).then_some(cover.width),
-        height: (cover.height > 0).then_some(cover.height),
-        metadata: parse_json_metadata(&cover.metadata)?,
-    })
-}
-
-pub(crate) fn stored_file_to_media_cover_proto(
+fn upload_session_file_cover_proto(
     file: &NewStoredFile,
-) -> Result<synctv_proto::client::MediaCover, ApiError> {
-    let fields = required_stored_file_fields(file, "media cover metadata")?;
-    Ok(synctv_proto::client::MediaCover {
-        id: file.id.clone(),
-        storage_backend: file.storage_backend.clone(),
-        object_key: file.object_key.clone(),
-        url: fields.url,
-        mime_type: fields.mime_type,
-        size_bytes: fields.size_bytes,
-        width: fields.width,
-        height: fields.height,
-        metadata: fields.metadata,
-    })
+) -> Result<synctv_proto::client::FileUploadReference, ApiError> {
+    file_upload_reference_to_proto(file)
 }
 
-fn media_cover_proto_to_stored_file(
-    cover: synctv_proto::client::MediaCover,
-) -> Result<NewStoredFile, ApiError> {
-    Ok(NewStoredFile {
-        filename: None,
-        id: cover.id,
-        storage_backend: cover.storage_backend,
-        object_key: cover.object_key,
-        url: optional_trimmed_string(&cover.url),
-        mime_type: optional_trimmed_string(&cover.mime_type),
-        size_bytes: (cover.size_bytes > 0).then_some(cover.size_bytes),
-        width: (cover.width > 0).then_some(cover.width),
-        height: (cover.height > 0).then_some(cover.height),
-        metadata: parse_json_metadata(&cover.metadata)?,
-    })
+pub(crate) fn file_upload_reference_to_proto(
+    file: &NewStoredFile,
+) -> Result<synctv_proto::client::FileUploadReference, ApiError> {
+    let reference = synctv_core::service::submitted_file_reference_from_session_file(file)
+        .map_err(ApiError::from)?;
+    Ok(synctv_proto::client::FileUploadReference { id: reference.id })
 }
 
-fn media_cover_upload_session_to_proto(
+pub(crate) fn file_upload_reference_to_core(
+    reference: synctv_proto::client::FileUploadReference,
+) -> synctv_core::models::SubmittedFileReference {
+    synctv_core::models::SubmittedFileReference {
+        id: reference.id,
+        kind: synctv_core::models::SubmittedFileReferenceKind::Upload,
+    }
+}
+
+pub(crate) fn required_file_upload_reference(
+    reference: Option<synctv_proto::client::FileUploadReference>,
+    field: &'static str,
+) -> Result<synctv_core::models::SubmittedFileReference, ApiError> {
+    reference
+        .map(file_upload_reference_to_core)
+        .ok_or_else(|| ApiError::InvalidInput(format!("{field} is required")))
+}
+
+fn upload_session_media_cover_proto(
+    file: &NewStoredFile,
+) -> Result<synctv_proto::client::FileUploadReference, ApiError> {
+    file_upload_reference_to_proto(file)
+}
+
+pub(crate) fn media_cover_upload_session_to_proto(
     session: FileUploadSession,
 ) -> Result<synctv_proto::client::MediaCoverUploadSession, ApiError> {
     let fields = upload_session_fields(&session)?;
     Ok(synctv_proto::client::MediaCoverUploadSession {
-        cover: Some(stored_file_to_media_cover_proto(&session.file)?),
+        cover_reference: Some(upload_session_media_cover_proto(&session.file)?),
         upload_required: session.upload_required,
         upload_url: fields.upload_url,
         upload_method: fields.upload_method,
@@ -296,8 +428,71 @@ fn media_cover_upload_session_to_proto(
                 },
             )
             .collect(),
-        ownership_proof_metadata_key: fields.ownership_proof_metadata_key,
+        resumable: session.resumable,
+        part_size_bytes: session.part_size_bytes,
+        uploaded_size_bytes: session.uploaded_size_bytes,
+        uploaded_parts: session.uploaded_parts,
+        upload_id: session.upload_id,
+        part_urls: session
+            .part_urls
+            .into_iter()
+            .map(file_upload_part_url_to_proto)
+            .collect(),
+        upload_token: fields.upload_token,
+        encoded_object_key: session.encoded_object_key,
     })
+}
+
+pub(crate) fn media_cover_upload_create_result_to_proto(
+    result: FileUploadSessionCreateResult,
+) -> Result<synctv_proto::client::CreateMediaCoverUploadSessionResponse, ApiError> {
+    use synctv_proto::client::create_media_cover_upload_session_response::Result as ProtoResult;
+    Ok(
+        synctv_proto::client::CreateMediaCoverUploadSessionResponse {
+            result: Some(match result {
+                FileUploadSessionCreateResult::Plan(plan) => {
+                    ProtoResult::Plan(file_upload_plan_to_proto(plan))
+                }
+                FileUploadSessionCreateResult::Session(session) => {
+                    ProtoResult::Session(media_cover_upload_session_to_proto(session)?)
+                }
+            }),
+        },
+    )
+}
+
+pub(crate) fn room_cover_upload_create_result_to_proto(
+    result: FileUploadSessionCreateResult,
+) -> Result<synctv_proto::client::CreateRoomCoverUploadSessionResponse, ApiError> {
+    use synctv_proto::client::create_room_cover_upload_session_response::Result as ProtoResult;
+    Ok(synctv_proto::client::CreateRoomCoverUploadSessionResponse {
+        result: Some(match result {
+            FileUploadSessionCreateResult::Plan(plan) => {
+                ProtoResult::Plan(file_upload_plan_to_proto(plan))
+            }
+            FileUploadSessionCreateResult::Session(session) => {
+                ProtoResult::Session(file_upload_session_to_room_cover_proto(session)?)
+            }
+        }),
+    })
+}
+
+pub(crate) fn playlist_cover_upload_create_result_to_proto(
+    result: FileUploadSessionCreateResult,
+) -> Result<synctv_proto::client::CreatePlaylistCoverUploadSessionResponse, ApiError> {
+    use synctv_proto::client::create_playlist_cover_upload_session_response::Result as ProtoResult;
+    Ok(
+        synctv_proto::client::CreatePlaylistCoverUploadSessionResponse {
+            result: Some(match result {
+                FileUploadSessionCreateResult::Plan(plan) => {
+                    ProtoResult::Plan(file_upload_plan_to_proto(plan))
+                }
+                FileUploadSessionCreateResult::Session(session) => {
+                    ProtoResult::Session(file_upload_session_to_playlist_cover_proto(session)?)
+                }
+            }),
+        },
+    )
 }
 
 pub(crate) fn file_upload_session_to_room_cover_proto(
@@ -305,7 +500,7 @@ pub(crate) fn file_upload_session_to_room_cover_proto(
 ) -> Result<synctv_proto::client::RoomCoverUploadSession, ApiError> {
     let fields = upload_session_fields(&session)?;
     Ok(synctv_proto::client::RoomCoverUploadSession {
-        cover: Some(stored_file_to_file_cover_proto(&session.file)?),
+        cover_reference: Some(upload_session_file_cover_proto(&session.file)?),
         upload_required: session.upload_required,
         upload_url: fields.upload_url,
         upload_method: fields.upload_method,
@@ -322,7 +517,18 @@ pub(crate) fn file_upload_session_to_room_cover_proto(
                 length: range.length,
             })
             .collect(),
-        ownership_proof_metadata_key: fields.ownership_proof_metadata_key,
+        resumable: session.resumable,
+        part_size_bytes: session.part_size_bytes,
+        uploaded_size_bytes: session.uploaded_size_bytes,
+        uploaded_parts: session.uploaded_parts,
+        upload_id: session.upload_id,
+        part_urls: session
+            .part_urls
+            .into_iter()
+            .map(file_upload_part_url_to_proto)
+            .collect(),
+        upload_token: fields.upload_token,
+        encoded_object_key: session.encoded_object_key,
     })
 }
 
@@ -331,7 +537,7 @@ pub(crate) fn file_upload_session_to_playlist_cover_proto(
 ) -> Result<synctv_proto::client::PlaylistCoverUploadSession, ApiError> {
     let fields = upload_session_fields(&session)?;
     Ok(synctv_proto::client::PlaylistCoverUploadSession {
-        cover: Some(stored_file_to_file_cover_proto(&session.file)?),
+        cover_reference: Some(upload_session_file_cover_proto(&session.file)?),
         upload_required: session.upload_required,
         upload_url: fields.upload_url,
         upload_method: fields.upload_method,
@@ -348,7 +554,18 @@ pub(crate) fn file_upload_session_to_playlist_cover_proto(
                 length: range.length,
             })
             .collect(),
-        ownership_proof_metadata_key: fields.ownership_proof_metadata_key,
+        resumable: session.resumable,
+        part_size_bytes: session.part_size_bytes,
+        uploaded_size_bytes: session.uploaded_size_bytes,
+        uploaded_parts: session.uploaded_parts,
+        upload_id: session.upload_id,
+        part_urls: session
+            .part_urls
+            .into_iter()
+            .map(file_upload_part_url_to_proto)
+            .collect(),
+        upload_token: fields.upload_token,
+        encoded_object_key: session.encoded_object_key,
     })
 }
 
@@ -356,10 +573,11 @@ pub(crate) fn media_cover_object_to_proto(
     blob: &FileBlob,
 ) -> synctv_proto::client::MediaCoverObjectResponse {
     synctv_proto::client::MediaCoverObjectResponse {
-        object_key: blob.object_key.clone(),
         mime_type: blob.mime_type.clone(),
-        checksum_sha256: blob.checksum_sha256.clone(),
+        content_manifest_sha256: blob.content_manifest_sha256.clone(),
         data: blob.data.clone(),
+        content_range: blob.range.map(file_byte_range_to_proto),
+        total_size_bytes: blob.total_size_bytes,
     }
 }
 
@@ -367,10 +585,11 @@ pub(crate) fn room_cover_object_to_proto(
     blob: &FileBlob,
 ) -> synctv_proto::client::RoomCoverObjectResponse {
     synctv_proto::client::RoomCoverObjectResponse {
-        object_key: blob.object_key.clone(),
         mime_type: blob.mime_type.clone(),
-        checksum_sha256: blob.checksum_sha256.clone(),
+        content_manifest_sha256: blob.content_manifest_sha256.clone(),
         data: blob.data.clone(),
+        content_range: blob.range.map(file_byte_range_to_proto),
+        total_size_bytes: blob.total_size_bytes,
     }
 }
 
@@ -378,10 +597,11 @@ pub(crate) fn playlist_cover_object_to_proto(
     blob: &FileBlob,
 ) -> synctv_proto::client::PlaylistCoverObjectResponse {
     synctv_proto::client::PlaylistCoverObjectResponse {
-        object_key: blob.object_key.clone(),
         mime_type: blob.mime_type.clone(),
-        checksum_sha256: blob.checksum_sha256.clone(),
+        content_manifest_sha256: blob.content_manifest_sha256.clone(),
         data: blob.data.clone(),
+        content_range: blob.range.map(file_byte_range_to_proto),
+        total_size_bytes: blob.total_size_bytes,
     }
 }
 
@@ -1179,17 +1399,13 @@ impl ClientApiImpl {
                     size_bytes: req.size_bytes,
                     width: (req.width > 0).then_some(req.width),
                     height: (req.height > 0).then_some(req.height),
-                    checksum_sha256: optional_trimmed_string(&req.checksum_sha256),
+                    parts: proto_upload_manifest_parts(req.parts),
                     metadata: parse_json_metadata(&req.metadata)?,
                 },
             )
             .await
             .map_err(ApiError::from)?;
-        Ok(
-            synctv_proto::client::CreateMediaCoverUploadSessionResponse {
-                session: Some(media_cover_upload_session_to_proto(session)?),
-            },
-        )
+        media_cover_upload_create_result_to_proto(session)
     }
 
     pub async fn upload_media_cover_object(
@@ -1203,13 +1419,50 @@ impl ClientApiImpl {
                 &req.encoded_object_key,
                 &req.token,
                 req.content_type.as_deref(),
+                proto_file_upload_range(req.content_range),
                 req.data,
             )
             .await
             .map_err(ApiError::from)?;
+        let (complete, uploaded_size_bytes, uploaded_parts) = uploaded_parts_response_fields(&blob);
         Ok(synctv_proto::client::UploadMediaCoverObjectResponse {
-            object: Some(media_cover_object_to_proto(&blob)),
+            object: match blob {
+                StoreFileUploadResult::Complete(blob) => Some(media_cover_object_to_proto(&blob)),
+                StoreFileUploadResult::PartAccepted { .. } => None,
+            },
+            complete,
+            uploaded_size_bytes,
+            uploaded_parts,
         })
+    }
+
+    pub async fn complete_media_cover_upload_session(
+        &self,
+        req: synctv_proto::client::CompleteMediaCoverUploadSessionRequest,
+    ) -> Result<synctv_proto::client::CompleteMediaCoverUploadSessionResponse, ApiError> {
+        let result = self
+            .room_service
+            .media_service()
+            .complete_media_cover_upload_session(complete_upload_session_request(
+                &req.file_id,
+                req.encoded_object_key,
+                req.token,
+                req.upload_id,
+                &req.ownership_proof,
+                req.parts,
+            ))
+            .await
+            .map_err(ApiError::from)?;
+        let (complete, uploaded_size_bytes, uploaded_parts) =
+            complete_upload_response_fields(&result);
+        Ok(
+            synctv_proto::client::CompleteMediaCoverUploadSessionResponse {
+                object: result.object.as_ref().map(media_cover_object_to_proto),
+                complete,
+                uploaded_size_bytes,
+                uploaded_parts,
+            },
+        )
     }
 
     pub async fn get_media_cover_object(
@@ -1219,7 +1472,11 @@ impl ClientApiImpl {
         let blob = self
             .room_service
             .media_service()
-            .get_media_cover_object(&req.encoded_object_key, &req.token)
+            .get_media_cover_object_range(
+                &req.encoded_object_key,
+                &req.token,
+                proto_file_range_request(req.range),
+            )
             .await
             .map_err(ApiError::from)?;
         Ok(media_cover_object_to_proto(&blob))
@@ -1235,18 +1492,11 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
         let media_id =
             crate::impls::parse_media_id_param(&req.media_id, "media_id", &self.public_id_codec)?;
-        let cover = req
-            .cover
-            .ok_or_else(|| ApiError::InvalidInput("cover is required".to_string()))?;
+        let cover = required_file_upload_reference(req.cover_reference, "cover_reference")?;
         let media = self
             .room_service
             .media_service()
-            .update_media_cover(
-                rid,
-                media_id,
-                *user_id,
-                media_cover_proto_to_stored_file(cover)?,
-            )
+            .update_media_cover(rid, media_id, *user_id, cover)
             .await
             .map_err(ApiError::from)?;
         self.room_cache_fanout.publish_invalidation(&rid);
@@ -2032,9 +2282,10 @@ mod tests {
     use super::{
         build_add_media_batch_request, build_add_media_request, build_delete_entries_request,
         build_delete_media_request, build_edit_media_request, build_move_media_request,
-        compute_playlist_items_response_version, map_availability_filter, map_media_sort,
-        map_playlist_sort_from_media_sort, map_sort_direction, stored_file_to_file_cover_proto,
-        upload_session_fields, validate_dynamic_playlist_query_support, DEFAULT_MEDIA_TITLE,
+        compute_playlist_items_response_version, file_upload_session_to_room_cover_proto,
+        map_availability_filter, map_media_sort, map_playlist_sort_from_media_sort,
+        map_sort_direction, stored_file_to_file_cover_proto, upload_session_fields,
+        validate_dynamic_playlist_query_support, DEFAULT_MEDIA_TITLE,
     };
     use chrono::Utc;
     use serde_json::json;
@@ -2372,23 +2623,29 @@ mod tests {
             size_bytes: Some(7),
             width: Some(16),
             height: Some(16),
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: serde_json::json!({"_synctv_upload_token": "v1.payload.signature"}),
         }
     }
 
     fn make_upload_session() -> FileUploadSession {
         FileUploadSession {
             file: make_stored_file(),
+            encoded_object_key: "encoded-file-1".to_string(),
             upload_required: true,
             ownership_proof_required: false,
             ownership_proof_nonce: None,
             ownership_proof_ranges: Vec::new(),
-            ownership_proof_metadata_key: None,
             upload_url: Some("https://upload.example.test/file-1".to_string()),
             upload_method: Some("PUT".to_string()),
             upload_headers: Default::default(),
             expires_at: Some(Utc::now()),
             max_size_bytes: 1024,
+            resumable: true,
+            part_size_bytes: 4 * 1024 * 1024,
+            uploaded_size_bytes: 0,
+            uploaded_parts: Vec::new(),
+            upload_id: None,
+            part_urls: Vec::new(),
         }
     }
 
@@ -2466,15 +2723,42 @@ mod tests {
     }
 
     #[test]
-    fn upload_session_fields_require_ownership_proof_metadata_when_reused() -> TestResult {
+    fn upload_session_fields_accept_multipart_upload_targets() -> TestResult {
+        let mut session = make_upload_session();
+        session.upload_id = Some("upload-id".to_string());
+        session
+            .part_urls
+            .push(synctv_core::models::FileUploadPartUrl {
+                part_number: 1,
+                offset_bytes: 0,
+                size_bytes: 7,
+                upload_url: "https://upload.example.test/file-1?partNumber=1".to_string(),
+                upload_method: "PUT".to_string(),
+                upload_headers: Default::default(),
+                expires_at: Some(Utc::now()),
+            });
+
+        let fields = api_ok(upload_session_fields(&session))?;
+
+        assert_eq!(
+            fields.upload_url.as_deref(),
+            Some("https://upload.example.test/file-1")
+        );
+        assert_eq!(fields.upload_method.as_deref(), Some("PUT"));
+        assert!(fields.expires_at.is_some_and(|expires_at| expires_at > 0));
+        Ok(())
+    }
+
+    #[test]
+    fn upload_session_fields_require_ownership_proof_nonce_when_reused() -> TestResult {
         let mut session = make_upload_session();
         session.upload_required = false;
+        session.file.url = None;
         session.upload_url = None;
         session.upload_method = None;
         session.expires_at = None;
         session.ownership_proof_required = true;
         session.ownership_proof_nonce = Some("nonce".to_string());
-        session.ownership_proof_metadata_key = Some("proof".to_string());
         session.ownership_proof_ranges = vec![FileOwnershipProofRange {
             offset: 0,
             length: 16,
@@ -2482,11 +2766,13 @@ mod tests {
 
         let fields = api_ok(upload_session_fields(&session))?;
         assert!(fields.upload_url.is_none());
+        let session_proto = api_ok(file_upload_session_to_room_cover_proto(session.clone()))?;
+        let cover = session_proto
+            .cover_reference
+            .ok_or_else(|| test_error("cover_reference should be returned"))?;
+        assert_eq!(cover.id, "file-1");
+        assert!(!session_proto.upload_token.is_empty());
         assert_eq!(fields.ownership_proof_nonce.as_deref(), Some("nonce"));
-        assert_eq!(
-            fields.ownership_proof_metadata_key.as_deref(),
-            Some("proof")
-        );
 
         session.ownership_proof_nonce = None;
         assert!(matches!(

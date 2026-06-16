@@ -25,14 +25,14 @@ use crate::{
     },
     service::{
         notification::NotificationService as RoomNotificationService, AuditFlushHandle,
-        AuditService, ChatService, ContentFilter, DatabaseFileStorageService,
-        DisabledFileStorageService, EmailService, EmailTokenService, FileStorageBackendRegistry,
-        FileStorageService, JwtService, OAuth2Service, PasskeyService, PermissionService,
-        PgTokenBlacklistStore, ProvidersManager, RateLimitConfig, RemoteProviderManager,
-        RequestRateLimiterService, RoomService, RoomSettingsService, RuntimeEmailConfigProvider,
-        S3CompatibleFileStorageService, S3FileStorageConfig, SettingsRegistry, SettingsService,
-        StreamingPublishKeyService, TieredTokenBlacklistStore, UserNotificationService,
-        UserService,
+        AuditService, ChatService, ContentFilter, DatabaseFileStorageCompressionConfig,
+        DatabaseFileStorageService, DisabledFileStorageService, EmailService, EmailTokenService,
+        FileStorageBackendRegistry, FileStorageService, JwtService, OAuth2Service, PasskeyService,
+        PermissionService, PgTokenBlacklistStore, ProvidersManager, RateLimitConfig,
+        RemoteProviderManager, RequestRateLimiterService, RoomService, RoomSettingsService,
+        RuntimeEmailConfigProvider, S3CompatibleFileStorageService, S3FileStorageConfig,
+        SettingsRegistry, SettingsService, StreamingPublishKeyService, TieredTokenBlacklistStore,
+        UserNotificationService, UserService,
     },
     Config, SharedStateMode, SharedStateProfile,
 };
@@ -674,11 +674,17 @@ pub async fn init_services_with_options(
         let service: Arc<dyn FileStorageService> = match backend_config.backend_type {
             FileStorageBackendType::Disabled => Arc::new(DisabledFileStorageService),
             FileStorageBackendType::Database => {
-                Arc::new(DatabaseFileStorageService::new_with_compression(
+                Arc::new(DatabaseFileStorageService::new_with_compression_config(
                     name.clone(),
                     file_storage_repo.clone(),
                     file_upload_token_secret.clone(),
-                    backend_config.database.compression.into(),
+                    DatabaseFileStorageCompressionConfig {
+                        algorithm: backend_config.database.compression.into(),
+                        min_size_bytes: backend_config.database.compression_min_size_bytes,
+                        min_savings_percent: backend_config
+                            .database
+                            .compression_min_savings_percent,
+                    },
                 ))
             }
             FileStorageBackendType::S3 => {

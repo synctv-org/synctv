@@ -3,19 +3,18 @@ CREATE TABLE IF NOT EXISTS file_objects (
     object_key TEXT NOT NULL,
     mime_type TEXT NOT NULL,
     size_bytes BIGINT NOT NULL,
-    checksum_sha256 TEXT NOT NULL,
+    content_manifest_sha256 TEXT NOT NULL,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     validated_at TIMESTAMPTZ,
     PRIMARY KEY (storage_backend, object_key),
-    UNIQUE (storage_backend, checksum_sha256, size_bytes),
     CHECK (size_bytes > 0),
-    CHECK (length(checksum_sha256) = 64),
+    CHECK (length(content_manifest_sha256) = 64),
     CHECK (jsonb_typeof(metadata) = 'object')
 );
 
-CREATE INDEX IF NOT EXISTS idx_file_objects_checksum
-    ON file_objects(storage_backend, checksum_sha256, size_bytes);
+CREATE INDEX IF NOT EXISTS idx_file_objects_manifest
+    ON file_objects(storage_backend, content_manifest_sha256, size_bytes);
 CREATE INDEX IF NOT EXISTS idx_file_objects_validated
     ON file_objects(validated_at DESC);
 
@@ -43,24 +42,90 @@ CREATE INDEX IF NOT EXISTS idx_file_references_expiry
     ON file_references(expires_at)
     WHERE released_at IS NULL AND expires_at IS NOT NULL;
 
-CREATE TABLE IF NOT EXISTS file_blobs (
+CREATE TABLE IF NOT EXISTS file_blob_parts (
     storage_backend TEXT NOT NULL,
     object_key TEXT NOT NULL,
-    mime_type TEXT NOT NULL,
+    part_index INTEGER NOT NULL,
+    offset_bytes BIGINT NOT NULL,
     size_bytes BIGINT NOT NULL,
     checksum_sha256 TEXT NOT NULL,
     compression SMALLINT NOT NULL DEFAULT 0,
     data BYTEA NOT NULL,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (storage_backend, object_key),
+    PRIMARY KEY (storage_backend, object_key, part_index),
+    CHECK (part_index >= 0),
+    CHECK (offset_bytes >= 0),
     CHECK (size_bytes > 0),
     CHECK (length(checksum_sha256) = 64),
-    CHECK (jsonb_typeof(metadata) = 'object')
+    FOREIGN KEY (storage_backend, object_key)
+        REFERENCES file_objects(storage_backend, object_key) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_file_blobs_created_at
-    ON file_blobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_file_blob_parts_object_offset
+    ON file_blob_parts(storage_backend, object_key, offset_bytes);
+CREATE INDEX IF NOT EXISTS idx_file_blob_parts_created_at
+    ON file_blob_parts(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS file_upload_sessions (
+    storage_backend TEXT NOT NULL,
+    upload_session_key TEXT NOT NULL,
+    object_key TEXT NOT NULL,
+    session_kind SMALLINT NOT NULL,
+    upload_id TEXT,
+    user_id BIGINT NOT NULL,
+    storage_scope TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    content_manifest_sha256 TEXT NOT NULL,
+    part_size_bytes BIGINT NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    expires_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (storage_backend, upload_session_key),
+    CHECK (size_bytes > 0),
+    CHECK (part_size_bytes > 0),
+    CHECK (length(content_manifest_sha256) = 64),
+    CHECK (jsonb_typeof(metadata) = 'object'),
+    FOREIGN KEY (storage_backend, object_key)
+        REFERENCES file_objects(storage_backend, object_key) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_upload_sessions_upload_id
+    ON file_upload_sessions(storage_backend, upload_id)
+    WHERE upload_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_file_upload_sessions_manifest
+    ON file_upload_sessions(storage_backend, user_id, storage_scope, content_manifest_sha256, size_bytes)
+    WHERE completed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_file_upload_sessions_object
+    ON file_upload_sessions(storage_backend, object_key);
+CREATE INDEX IF NOT EXISTS idx_file_upload_sessions_expiry
+    ON file_upload_sessions(expires_at)
+    WHERE completed_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS file_upload_session_parts (
+    storage_backend TEXT NOT NULL,
+    upload_session_key TEXT NOT NULL,
+    part_index INTEGER NOT NULL,
+    part_number INTEGER NOT NULL,
+    offset_bytes BIGINT NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    checksum_sha256 TEXT,
+    etag TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (storage_backend, upload_session_key, part_index),
+    UNIQUE (storage_backend, upload_session_key, part_number),
+    CHECK (part_index >= 0),
+    CHECK (part_number > 0),
+    CHECK (offset_bytes >= 0),
+    CHECK (size_bytes > 0),
+    CHECK (checksum_sha256 IS NULL OR length(checksum_sha256) = 64)
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_upload_session_parts_object_offset
+    ON file_upload_session_parts(storage_backend, upload_session_key, offset_bytes);
 
 CREATE TABLE IF NOT EXISTS file_cleanup_jobs (
     id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,

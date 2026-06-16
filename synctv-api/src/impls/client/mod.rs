@@ -24,7 +24,9 @@ pub(crate) mod playback_lifecycle;
 pub(crate) mod playlist;
 mod report;
 mod room;
-pub(crate) use room::{chat_reaction_count, chat_reaction_summary_to_proto};
+pub(crate) use room::{
+    chat_reaction_count, chat_reaction_summary_to_proto, parse_proto_chat_attachments,
+};
 pub(crate) mod stream;
 mod user;
 mod webrtc;

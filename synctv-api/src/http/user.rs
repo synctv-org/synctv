@@ -3,7 +3,7 @@
 use axum::{
     body::Bytes,
     extract::{Path, State},
-    http::{header, HeaderMap, HeaderName, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -21,13 +21,14 @@ use synctv_proto::client::{
     StartSensitiveOperationVerificationRequest, StartSensitiveOperationVerificationResponse,
 };
 use synctv_proto::client::{
+    CompleteUserAvatarUploadSessionRequest, CompleteUserAvatarUploadSessionResponse,
+    CreateUserAvatarUploadSessionRequest, CreateUserAvatarUploadSessionResponse,
+    GetProfileResponse as UserAvatarUpdateResponse, UpdateUserAvatarRequest,
+};
+use synctv_proto::client::{
     ConfirmEmailBindRequest, ConfirmEmailBindResponse, GetUserPreferencesResponse,
     UnbindEmailRequest, UnbindEmailResponse, UpdateUserPreferencesRequest,
     UpdateUserPreferencesResponse,
-};
-use synctv_proto::client::{
-    CreateUserAvatarUploadSessionRequest, CreateUserAvatarUploadSessionResponse,
-    GetProfileResponse as UserAvatarUpdateResponse, UpdateUserAvatarRequest,
 };
 use synctv_proto::client::{
     FinishOpaquePasswordUpdateRequest, FinishOpaquePasswordUpdateResponse,
@@ -36,6 +37,43 @@ use synctv_proto::client::{
 use synctv_proto::client::{
     SetUsernameRequest, SetUsernameResponse, StartEmailBindRequest, StartEmailBindResponse,
 };
+
+fn file_upload_range_to_proto(
+    range: synctv_core::models::FileUploadRange,
+) -> synctv_proto::client::FileUploadRange {
+    synctv_proto::client::FileUploadRange {
+        start: range.start,
+        end_inclusive: range.end_inclusive,
+        total_size: range.total_size,
+    }
+}
+
+fn upload_response_headers(
+    complete: bool,
+    uploaded_size_bytes: i64,
+    uploaded_parts: &[i32],
+) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("x-synctv-upload-complete"),
+        HeaderValue::from_static(if complete { "true" } else { "false" }),
+    );
+    if let Ok(value) = HeaderValue::from_str(&uploaded_size_bytes.to_string()) {
+        headers.insert(
+            HeaderName::from_static("x-synctv-uploaded-size-bytes"),
+            value,
+        );
+    }
+    let uploaded_parts = uploaded_parts
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    if let Ok(value) = HeaderValue::from_str(&uploaded_parts) {
+        headers.insert(HeaderName::from_static("x-synctv-uploaded-parts"), value);
+    }
+    headers
+}
 
 #[derive(Debug, serde::Deserialize)]
 pub struct UserAvatarObjectPath {
@@ -280,17 +318,19 @@ pub async fn upload_user_avatar_object(
     Path(path): Path<UserAvatarObjectPath>,
     headers: HeaderMap,
     body: Bytes,
-) -> AppResult<StatusCode> {
+) -> AppResult<Response> {
     let upload_token = super::required_header_str(
         &headers,
         synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
         "Missing file upload token",
     )?;
     let content_type = super::optional_header_str(&headers, &header::CONTENT_TYPE)?;
+    let range = super::optional_content_range(&headers)?;
     let req = synctv_proto::client::UploadUserAvatarObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: upload_token.to_string(),
         content_type: content_type.map(str::to_string),
+        content_range: range.map(file_upload_range_to_proto),
         data: body.to_vec(),
     };
     let request_meta = request_meta
@@ -298,7 +338,7 @@ pub async fn upload_user_avatar_object(
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let executor = state.shared_api_runtime.client_api.clone();
     let client_api = state.shared_api_runtime.client_api.clone();
-    executor
+    let response = executor
         .execute_public_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
@@ -306,25 +346,59 @@ pub async fn upload_user_avatar_object(
         )
         .await
         .map_err(super::error::map_api_error)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok((
+        upload_response_headers(
+            response.complete,
+            response.uploaded_size_bytes,
+            &response.uploaded_parts,
+        ),
+        StatusCode::NO_CONTENT,
+    )
+        .into_response())
+}
+
+pub async fn complete_user_avatar_upload_session(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<UserAvatarObjectPath>,
+    Json(mut req): Json<CompleteUserAvatarUploadSessionRequest>,
+) -> AppResult<Json<CompleteUserAvatarUploadSessionResponse>> {
+    req.encoded_object_key = path.encoded_object_key;
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_public_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move || async move { client_api.complete_user_avatar_upload_session(req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+    Ok(Json(response))
 }
 
 pub async fn get_user_avatar_object(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<UserAvatarObjectPath>,
+    headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<UserAvatarObjectQuery>,
 ) -> AppResult<Response> {
+    let range = super::optional_file_range(&headers)?;
     let req = synctv_proto::client::GetUserAvatarObjectRequest {
         encoded_object_key: path.encoded_object_key,
         token: query.token,
+        range: range.map(super::file_range_request_to_proto),
     };
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let executor = state.shared_api_runtime.client_api.clone();
     let client_api = state.shared_api_runtime.client_api.clone();
-    let blob = executor
+    let object = executor
         .execute_public_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
@@ -332,18 +406,16 @@ pub async fn get_user_avatar_object(
         )
         .await
         .map_err(super::error::map_api_error)?;
-    let response = (
-        [
-            (header::CONTENT_TYPE, blob.mime_type),
-            (
-                HeaderName::from_static("x-synctv-checksum-sha256"),
-                blob.checksum_sha256,
-            ),
-        ],
-        blob.data,
+    super::file_blob_response(
+        super::object_response_blob(
+            object.mime_type,
+            object.content_manifest_sha256,
+            object.data,
+            object.content_range,
+            object.total_size_bytes,
+        ),
+        None,
     )
-        .into_response();
-    Ok(response)
 }
 
 #[cfg_attr(

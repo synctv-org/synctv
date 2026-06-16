@@ -26,7 +26,7 @@ pub mod providers;
 use crate::realtime_fanout::RealtimeFanoutService;
 use crate::runtime::RealtimeEventService;
 use axum::{
-    http::{HeaderMap, HeaderName, HeaderValue, Method},
+    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     middleware as axum_middleware,
     response::IntoResponse,
     routing::{get, post},
@@ -79,6 +79,190 @@ pub(crate) fn optional_header_str<'a>(
                 .map_err(|_| AppError::bad_request(format!("Invalid {name} header")))
         })
         .transpose()
+}
+
+pub(crate) fn optional_content_range(
+    headers: &HeaderMap,
+) -> AppResult<Option<synctv_core::models::FileUploadRange>> {
+    let Some(value) = optional_header_str(headers, &axum::http::header::CONTENT_RANGE)? else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    let Some(rest) = value.strip_prefix("bytes ") else {
+        return Err(AppError::bad_request("Invalid Content-Range header"));
+    };
+    let (range, total) = rest
+        .split_once('/')
+        .ok_or_else(|| AppError::bad_request("Invalid Content-Range header"))?;
+    let (start, end) = range
+        .split_once('-')
+        .ok_or_else(|| AppError::bad_request("Invalid Content-Range header"))?;
+    let start = start
+        .parse::<i64>()
+        .map_err(|_| AppError::bad_request("Invalid Content-Range header"))?;
+    let end_inclusive = end
+        .parse::<i64>()
+        .map_err(|_| AppError::bad_request("Invalid Content-Range header"))?;
+    let total_size = total
+        .parse::<i64>()
+        .map_err(|_| AppError::bad_request("Invalid Content-Range header"))?;
+    Ok(Some(synctv_core::models::FileUploadRange {
+        start,
+        end_inclusive,
+        total_size,
+    }))
+}
+
+pub(crate) fn optional_file_range(
+    headers: &HeaderMap,
+) -> AppResult<Option<synctv_core::models::FileRangeRequest>> {
+    let Some(value) = optional_header_str(headers, &header::RANGE)? else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    let Some(rest) = value.strip_prefix("bytes=") else {
+        return Err(AppError::bad_request("Invalid Range header"));
+    };
+    if rest.contains(',') {
+        return Err(AppError::bad_request(
+            "Multiple byte ranges are unsupported",
+        ));
+    }
+    let (start, end) = rest
+        .split_once('-')
+        .ok_or_else(|| AppError::bad_request("Invalid Range header"))?;
+    match (start.trim(), end.trim()) {
+        ("", "") => Err(AppError::bad_request("Invalid Range header")),
+        ("", suffix) => {
+            let length = suffix
+                .parse::<i64>()
+                .map_err(|_| AppError::bad_request("Invalid Range header"))?;
+            if length <= 0 {
+                return Err(AppError::bad_request("Invalid Range header"));
+            }
+            Ok(Some(synctv_core::models::FileRangeRequest::Suffix {
+                length,
+            }))
+        }
+        (start, "") => {
+            let start = start
+                .parse::<i64>()
+                .map_err(|_| AppError::bad_request("Invalid Range header"))?;
+            if start < 0 {
+                return Err(AppError::bad_request("Invalid Range header"));
+            }
+            Ok(Some(synctv_core::models::FileRangeRequest::From { start }))
+        }
+        (start, end) => {
+            let start = start
+                .parse::<i64>()
+                .map_err(|_| AppError::bad_request("Invalid Range header"))?;
+            let end_inclusive = end
+                .parse::<i64>()
+                .map_err(|_| AppError::bad_request("Invalid Range header"))?;
+            if start < 0 || end_inclusive < start {
+                return Err(AppError::bad_request("Invalid Range header"));
+            }
+            Ok(Some(synctv_core::models::FileRangeRequest::Exact(
+                synctv_core::models::FileByteRange {
+                    start,
+                    end_inclusive,
+                },
+            )))
+        }
+    }
+}
+
+pub(crate) fn file_range_request_to_proto(
+    range: synctv_core::models::FileRangeRequest,
+) -> synctv_proto::client::FileRangeRequest {
+    use synctv_proto::client::file_range_request::Range;
+
+    let range = match range {
+        synctv_core::models::FileRangeRequest::Exact(range) => {
+            Range::Exact(synctv_proto::client::FileByteRange {
+                start: range.start,
+                end_inclusive: range.end_inclusive,
+            })
+        }
+        synctv_core::models::FileRangeRequest::From { start } => Range::FromStart(start),
+        synctv_core::models::FileRangeRequest::Suffix { length } => Range::SuffixLength(length),
+    };
+    synctv_proto::client::FileRangeRequest { range: Some(range) }
+}
+
+pub(crate) fn proto_file_byte_range_to_core(
+    range: synctv_proto::client::FileByteRange,
+) -> synctv_core::models::FileByteRange {
+    synctv_core::models::FileByteRange {
+        start: range.start,
+        end_inclusive: range.end_inclusive,
+    }
+}
+
+pub(crate) fn object_response_blob(
+    mime_type: String,
+    content_manifest_sha256: String,
+    data: Vec<u8>,
+    content_range: Option<synctv_proto::client::FileByteRange>,
+    total_size_bytes: i64,
+) -> synctv_core::models::FileBlob {
+    let size_bytes = i64::try_from(data.len()).unwrap_or(i64::MAX);
+    let total_size_bytes = if total_size_bytes > 0 {
+        total_size_bytes
+    } else {
+        size_bytes
+    };
+    synctv_core::models::FileBlob {
+        storage_backend: String::new(),
+        object_key: String::new(),
+        mime_type,
+        size_bytes,
+        total_size_bytes,
+        content_manifest_sha256,
+        compression: synctv_core::models::FileBlobCompression::None,
+        range: content_range.map(proto_file_byte_range_to_core),
+        data,
+        metadata: serde_json::Value::Object(Default::default()),
+        created_at: chrono::Utc::now(),
+    }
+}
+
+pub(crate) fn file_blob_response(
+    blob: synctv_core::models::FileBlob,
+    cache_control: Option<&'static str>,
+) -> AppResult<axum::response::Response> {
+    let mut response = (StatusCode::OK, blob.data).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&blob.mime_type)
+            .map_err(|_| AppError::internal_server_error("Invalid file content type"))?,
+    );
+    response
+        .headers_mut()
+        .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    if let Some(cache_control) = cache_control {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(cache_control),
+        );
+    }
+    if let Ok(value) = HeaderValue::from_str(&blob.content_manifest_sha256) {
+        response.headers_mut().insert(
+            HeaderName::from_static("x-synctv-content-manifest-sha256"),
+            value,
+        );
+    }
+    if let Some(range) = blob.range {
+        let start = range.start;
+        let end = range.end_inclusive;
+        let content_range = format!("bytes {start}-{end}/{}", blob.total_size_bytes);
+        *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+        if let Ok(value) = HeaderValue::from_str(&content_range) {
+            response.headers_mut().insert(header::CONTENT_RANGE, value);
+        }
+    }
+    Ok(response)
 }
 
 static X_FORWARDED_PROTO: LazyLock<HeaderName> =
@@ -922,6 +1106,10 @@ fn register_read_routes() -> Router<AppState> {
 fn register_chat_attachment_object_routes() -> Router<AppState> {
     Router::new()
         .route(
+            "/api/chat/attachment-objects/{encoded_object_key}/complete",
+            post(room::complete_chat_attachment_upload_session),
+        )
+        .route(
             "/api/chat/attachment-objects/{encoded_object_key}",
             axum::routing::put(room::upload_chat_attachment_object)
                 .get(room::get_chat_attachment_object),
@@ -934,6 +1122,10 @@ fn register_chat_attachment_object_routes() -> Router<AppState> {
 fn register_media_cover_object_routes() -> Router<AppState> {
     Router::new()
         .route(
+            "/api/media/cover-objects/{encoded_object_key}/complete",
+            post(room::complete_media_cover_upload_session),
+        )
+        .route(
             "/api/media/cover-objects/{encoded_object_key}",
             axum::routing::put(room::upload_media_cover_object).get(room::get_media_cover_object),
         )
@@ -943,6 +1135,10 @@ fn register_media_cover_object_routes() -> Router<AppState> {
 fn register_room_cover_object_routes() -> Router<AppState> {
     Router::new()
         .route(
+            "/api/room/cover-objects/{encoded_object_key}/complete",
+            post(room::complete_room_cover_upload_session),
+        )
+        .route(
             "/api/room/cover-objects/{encoded_object_key}",
             axum::routing::put(room::upload_room_cover_object).get(room::get_room_cover_object),
         )
@@ -951,6 +1147,10 @@ fn register_room_cover_object_routes() -> Router<AppState> {
 
 fn register_playlist_cover_object_routes() -> Router<AppState> {
     Router::new()
+        .route(
+            "/api/playlist/cover-objects/{encoded_object_key}/complete",
+            post(room::complete_playlist_cover_upload_session),
+        )
         .route(
             "/api/playlist/cover-objects/{encoded_object_key}",
             axum::routing::put(room::upload_playlist_cover_object)
@@ -1025,6 +1225,10 @@ fn register_extracted_user_routes() -> Router<AppState> {
 
 fn register_user_avatar_object_routes() -> Router<AppState> {
     Router::new()
+        .route(
+            "/api/user/avatar-objects/{encoded_object_key}/complete",
+            post(user::complete_user_avatar_upload_session),
+        )
         .route(
             "/api/user/avatar-objects/{encoded_object_key}",
             axum::routing::put(user::upload_user_avatar_object).get(user::get_user_avatar_object),
@@ -1230,11 +1434,24 @@ fn build_cors_layer(config: &synctv_core::Config) -> anyhow::Result<CorsLayer> {
                 axum::http::header::AUTHORIZATION,
                 axum::http::header::CONTENT_TYPE,
                 axum::http::header::ACCEPT,
+                axum::http::header::CONTENT_RANGE,
+                axum::http::header::RANGE,
                 axum::http::HeaderName::from_static("x-request-id"),
+                axum::http::HeaderName::from_static(
+                    synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
+                ),
                 axum::http::HeaderName::from_static("traceparent"),
                 axum::http::HeaderName::from_static("tracestate"),
             ])
-            .expose_headers([axum::http::HeaderName::from_static("x-request-id")])
+            .expose_headers([
+                axum::http::HeaderName::from_static("x-request-id"),
+                axum::http::header::ACCEPT_RANGES,
+                axum::http::header::CONTENT_RANGE,
+                axum::http::HeaderName::from_static("x-synctv-content-manifest-sha256"),
+                axum::http::HeaderName::from_static("x-synctv-upload-complete"),
+                axum::http::HeaderName::from_static("x-synctv-uploaded-size-bytes"),
+                axum::http::HeaderName::from_static("x-synctv-uploaded-parts"),
+            ])
             .vary([
                 axum::http::header::ORIGIN,
                 axum::http::header::ACCESS_CONTROL_REQUEST_METHOD,

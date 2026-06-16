@@ -78,6 +78,8 @@ pub use distributed_lock::{with_coordination_lock, CoordinationLock, Distributed
 pub use email::{mask_email, EmailConfig, EmailConfigProvider, EmailService};
 pub use email_token::EmailTokenService;
 pub use file_storage::{
+    submitted_file_reference_from_reuse_token, submitted_file_reference_from_session_file,
+    upload_token_from_session_file, DatabaseFileStorageCompressionConfig,
     DatabaseFileStorageService, DisabledFileStorageService, FileStorageBackendRegistry,
     FileStorageCleanupOrigin, FileStorageContext, FileStorageService, RoutedFileStorageService,
     S3CompatibleFileStorageService, S3FileStorageConfig,

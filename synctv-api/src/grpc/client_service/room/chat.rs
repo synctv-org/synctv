@@ -42,6 +42,27 @@ pub(super) async fn upload_chat_attachment_object(
     Ok(Response::new(response))
 }
 
+pub(super) async fn complete_chat_attachment_upload_session(
+    service: &ClientServiceImpl,
+    request: Request<CompleteChatAttachmentUploadSessionRequest>,
+) -> Result<Response<CompleteChatAttachmentUploadSessionResponse>, Status> {
+    let metadata = service.request_metadata(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .client_api
+        .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
+            let client_api = service.client_api.clone();
+            async move {
+                client_api
+                    .complete_chat_attachment_upload_session(req)
+                    .await
+            }
+        })
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
 pub(super) async fn get_chat_attachment_object(
     service: &ClientServiceImpl,
     request: Request<GetChatAttachmentObjectRequest>,

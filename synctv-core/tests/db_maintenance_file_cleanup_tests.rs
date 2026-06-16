@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use chrono::{Duration, Utc};
 use synctv_core::{
     models::{
-        CreateFileUploadSession, FileReferenceTarget, FileUploadSession, NewStoredFile, Room,
-        RoomId, RoomStatus, SignupMethod, User, UserId, UserRole, UserStatus,
+        CreateFileUploadSession, FileReferenceTarget, FileUploadSessionCreateResult, NewStoredFile,
+        Room, RoomId, RoomStatus, SignupMethod, User, UserId, UserRole, UserStatus,
     },
-    repository::{FileStorageRepository, RoomRepository, UserRepository},
+    repository::{FileStorageRepository, RoomRepository, UpsertFileObject, UserRepository},
     service::{
         db_maintenance::DatabaseMaintenanceOptions, AlwaysLeader, DatabaseMaintenanceService,
         FileStorageCleanupOrigin, FileStorageContext, FileStorageService,
@@ -32,7 +32,7 @@ impl FileStorageService for RecordingFileStorageService {
     async fn create_upload_session(
         &self,
         _request: CreateFileUploadSession,
-    ) -> synctv_core::Result<FileUploadSession> {
+    ) -> synctv_core::Result<FileUploadSessionCreateResult> {
         Err(Error::Internal("not used".to_string()))
     }
 
@@ -74,7 +74,7 @@ impl FileStorageService for FailingFileStorageService {
     async fn create_upload_session(
         &self,
         _request: CreateFileUploadSession,
-    ) -> synctv_core::Result<FileUploadSession> {
+    ) -> synctv_core::Result<FileUploadSessionCreateResult> {
         Err(Error::Internal("not used".to_string()))
     }
 
@@ -270,14 +270,14 @@ async fn expired_file_reference_cleanup_releases_reference() {
     let repository = FileStorageRepository::new(pool.clone());
     ok(
         repository
-            .upsert_object(
-                "database",
-                "database/files/expired.webp",
-                "image/webp",
-                7,
-                &"a".repeat(64),
-                &serde_json::Value::Object(Default::default()),
-            )
+            .upsert_object(UpsertFileObject {
+                storage_backend: "database",
+                object_key: "database/files/expired.webp",
+                mime_type: "image/webp",
+                size_bytes: 7,
+                content_manifest_sha256: &"a".repeat(64),
+                metadata: &serde_json::Value::Object(Default::default()),
+            })
             .await,
         "object should be registered",
     );

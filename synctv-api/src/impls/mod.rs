@@ -429,6 +429,9 @@ pub enum ApiError {
     AlreadyExists(String),
     Conflict(String),
     InvalidInput(String),
+    RangeNotSatisfiable {
+        total_size: i64,
+    },
     RateLimited(String),
     RateLimitedWithRetry {
         message: String,
@@ -453,6 +456,9 @@ impl From<synctv_core::Error> for ApiError {
                 Self::Conflict("Resource modified concurrently".to_string())
             }
             synctv_core::Error::InvalidInput(msg) => Self::InvalidInput(msg),
+            synctv_core::Error::RangeNotSatisfiable { total_size } => {
+                Self::RangeNotSatisfiable { total_size }
+            }
             synctv_core::Error::RateLimited(msg) => Self::RateLimited(msg),
             synctv_core::Error::ServiceUnavailable(msg) => Self::ServiceUnavailable(msg),
             synctv_core::Error::Timeout(msg) => Self::Timeout(msg),
@@ -562,7 +568,7 @@ impl ApiError {
             Self::Authorization(_) => ErrorKind::PermissionDenied,
             Self::AlreadyExists(_) => ErrorKind::AlreadyExists,
             Self::Conflict(_) => ErrorKind::Conflict,
-            Self::InvalidInput(_) => ErrorKind::InvalidArgument,
+            Self::InvalidInput(_) | Self::RangeNotSatisfiable { .. } => ErrorKind::InvalidArgument,
             Self::RateLimited(_) | Self::RateLimitedWithRetry { .. } => ErrorKind::RateLimited,
             Self::ServiceUnavailable(_) => ErrorKind::ServiceUnavailable,
             Self::Timeout(_) => ErrorKind::Timeout,
@@ -585,6 +591,7 @@ impl ApiError {
             | Self::Timeout(msg)
             | Self::Internal(msg) => msg,
             Self::RateLimitedWithRetry { message, .. } => message,
+            Self::RangeNotSatisfiable { .. } => "Requested byte range is not satisfiable",
         }
     }
 

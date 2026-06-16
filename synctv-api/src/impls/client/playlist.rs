@@ -2,7 +2,8 @@
 
 use serde_json::Value as JsonValue;
 use synctv_core::models::{
-    PlaylistListSortBy as CorePlaylistListSortBy, SortDirection as CoreSortDirection, UserId,
+    PlaylistListSortBy as CorePlaylistListSortBy, SortDirection as CoreSortDirection,
+    StoreFileUploadResult, UserId,
 };
 use synctv_core::service::playlist::{
     CreatePlaylistRequest as CoreCreatePlaylistRequest,
@@ -10,8 +11,10 @@ use synctv_core::service::playlist::{
 };
 
 use super::media::{
-    file_cover_proto_to_stored_file, file_upload_session_to_playlist_cover_proto,
-    parse_json_metadata, playlist_cover_object_to_proto,
+    complete_upload_response_fields, complete_upload_session_request, parse_json_metadata,
+    playlist_cover_object_to_proto, playlist_cover_upload_create_result_to_proto,
+    proto_file_range_request, proto_file_upload_range, proto_upload_manifest_parts,
+    required_file_upload_reference, uploaded_parts_response_fields,
 };
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::impls::ApiError;
@@ -376,17 +379,13 @@ impl ClientApiImpl {
                     size_bytes: req.size_bytes,
                     width: (req.width > 0).then_some(req.width),
                     height: (req.height > 0).then_some(req.height),
-                    checksum_sha256: optional_trimmed_string(&req.checksum_sha256),
+                    parts: proto_upload_manifest_parts(req.parts),
                     metadata: parse_json_metadata(&req.metadata)?,
                 },
             )
             .await
             .map_err(ApiError::from)?;
-        Ok(
-            synctv_proto::client::CreatePlaylistCoverUploadSessionResponse {
-                session: Some(file_upload_session_to_playlist_cover_proto(session)?),
-            },
-        )
+        playlist_cover_upload_create_result_to_proto(session)
     }
 
     pub async fn upload_playlist_cover_object(
@@ -400,13 +399,52 @@ impl ClientApiImpl {
                 &req.encoded_object_key,
                 &req.token,
                 req.content_type.as_deref(),
+                proto_file_upload_range(req.content_range),
                 req.data,
             )
             .await
             .map_err(ApiError::from)?;
+        let (complete, uploaded_size_bytes, uploaded_parts) = uploaded_parts_response_fields(&blob);
         Ok(synctv_proto::client::UploadPlaylistCoverObjectResponse {
-            object: Some(playlist_cover_object_to_proto(&blob)),
+            object: match blob {
+                StoreFileUploadResult::Complete(blob) => {
+                    Some(playlist_cover_object_to_proto(&blob))
+                }
+                StoreFileUploadResult::PartAccepted { .. } => None,
+            },
+            complete,
+            uploaded_size_bytes,
+            uploaded_parts,
         })
+    }
+
+    pub async fn complete_playlist_cover_upload_session(
+        &self,
+        req: synctv_proto::client::CompletePlaylistCoverUploadSessionRequest,
+    ) -> Result<synctv_proto::client::CompletePlaylistCoverUploadSessionResponse, ApiError> {
+        let result = self
+            .room_service
+            .playlist_service()
+            .complete_cover_upload_session(complete_upload_session_request(
+                &req.file_id,
+                req.encoded_object_key,
+                req.token,
+                req.upload_id,
+                &req.ownership_proof,
+                req.parts,
+            ))
+            .await
+            .map_err(ApiError::from)?;
+        let (complete, uploaded_size_bytes, uploaded_parts) =
+            complete_upload_response_fields(&result);
+        Ok(
+            synctv_proto::client::CompletePlaylistCoverUploadSessionResponse {
+                object: result.object.as_ref().map(playlist_cover_object_to_proto),
+                complete,
+                uploaded_size_bytes,
+                uploaded_parts,
+            },
+        )
     }
 
     pub async fn get_playlist_cover_object(
@@ -416,7 +454,11 @@ impl ClientApiImpl {
         let blob = self
             .room_service
             .playlist_service()
-            .get_cover_object(&req.encoded_object_key, &req.token)
+            .get_cover_object_range(
+                &req.encoded_object_key,
+                &req.token,
+                proto_file_range_request(req.range),
+            )
             .await
             .map_err(ApiError::from)?;
         Ok(playlist_cover_object_to_proto(&blob))
@@ -435,18 +477,11 @@ impl ClientApiImpl {
             "playlist_id",
             &self.public_id_codec,
         )?;
-        let cover = req
-            .cover
-            .ok_or_else(|| ApiError::InvalidInput("cover is required".to_string()))?;
+        let cover = required_file_upload_reference(req.cover_reference, "cover_reference")?;
         let playlist = self
             .room_service
             .playlist_service()
-            .update_cover(
-                rid,
-                playlist_id,
-                *user_id,
-                file_cover_proto_to_stored_file(cover)?,
-            )
+            .update_cover(rid, playlist_id, *user_id, cover)
             .await
             .map_err(ApiError::from)?;
         self.room_cache_fanout.publish_invalidation(&rid);

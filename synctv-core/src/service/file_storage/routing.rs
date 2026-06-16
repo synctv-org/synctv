@@ -2,12 +2,15 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     models::{
-        CreateFileUploadSession, FileBlob, FileReferenceTarget, FileUploadSession, NewStoredFile,
+        CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
+        FileBlob, FileReferenceTarget, FileUploadSessionCreateResult, GetFileObject, NewStoredFile,
+        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
     },
     service::file_storage::{
         database_file_read_token_storage_backend, file_upload_token_storage_backend,
-        validation::validate_stored_files, FileStorageCleanupOrigin, FileStorageContext,
-        FileStorageService,
+        upload_session_reference_target, validation::validate_stored_files, CreateFileReuseGrant,
+        FileReuseGrant, FileStorageCleanupOrigin, FileStorageContext, FileStorageService,
+        ValidatedFileReuseGrant,
     },
     Error, Result,
 };
@@ -73,7 +76,7 @@ impl FileStorageService for RoutedFileStorageService {
     async fn create_upload_session(
         &self,
         request: CreateFileUploadSession,
-    ) -> Result<FileUploadSession> {
+    ) -> Result<FileUploadSessionCreateResult> {
         self.registry
             .backend(&self.write_backend)?
             .create_upload_session(request)
@@ -103,6 +106,77 @@ impl FileStorageService for RoutedFileStorageService {
             prepared.append(&mut backend_prepared);
         }
         Ok(prepared)
+    }
+
+    async fn prepare_submitted_files(
+        &self,
+        context: FileStorageContext<'_>,
+        files: Vec<SubmittedFileReference>,
+    ) -> Result<Vec<NewStoredFile>> {
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let Some(repository) = self
+            .registry
+            .backends
+            .values()
+            .find_map(|backend| backend.repository())
+        else {
+            return Err(Error::InvalidInput(
+                "file upload references are not supported by this storage".to_string(),
+            ));
+        };
+        let mut prepared = Vec::with_capacity(files.len());
+        let mut by_backend: HashMap<String, Vec<SubmittedFileReference>> = HashMap::new();
+        for file in files {
+            let backend_name = match file.kind {
+                SubmittedFileReferenceKind::Upload => {
+                    let id = file.id.trim();
+                    if id.is_empty() {
+                        return Err(Error::InvalidInput(
+                            "file reference id is required".to_string(),
+                        ));
+                    }
+                    let (reference_kind, reference_id) = upload_session_reference_target(id);
+                    let session = repository
+                        .get_upload_session_by_reference(reference_kind, &reference_id)
+                        .await?
+                        .ok_or_else(|| {
+                            Error::InvalidInput("file reference was not found".to_string())
+                        })?;
+                    session.storage_backend
+                }
+                SubmittedFileReferenceKind::Reuse => self.write_backend.clone(),
+            };
+            by_backend.entry(backend_name).or_default().push(file);
+        }
+        for (backend_name, backend_files) in by_backend {
+            let mut backend_prepared = self
+                .registry
+                .backend(&backend_name)?
+                .prepare_submitted_files(context, backend_files)
+                .await?;
+            prepared.append(&mut backend_prepared);
+        }
+        Ok(prepared)
+    }
+
+    fn create_reuse_grant(&self, request: CreateFileReuseGrant<'_>) -> Result<FileReuseGrant> {
+        self.registry
+            .backend(&self.write_backend)?
+            .create_reuse_grant(request)
+    }
+
+    async fn validate_reuse_grant(
+        &self,
+        token: &str,
+        context: FileStorageContext<'_>,
+    ) -> Result<ValidatedFileReuseGrant> {
+        self.registry
+            .backend(&self.write_backend)?
+            .validate_reuse_grant(token, context)
+            .await
     }
 
     async fn delete_files(
@@ -140,11 +214,30 @@ impl FileStorageService for RoutedFileStorageService {
             .await
     }
 
-    async fn get_object(&self, encoded_object_key: &str, read_token: &str) -> Result<FileBlob> {
-        let backend_name = database_file_read_token_storage_backend(read_token)?;
+    async fn store_upload(&self, upload: StoreFileUpload) -> Result<StoreFileUploadResult> {
+        let backend_name = file_upload_token_storage_backend(&upload.upload_token)?;
         self.registry
             .backend(&backend_name)?
-            .get_object(encoded_object_key, read_token)
+            .store_upload(upload)
+            .await
+    }
+
+    async fn complete_upload_session(
+        &self,
+        request: CompleteFileUploadSession,
+    ) -> Result<CompleteFileUploadSessionResult> {
+        let backend_name = file_upload_token_storage_backend(&request.upload_token)?;
+        self.registry
+            .backend(&backend_name)?
+            .complete_upload_session(request)
+            .await
+    }
+
+    async fn get_object(&self, request: GetFileObject) -> Result<FileBlob> {
+        let backend_name = database_file_read_token_storage_backend(&request.read_token)?;
+        self.registry
+            .backend(&backend_name)?
+            .get_object(request)
             .await
     }
 }

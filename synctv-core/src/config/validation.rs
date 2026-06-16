@@ -798,6 +798,18 @@ impl Config {
             if name == "disabled" && backend.backend_type != FileStorageBackendType::Disabled {
                 errors.push("file_storage.backends.disabled must use type='disabled'".to_string());
             }
+            if backend.backend_type == FileStorageBackendType::Database {
+                if backend.database.compression_min_size_bytes < 0 {
+                    errors.push(format!(
+                        "file_storage.backends.{name}.database.compression_min_size_bytes must be non-negative"
+                    ));
+                }
+                if backend.database.compression_min_savings_percent > 100 {
+                    errors.push(format!(
+                        "file_storage.backends.{name}.database.compression_min_savings_percent must be between 0 and 100"
+                    ));
+                }
+            }
             if backend.backend_type == FileStorageBackendType::S3 {
                 let s3 = &backend.s3;
                 if s3.endpoint.trim().is_empty() {
@@ -823,6 +835,15 @@ impl Config {
                 if s3.region.trim().is_empty() {
                     errors.push(format!(
                         "file_storage.backends.{name}.s3.region must be set when type='s3'"
+                    ));
+                }
+                if s3
+                    .public_base_url
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    errors.push(format!(
+                        "file_storage.backends.{name}.s3.public_base_url must be set when type='s3'"
                     ));
                 }
                 if s3.upload_expires_seconds <= 0 {

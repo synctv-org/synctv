@@ -11,7 +11,7 @@ pub const FILE_OBJECT_KEY_MAX_CHARS: usize = 2048;
 pub const FILE_REFERENCE_KIND_MAX_CHARS: usize = 64;
 pub const FILE_REFERENCE_ID_MAX_CHARS: usize = 256;
 pub const FILE_CLEANUP_ORIGIN_MAX_CHARS: usize = 64;
-pub const FILE_CHECKSUM_SHA256_HEX_CHARS: usize = 64;
+pub const FILE_SHA256_HEX_CHARS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i16)]
@@ -62,8 +62,10 @@ pub struct FileBlob {
     pub object_key: String,
     pub mime_type: String,
     pub size_bytes: i64,
-    pub checksum_sha256: String,
+    pub total_size_bytes: i64,
+    pub content_manifest_sha256: String,
     pub compression: FileBlobCompression,
+    pub range: Option<FileByteRange>,
     pub data: Vec<u8>,
     pub metadata: JsonValue,
     pub created_at: DateTime<Utc>,
@@ -75,10 +77,86 @@ pub struct FileObject {
     pub object_key: String,
     pub mime_type: String,
     pub size_bytes: i64,
-    pub checksum_sha256: String,
+    pub content_manifest_sha256: String,
     pub metadata: JsonValue,
     pub created_at: DateTime<Utc>,
     pub validated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct FileBlobPart {
+    pub storage_backend: String,
+    pub object_key: String,
+    pub part_index: i32,
+    pub offset_bytes: i64,
+    pub size_bytes: i64,
+    pub checksum_sha256: String,
+    pub compression: FileBlobCompression,
+    pub data: Vec<u8>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i16)]
+#[serde(rename_all = "snake_case")]
+pub enum FileUploadSessionKind {
+    DatabaseMultipart = 1,
+    S3Multipart = 2,
+}
+
+impl From<FileUploadSessionKind> for i16 {
+    fn from(value: FileUploadSessionKind) -> Self {
+        match value {
+            FileUploadSessionKind::DatabaseMultipart => 1,
+            FileUploadSessionKind::S3Multipart => 2,
+        }
+    }
+}
+
+impl TryFrom<i16> for FileUploadSessionKind {
+    type Error = ();
+
+    fn try_from(value: i16) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::DatabaseMultipart),
+            2 => Ok(Self::S3Multipart),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct FileUploadSessionRecord {
+    pub storage_backend: String,
+    pub upload_session_key: String,
+    pub object_key: String,
+    pub session_kind: FileUploadSessionKind,
+    pub upload_id: Option<String>,
+    pub user_id: i64,
+    pub storage_scope: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub content_manifest_sha256: String,
+    pub part_size_bytes: i64,
+    pub metadata: JsonValue,
+    pub expires_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct FileUploadSessionPart {
+    pub storage_backend: String,
+    pub upload_session_key: String,
+    pub part_index: i32,
+    pub part_number: i32,
+    pub offset_bytes: i64,
+    pub size_bytes: i64,
+    pub checksum_sha256: Option<String>,
+    pub etag: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -88,7 +166,7 @@ pub struct StoredFileReference {
     pub object_key: String,
     pub mime_type: String,
     pub size_bytes: i64,
-    pub checksum_sha256: String,
+    pub content_manifest_sha256: String,
     pub metadata: JsonValue,
     pub created_at: DateTime<Utc>,
     pub validated_at: Option<DateTime<Utc>>,
@@ -180,6 +258,19 @@ pub struct NewStoredFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmittedFileReferenceKind {
+    Upload,
+    Reuse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubmittedFileReference {
+    pub id: String,
+    pub kind: SubmittedFileReferenceKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateFileUploadSession {
     pub user_id: UserId,
     pub storage_scope: String,
@@ -189,22 +280,206 @@ pub struct CreateFileUploadSession {
     pub size_bytes: i64,
     pub width: Option<i32>,
     pub height: Option<i32>,
-    pub checksum_sha256: Option<String>,
+    pub parts: Vec<FileUploadManifestPart>,
     pub metadata: JsonValue,
     pub policy: FileUploadPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileUploadManifestPart {
+    pub part_number: i32,
+    pub offset_bytes: i64,
+    pub size_bytes: i64,
+    pub checksum_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileUploadPlanPart {
+    pub part_number: i32,
+    pub offset_bytes: i64,
+    pub size_bytes: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileUploadPlan {
+    pub checksum_algorithm: String,
+    pub part_size_bytes: i64,
+    pub parts: Vec<FileUploadPlanPart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileUploadPartUrl {
+    pub part_number: i32,
+    pub offset_bytes: i64,
+    pub size_bytes: i64,
+    pub upload_url: String,
+    pub upload_method: String,
+    pub upload_headers: BTreeMap<String, String>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileUploadSession {
     pub file: NewStoredFile,
+    pub encoded_object_key: String,
     pub upload_required: bool,
     pub ownership_proof_required: bool,
     pub ownership_proof_nonce: Option<String>,
     pub ownership_proof_ranges: Vec<FileOwnershipProofRange>,
-    pub ownership_proof_metadata_key: Option<String>,
     pub upload_url: Option<String>,
     pub upload_method: Option<String>,
     pub upload_headers: BTreeMap<String, String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub max_size_bytes: i64,
+    pub resumable: bool,
+    pub part_size_bytes: i64,
+    pub uploaded_size_bytes: i64,
+    pub uploaded_parts: Vec<i32>,
+    pub upload_id: Option<String>,
+    pub part_urls: Vec<FileUploadPartUrl>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FileUploadSessionCreateResult {
+    Plan(FileUploadPlan),
+    Session(FileUploadSession),
+}
+
+impl FileUploadSessionCreateResult {
+    #[must_use]
+    pub const fn as_session(&self) -> Option<&FileUploadSession> {
+        match self {
+            Self::Session(session) => Some(session),
+            Self::Plan(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn into_session(self) -> Option<FileUploadSession> {
+        match self {
+            Self::Session(session) => Some(session),
+            Self::Plan(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_plan(&self) -> Option<&FileUploadPlan> {
+        match self {
+            Self::Plan(plan) => Some(plan),
+            Self::Session(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn into_plan(self) -> Option<FileUploadPlan> {
+        match self {
+            Self::Plan(plan) => Some(plan),
+            Self::Session(_) => None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for FileUploadSessionCreateResult {
+    type Target = FileUploadSession;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_session()
+            .expect("upload session create result should contain a session")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileUploadRange {
+    pub start: i64,
+    pub end_inclusive: i64,
+    pub total_size: i64,
+}
+
+impl FileUploadRange {
+    #[must_use]
+    pub const fn size_bytes(self) -> i64 {
+        self.end_inclusive - self.start + 1
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreFileUpload {
+    pub encoded_object_key: String,
+    pub upload_token: String,
+    pub content_type: Option<String>,
+    pub range: Option<FileUploadRange>,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompleteFileUploadPart {
+    pub part_number: i32,
+    pub etag: String,
+    pub size_bytes: i64,
+    pub checksum_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompleteFileUploadSession {
+    pub file_id: Option<String>,
+    pub encoded_object_key: String,
+    pub upload_token: String,
+    pub upload_id: Option<String>,
+    pub ownership_proof: Option<String>,
+    pub parts: Vec<CompleteFileUploadPart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StoreFileUploadResult {
+    Complete(FileBlob),
+    PartAccepted {
+        uploaded_size_bytes: i64,
+        uploaded_parts: Vec<i32>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileByteRange {
+    pub start: i64,
+    pub end_inclusive: i64,
+}
+
+impl FileByteRange {
+    #[must_use]
+    pub const fn size_bytes(self) -> i64 {
+        self.end_inclusive - self.start + 1
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FileRangeRequest {
+    Exact(FileByteRange),
+    From { start: i64 },
+    Suffix { length: i64 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetFileObject {
+    pub encoded_object_key: String,
+    pub read_token: String,
+    pub range: Option<FileRangeRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileObjectData {
+    pub storage_backend: String,
+    pub object_key: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub content_manifest_sha256: String,
+    pub data: Vec<u8>,
+    pub range: Option<FileByteRange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompleteFileUploadSessionResult {
+    pub object: Option<FileBlob>,
+    pub uploaded_size_bytes: i64,
+    pub uploaded_parts: Vec<i32>,
 }

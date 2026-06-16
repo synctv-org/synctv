@@ -269,11 +269,25 @@ impl From<crate::impls::ApiError> for AppError {
         let error_code = err.code();
         let msg = err.message().to_string();
         let mut app_err = match err.classify() {
+            ErrorKind::InvalidArgument => match err {
+                crate::impls::ApiError::RangeNotSatisfiable { total_size } => {
+                    let mut app_error = Self::new(
+                        StatusCode::RANGE_NOT_SATISFIABLE,
+                        "Requested byte range is not satisfiable",
+                    );
+                    if let Ok(value) =
+                        HeaderValue::from_str(&format!("bytes */{}", total_size.max(0)))
+                    {
+                        app_error = app_error.with_header(header::CONTENT_RANGE, value);
+                    }
+                    app_error
+                }
+                _ => Self::bad_request(msg),
+            },
             ErrorKind::NotFound => Self::not_found(msg),
             ErrorKind::Unauthenticated => Self::unauthorized(msg),
             ErrorKind::PermissionDenied => Self::forbidden(msg),
             ErrorKind::AlreadyExists | ErrorKind::Conflict => Self::conflict(msg),
-            ErrorKind::InvalidArgument => Self::bad_request(msg),
             ErrorKind::RateLimited => {
                 if let Some(retry_after_seconds) = err.retry_after_seconds() {
                     Self::too_many_requests_with_retry(msg, retry_after_seconds)

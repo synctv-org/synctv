@@ -150,11 +150,17 @@ pub use content_report::{
 };
 pub use email_token::EmailTokenType;
 pub use file_storage::{
-    CreateFileUploadSession, FileBlob, FileBlobCompression, FileCleanupJob, FileObject,
-    FileOwnershipProofRange, FileReferenceTarget, FileUploadPolicy, FileUploadSession,
-    NewStoredFile, StoredFileReference, FILE_CHECKSUM_SHA256_HEX_CHARS,
+    CompleteFileUploadPart, CompleteFileUploadSession, CompleteFileUploadSessionResult,
+    CreateFileUploadSession, FileBlob, FileBlobCompression, FileBlobPart, FileByteRange,
+    FileCleanupJob, FileObject, FileObjectData, FileOwnershipProofRange, FileRangeRequest,
+    FileReferenceTarget, FileUploadManifestPart, FileUploadPartUrl, FileUploadPlan,
+    FileUploadPlanPart, FileUploadPolicy, FileUploadRange, FileUploadSession,
+    FileUploadSessionCreateResult, FileUploadSessionKind, FileUploadSessionPart,
+    FileUploadSessionRecord, GetFileObject, NewStoredFile, StoreFileUpload, StoreFileUploadResult,
+    StoredFileReference, SubmittedFileReference, SubmittedFileReferenceKind,
     FILE_CLEANUP_ORIGIN_MAX_CHARS, FILE_ID_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS,
-    FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+    FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS, FILE_SHA256_HEX_CHARS,
+    FILE_STORAGE_BACKEND_MAX_CHARS,
 };
 pub use id::{
     generate_id, BanRecordId, ContentReportId, EmailRegistrationTokenId, MediaId, PlaylistId,

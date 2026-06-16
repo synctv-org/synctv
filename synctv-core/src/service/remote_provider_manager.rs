@@ -273,6 +273,9 @@ impl RemoteProviderManager {
     fn map_remote_resolution_error(err: crate::Error) -> ProviderError {
         match err {
             crate::Error::InvalidInput(msg) => ProviderError::InvalidConfig(msg),
+            crate::Error::RangeNotSatisfiable { total_size } => ProviderError::InvalidConfig(
+                format!("Range not satisfiable: total size {total_size}"),
+            ),
             crate::Error::Timeout(msg) => ProviderError::NetworkError(msg),
             crate::Error::ServiceUnavailable(msg) | crate::Error::RateLimited(msg) => {
                 ProviderError::ApiError(msg)

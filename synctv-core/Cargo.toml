@@ -75,6 +75,7 @@ parking_lot.workspace = true
 dotenvy.workspace = true
 paste.workspace = true
 url.workspace = true
+percent-encoding.workspace = true
 regex.workspace = true
 ipnet.workspace = true
 

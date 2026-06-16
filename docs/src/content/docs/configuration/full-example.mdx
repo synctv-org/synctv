@@ -289,7 +289,13 @@ file_storage:
   playlist_covers_backend: ""
   upload_token_secret: ""
   upload_token_secret_file: "/run/secrets/file_upload_token_secret"
-  backends: {}
+  backends:
+    database:
+      type: "database"
+      database:
+        compression: "zstd"
+        compression_min_size_bytes: 4096
+        compression_min_savings_percent: 10
 
 webauthn:
   enabled: true

@@ -3,7 +3,7 @@ use webauthn_rs::prelude::Passkey;
 
 use crate::{
     models::oauth2_client::OAuth2Provider,
-    models::{SignupMethod, User, UserId},
+    models::{FileUploadManifestPart, SignupMethod, User, UserId},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +60,7 @@ pub struct CreateUserAvatarUploadSession {
     pub size_bytes: i64,
     pub width: Option<i32>,
     pub height: Option<i32>,
-    pub checksum_sha256: Option<String>,
+    pub parts: Vec<FileUploadManifestPart>,
     pub metadata: serde_json::Value,
 }
 

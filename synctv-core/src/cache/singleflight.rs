@@ -100,6 +100,9 @@ impl From<Error> for CloneableError {
             Error::AlreadyExists(message) => Self::AlreadyExists(message),
             Error::Conflict(message) => Self::Conflict(message),
             Error::InvalidInput(message) => Self::InvalidInput(message),
+            Error::RangeNotSatisfiable { total_size } => {
+                Self::InvalidInput(format!("Range not satisfiable: total size {total_size}"))
+            }
             Error::RateLimited(message) => Self::RateLimited(message),
             Error::ServiceUnavailable(message) => Self::ServiceUnavailable(message),
             Error::Internal(message) => Self::Internal(message),

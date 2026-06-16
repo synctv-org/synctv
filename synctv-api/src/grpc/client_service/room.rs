@@ -258,6 +258,13 @@ impl RoomService for ClientServiceImpl {
         chat::upload_chat_attachment_object(self, request).await
     }
 
+    async fn complete_chat_attachment_upload_session(
+        &self,
+        request: Request<CompleteChatAttachmentUploadSessionRequest>,
+    ) -> Result<Response<CompleteChatAttachmentUploadSessionResponse>, Status> {
+        chat::complete_chat_attachment_upload_session(self, request).await
+    }
+
     async fn get_chat_attachment_object(
         &self,
         request: Request<GetChatAttachmentObjectRequest>,
@@ -419,6 +426,14 @@ impl RoomService for ClientServiceImpl {
         media::upload_room_cover_object(self, request).await
     }
 
+    async fn complete_room_cover_upload_session(
+        &self,
+        request: Request<synctv_proto::client::CompleteRoomCoverUploadSessionRequest>,
+    ) -> Result<Response<synctv_proto::client::CompleteRoomCoverUploadSessionResponse>, Status>
+    {
+        media::complete_room_cover_upload_session(self, request).await
+    }
+
     async fn get_room_cover_object(
         &self,
         request: Request<synctv_proto::client::GetRoomCoverObjectRequest>,
@@ -445,6 +460,13 @@ impl RoomService for ClientServiceImpl {
         request: Request<UploadMediaCoverObjectRequest>,
     ) -> Result<Response<UploadMediaCoverObjectResponse>, Status> {
         media::upload_media_cover_object(self, request).await
+    }
+
+    async fn complete_media_cover_upload_session(
+        &self,
+        request: Request<CompleteMediaCoverUploadSessionRequest>,
+    ) -> Result<Response<CompleteMediaCoverUploadSessionResponse>, Status> {
+        media::complete_media_cover_upload_session(self, request).await
     }
 
     async fn get_media_cover_object(
@@ -481,6 +503,14 @@ impl RoomService for ClientServiceImpl {
         request: Request<synctv_proto::client::UploadPlaylistCoverObjectRequest>,
     ) -> Result<Response<synctv_proto::client::UploadPlaylistCoverObjectResponse>, Status> {
         media::upload_playlist_cover_object(self, request).await
+    }
+
+    async fn complete_playlist_cover_upload_session(
+        &self,
+        request: Request<synctv_proto::client::CompletePlaylistCoverUploadSessionRequest>,
+    ) -> Result<Response<synctv_proto::client::CompletePlaylistCoverUploadSessionResponse>, Status>
+    {
+        media::complete_playlist_cover_upload_session(self, request).await
     }
 
     async fn get_playlist_cover_object(

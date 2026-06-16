@@ -228,7 +228,7 @@ impl DatabaseMaintenanceService {
 
         let attachments = if let Some(storage) = &self.file_storage_service {
             let attachments = sqlx::query_as::<_, ChatAttachment>(
-                r#"
+                r"
                 SELECT i.id,
                        i.kind,
                        i.room_id,
@@ -249,7 +249,7 @@ impl DatabaseMaintenanceService {
                     ON m.id = i.message_id AND m.created_at = i.message_created_at
                 WHERE m.created_at <= NOW() - $1::text::interval
                 ORDER BY m.created_at, m.id, i.created_at
-                "#,
+                ",
             )
             .bind(&interval)
             .fetch_all(&self.pool)

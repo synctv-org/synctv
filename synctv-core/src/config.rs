@@ -1458,7 +1458,7 @@ pub struct FileStorageS3Config {
     pub region: String,
     /// Object key prefix inside the bucket, for example `files/`.
     pub base_path: String,
-    /// Optional public base URL for serving file objects.
+    /// Public base URL for serving file objects.
     pub public_base_url: Option<String>,
     /// Presigned upload URL TTL in seconds.
     pub upload_expires_seconds: i64,
@@ -1532,14 +1532,20 @@ impl From<FileStorageDatabaseCompression> for FileBlobCompression {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FileStorageDatabaseConfig {
-    /// Compression algorithm used for payload bytes stored in `file_blobs`.
+    /// Compression algorithm used for payload bytes stored in `file_blob_parts`.
     pub compression: FileStorageDatabaseCompression,
+    /// Minimum original payload size before compression is attempted.
+    pub compression_min_size_bytes: i64,
+    /// Minimum saved percentage required to store compressed bytes.
+    pub compression_min_savings_percent: u8,
 }
 
 impl Default for FileStorageDatabaseConfig {
     fn default() -> Self {
         Self {
             compression: FileStorageDatabaseCompression::Zstd,
+            compression_min_size_bytes: 4096,
+            compression_min_savings_percent: 10,
         }
     }
 }
@@ -1548,6 +1554,14 @@ impl std::fmt::Debug for FileStorageDatabaseConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileStorageDatabaseConfig")
             .field("compression", &self.compression)
+            .field(
+                "compression_min_size_bytes",
+                &self.compression_min_size_bytes,
+            )
+            .field(
+                "compression_min_savings_percent",
+                &self.compression_min_savings_percent,
+            )
             .finish()
     }
 }

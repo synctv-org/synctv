@@ -233,10 +233,12 @@ curl -fsS http://localhost:8080/health/ready
 | `file_storage.upload_token_secret` | secret 字符串 | `""` | 文件上传/读取 token 签名密钥；空值在启动时由 `jwt.secret` 派生 |
 | `file_storage.unreferenced_object_retention_seconds` | 秒数 | `86400` | 未被业务引用的已上传对象清理宽限期；`0` 表示关闭孤儿对象清理 |
 | `file_storage.backends.<name>.type` | `disabled`、`database` 或 `s3` | `disabled` | 已注册后端实现类型 |
-| `file_storage.backends.<name>.database.compression` | `none`、`lz4` 或 `zstd` | `zstd` | `type: "database"` 后端写入 PostgreSQL `file_blobs` 的压缩算法 |
-| `file_storage.backends.<name>.s3.*` | S3 配置 | S3 默认字段 | `type: "s3"` 后端的 S3-compatible 配置 |
+| `file_storage.backends.<name>.database.compression` | `none`、`lz4` 或 `zstd` | `zstd` | `type: "database"` 后端写入 PostgreSQL 永久 `file_blob_parts` 分段的压缩算法 |
+| `file_storage.backends.<name>.database.compression_min_size_bytes` | 字节数 | `4096` | 原始 payload 达到该大小后才尝试压缩 |
+| `file_storage.backends.<name>.database.compression_min_savings_percent` | `0` 到 `100` | `10` | 压缩节省比例达到该百分比才存储压缩结果 |
+| `file_storage.backends.<name>.s3.*` | S3 配置 | S3 默认字段 | `type: "s3"` 后端的 S3-compatible 配置；`public_base_url` 必填，用于上传或 ownership proof 通过后的可读文件 URL |
 
-客户端在上传会话请求中提供 `checksum_sha256`。选中的后端按 `(storage_backend, checksum_sha256, size_bytes)` 存储内容寻址对象，重复文件会返回 `upload_required=false` 和 ownership proof challenge。读取和清理使用对象记录里的 `storage_backend`，业务数据可以在配置切换后混合多个后端。
+上传会话使用服务端分片计划：客户端先用空 `parts` 请求 `FileUploadPlan`，按计划计算每片 SHA-256，再提交 `FileUploadManifestPart[]`。SyncTV 根据 canonical manifest 计算 `content_manifest_sha256`，用它命中秒传对象和未完成断点续传会话。Database 后端持久化固定 `file_blob_parts` 分段，并直接从分段服务 HTTP Range 请求，只解压覆盖请求区间的分段。S3 后端使用原生 multipart upload 和预签名 part URL，part URL 签入 `x-amz-checksum-sha256`，完成时用已记录分片 manifest 校验对象身份，服务端无需从 S3 读回 GB 级对象。重复对象返回 `upload_required=false` 和 ownership proof challenge；可读 URL 会在 proof 通过并写入业务引用后签发。
 
 ### 文件存储配置示例
 

@@ -56,6 +56,8 @@ pub use members::get_room_members;
 pub(crate) use objects::__path_create_chat_attachment_upload_session;
 pub use objects::{
     clear_media_cover, clear_playlist_cover, clear_room_cover,
+    complete_chat_attachment_upload_session, complete_media_cover_upload_session,
+    complete_playlist_cover_upload_session, complete_room_cover_upload_session,
     create_chat_attachment_upload_session, create_media_cover_upload_session,
     create_playlist_cover_upload_session, create_room_cover_upload_session,
     get_chat_attachment_object, get_media_cover_object, get_playlist_cover_object,

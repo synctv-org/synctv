@@ -218,6 +218,8 @@ fn chat_attachment() -> ChatAttachment {
         height: Some(240),
         metadata: serde_json::json!({"sha256": "abc"}),
         created_at: chrono::Utc::now(),
+        reuse_token: None,
+        reuse_expires_at: None,
     }
 }
 

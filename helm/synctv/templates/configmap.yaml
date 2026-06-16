@@ -218,6 +218,8 @@ data:
           {{- $database := index $backend "database" | default dict }}
           database:
             compression: {{ $database.compression | default "zstd" | quote }}
+            compression_min_size_bytes: {{ $database.compressionMinSizeBytes | default 4096 }}
+            compression_min_savings_percent: {{ $database.compressionMinSavingsPercent | default 10 }}
           {{- end }}
           {{- if eq $backendType "s3" }}
           {{- $s3 := index $backend "s3" | default dict }}
@@ -228,11 +230,7 @@ data:
             bucket: {{ $s3.bucket | default "" | quote }}
             region: {{ $s3.region | default "auto" | quote }}
             base_path: {{ $s3.basePath | default "files/" | quote }}
-            {{- if $s3.publicBaseUrl }}
-            public_base_url: {{ $s3.publicBaseUrl | quote }}
-            {{- else }}
-            public_base_url: null
-            {{- end }}
+            public_base_url: {{ $s3.publicBaseUrl | default "" | quote }}
             upload_expires_seconds: {{ $s3.uploadExpiresSeconds | default 900 }}
           {{- end }}
         {{- end }}

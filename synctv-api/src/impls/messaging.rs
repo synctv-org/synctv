@@ -94,7 +94,6 @@ pub(crate) use codec::{
     chat_display_color_from_metadata, chat_display_position_from_metadata,
     chat_event_kind_to_proto, chat_message_event_to_proto, chat_metadata_for_send,
     chat_playback_metadata_from_metadata, core_chat_attachment_to_proto, online_event_to_proto,
-    proto_chat_attachment_kind_from_mime_type, proto_chat_attachment_to_core,
     room_member_event_to_proto,
 };
 #[cfg(test)]
@@ -1152,16 +1151,7 @@ impl StreamMessageHandler {
                     }
                 }
 
-                () = async {
-                    match self
-                        .resource_observer
-                        .next_expired_resource_refresh_deadline()
-                        .await
-                    {
-                        Some(deadline) => tokio::time::sleep_until(deadline).await,
-                        None => std::future::pending::<()>().await,
-                    }
-                } => {
+                () = self.resource_observer.wait_for_expired_resource_refresh_deadline() => {
                     if let Err(error) = self
                         .resource_observer
                         .refresh_expired_resource_observations()
@@ -2100,15 +2090,9 @@ impl StreamMessageHandler {
                             None => break,
                         }
                     }
-                    () = async {
-                        match event_handler
-                            .resource_observer
-                            .next_expired_resource_refresh_deadline()
-                            .await {
-                            Some(deadline) => tokio::time::sleep_until(deadline).await,
-                            None => std::future::pending::<()>().await,
-                        }
-                    } => {
+                    () = event_handler
+                        .resource_observer
+                        .wait_for_expired_resource_refresh_deadline() => {
                         if let Err(error) = event_handler
                             .resource_observer
                             .refresh_expired_resource_observations()
@@ -2597,11 +2581,8 @@ impl StreamMessageHandler {
 
         // Delegate to ChatService which handles permission checks, content filtering,
         // rate limiting, and persistence (no fallback path).
-        let attachments = chat_msg
-            .attachments
-            .iter()
-            .map(proto_chat_attachment_to_core)
-            .collect::<Result<Vec<_>, _>>()?;
+        let attachments = crate::impls::client::parse_proto_chat_attachments(&chat_msg.attachments)
+            .map_err(|error| error.to_string())?;
         let reply_to_message_id = parse_optional_chat_message_id(&chat_msg.reply_to_message_id)?;
         let playback_state = self
             .room_service

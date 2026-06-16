@@ -452,6 +452,7 @@ pub(super) struct ResourceObserver {
     room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
     room_settings_snapshot_service_id: usize,
     state: tokio::sync::Mutex<ResourceObserverState>,
+    observation_change: tokio::sync::Notify,
 }
 
 pub(super) struct ResourceObserverParams {
@@ -501,6 +502,7 @@ impl ResourceObserver {
             room_settings_snapshot_service,
             room_settings_snapshot_service_id,
             state: tokio::sync::Mutex::new(ResourceObserverState::default()),
+            observation_change: tokio::sync::Notify::new(),
         }
     }
 
@@ -556,6 +558,8 @@ impl ResourceObserver {
             state
                 .observations
                 .insert(observation.observe_id.clone(), observation);
+            drop(state);
+            self.observation_change.notify_waiters();
         }
     }
 
@@ -570,15 +574,25 @@ impl ResourceObserver {
 
     async fn remove_local_observation(&self, observe_id: &str) {
         let mut state = self.state.lock().await;
-        state.observations.remove(observe_id);
-        state.pending_observe_ids.remove(observe_id);
+        let removed_observation = state.observations.remove(observe_id).is_some();
+        let removed_pending = state.pending_observe_ids.remove(observe_id);
+        let changed = removed_observation || removed_pending;
+        drop(state);
+        if changed {
+            self.observation_change.notify_waiters();
+        }
     }
 
     pub(super) async fn clear_observations(&self) {
-        {
+        let changed = {
             let mut state = self.state.lock().await;
+            let changed = !state.observations.is_empty() || !state.pending_observe_ids.is_empty();
             state.observations.clear();
             state.pending_observe_ids.clear();
+            changed
+        };
+        if changed {
+            self.observation_change.notify_waiters();
         }
         self.room_hub
             .unregister_connection(&self.connection_id)
@@ -661,7 +675,10 @@ impl ResourceObserver {
             return None;
         }
         state.observations.insert(observe_id.clone(), observation);
-        state.observations.get(&observe_id).cloned()
+        let observation = state.observations.get(&observe_id).cloned();
+        drop(state);
+        self.observation_change.notify_waiters();
+        observation
     }
 
     fn observation_start_sequence(
@@ -2372,6 +2389,22 @@ impl ResourceObserver {
                 .checked_add(refresh_after)
                 .unwrap_or(now_instant + Duration::from_hours(8760)),
         )
+    }
+
+    pub(super) async fn wait_for_expired_resource_refresh_deadline(&self) {
+        loop {
+            match self.next_expired_resource_refresh_deadline().await {
+                Some(deadline) => {
+                    tokio::select! {
+                        () = tokio::time::sleep_until(deadline) => return,
+                        () = self.observation_change.notified() => {}
+                    }
+                }
+                None => {
+                    self.observation_change.notified().await;
+                }
+            }
+        }
     }
 
     pub(super) async fn refresh_expired_resource_observations(&self) -> Result<(), String> {

@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT target_type FROM audit_logs WHERE actor_username = 'target_tester' ORDER BY created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "target_type",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "target_type"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "614531b716336c95092bda3427f8e52998de726a27f4b09ab0a088e4f9d7a6d2"
+}

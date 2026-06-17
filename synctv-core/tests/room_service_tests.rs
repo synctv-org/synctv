@@ -260,12 +260,14 @@ async fn test_create_room_initializes_password_settings_and_playlist_state() {
     );
     assert_eq!(version, 1);
 
-    let playlist_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = ANY($1)")
-            .bind(vec![password_room.id.as_i64(), open_room.id.as_i64()])
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let room_ids = vec![password_room.id.as_i64(), open_room.id.as_i64()];
+    let playlist_count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM playlists WHERE room_id = ANY($1::BIGINT[])"#,
+        &room_ids
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(playlist_count, 0);
 }
 
@@ -488,16 +490,16 @@ async fn test_join_room_requires_approval_returns_pending_membership() {
         stored_member.is_none(),
         "pending join requests must not create active membership rows"
     );
-    let pending_request_exists = sqlx::query_scalar::<_, bool>(
-        r"
+    let pending_request_exists = sqlx::query_scalar!(
+        r#"
         SELECT EXISTS (
             SELECT 1 FROM room_join_requests
             WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL
-        )
-        ",
+        ) AS "exists!"
+        "#,
+        room.id.as_i64(),
+        joiner.id.as_i64()
     )
-    .bind(room.id)
-    .bind(joiner.id)
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");
@@ -591,17 +593,17 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
         .checked("test operation should succeed");
     assert_eq!(pending_member.status, MemberStatus::Active);
 
-    let request_id = sqlx::query_scalar::<_, i64>(
-        r"
+    let request_id = sqlx::query_scalar!(
+        r#"
         SELECT id
         FROM room_join_requests
         WHERE room_id = $1
           AND user_id = $2
           AND reviewed_at IS NULL
-        ",
+        "#,
+        room.id.as_i64(),
+        joiner.id.as_i64()
     )
-    .bind(room.id)
-    .bind(joiner.id)
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");
@@ -624,18 +626,18 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
             .is_none(),
         "rejected join requests must not create active memberships"
     );
-    let rejected_request_exists = sqlx::query_scalar::<_, bool>(
-        r"
+    let rejected_request_exists = sqlx::query_scalar!(
+        r#"
         SELECT EXISTS (
             SELECT 1 FROM room_join_requests
             WHERE room_id = $1
               AND user_id = $2
               AND reviewed_at IS NOT NULL
-        )
-        ",
+        ) AS "exists!"
+        "#,
+        room.id.as_i64(),
+        joiner.id.as_i64()
     )
-    .bind(room.id)
-    .bind(joiner.id)
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");
@@ -685,17 +687,17 @@ async fn test_join_review_approval_transition_does_not_touch_new_pending_request
         .join_room(room.id, joiner.id, None)
         .await
         .checked("test operation should succeed");
-    let old_request_id = sqlx::query_scalar::<_, i64>(
-        r"
+    let old_request_id = sqlx::query_scalar!(
+        r#"
         SELECT id
         FROM room_join_requests
         WHERE room_id = $1
           AND user_id = $2
           AND reviewed_at IS NULL
-        ",
+        "#,
+        room.id.as_i64(),
+        joiner.id.as_i64()
     )
-    .bind(room.id)
-    .bind(joiner.id)
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");
@@ -710,17 +712,17 @@ async fn test_join_review_approval_transition_does_not_touch_new_pending_request
         .join_room(room.id, joiner.id, None)
         .await
         .checked("test operation should succeed");
-    let new_request_id = sqlx::query_scalar::<_, i64>(
-        r"
+    let new_request_id = sqlx::query_scalar!(
+        r#"
         SELECT id
         FROM room_join_requests
         WHERE room_id = $1
           AND user_id = $2
           AND reviewed_at IS NULL
-        ",
+        "#,
+        room.id.as_i64(),
+        joiner.id.as_i64()
     )
-    .bind(room.id)
-    .bind(joiner.id)
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");
@@ -794,17 +796,17 @@ async fn test_approve_join_request_rejects_room_banned_after_request() {
         .join_room(room.id, joiner.id, None)
         .await
         .checked("test operation should succeed");
-    let request_id = sqlx::query_scalar::<_, i64>(
-        r"
+    let request_id = sqlx::query_scalar!(
+        r#"
         SELECT id
         FROM room_join_requests
         WHERE room_id = $1
           AND user_id = $2
           AND reviewed_at IS NULL
-        ",
+        "#,
+        room.id.as_i64(),
+        joiner.id.as_i64()
     )
-    .bind(room.id)
-    .bind(joiner.id)
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");
@@ -1258,12 +1260,13 @@ async fn test_delete_room_sets_deleted_at() {
         "Room should not be found after soft-delete"
     );
 
-    let deleted_at: Option<chrono::DateTime<Utc>> =
-        sqlx::query_scalar("SELECT deleted_at FROM rooms WHERE id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let deleted_at = sqlx::query_scalar!(
+        "SELECT deleted_at FROM rooms WHERE id = $1",
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
 
     assert!(deleted_at.is_some(), "deleted_at should be set");
 }
@@ -1301,10 +1304,11 @@ async fn test_settings_cas_exhaustion_returns_internal() {
 
     let bumper = tokio::spawn(async move {
         while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE room_settings SET version = version + 1 WHERE room_id = $1 AND key = '_settings'"
+                ,
+                room.id.as_i64()
             )
-            .bind(room.id)
             .execute(&pool_clone)
             .await?;
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -1692,12 +1696,13 @@ async fn test_concurrent_room_creation_same_name_different_users_succeeds() {
         result2.err()
     );
 
-    let room_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM rooms WHERE name = $1 AND deleted_at IS NULL")
-            .bind(&room_name)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let room_count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM rooms WHERE name = $1 AND deleted_at IS NULL"#,
+        &room_name
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(room_count, 2, "Both active rooms should exist");
 }
 
@@ -1744,11 +1749,15 @@ async fn test_concurrent_same_user_duplicate_room_name_is_service_prevented() {
         already_exists_count, 4,
         "all competing creates should hit service policy"
     );
-    let persisted_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM rooms WHERE created_by = $1 AND name = $2 AND deleted_at IS NULL",
+    let persisted_count: i64 = sqlx::query_scalar!(
+        r#"
+        SELECT COUNT(*) AS "count!"
+        FROM rooms
+        WHERE created_by = $1 AND name = $2 AND deleted_at IS NULL
+        "#,
+        user.id.as_i64(),
+        &room_name
     )
-    .bind(user.id.as_i64())
-    .bind(&room_name)
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");
@@ -2183,10 +2192,11 @@ async fn test_settings_update_returns_internal_error_after_max_retries() {
     // Spawn a task that keeps bumping the version
     let bumper = tokio::spawn(async move {
         while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE room_settings SET version = version + 1 WHERE room_id = $1 AND key = '_settings'"
+                ,
+                room.id.as_i64()
             )
-            .bind(room.id)
             .execute(&pool_clone)
             .await?;
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -3089,18 +3099,16 @@ async fn test_remove_media_respects_admin_override_columns() {
         .await
         .checked("test operation should succeed");
 
-    sqlx::query(
+    sqlx::query!(
         "UPDATE room_members
          SET admin_removed_permissions = admin_removed_permissions | $3,
              added_permissions = 0,
              removed_permissions = 0
          WHERE room_id = $1 AND user_id = $2",
+        room.id.as_i64(),
+        admin.id.as_i64(),
+        u64_to_i64(RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY)
     )
-    .bind(room.id)
-    .bind(admin.id)
-    .bind(u64_to_i64(
-        RoomAdminPermissionBits::DELETE_MEDIA_RESOURCE_ANY,
-    ))
     .execute(&pool)
     .await
     .checked("test operation should succeed");
@@ -4405,23 +4413,25 @@ async fn test_room_creation_creates_all_related_records_atomically() {
         .checked("test operation should succeed");
     assert!(settings.chat_enabled.0, "Chat should be enabled by default");
 
-    let playlist_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let playlist_count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM playlists WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(
         playlist_count, 0,
         "Room creation should not create playlist rows"
     );
 
-    let playback_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM room_playback_state WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let playback_count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM room_playback_state WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(playback_count, 1, "Playback state should exist");
 }
 
@@ -5521,47 +5531,52 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         .await
         .checked("test operation should succeed");
 
-    let member_count_before: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let member_count_before: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM room_members WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(
         member_count_before, 2,
         "Owner and member1 should be in room"
     );
 
-    let playlist_count_before: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let playlist_count_before: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM playlists WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert!(playlist_count_before > 0, "Should have playlists");
 
-    let media_count_before: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let media_count_before: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM media WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert!(media_count_before > 0, "Should have media");
 
-    let settings_count_before: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM room_settings WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let settings_count_before: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM room_settings WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert!(settings_count_before > 0, "Should have settings");
 
-    let playback_count_before: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM room_playback_state WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let playback_count_before: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM room_playback_state WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(playback_count_before, 1, "Should have playback state");
 
     room_service
@@ -5569,87 +5584,96 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         .await
         .checked("test operation should succeed");
 
-    let deleted_at: Option<chrono::DateTime<Utc>> =
-        sqlx::query_scalar("SELECT deleted_at FROM rooms WHERE id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let deleted_at = sqlx::query_scalar!(
+        "SELECT deleted_at FROM rooms WHERE id = $1",
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert!(deleted_at.is_some(), "Room should be soft-deleted");
 
     // This is the key optimization - these should be gone, not waiting 90 days
 
-    let member_count_after: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let member_count_after: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM room_members WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(
         member_count_after, 0,
         "Members should be immediately cleaned up"
     );
 
-    let playlist_count_after: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let playlist_count_after: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM playlists WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(
         playlist_count_after, 0,
         "Playlists should be immediately cleaned up"
     );
 
-    let media_count_after: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let media_count_after: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM media WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(
         media_count_after, 0,
         "Media should be immediately cleaned up"
     );
 
-    let settings_count_after: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM room_settings WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let settings_count_after: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM room_settings WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(
         settings_count_after, 0,
         "Settings should be immediately cleaned up"
     );
 
-    let playback_count_after: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM room_playback_state WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let playback_count_after: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM room_playback_state WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(
         playback_count_after, 0,
         "Playback state should be immediately cleaned up"
     );
 
-    let chat_count_after: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let chat_count_after: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM chat_messages WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(
         chat_count_after, 0,
         "Chat messages should be immediately cleaned up"
     );
 
-    let room_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)")
-        .bind(room.id)
-        .fetch_one(&pool)
-        .await
-        .checked("test operation should succeed");
+    let room_exists = sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1) AS "exists!""#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert!(room_exists, "Room row should still exist (soft-deleted)");
 
     // does not have an audit service configured. Audit functionality is
@@ -5691,11 +5715,13 @@ async fn test_admin_delete_orphaned_room_removes_rooms_with_inactive_creators() 
         .await
         .checked("test operation should succeed");
 
-    sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(creator.id)
-        .execute(&pool)
-        .await
-        .checked("test operation should succeed");
+    sqlx::query!(
+        "UPDATE users SET deleted_at = NOW() WHERE id = $1",
+        creator.id.as_i64()
+    )
+    .execute(&pool)
+    .await
+    .checked("test operation should succeed");
 
     let deleted_creator = user_repo
         .get_by_id(&creator.id)
@@ -5831,11 +5857,13 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
         .await
         .checked("test operation should succeed");
 
-    sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(orphan_creator.id)
-        .execute(&pool)
-        .await
-        .checked("test operation should succeed");
+    sqlx::query!(
+        "UPDATE users SET deleted_at = NOW() WHERE id = $1",
+        orphan_creator.id.as_i64()
+    )
+    .execute(&pool)
+    .await
+    .checked("test operation should succeed");
 
     let result = room_service
         .admin_delete_orphaned_room(&orphan_room.id, &regular_user.id)
@@ -5865,11 +5893,13 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
         .await
         .checked("test operation should succeed");
 
-    sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(creator.id)
-        .execute(&pool)
-        .await
-        .checked("test operation should succeed");
+    sqlx::query!(
+        "UPDATE users SET deleted_at = NOW() WHERE id = $1",
+        creator.id.as_i64()
+    )
+    .execute(&pool)
+    .await
+    .checked("test operation should succeed");
 
     room_service
         .admin_delete_room(&room.id, &admin.id)
@@ -5907,12 +5937,12 @@ async fn make_settings_registry(pool: PgPool) -> Arc<SettingsRegistry> {
         ("server.max_rooms_per_user", "server", "10"),
         ("room.create_room_need_review", "room", "false"),
     ] {
-        sqlx::query(
-            "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING"
+        sqlx::query!(
+            "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING",
+            key,
+            group,
+            default_value
         )
-        .bind(key)
-        .bind(group)
-        .bind(default_value)
         .execute(&pool)
         .await
         .checked("test operation should succeed");
@@ -6352,15 +6382,15 @@ async fn test_pending_room_creation_rejects_duplicate_active_room_name() {
         .await
         .checked("first request should create a pending room");
 
-    sqlx::query(
-        r"
+    sqlx::query!(
+        r#"
         UPDATE room_creation_requests
         SET status = $2, reviewed_at = CURRENT_TIMESTAMP
         WHERE requested_by = $1
-        ",
+        "#,
+        owner.id.as_i64(),
+        i16::from(synctv_core::models::ReviewStatus::Approved)
     )
-    .bind(owner.id.as_i64())
-    .bind(i16::from(synctv_core::models::ReviewStatus::Approved))
     .execute(&pool)
     .await
     .checked("test operation should succeed");
@@ -6437,17 +6467,17 @@ async fn test_pending_room_creation_rejects_duplicate_pending_room_name() {
         Error::AlreadyExists(ref msg) if msg == "You already have a room with this name"
     ));
 
-    let pending_count: i64 = sqlx::query_scalar(
-        r"
-        SELECT COUNT(*)
+    let pending_count: i64 = sqlx::query_scalar!(
+        r#"
+        SELECT COUNT(*) AS "count!"
         FROM room_creation_requests
         WHERE requested_by = $1
           AND name = $2
           AND reviewed_at IS NULL
-        ",
+        "#,
+        owner.id.as_i64(),
+        "Duplicate Pending Name"
     )
-    .bind(owner.id.as_i64())
-    .bind("Duplicate Pending Name")
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");

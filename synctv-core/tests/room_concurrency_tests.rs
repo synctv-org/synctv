@@ -229,10 +229,12 @@ async fn test_concurrent_join_respects_max_members_limit() {
 
     // Verify final member count
     let member_count: i64 = ok(
-        sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(pool)
-            .await,
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM room_members WHERE room_id = $1"#,
+            room.id.as_i64()
+        )
+        .fetch_one(pool)
+        .await,
         "room member count should be fetched",
     );
 
@@ -371,10 +373,12 @@ async fn test_concurrent_room_creation_same_name_different_users() {
     assert_eq!(success_count, 10, "All 10 rooms should be created");
 
     let persisted_count: i64 = ok(
-        sqlx::query_scalar("SELECT COUNT(*) FROM rooms WHERE name = $1 AND deleted_at IS NULL")
-            .bind(room_name)
-            .fetch_one(pool)
-            .await,
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM rooms WHERE name = $1 AND deleted_at IS NULL"#,
+            room_name
+        )
+        .fetch_one(pool)
+        .await,
         "persisted room count should be fetched",
     );
     assert_eq!(persisted_count, 10, "All active rooms should persist");
@@ -422,11 +426,11 @@ async fn test_concurrent_room_creation_same_user_is_repository_allowed() {
 
     assert_eq!(success_count, 5, "Repository should persist all rows");
     let persisted_count: i64 = ok(
-        sqlx::query_scalar(
-            "SELECT COUNT(*) FROM rooms WHERE created_by = $1 AND name = $2 AND deleted_at IS NULL",
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM rooms WHERE created_by = $1 AND name = $2 AND deleted_at IS NULL"#,
+            user_id.as_i64(),
+            "Repeated Room"
         )
-        .bind(user_id.as_i64())
-        .bind("Repeated Room")
         .fetch_one(pool)
         .await,
         "persisted repeated room count should be fetched",
@@ -687,10 +691,12 @@ async fn test_concurrent_join_and_leave_operations() {
 
     // Final count: owner (1) + 5 remaining original + 5 new = 11
     let final_count: i64 = ok(
-        sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(pool)
-            .await,
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM room_members WHERE room_id = $1"#,
+            room.id.as_i64()
+        )
+        .fetch_one(pool)
+        .await,
         "final member count should be fetched",
     );
 

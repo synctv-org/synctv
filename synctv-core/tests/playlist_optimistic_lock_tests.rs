@@ -109,10 +109,12 @@ async fn test_optimistic_lock_version_mismatch() {
 
     // Simulate concurrent update by incrementing version in DB
     ok(
-        sqlx::query("UPDATE playlists SET version = version + 1 WHERE id = $1")
-            .bind(playlist.id)
-            .execute(&pool)
-            .await,
+        sqlx::query!(
+            "UPDATE playlists SET version = version + 1 WHERE id = $1",
+            playlist.id.as_i64()
+        )
+        .execute(&pool)
+        .await,
         "playlist version should be manually incremented",
     );
 

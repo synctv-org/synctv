@@ -1,23 +1,27 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use sqlx::{Executor, PgPool, Postgres, Row as _, Transaction};
+use sqlx::{Executor, PgPool, Postgres, Transaction};
 
 use crate::{
     models::{
         ChatAttachment, ChatAttachmentKind, ChatEventKind, ChatHistoryCursor, ChatHistoryPage,
         ChatMention, ChatMentionInput, ChatMessage, ChatMessageContext, ChatMessageEvent,
-        ChatMessageEventLog, ChatMessageReadReceiptMember, ChatMessageReadReceiptUser,
-        ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType,
-        ChatMessageWithAttachments, ChatPlaybackMessagesQuery, ChatReactionSummary,
-        ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState,
-        EventCursor, NewStoredFile, RoomId, SetChatReaction, User, UserId,
+        ChatMessageEventLog, ChatMessageOperationKind, ChatMessagePin,
+        ChatMessageReadReceiptMember, ChatMessageReadReceiptUser, ChatMessageReadReceiptsPage,
+        ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments, ChatPinEvent,
+        ChatPinEventKind, ChatPinEventLog, ChatPinnedMessage, ChatPlaybackMessagesQuery,
+        ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage,
+        ChatReadState, EventCursor, NewStoredFile, RoomId, SetChatReaction, User, UserId,
         CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
         CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
-        CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS,
-        FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+        CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS, CHAT_PIN_NOTE_MAX_CHARS,
+        CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
     },
-    repository::FileStorageRepository,
+    repository::{
+        room_resource_event::insert_room_resource_event_with_executor, FileStorageRepository,
+        NewRoomResourceEvent, RoomResourceEventScope,
+    },
     Error, Result,
 };
 
@@ -25,6 +29,14 @@ type ChatMessageKey = (i64, DateTime<Utc>);
 
 fn chat_message_key(message: &ChatMessage) -> ChatMessageKey {
     (message.id, message.created_at)
+}
+
+fn chat_pin_resource_id(message: &ChatMessage) -> String {
+    chat_pin_resource_id_parts(message.id, message.created_at)
+}
+
+fn chat_pin_resource_id_parts(message_id: i64, message_created_at: DateTime<Utc>) -> String {
+    format!("{}:{}", message_id, message_created_at.timestamp_micros())
 }
 
 fn chat_attachment_message_key(attachment: &ChatAttachment) -> ChatMessageKey {
@@ -126,17 +138,34 @@ fn validate_chat_event_for_insert(event: &ChatMessageEvent, event_type: &str) ->
 #[derive(Clone)]
 pub struct ChatRepository {
     pool: PgPool,
+    read_pool: Option<PgPool>,
 }
 
 impl ChatRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            read_pool: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
+        Self {
+            pool,
+            read_pool: Some(read_pool),
+        }
     }
 
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    #[must_use]
+    pub fn eventually_consistent_pool(&self) -> &PgPool {
+        self.read_pool.as_ref().unwrap_or(&self.pool)
     }
 
     pub async fn create(&self, message: &ChatMessage) -> Result<ChatMessage> {
@@ -257,6 +286,7 @@ impl ChatRepository {
                     return Ok(IdempotentChatEventInsert {
                         event,
                         inserted: false,
+                        pin_event: None,
                     });
                 }
             }
@@ -280,6 +310,7 @@ impl ChatRepository {
                 attachments: inserted_attachments,
                 reactions: Vec::new(),
                 mentions: inserted_mentions,
+                pin: None,
             },
             occurred_at,
         };
@@ -307,6 +338,7 @@ impl ChatRepository {
         Ok(IdempotentChatEventInsert {
             event: logged,
             inserted: true,
+            pin_event: None,
         })
     }
 
@@ -317,12 +349,312 @@ impl ChatRepository {
         Ok(logged)
     }
 
+    pub async fn list_pinned_messages_for_viewer(
+        &self,
+        room_id: &RoomId,
+        limit: i32,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<Vec<ChatPinnedMessage>> {
+        let limit = limit.clamp(1, 100);
+        let pool = self.eventually_consistent_pool();
+        let rows = sqlx::query_as!(
+            ChatMessagePin,
+            r#"
+            SELECT p.room_id AS "room_id!: RoomId",
+                   p.message_id AS "message_id!",
+                   p.message_created_at AS "message_created_at!",
+                   p.pinned_by AS "pinned_by?: UserId",
+                   u.username AS pinned_by_username,
+                   p.note,
+                   p.pinned_at AS "pinned_at!"
+            FROM chat_message_pins p
+            LEFT JOIN users u ON u.id = p.pinned_by
+            JOIN chat_messages m
+              ON m.room_id = p.room_id
+             AND m.id = p.message_id
+             AND m.created_at = p.message_created_at
+            WHERE p.room_id = $1
+              AND m.status <> $2
+            ORDER BY p.pinned_at DESC, p.message_id DESC
+            LIMIT $3
+            "#,
+            room_id.as_i64(),
+            i16::from(ChatMessageStatus::Deleted),
+            i64::from(limit)
+        )
+        .fetch_all(pool)
+        .await?;
+
+        let messages = self
+            .messages_for_pin_rows(room_id, &rows, viewer_user_id)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .zip(messages)
+            .map(|(pin, message)| ChatPinnedMessage { pin, message })
+            .collect())
+    }
+
+    pub async fn pin_message_with_event(
+        &self,
+        request: PinChatMessageEventRequest<'_>,
+    ) -> Result<IdempotentChatPinEventInsert> {
+        validate_optional_text(request.note, "chat pin note", CHAT_PIN_NOTE_MAX_CHARS)?;
+        let mut tx = self.pool.begin().await?;
+        if let Some(operation) = request.operation {
+            if let Some(event) = self
+                .begin_pin_operation_in_tx(&mut tx, request.room_id, request.pinned_by, operation)
+                .await?
+            {
+                tx.commit().await?;
+                return Ok(IdempotentChatPinEventInsert {
+                    event,
+                    inserted: false,
+                });
+            }
+        }
+
+        let message = self
+            .get_message_for_update_in_tx(&mut tx, request.room_id, request.message_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+        if message.status == ChatMessageStatus::Deleted {
+            if let Some(operation) = request.operation {
+                self.clear_incomplete_message_operation_in_tx(
+                    &mut tx,
+                    request.room_id,
+                    request.pinned_by,
+                    operation,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            return Err(Error::Conflict("Message has been deleted".to_string()));
+        }
+
+        if self
+            .pin_for_message_in_tx(&mut tx, request.room_id, message.id, message.created_at)
+            .await?
+            .is_some()
+        {
+            let event = self
+                .latest_pin_event_for_message_in_tx(
+                    &mut tx,
+                    request.room_id,
+                    message.id,
+                    message.created_at,
+                    ChatPinEventKind::Pinned,
+                )
+                .await?
+                .ok_or_else(|| {
+                    Error::Internal("chat pin exists without durable pin event".to_string())
+                })?;
+            if let Some(operation) = request.operation {
+                self.complete_pin_operation_in_tx(
+                    &mut tx,
+                    request.room_id,
+                    request.pinned_by,
+                    operation,
+                    &event.event,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            return Ok(IdempotentChatPinEventInsert {
+                event,
+                inserted: false,
+            });
+        }
+
+        if let Some(max_pins_per_room) = request.max_pins_per_room {
+            self.lock_room_pins_in_tx(&mut tx, request.room_id).await?;
+            let current_count = self
+                .count_active_pins_in_tx(&mut tx, request.room_id)
+                .await?;
+            if current_count >= max_pins_per_room {
+                if let Some(operation) = request.operation {
+                    self.clear_incomplete_message_operation_in_tx(
+                        &mut tx,
+                        request.room_id,
+                        request.pinned_by,
+                        operation,
+                    )
+                    .await?;
+                }
+                tx.commit().await?;
+                return Err(Error::Conflict(format!(
+                    "Room pinned chat message limit reached ({max_pins_per_room})"
+                )));
+            }
+        }
+
+        let inserted_pin = self
+            .upsert_pin_in_tx(
+                &mut tx,
+                &message,
+                request.pinned_by,
+                request.note,
+                request.occurred_at,
+            )
+            .await?;
+        if !inserted_pin {
+            let event = self
+                .latest_pin_event_for_message_in_tx(
+                    &mut tx,
+                    request.room_id,
+                    message.id,
+                    message.created_at,
+                    ChatPinEventKind::Pinned,
+                )
+                .await?
+                .ok_or_else(|| {
+                    Error::Internal("chat pin exists without durable pin event".to_string())
+                })?;
+            if let Some(operation) = request.operation {
+                self.complete_pin_operation_in_tx(
+                    &mut tx,
+                    request.room_id,
+                    request.pinned_by,
+                    operation,
+                    &event.event,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            return Ok(IdempotentChatPinEventInsert {
+                event,
+                inserted: false,
+            });
+        }
+
+        let loaded = self
+            .message_event_payload_in_tx(
+                &mut tx,
+                request.room_id,
+                &message,
+                Some(request.pinned_by),
+            )
+            .await?;
+        let pin = self
+            .pin_for_message_in_tx(&mut tx, request.room_id, message.id, message.created_at)
+            .await?;
+        let event = ChatPinEvent {
+            event_id: request.event_id.to_string(),
+            sequence: 0,
+            room_id: *request.room_id,
+            actor_user_id: *request.pinned_by,
+            kind: ChatPinEventKind::Pinned,
+            message: loaded,
+            pin,
+            occurred_at: request.occurred_at,
+        };
+        let logged = self.insert_pin_event_in_tx(&mut tx, &event).await?;
+        if let Some(operation) = request.operation {
+            self.complete_pin_operation_in_tx(
+                &mut tx,
+                request.room_id,
+                request.pinned_by,
+                operation,
+                &logged.event,
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(IdempotentChatPinEventInsert {
+            event: logged,
+            inserted: true,
+        })
+    }
+
+    pub async fn unpin_message_with_event(
+        &self,
+        request: UnpinChatMessageEventRequest<'_>,
+    ) -> Result<IdempotentChatPinEventInsert> {
+        let mut tx = self.pool.begin().await?;
+        if let Some(operation) = request.operation {
+            if let Some(event) = self
+                .begin_pin_operation_in_tx(&mut tx, request.room_id, request.unpinned_by, operation)
+                .await?
+            {
+                tx.commit().await?;
+                return Ok(IdempotentChatPinEventInsert {
+                    event,
+                    inserted: false,
+                });
+            }
+        }
+
+        let message = self
+            .get_message_for_update_in_tx(&mut tx, request.room_id, request.message_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+        let deleted = sqlx::query!(
+            r"
+            DELETE FROM chat_message_pins
+            WHERE room_id = $1 AND message_id = $2 AND message_created_at = $3
+            ",
+            request.room_id.as_i64(),
+            message.id,
+            message.created_at
+        )
+        .execute(&mut *tx)
+        .await?;
+        if deleted.rows_affected() == 0 {
+            if let Some(operation) = request.operation {
+                self.clear_incomplete_message_operation_in_tx(
+                    &mut tx,
+                    request.room_id,
+                    request.unpinned_by,
+                    operation,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            return Err(Error::NotFound("Chat message pin not found".to_string()));
+        }
+
+        let loaded = self
+            .message_event_payload_in_tx(
+                &mut tx,
+                request.room_id,
+                &message,
+                Some(request.unpinned_by),
+            )
+            .await?;
+        let event = ChatPinEvent {
+            event_id: request.event_id.to_string(),
+            sequence: 0,
+            room_id: *request.room_id,
+            actor_user_id: *request.unpinned_by,
+            kind: ChatPinEventKind::Unpinned,
+            message: loaded,
+            pin: None,
+            occurred_at: request.occurred_at,
+        };
+        let logged = self.insert_pin_event_in_tx(&mut tx, &event).await?;
+        if let Some(operation) = request.operation {
+            self.complete_pin_operation_in_tx(
+                &mut tx,
+                request.room_id,
+                request.unpinned_by,
+                operation,
+                &logged.event,
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(IdempotentChatPinEventInsert {
+            event: logged,
+            inserted: true,
+        })
+    }
+
     pub async fn set_reaction_with_event(
         &self,
         request: &SetChatReaction,
         event_id: &str,
         occurred_at: DateTime<Utc>,
-    ) -> Result<ChatMessageEventLog> {
+    ) -> Result<IdempotentChatEventInsert> {
         validate_required_text(
             &request.reaction_key,
             "reaction_key",
@@ -421,10 +753,11 @@ impl ChatRepository {
                 .then_with(|| left.key.cmp(&right.key))
         });
         let mentions = self
-            .mentions_for_messages(std::slice::from_ref(&message))
-            .await?
-            .remove(&chat_message_key(&message))
-            .unwrap_or_default();
+            .mentions_for_message_in_tx(&mut tx, message.id, message.created_at)
+            .await?;
+        let pin = self
+            .pin_for_message_in_tx(&mut tx, &request.room_id, message.id, message.created_at)
+            .await?;
         let event = ChatMessageEvent {
             event_id: event_id.to_string(),
             sequence: 0,
@@ -436,12 +769,37 @@ impl ChatRepository {
                 attachments,
                 reactions,
                 mentions,
+                pin: pin.clone(),
             },
             occurred_at,
         };
         let logged = self.insert_event_in_tx(&mut tx, &event).await?;
+        let pin_event = if pin.is_some() {
+            Some(
+                self.insert_pin_event_in_tx(
+                    &mut tx,
+                    &ChatPinEvent {
+                        event_id: synctv_common::snanoid!(16),
+                        sequence: 0,
+                        room_id: request.room_id,
+                        actor_user_id: request.user_id,
+                        kind: ChatPinEventKind::MessageUpdated,
+                        message: logged.event.message.clone(),
+                        pin,
+                        occurred_at,
+                    },
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         tx.commit().await?;
-        Ok(logged)
+        Ok(IdempotentChatEventInsert {
+            event: logged,
+            inserted: true,
+            pin_event,
+        })
     }
 
     pub async fn list_reaction_users(
@@ -461,6 +819,7 @@ impl ChatRepository {
             return Err(Error::Conflict("Message has been deleted".to_string()));
         }
 
+        let pool = self.eventually_consistent_pool();
         let total = sqlx::query_scalar!(
             r#"
             SELECT COUNT(*)::bigint AS "total!"
@@ -475,7 +834,7 @@ impl ChatRepository {
             message.created_at,
             reaction_key
         )
-        .fetch_one(&self.pool)
+        .fetch_one(pool)
         .await?;
 
         let page_limit = usize::try_from(limit)
@@ -510,7 +869,7 @@ impl ChatRepository {
             cursor_user_id,
             i64::from(fetch_limit)
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         let mut users = rows;
@@ -627,12 +986,35 @@ impl ChatRepository {
         room_id: &RoomId,
         user_id: &UserId,
         client_operation_id: &str,
-        operation_kind: ChatEventKind,
+        operation_kind: ChatMessageOperationKind,
         request_hash: &str,
     ) -> Result<Option<ChatMessageEventLog>> {
         let mut tx = self.pool.begin().await?;
         let event = self
             .replay_message_operation_event_in_tx(
+                &mut tx,
+                room_id,
+                user_id,
+                client_operation_id,
+                operation_kind,
+                request_hash,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(event)
+    }
+
+    pub async fn replay_pin_operation_event(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        client_operation_id: &str,
+        operation_kind: ChatMessageOperationKind,
+        request_hash: &str,
+    ) -> Result<Option<ChatPinEventLog>> {
+        let mut tx = self.pool.begin().await?;
+        let event = self
+            .replay_pin_operation_event_in_tx(
                 &mut tx,
                 room_id,
                 user_id,
@@ -1003,6 +1385,7 @@ impl ChatRepository {
         user_id: &UserId,
         state: Option<&ChatReadState>,
     ) -> Result<i64> {
+        let pool = self.eventually_consistent_pool();
         let count = if let Some(state) = state {
             if let (Some(message_id), Some(created_at)) = (
                 state.last_read_message_id,
@@ -1023,7 +1406,7 @@ impl ChatRepository {
                     created_at,
                     message_id
                 )
-                .fetch_one(&self.pool)
+                .fetch_one(pool)
                 .await?
             } else if let Some(sequence) = state.last_read_event_sequence {
                 self.count_unread_after_event_sequence(room_id, user_id, sequence)
@@ -1051,6 +1434,7 @@ impl ChatRepository {
         let offset = i64::from(page - 1) * i64::from(limit);
         let sender_user_id = message.user_id.map(|id| id.as_i64());
         let event_sequence = event.map(|event| event.sequence);
+        let pool = self.eventually_consistent_pool();
 
         let reader_total = sqlx::query_scalar!(
             r#"
@@ -1083,10 +1467,10 @@ impl ChatRepository {
             message.created_at,
             message.id
         )
-        .fetch_one(&self.pool)
+        .fetch_one(pool)
         .await?;
 
-        let unread_total = sqlx::query_scalar::<_, i64>(
+        let unread_total = sqlx::query_scalar!(
             r#"
             SELECT COUNT(*) AS "count!"
             FROM room_members rm
@@ -1111,13 +1495,13 @@ impl ChatRepository {
                          = ($4, $5))
               ), FALSE)
             "#,
+            room_id.as_i64(),
+            sender_user_id,
+            event_sequence,
+            message.created_at,
+            message.id
         )
-        .bind(room_id.as_i64())
-        .bind(sender_user_id)
-        .bind(event_sequence)
-        .bind(message.created_at)
-        .bind(message.id)
-        .fetch_one(&self.pool)
+        .fetch_one(pool)
         .await?;
 
         let reader_rows = sqlx::query!(
@@ -1184,7 +1568,7 @@ impl ChatRepository {
             i64::from(limit),
             offset
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
         let readers = reader_rows
             .into_iter()
@@ -1209,24 +1593,24 @@ impl ChatRepository {
             })
             .collect();
 
-        let unread_rows = sqlx::query(
-            r"
-            SELECT u.id,
-                   u.username,
-                   u.role,
+        let unread_rows = sqlx::query!(
+            r#"
+            SELECT u.id AS "id!: UserId",
+                   u.username AS "username!",
+                   u.role AS "role!: crate::models::UserRole",
                    u.avatar_file_reference_id,
                    CASE
                        WHEN active_ban.user_id IS NULL THEN 1::SMALLINT
                        ELSE 2::SMALLINT
-                   END AS status,
-                   (active_ban.user_id IS NOT NULL) AS is_banned,
-                   active_ban.starts_at AS banned_at,
-                   active_ban.banned_by AS banned_by,
+                   END AS "status!: crate::models::UserStatus",
+                   (active_ban.user_id IS NOT NULL) AS "is_banned!",
+                   active_ban.starts_at AS "banned_at?",
+                   active_ban.banned_by AS "banned_by?: UserId",
                    active_ban.reason AS banned_reason,
-                   u.signup_method,
-                   u.created_at,
-                   u.updated_at,
-                   u.version,
+                   u.signup_method AS "signup_method!: crate::models::SignupMethod",
+                   u.created_at AS "created_at!",
+                   u.updated_at AS "updated_at!",
+                   u.version AS "version!",
                    u.deleted_at
             FROM room_members rm
             JOIN users u ON u.id = rm.user_id AND u.deleted_at IS NULL
@@ -1263,35 +1647,35 @@ impl ChatRepository {
               ), FALSE)
             ORDER BY u.username ASC, u.id ASC
             LIMIT $6 OFFSET $7
-            ",
+            "#,
+            room_id.as_i64(),
+            sender_user_id,
+            event_sequence,
+            message.created_at,
+            message.id,
+            i64::from(limit),
+            offset
         )
-        .bind(room_id.as_i64())
-        .bind(sender_user_id)
-        .bind(event_sequence)
-        .bind(message.created_at)
-        .bind(message.id)
-        .bind(i64::from(limit))
-        .bind(offset)
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
         let unread_members = unread_rows
             .into_iter()
             .map(|row| ChatMessageReadReceiptMember {
                 user: User {
-                    id: row.get("id"),
-                    username: row.get("username"),
-                    role: row.get("role"),
-                    avatar_file_reference_id: row.get("avatar_file_reference_id"),
-                    status: row.get("status"),
-                    is_banned: row.get("is_banned"),
-                    banned_at: row.get("banned_at"),
-                    banned_by: row.get("banned_by"),
-                    banned_reason: row.get("banned_reason"),
-                    signup_method: row.get("signup_method"),
-                    created_at: row.get("created_at"),
-                    updated_at: row.get("updated_at"),
-                    version: row.get("version"),
-                    deleted_at: row.get("deleted_at"),
+                    id: row.id,
+                    username: row.username,
+                    role: row.role,
+                    avatar_file_reference_id: row.avatar_file_reference_id,
+                    status: row.status,
+                    is_banned: row.is_banned,
+                    banned_at: row.banned_at,
+                    banned_by: row.banned_by,
+                    banned_reason: row.banned_reason,
+                    signup_method: row.signup_method,
+                    created_at: row.created_at,
+                    updated_at: row.updated_at,
+                    version: row.version,
+                    deleted_at: row.deleted_at,
                 },
             })
             .collect();
@@ -1310,6 +1694,7 @@ impl ChatRepository {
         user_id: &UserId,
         sequence: i64,
     ) -> Result<i64> {
+        let pool = self.eventually_consistent_pool();
         let count = sqlx::query_scalar!(
             r#"
             SELECT COUNT(*) AS "count!"
@@ -1329,13 +1714,14 @@ impl ChatRepository {
             i16::from(ChatMessageStatus::Deleted),
             user_id.as_i64()
         )
-        .fetch_one(&self.pool)
+        .fetch_one(pool)
         .await?;
 
         Ok(count)
     }
 
     async fn count_unread_without_state(&self, room_id: &RoomId, user_id: &UserId) -> Result<i64> {
+        let pool = self.eventually_consistent_pool();
         let count = sqlx::query_scalar!(
             r#"
             SELECT COUNT(*) AS "count!"
@@ -1349,7 +1735,7 @@ impl ChatRepository {
             i16::from(ChatMessageStatus::Deleted),
             user_id.as_i64()
         )
-        .fetch_one(&self.pool)
+        .fetch_one(pool)
         .await?;
 
         Ok(count)
@@ -1368,6 +1754,26 @@ impl ChatRepository {
 
     pub async fn list_by_room_cursor_for_viewer(
         &self,
+        room_id: &RoomId,
+        cursor: Option<ChatHistoryCursor>,
+        limit: i32,
+        include_deleted: bool,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<(Vec<ChatMessageWithAttachments>, Option<ChatHistoryCursor>)> {
+        self.list_by_room_cursor_for_viewer_from_pool(
+            self.eventually_consistent_pool(),
+            room_id,
+            cursor,
+            limit,
+            include_deleted,
+            viewer_user_id,
+        )
+        .await
+    }
+
+    async fn list_by_room_cursor_for_viewer_from_pool(
+        &self,
+        pool: &PgPool,
         room_id: &RoomId,
         cursor: Option<ChatHistoryCursor>,
         limit: i32,
@@ -1409,7 +1815,7 @@ impl ChatRepository {
                 cursor.id,
                 i64::from(limit)
             )
-            .fetch_all(&self.pool)
+            .fetch_all(pool)
             .await?
         } else {
             sqlx::query_as!(
@@ -1443,7 +1849,7 @@ impl ChatRepository {
                 i16::from(ChatMessageStatus::Deleted),
                 i64::from(limit)
             )
-            .fetch_all(&self.pool)
+            .fetch_all(pool)
             .await?
         };
 
@@ -1457,7 +1863,7 @@ impl ChatRepository {
         };
 
         let messages = self
-            .attach_attachments_and_reactions_to_messages(messages, viewer_user_id)
+            .attach_attachments_and_reactions_to_messages_from_pool(pool, messages, viewer_user_id)
             .await?;
 
         Ok((messages, next_cursor))
@@ -1473,7 +1879,14 @@ impl ChatRepository {
     ) -> Result<ChatHistoryPage> {
         let event_cursor = self.latest_event_cursor_for_room(room_id).await?;
         let (messages, next_cursor) = self
-            .list_by_room_cursor_for_viewer(room_id, cursor, limit, include_deleted, viewer_user_id)
+            .list_by_room_cursor_for_viewer_from_pool(
+                &self.pool,
+                room_id,
+                cursor,
+                limit,
+                include_deleted,
+                viewer_user_id,
+            )
             .await?;
 
         Ok(ChatHistoryPage {
@@ -1501,6 +1914,7 @@ impl ChatRepository {
         let media_id = query.media_id.map(|id| id.as_i64().to_string());
         let playlist_id = query.playlist_id.map(|id| id.as_i64().to_string());
         let target_hex = query.target.as_ref().map(hex::encode);
+        let pool = self.eventually_consistent_pool();
         let messages = sqlx::query_as!(
             ChatMessage,
             r#"
@@ -1564,7 +1978,7 @@ impl ChatRepository {
             end_seconds,
             i64::from(limit)
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         self.attach_attachments_and_reactions_to_messages(messages, viewer_user_id)
@@ -1608,6 +2022,7 @@ impl ChatRepository {
 
         let before_limit = before_limit.clamp(0, 50);
         let after_limit = after_limit.clamp(0, 50);
+        let pool = self.eventually_consistent_pool();
         let mut before = sqlx::query_as!(
             ChatMessage,
             r#"
@@ -1641,7 +2056,7 @@ impl ChatRepository {
             anchor.id,
             i64::from(before_limit)
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
         before.reverse();
 
@@ -1678,7 +2093,7 @@ impl ChatRepository {
             anchor.id,
             i64::from(after_limit)
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         let anchor = self
@@ -1699,6 +2114,7 @@ impl ChatRepository {
     }
 
     pub async fn get_by_id(&self, message_id: i64) -> Result<Option<ChatMessage>> {
+        let pool = self.eventually_consistent_pool();
         let msg = sqlx::query_as!(
             ChatMessage,
             r#"
@@ -1723,7 +2139,7 @@ impl ChatRepository {
             "#,
             message_id
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(pool)
         .await?;
 
         Ok(msg)
@@ -1731,6 +2147,25 @@ impl ChatRepository {
 
     pub async fn get_by_room_and_id(
         &self,
+        room_id: &RoomId,
+        message_id: i64,
+    ) -> Result<Option<ChatMessage>> {
+        self.get_by_room_and_id_from_pool(self.eventually_consistent_pool(), room_id, message_id)
+            .await
+    }
+
+    pub async fn get_by_room_and_id_from_primary(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+    ) -> Result<Option<ChatMessage>> {
+        self.get_by_room_and_id_from_pool(&self.pool, room_id, message_id)
+            .await
+    }
+
+    async fn get_by_room_and_id_from_pool(
+        &self,
+        pool: &PgPool,
         room_id: &RoomId,
         message_id: i64,
     ) -> Result<Option<ChatMessage>> {
@@ -1759,7 +2194,7 @@ impl ChatRepository {
             room_id.as_i64(),
             message_id
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(pool)
         .await?;
 
         Ok(msg)
@@ -1780,30 +2215,67 @@ impl ChatRepository {
         message_id: i64,
         viewer_user_id: Option<&UserId>,
     ) -> Result<Option<ChatMessageWithAttachments>> {
-        let Some(message) = self.get_by_room_and_id(room_id, message_id).await? else {
+        self.get_with_attachments_by_room_and_id_from_pool(
+            self.eventually_consistent_pool(),
+            room_id,
+            message_id,
+            viewer_user_id,
+        )
+        .await
+    }
+
+    pub async fn get_with_attachments_by_room_and_id_from_primary(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+    ) -> Result<Option<ChatMessageWithAttachments>> {
+        self.get_with_attachments_by_room_and_id_from_pool(&self.pool, room_id, message_id, None)
+            .await
+    }
+
+    async fn get_with_attachments_by_room_and_id_from_pool(
+        &self,
+        pool: &PgPool,
+        room_id: &RoomId,
+        message_id: i64,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<Option<ChatMessageWithAttachments>> {
+        let Some(message) = self
+            .get_by_room_and_id_from_pool(pool, room_id, message_id)
+            .await?
+        else {
             return Ok(None);
         };
         let attachments = if message.status == ChatMessageStatus::Deleted {
             Vec::new()
         } else {
-            self.attachments_for_message(message.id, message.created_at)
+            self.attachments_for_message_from_pool(pool, message.id, message.created_at)
                 .await?
         };
         let reactions = self
-            .reaction_summaries_for_messages(std::slice::from_ref(&message), viewer_user_id)
+            .reaction_summaries_for_messages_with_executor(
+                pool,
+                std::slice::from_ref(&message),
+                viewer_user_id,
+            )
             .await?
             .remove(&chat_message_key(&message))
             .unwrap_or_default();
         let mentions = self
-            .mentions_for_messages(std::slice::from_ref(&message))
+            .mentions_for_messages_from_pool(pool, std::slice::from_ref(&message))
             .await?
             .remove(&chat_message_key(&message))
             .unwrap_or_default();
+        let pin = self
+            .pins_for_messages_from_pool(pool, std::slice::from_ref(&message))
+            .await?
+            .remove(&chat_message_key(&message));
         Ok(Some(ChatMessageWithAttachments {
             message,
             attachments,
             reactions,
             mentions,
+            pin,
         }))
     }
 
@@ -1866,6 +2338,7 @@ impl ChatRepository {
             attachments,
             reactions: Vec::new(),
             mentions,
+            pin: None,
         }))
     }
 
@@ -1888,6 +2361,7 @@ impl ChatRepository {
                 return Ok(Some(IdempotentChatEventInsert {
                     event,
                     inserted: false,
+                    pin_event: None,
                 }));
             }
         }
@@ -1941,27 +2415,45 @@ impl ChatRepository {
             tx.commit().await?;
             return Ok(None);
         };
-        let attachments = self
-            .attachments_for_message_in_tx(&mut tx, message.id, message.created_at)
+        let message_payload = self
+            .message_event_payload_in_tx(
+                &mut tx,
+                request.room_id,
+                &message,
+                Some(request.actor_user_id),
+            )
             .await?;
-        let mentions = self
-            .mentions_for_message_in_tx(&mut tx, message.id, message.created_at)
-            .await?;
+        let pin = message_payload.pin.clone();
         let event = ChatMessageEvent {
             event_id: request.event_id.to_string(),
             sequence: 0,
             room_id: *request.room_id,
             actor_user_id: *request.actor_user_id,
             kind: ChatEventKind::Edited,
-            message: ChatMessageWithAttachments {
-                message,
-                attachments,
-                reactions: Vec::new(),
-                mentions,
-            },
+            message: message_payload,
             occurred_at: request.occurred_at,
         };
         let logged = self.insert_event_in_tx(&mut tx, &event).await?;
+        let pin_event = if pin.is_some() {
+            Some(
+                self.insert_pin_event_in_tx(
+                    &mut tx,
+                    &ChatPinEvent {
+                        event_id: synctv_common::snanoid!(16),
+                        sequence: 0,
+                        room_id: *request.room_id,
+                        actor_user_id: *request.actor_user_id,
+                        kind: ChatPinEventKind::MessageUpdated,
+                        message: logged.event.message.clone(),
+                        pin,
+                        occurred_at: request.occurred_at,
+                    },
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         if let Some(operation) = request.operation {
             self.complete_message_operation_in_tx(
                 &mut tx,
@@ -1976,6 +2468,7 @@ impl ChatRepository {
         Ok(Some(IdempotentChatEventInsert {
             event: logged,
             inserted: true,
+            pin_event,
         }))
     }
 
@@ -2022,6 +2515,8 @@ impl ChatRepository {
         let Some(message) = message else {
             return Ok(None);
         };
+        self.delete_pin_for_message(message.room_id, message.id, message.created_at)
+            .await?;
         let mentions = self
             .mentions_for_messages(std::slice::from_ref(&message))
             .await?
@@ -2032,6 +2527,7 @@ impl ChatRepository {
             attachments: Vec::new(),
             reactions: Vec::new(),
             mentions,
+            pin: None,
         }))
     }
 
@@ -2054,6 +2550,7 @@ impl ChatRepository {
                 return Ok(Some(IdempotentChatEventInsert {
                     event,
                     inserted: false,
+                    pin_event: None,
                 }));
             }
         }
@@ -2104,6 +2601,10 @@ impl ChatRepository {
             tx.commit().await?;
             return Ok(None);
         };
+        let pin = self
+            .pin_for_message_in_tx(&mut tx, request.room_id, message.id, message.created_at)
+            .await?;
+        self.delete_pin_for_message_in_tx(&mut tx, &message).await?;
         let mentions = self
             .mentions_for_message_in_tx(&mut tx, message.id, message.created_at)
             .await?;
@@ -2118,10 +2619,31 @@ impl ChatRepository {
                 attachments: Vec::new(),
                 reactions: Vec::new(),
                 mentions,
+                pin: None,
             },
             occurred_at: request.occurred_at,
         };
         let logged = self.insert_event_in_tx(&mut tx, &event).await?;
+        let pin_event = if pin.is_some() {
+            Some(
+                self.insert_pin_event_in_tx(
+                    &mut tx,
+                    &ChatPinEvent {
+                        event_id: synctv_common::snanoid!(16),
+                        sequence: 0,
+                        room_id: *request.room_id,
+                        actor_user_id: *request.deleted_by,
+                        kind: ChatPinEventKind::MessageDeleted,
+                        message: logged.event.message.clone(),
+                        pin: None,
+                        occurred_at: request.occurred_at,
+                    },
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         if let Some(operation) = request.operation {
             self.complete_message_operation_in_tx(
                 &mut tx,
@@ -2136,6 +2658,7 @@ impl ChatRepository {
         Ok(Some(IdempotentChatEventInsert {
             event: logged,
             inserted: true,
+            pin_event,
         }))
     }
 
@@ -2334,44 +2857,47 @@ impl ChatRepository {
                 .mime_type
                 .as_deref()
                 .map_or(ChatAttachmentKind::File, ChatAttachmentKind::from_mime_type);
-            let row = sqlx::query_as::<_, ChatAttachment>(
-                r"
+            let row = sqlx::query_as!(
+                ChatAttachment,
+                r#"
                 INSERT INTO chat_message_attachments (
                     id, kind, room_id, message_id, message_created_at, filename,
                     storage_backend, object_key, url, mime_type, size_bytes, width, height, metadata
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                RETURNING id,
-                          kind,
-                          room_id,
-                          message_id,
-                          message_created_at,
+                RETURNING id AS "id!",
+                          kind AS "kind!: ChatAttachmentKind",
+                          room_id AS "room_id!: RoomId",
+                          message_id AS "message_id!",
+                          message_created_at AS "message_created_at!",
                           filename,
-                          storage_backend,
-                          object_key,
+                          storage_backend AS "storage_backend!",
+                          object_key AS "object_key!",
                           url,
                           mime_type,
                           size_bytes,
                           width,
                           height,
-                          metadata,
-                          created_at
-                ",
+                          metadata AS "metadata!: serde_json::Value",
+                          created_at AS "created_at!",
+                          NULL::TEXT AS "reuse_token?",
+                          NULL::TIMESTAMPTZ AS "reuse_expires_at?"
+                "#,
+                &attachment.id,
+                i16::from(kind),
+                message.room_id.as_i64(),
+                message.id,
+                message.created_at,
+                attachment.filename.as_deref(),
+                &attachment.storage_backend,
+                &attachment.object_key,
+                attachment.url.as_deref(),
+                attachment.mime_type.as_deref(),
+                attachment.size_bytes,
+                attachment.width,
+                attachment.height,
+                &attachment.metadata
             )
-            .bind(&attachment.id)
-            .bind(kind)
-            .bind(message.room_id.as_i64())
-            .bind(message.id)
-            .bind(message.created_at)
-            .bind(attachment.filename.as_deref())
-            .bind(&attachment.storage_backend)
-            .bind(&attachment.object_key)
-            .bind(attachment.url.as_deref())
-            .bind(attachment.mime_type.as_deref())
-            .bind(attachment.size_bytes)
-            .bind(attachment.width)
-            .bind(attachment.height)
-            .bind(&attachment.metadata)
             .fetch_one(&mut **tx)
             .await?;
             self.insert_file_reference_for_attachment_in_tx(tx, &row)
@@ -2569,13 +3095,59 @@ impl ChatRepository {
         .await
     }
 
+    async fn begin_pin_operation_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: &RoomId,
+        user_id: &UserId,
+        operation: &ChatMessageOperationIdempotency<'_>,
+    ) -> Result<Option<ChatPinEventLog>> {
+        validate_required_text(
+            operation.client_operation_id,
+            "client_operation_id",
+            CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
+        )?;
+        let inserted = sqlx::query!(
+            r"
+            INSERT INTO chat_message_operation_idempotency (
+                room_id, user_id, client_operation_id, operation_kind,
+                request_hash, message_id, message_created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (room_id, user_id, client_operation_id) DO NOTHING
+            ",
+            room_id.as_i64(),
+            user_id.as_i64(),
+            operation.client_operation_id,
+            i16::from(operation.operation_kind),
+            operation.request_hash,
+            operation.message_id,
+            operation.message_created_at
+        )
+        .execute(&mut **tx)
+        .await?;
+        if inserted.rows_affected() == 1 {
+            return Ok(None);
+        }
+
+        self.replay_pin_operation_event_in_tx(
+            tx,
+            room_id,
+            user_id,
+            operation.client_operation_id,
+            operation.operation_kind,
+            operation.request_hash,
+        )
+        .await
+    }
+
     async fn replay_message_operation_event_in_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         room_id: &RoomId,
         user_id: &UserId,
         client_operation_id: &str,
-        operation_kind: ChatEventKind,
+        operation_kind: ChatMessageOperationKind,
         request_hash: &str,
     ) -> Result<Option<ChatMessageEventLog>> {
         let row = sqlx::query!(
@@ -2616,6 +3188,54 @@ impl ChatRepository {
         ))
     }
 
+    async fn replay_pin_operation_event_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: &RoomId,
+        user_id: &UserId,
+        client_operation_id: &str,
+        operation_kind: ChatMessageOperationKind,
+        request_hash: &str,
+    ) -> Result<Option<ChatPinEventLog>> {
+        let row = sqlx::query!(
+            r#"
+            SELECT
+                operation_kind,
+                request_hash,
+                event_id AS "event_id?: String"
+            FROM chat_message_operation_idempotency
+            WHERE room_id = $1 AND user_id = $2 AND client_operation_id = $3
+            FOR UPDATE
+            "#,
+            room_id.as_i64(),
+            user_id.as_i64(),
+            client_operation_id
+        )
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        if row.operation_kind != i16::from(operation_kind) || row.request_hash != request_hash {
+            return Err(Error::Conflict(
+                "client_operation_id was already used with a different operation".to_string(),
+            ));
+        }
+        let Some(event_id) = row.event_id else {
+            return Ok(None);
+        };
+        if let Some(event) = self
+            .latest_pin_event_by_id_in_tx(tx, room_id, &event_id)
+            .await?
+        {
+            return Ok(Some(event));
+        }
+        Err(Error::Internal(
+            "operation idempotency record points to a missing durable chat pin event".to_string(),
+        ))
+    }
+
     async fn complete_message_operation_in_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -2623,6 +3243,30 @@ impl ChatRepository {
         user_id: &UserId,
         operation: &ChatMessageOperationIdempotency<'_>,
         event: &ChatMessageEvent,
+    ) -> Result<()> {
+        sqlx::query!(
+            r"
+            UPDATE chat_message_operation_idempotency
+            SET event_id = $4
+            WHERE room_id = $1 AND user_id = $2 AND client_operation_id = $3
+            ",
+            room_id.as_i64(),
+            user_id.as_i64(),
+            operation.client_operation_id,
+            &event.event_id
+        )
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn complete_pin_operation_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: &RoomId,
+        user_id: &UserId,
+        operation: &ChatMessageOperationIdempotency<'_>,
+        event: &ChatPinEvent,
     ) -> Result<()> {
         sqlx::query!(
             r"
@@ -2714,6 +3358,7 @@ impl ChatRepository {
             attachments,
             reactions: Vec::new(),
             mentions,
+            pin: None,
         }))
     }
 
@@ -2723,30 +3368,33 @@ impl ChatRepository {
         message_id: i64,
         message_created_at: DateTime<Utc>,
     ) -> Result<Vec<ChatAttachment>> {
-        let attachments = sqlx::query_as::<_, ChatAttachment>(
-            r"
-            SELECT id,
-                   kind,
-                   room_id,
-                   message_id,
-                   message_created_at,
+        let attachments = sqlx::query_as!(
+            ChatAttachment,
+            r#"
+            SELECT id AS "id!",
+                   kind AS "kind!: ChatAttachmentKind",
+                   room_id AS "room_id!: RoomId",
+                   message_id AS "message_id!",
+                   message_created_at AS "message_created_at!",
                    filename,
-                   storage_backend,
-                   object_key,
+                   storage_backend AS "storage_backend!",
+                   object_key AS "object_key!",
                    url,
                    mime_type,
                    size_bytes,
                    width,
                    height,
-                   metadata,
-                   created_at
+                   metadata AS "metadata!: serde_json::Value",
+                   created_at AS "created_at!",
+                   NULL::TEXT AS "reuse_token?",
+                   NULL::TIMESTAMPTZ AS "reuse_expires_at?"
             FROM chat_message_attachments
             WHERE message_id = $1 AND message_created_at = $2
             ORDER BY created_at ASC, id ASC
-            ",
+            "#,
+            message_id,
+            message_created_at
         )
-        .bind(message_id)
-        .bind(message_created_at)
         .fetch_all(&mut **tx)
         .await?;
         Ok(attachments)
@@ -2822,6 +3470,45 @@ impl ChatRepository {
         row.try_into_log()
     }
 
+    async fn insert_pin_event_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        event: &ChatPinEvent,
+    ) -> Result<ChatPinEventLog> {
+        validate_required_text(
+            &event.event_id,
+            "chat pin event_id",
+            CHAT_EVENT_ID_MAX_CHARS,
+        )?;
+        let payload = serde_json::to_value(event)?;
+        let summary = chat_pin_event_summary(event);
+        insert_room_resource_event_with_executor(
+            &NewRoomResourceEvent {
+                event_id: event.event_id.clone(),
+                scope_type: RoomResourceEventScope::Room,
+                room_id: Some(event.room_id.as_i64()),
+                user_id: None,
+                aggregate_type: "chat_message".to_string(),
+                aggregate_id: event.message.message.id.to_string(),
+                resource_type: "chat_pins".to_string(),
+                resource_id: chat_pin_resource_id(&event.message.message),
+                event_type: event.kind.as_str().to_string(),
+                event_version: 1,
+                aggregate_version: Some(event.message.message.version),
+                actor_user_id: Some(event.actor_user_id.as_i64()),
+                payload: Some(payload),
+                summary,
+                occurred_at: event.occurred_at,
+            },
+            &mut **tx,
+        )
+        .await?;
+
+        self.latest_pin_event_by_id_in_tx(tx, &event.room_id, &event.event_id)
+            .await?
+            .ok_or_else(|| Error::Internal("chat pin event was not inserted".to_string()))
+    }
+
     async fn get_event_by_id_in_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -2856,43 +3543,122 @@ impl ChatRepository {
         row.map(ChatEventRow::try_into_log).transpose()
     }
 
+    async fn latest_pin_event_by_id_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: &RoomId,
+        event_id: &str,
+    ) -> Result<Option<ChatPinEventLog>> {
+        let row = sqlx::query_as!(
+            ChatPinEventRow,
+            r#"
+            SELECT event_id AS "event_id!",
+                   sequence AS "sequence!",
+                   payload AS "event_payload?: serde_json::Value",
+                   occurred_at AS "occurred_at!"
+            FROM room_resource_events
+            WHERE room_id = $1
+              AND event_id = $2
+              AND resource_type = 'chat_pins'
+            LIMIT 1
+            "#,
+            room_id.as_i64(),
+            event_id
+        )
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        row.map(ChatPinEventRow::try_into_log).transpose()
+    }
+
+    async fn latest_pin_event_for_message_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: &RoomId,
+        message_id: i64,
+        message_created_at: DateTime<Utc>,
+        kind: ChatPinEventKind,
+    ) -> Result<Option<ChatPinEventLog>> {
+        let row = sqlx::query_as!(
+            ChatPinEventRow,
+            r#"
+            SELECT event_id AS "event_id!",
+                   sequence AS "sequence!",
+                   payload AS "event_payload?: serde_json::Value",
+                   occurred_at AS "occurred_at!"
+            FROM room_resource_events
+            WHERE room_id = $1
+              AND resource_type = 'chat_pins'
+              AND event_type = $2
+              AND resource_id = $3
+            ORDER BY sequence DESC
+            LIMIT 1
+            "#,
+            room_id.as_i64(),
+            kind.as_str(),
+            chat_pin_resource_id_parts(message_id, message_created_at)
+        )
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        row.map(ChatPinEventRow::try_into_log).transpose()
+    }
+
     async fn attachments_for_message(
         &self,
         message_id: i64,
         message_created_at: DateTime<Utc>,
     ) -> Result<Vec<ChatAttachment>> {
-        let attachments = sqlx::query_as::<_, ChatAttachment>(
-            r"
-            SELECT id,
-                   kind,
-                   room_id,
-                   message_id,
-                   message_created_at,
+        self.attachments_for_message_from_pool(
+            self.eventually_consistent_pool(),
+            message_id,
+            message_created_at,
+        )
+        .await
+    }
+
+    async fn attachments_for_message_from_pool(
+        &self,
+        pool: &PgPool,
+        message_id: i64,
+        message_created_at: DateTime<Utc>,
+    ) -> Result<Vec<ChatAttachment>> {
+        let attachments = sqlx::query_as!(
+            ChatAttachment,
+            r#"
+            SELECT id AS "id!",
+                   kind AS "kind!: ChatAttachmentKind",
+                   room_id AS "room_id!: RoomId",
+                   message_id AS "message_id!",
+                   message_created_at AS "message_created_at!",
                    filename,
-                   storage_backend,
-                   object_key,
+                   storage_backend AS "storage_backend!",
+                   object_key AS "object_key!",
                    url,
                    mime_type,
                    size_bytes,
                    width,
                    height,
-                   metadata,
-                   created_at
+                   metadata AS "metadata!: serde_json::Value",
+                   created_at AS "created_at!",
+                   NULL::TEXT AS "reuse_token?",
+                   NULL::TIMESTAMPTZ AS "reuse_expires_at?"
             FROM chat_message_attachments
             WHERE message_id = $1 AND message_created_at = $2
             ORDER BY created_at ASC, id ASC
-            ",
+            "#,
+            message_id,
+            message_created_at
         )
-        .bind(message_id)
-        .bind(message_created_at)
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         Ok(attachments)
     }
 
-    async fn attachments_for_messages(
+    async fn attachments_for_messages_from_pool(
         &self,
+        pool: &PgPool,
         messages: &[ChatMessage],
     ) -> Result<Vec<ChatAttachment>> {
         if messages.is_empty() {
@@ -2901,32 +3667,35 @@ impl ChatRepository {
 
         let ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
         let created_ats: Vec<DateTime<Utc>> = messages.iter().map(|m| m.created_at).collect();
-        let attachments = sqlx::query_as::<_, ChatAttachment>(
-            r"
-            SELECT a.id,
-                   a.kind,
-                   a.room_id,
-                   a.message_id,
-                   a.message_created_at,
+        let attachments = sqlx::query_as!(
+            ChatAttachment,
+            r#"
+            SELECT a.id AS "id!",
+                   a.kind AS "kind!: ChatAttachmentKind",
+                   a.room_id AS "room_id!: RoomId",
+                   a.message_id AS "message_id!",
+                   a.message_created_at AS "message_created_at!",
                    a.filename,
-                   a.storage_backend,
-                   a.object_key,
+                   a.storage_backend AS "storage_backend!",
+                   a.object_key AS "object_key!",
                    a.url,
                    a.mime_type,
                    a.size_bytes,
                    a.width,
                    a.height,
-                   a.metadata,
-                   a.created_at
+                   a.metadata AS "metadata!: serde_json::Value",
+                   a.created_at AS "created_at!",
+                   NULL::TEXT AS "reuse_token?",
+                   NULL::TIMESTAMPTZ AS "reuse_expires_at?"
             FROM chat_message_attachments a
             JOIN unnest($1::bigint[], $2::timestamptz[]) AS m(id, created_at)
               ON a.message_id = m.id AND a.message_created_at = m.created_at
             ORDER BY a.message_created_at DESC, a.message_id DESC, a.created_at ASC, a.id ASC
-            ",
+            "#,
+            &ids,
+            &created_ats
         )
-        .bind(&ids)
-        .bind(&created_ats)
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
 
         Ok(attachments)
@@ -2934,7 +3703,21 @@ impl ChatRepository {
 
     async fn attach_attachments_and_reactions_to_messages(
         &self,
-        mut messages: Vec<ChatMessage>,
+        messages: Vec<ChatMessage>,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<Vec<ChatMessageWithAttachments>> {
+        self.attach_attachments_and_reactions_to_messages_from_pool(
+            self.eventually_consistent_pool(),
+            messages,
+            viewer_user_id,
+        )
+        .await
+    }
+
+    async fn attach_attachments_and_reactions_to_messages_from_pool(
+        &self,
+        pool: &PgPool,
+        messages: Vec<ChatMessage>,
         viewer_user_id: Option<&UserId>,
     ) -> Result<Vec<ChatMessageWithAttachments>> {
         let visible_attachment_messages = messages
@@ -2943,7 +3726,7 @@ impl ChatRepository {
             .cloned()
             .collect::<Vec<_>>();
         let attachments = self
-            .attachments_for_messages(&visible_attachment_messages)
+            .attachments_for_messages_from_pool(pool, &visible_attachment_messages)
             .await?;
         let mut grouped = HashMap::<ChatMessageKey, Vec<ChatAttachment>>::new();
         for attachment in attachments {
@@ -2953,29 +3736,293 @@ impl ChatRepository {
                 .push(attachment);
         }
         let mut reaction_grouped = self
-            .reaction_summaries_for_messages(&messages, viewer_user_id)
+            .reaction_summaries_for_messages_from_pool(pool, &messages, viewer_user_id)
             .await?;
-        let mut mention_grouped = self.mentions_for_messages(&messages).await?;
+        let mut mention_grouped = self
+            .mentions_for_messages_from_pool(pool, &messages)
+            .await?;
+        let mut pin_grouped = self.pins_for_messages_from_pool(pool, &messages).await?;
 
         Ok(messages
-            .drain(..)
+            .into_iter()
             .map(|message| {
                 let key = chat_message_key(&message);
                 let attachments = grouped.remove(&key).unwrap_or_default();
                 let reactions = reaction_grouped.remove(&key).unwrap_or_default();
                 let mentions = mention_grouped.remove(&key).unwrap_or_default();
+                let pin = pin_grouped.remove(&key);
                 ChatMessageWithAttachments {
                     message,
                     attachments,
                     reactions,
                     mentions,
+                    pin,
                 }
             })
             .collect())
     }
 
+    async fn messages_for_pin_rows(
+        &self,
+        room_id: &RoomId,
+        pins: &[ChatMessagePin],
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<Vec<ChatMessageWithAttachments>> {
+        if pins.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pool = self.eventually_consistent_pool();
+        let ids = pins.iter().map(|pin| pin.message_id).collect::<Vec<_>>();
+        let created_ats = pins
+            .iter()
+            .map(|pin| pin.message_created_at)
+            .collect::<Vec<_>>();
+        let messages = sqlx::query_as!(
+            ChatMessage,
+            r#"
+            SELECT m.id AS "id!",
+                   m.room_id AS "room_id!: RoomId",
+                   m.user_id AS "user_id?: UserId",
+                   m.client_message_id,
+                   m.content AS "content!",
+                   m.message_type AS "message_type!: ChatMessageType",
+                   m.status AS "status!: ChatMessageStatus",
+                   m.version AS "version!",
+                   m.reply_to_message_id,
+                   m.reply_to_message_created_at,
+                   m.metadata AS "metadata!: serde_json::Value",
+                   m.edited_at,
+                   m.deleted_at,
+                   m.deleted_by AS "deleted_by?: UserId",
+                   m.delete_reason,
+                   m.created_at AS "created_at!"
+            FROM chat_messages m
+            JOIN unnest($2::bigint[], $3::timestamptz[]) AS wanted(id, created_at)
+              ON m.id = wanted.id AND m.created_at = wanted.created_at
+            WHERE m.room_id = $1
+              AND m.status <> $4
+            "#,
+            room_id.as_i64(),
+            &ids,
+            &created_ats,
+            i16::from(ChatMessageStatus::Deleted)
+        )
+        .fetch_all(pool)
+        .await?;
+        let mut grouped = self
+            .attach_attachments_and_reactions_to_messages(messages, viewer_user_id)
+            .await?
+            .into_iter()
+            .map(|message| (chat_message_key(&message.message), message))
+            .collect::<HashMap<_, _>>();
+
+        pins.iter()
+            .map(|pin| {
+                grouped
+                    .remove(&(pin.message_id, pin.message_created_at))
+                    .ok_or_else(|| {
+                        Error::Internal("chat pin points to missing message".to_string())
+                    })
+            })
+            .collect()
+    }
+
+    async fn message_event_payload_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: &RoomId,
+        message: &ChatMessage,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<ChatMessageWithAttachments> {
+        let attachments = self
+            .attachments_for_message_in_tx(tx, message.id, message.created_at)
+            .await?;
+        let reactions = self
+            .reaction_summaries_for_messages_with_executor(
+                &mut **tx,
+                std::slice::from_ref(message),
+                viewer_user_id,
+            )
+            .await?
+            .remove(&chat_message_key(message))
+            .unwrap_or_default();
+        let mentions = self
+            .mentions_for_message_in_tx(tx, message.id, message.created_at)
+            .await?;
+        let pin = self
+            .pin_for_message_in_tx(tx, room_id, message.id, message.created_at)
+            .await?;
+        if message.room_id != *room_id {
+            return Err(Error::Internal(
+                "chat message event payload room mismatch".to_string(),
+            ));
+        }
+        Ok(ChatMessageWithAttachments {
+            message: message.clone(),
+            attachments,
+            reactions,
+            mentions,
+            pin,
+        })
+    }
+
+    async fn get_message_for_update_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: &RoomId,
+        message_id: i64,
+    ) -> Result<Option<ChatMessage>> {
+        let message = sqlx::query_as!(
+            ChatMessage,
+            r#"
+            SELECT id AS "id!",
+                   room_id AS "room_id!: RoomId",
+                   user_id AS "user_id?: UserId",
+                   client_message_id,
+                   content AS "content!",
+                   message_type AS "message_type!: ChatMessageType",
+                   status AS "status!: ChatMessageStatus",
+                   version AS "version!",
+                   reply_to_message_id,
+                   reply_to_message_created_at,
+                   metadata AS "metadata!: serde_json::Value",
+                   edited_at,
+                   deleted_at,
+                   deleted_by AS "deleted_by?: UserId",
+                   delete_reason,
+                   created_at AS "created_at!"
+            FROM chat_messages
+            WHERE room_id = $1 AND id = $2
+            FOR UPDATE
+            "#,
+            room_id.as_i64(),
+            message_id
+        )
+        .fetch_optional(&mut **tx)
+        .await?;
+        Ok(message)
+    }
+
+    fn pin_scope_lock_key(room_id: &RoomId) -> i64 {
+        super::stable_scope_lock_key(room_id.as_i64(), Some(1))
+    }
+
+    async fn lock_room_pins_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: &RoomId,
+    ) -> Result<()> {
+        sqlx::query!(
+            "SELECT pg_advisory_xact_lock($1)",
+            Self::pin_scope_lock_key(room_id)
+        )
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn count_active_pins_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: &RoomId,
+    ) -> Result<i64> {
+        let count = sqlx::query_scalar::<_, i64>(
+            r"
+            SELECT COUNT(*)
+            FROM chat_message_pins p
+            JOIN chat_messages m
+              ON m.room_id = p.room_id
+             AND m.id = p.message_id
+             AND m.created_at = p.message_created_at
+            WHERE p.room_id = $1
+              AND m.status <> $2
+            ",
+        )
+        .bind(room_id.as_i64())
+        .bind(i16::from(ChatMessageStatus::Deleted))
+        .fetch_one(&mut **tx)
+        .await?;
+        Ok(count)
+    }
+
+    async fn upsert_pin_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        message: &ChatMessage,
+        pinned_by: &UserId,
+        note: Option<&str>,
+        pinned_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let inserted = sqlx::query!(
+            r"
+            INSERT INTO chat_message_pins (
+                room_id, message_id, message_created_at, pinned_by, note, pinned_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (room_id, message_id, message_created_at) DO NOTHING
+            ",
+            message.room_id.as_i64(),
+            message.id,
+            message.created_at,
+            pinned_by.as_i64(),
+            note,
+            pinned_at
+        )
+        .execute(&mut **tx)
+        .await?;
+        Ok(inserted.rows_affected() == 1)
+    }
+
+    async fn delete_pin_for_message_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        message: &ChatMessage,
+    ) -> Result<()> {
+        sqlx::query!(
+            r"
+            DELETE FROM chat_message_pins
+            WHERE room_id = $1 AND message_id = $2 AND message_created_at = $3
+            ",
+            message.room_id.as_i64(),
+            message.id,
+            message.created_at
+        )
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_pin_for_message(
+        &self,
+        room_id: RoomId,
+        message_id: i64,
+        message_created_at: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query!(
+            r"
+            DELETE FROM chat_message_pins
+            WHERE room_id = $1 AND message_id = $2 AND message_created_at = $3
+            ",
+            room_id.as_i64(),
+            message_id,
+            message_created_at
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn mentions_for_messages(
         &self,
+        messages: &[ChatMessage],
+    ) -> Result<HashMap<ChatMessageKey, Vec<ChatMention>>> {
+        self.mentions_for_messages_from_pool(self.eventually_consistent_pool(), messages)
+            .await
+    }
+
+    async fn mentions_for_messages_from_pool(
+        &self,
+        pool: &PgPool,
         messages: &[ChatMessage],
     ) -> Result<HashMap<ChatMessageKey, Vec<ChatMention>>> {
         if messages.is_empty() {
@@ -3010,7 +4057,7 @@ impl ChatRepository {
             &message_ids,
             &message_created_at
         )
-        .fetch_all(&self.pool)
+        .fetch_all(pool)
         .await?;
         let mut grouped = HashMap::<ChatMessageKey, Vec<ChatMention>>::new();
         for mention in mentions {
@@ -3022,12 +4069,88 @@ impl ChatRepository {
         Ok(grouped)
     }
 
-    async fn reaction_summaries_for_messages(
+    async fn pins_for_messages_from_pool(
         &self,
+        pool: &PgPool,
+        messages: &[ChatMessage],
+    ) -> Result<HashMap<ChatMessageKey, ChatMessagePin>> {
+        if messages.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let message_ids = messages
+            .iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        let message_created_at = messages
+            .iter()
+            .map(|message| message.created_at)
+            .collect::<Vec<_>>();
+        let pins = sqlx::query_as!(
+            ChatMessagePin,
+            r#"
+            SELECT p.room_id AS "room_id!: RoomId",
+                   p.message_id AS "message_id!",
+                   p.message_created_at AS "message_created_at!",
+                   p.pinned_by AS "pinned_by?: UserId",
+                   u.username AS "pinned_by_username?",
+                   p.note,
+                   p.pinned_at AS "pinned_at!"
+            FROM chat_message_pins p
+            LEFT JOIN users u ON u.id = p.pinned_by
+            WHERE (p.message_id, p.message_created_at) IN (
+                SELECT * FROM UNNEST($1::BIGINT[], $2::TIMESTAMPTZ[])
+            )
+            "#,
+            &message_ids,
+            &message_created_at
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(pins
+            .into_iter()
+            .map(|pin| ((pin.message_id, pin.message_created_at), pin))
+            .collect())
+    }
+
+    async fn pin_for_message_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: &RoomId,
+        message_id: i64,
+        message_created_at: DateTime<Utc>,
+    ) -> Result<Option<ChatMessagePin>> {
+        let pin = sqlx::query_as!(
+            ChatMessagePin,
+            r#"
+            SELECT p.room_id AS "room_id!: RoomId",
+                   p.message_id AS "message_id!",
+                   p.message_created_at AS "message_created_at!",
+                   p.pinned_by AS "pinned_by?: UserId",
+                   u.username AS "pinned_by_username?",
+                   p.note,
+                   p.pinned_at AS "pinned_at!"
+            FROM chat_message_pins p
+            LEFT JOIN users u ON u.id = p.pinned_by
+            WHERE p.room_id = $1
+              AND p.message_id = $2
+              AND p.message_created_at = $3
+            "#,
+            room_id.as_i64(),
+            message_id,
+            message_created_at
+        )
+        .fetch_optional(&mut **tx)
+        .await?;
+        Ok(pin)
+    }
+
+    async fn reaction_summaries_for_messages_from_pool(
+        &self,
+        pool: &PgPool,
         messages: &[ChatMessage],
         viewer_user_id: Option<&UserId>,
     ) -> Result<HashMap<ChatMessageKey, Vec<ChatReactionSummary>>> {
-        self.reaction_summaries_for_messages_with_executor(&self.pool, messages, viewer_user_id)
+        self.reaction_summaries_for_messages_with_executor(pool, messages, viewer_user_id)
             .await
     }
 
@@ -3092,7 +4215,7 @@ struct IdempotencyRow {
 
 pub struct ChatMessageOperationIdempotency<'a> {
     pub client_operation_id: &'a str,
-    pub operation_kind: ChatEventKind,
+    pub operation_kind: ChatMessageOperationKind,
     pub request_hash: &'a str,
     pub message_id: i64,
     pub message_created_at: DateTime<Utc>,
@@ -3123,6 +4246,26 @@ pub struct DeleteChatMessageEventRequest<'a> {
     pub operation: Option<&'a ChatMessageOperationIdempotency<'a>>,
 }
 
+pub struct PinChatMessageEventRequest<'a> {
+    pub room_id: &'a RoomId,
+    pub message_id: i64,
+    pub pinned_by: &'a UserId,
+    pub note: Option<&'a str>,
+    pub max_pins_per_room: Option<i64>,
+    pub event_id: &'a str,
+    pub occurred_at: DateTime<Utc>,
+    pub operation: Option<&'a ChatMessageOperationIdempotency<'a>>,
+}
+
+pub struct UnpinChatMessageEventRequest<'a> {
+    pub room_id: &'a RoomId,
+    pub message_id: i64,
+    pub unpinned_by: &'a UserId,
+    pub event_id: &'a str,
+    pub occurred_at: DateTime<Utc>,
+    pub operation: Option<&'a ChatMessageOperationIdempotency<'a>>,
+}
+
 struct ExistingIdempotentEventRequest<'a> {
     message: &'a ChatMessage,
     client_message_id: &'a str,
@@ -3134,6 +4277,12 @@ struct ExistingIdempotentEventRequest<'a> {
 
 pub struct IdempotentChatEventInsert {
     pub event: ChatMessageEventLog,
+    pub inserted: bool,
+    pub pin_event: Option<ChatPinEventLog>,
+}
+
+pub struct IdempotentChatPinEventInsert {
+    pub event: ChatPinEventLog,
     pub inserted: bool,
 }
 
@@ -3156,6 +4305,17 @@ fn chat_event_summary(event: &ChatMessageEvent) -> serde_json::Value {
     })
 }
 
+fn chat_pin_event_summary(event: &ChatPinEvent) -> serde_json::Value {
+    serde_json::json!({
+        "kind": i16::from(event.kind),
+        "message_id": event.message.message.id,
+        "message_created_at": event.message.message.created_at,
+        "message_version": event.message.message.version,
+        "actor_user_id": event.actor_user_id.as_i64(),
+        "pinned": event.pin.is_some(),
+    })
+}
+
 #[derive(sqlx::FromRow)]
 struct ChatEventRow {
     sequence: i64,
@@ -3164,6 +4324,33 @@ struct ChatEventRow {
     actor_user_id: Option<i64>,
     event_payload: Option<serde_json::Value>,
     occurred_at: DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ChatPinEventRow {
+    sequence: i64,
+    event_id: String,
+    event_payload: Option<serde_json::Value>,
+    occurred_at: DateTime<Utc>,
+}
+
+impl ChatPinEventRow {
+    fn try_into_log(self) -> Result<ChatPinEventLog> {
+        let payload = self.event_payload.ok_or_else(|| {
+            Error::Internal("Chat pin resource event is missing replay payload".to_string())
+        })?;
+        let mut event: ChatPinEvent = serde_json::from_value(payload)?;
+        if event.event_id != self.event_id || event.occurred_at != self.occurred_at {
+            return Err(Error::Internal(
+                "Chat pin resource event payload does not match indexed columns".to_string(),
+            ));
+        }
+        event.sequence = self.sequence;
+        Ok(ChatPinEventLog {
+            sequence: self.sequence,
+            event,
+        })
+    }
 }
 
 impl ChatEventRow {
@@ -3239,6 +4426,7 @@ mod tests {
                 attachments: Vec::new(),
                 reactions: Vec::new(),
                 mentions: Vec::new(),
+                pin: None,
             },
             occurred_at: Utc::now(),
         }

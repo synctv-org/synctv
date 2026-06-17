@@ -2,13 +2,14 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        AuditAction, AuditTargetType, ContentReportStatus, ContentReportTarget,
-        CreateContentReport, PageParams, ReviewStatus, SignupMethod, User, UserId, UserListQuery,
+        AuditAction, AuditTargetType, ChatMessage, ChatMessageType, ContentReportStatus,
+        ContentReportTarget, CreateContentReport, PageParams, ReviewStatus, Room, RoomId,
+        RoomStatus, SignupMethod, User, UserId, UserListQuery,
     },
     repository::{
-        AuditLogQuery, AuditLogRepository, BanRecordListQuery, BanRecordRepository,
+        AuditLogQuery, AuditLogRepository, BanRecordListQuery, BanRecordRepository, ChatRepository,
         ContentReportListQuery, ContentReportListScope, ContentReportRepository, ReviewRepository,
-        UserRegistrationReviewListQuery, UserRepository,
+        RoomRepository, UserRegistrationReviewListQuery, UserRepository,
     },
 };
 use synctv_core_testing::{create_test_pool_with_db_and_label, ok, some};
@@ -26,10 +27,38 @@ async fn create_user(pool: &PgPool, username: &str) -> User {
     )
 }
 
+fn room(name: &str, owner_id: UserId) -> Room {
+    let now = Utc::now();
+    Room {
+        id: RoomId::new(),
+        name: name.to_string(),
+        description: String::new(),
+        cover_file_reference_id: None,
+        created_by: owner_id,
+        status: RoomStatus::Active,
+        is_banned: false,
+        closed_at: None,
+        created_at: now,
+        updated_at: now,
+        deleted_at: None,
+        version: 0,
+        last_activity_at: now,
+    }
+}
+
+async fn create_room(pool: &PgPool, name: &str, owner_id: UserId) -> Room {
+    ok(
+        RoomRepository::new(pool.clone())
+            .create(&room(name, owner_id))
+            .await,
+        "room should be created",
+    )
+}
+
 async fn insert_pending_registration(pool: &PgPool, username: &str) -> UserId {
     let id: i64 = ok(
-        sqlx::query_scalar(
-            r"
+        sqlx::query_scalar!(
+            r#"
             INSERT INTO user_registration_requests (
                 username,
                 email,
@@ -41,17 +70,17 @@ async fn insert_pending_registration(pool: &PgPool, username: &str) -> UserId {
                 status
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING id
-            ",
+            RETURNING id AS "id!"
+            "#,
+            username,
+            &format!("{username}@example.com"),
+            b"opaque-record".as_slice(),
+            b"opaque-id".as_slice(),
+            "ristretto255",
+            1_i32,
+            i16::from(SignupMethod::Email),
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(username)
-        .bind(format!("{username}@example.com"))
-        .bind(b"opaque-record".as_slice())
-        .bind(b"opaque-id".as_slice())
-        .bind("ristretto255")
-        .bind(1_i32)
-        .bind(i16::from(SignupMethod::Email))
-        .bind(i16::from(ReviewStatus::Pending))
         .fetch_one(pool)
         .await,
         "registration review should be inserted",
@@ -64,8 +93,8 @@ async fn insert_pending_registration(pool: &PgPool, username: &str) -> UserId {
 
 async fn insert_audit_log(pool: &PgPool, actor_username: &str) -> i64 {
     ok(
-        sqlx::query_scalar(
-            r"
+        sqlx::query_scalar!(
+            r#"
             INSERT INTO audit_logs (
                 actor_username,
                 action,
@@ -74,14 +103,14 @@ async fn insert_audit_log(pool: &PgPool, actor_username: &str) -> i64 {
                 created_at
             )
             VALUES ($1, $2, $3, $4, $5)
-            RETURNING id
-            ",
+            RETURNING id AS "id!"
+            "#,
+            actor_username,
+            i16::from(AuditAction::UserLogin),
+            i16::from(AuditTargetType::User),
+            actor_username,
+            Utc::now()
         )
-        .bind(actor_username)
-        .bind(i16::from(AuditAction::UserLogin))
-        .bind(i16::from(AuditTargetType::User))
-        .bind(actor_username)
-        .bind(Utc::now())
         .fetch_one(pool)
         .await,
         "audit log should be inserted",
@@ -121,6 +150,56 @@ async fn user_eventual_list_reads_from_read_pool_while_default_list_uses_primary
     assert_eq!(
         some(loaded, "primary user should be visible through get_by_id").username,
         "primary_only_user"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn chat_history_page_uses_primary_snapshot_with_primary_event_cursor() {
+    let (_primary_container, primary_pool) =
+        create_test_pool_with_db_and_label("synctv_test", "secondary-read-chat-primary").await;
+    let (_read_container, read_pool) =
+        create_test_pool_with_db_and_label("synctv_test", "secondary-read-chat-read").await;
+
+    let creator = create_user(&primary_pool, "primary_chat_owner").await;
+    let room = create_room(&primary_pool, "Primary Chat History Room", creator.id).await;
+    let mut message = ChatMessage::new(room.id, creator.id, "primary message".to_string());
+    message.message_type = ChatMessageType::Text;
+    message.client_message_id = Some("primary-chat-message".to_string());
+
+    let primary_repo = ChatRepository::new_with_read_pool(primary_pool, read_pool);
+    let inserted = ok(
+        primary_repo
+            .insert_message_event_idempotent(
+                &message,
+                &[],
+                &[],
+                "primary-chat-message-hash",
+                "primary-chat-event",
+                Utc::now(),
+            )
+            .await,
+        "primary chat message event should be inserted",
+    );
+
+    let page = ok(
+        primary_repo
+            .list_history_page_for_viewer(&room.id, None, 10, false, Some(&creator.id))
+            .await,
+        "history page should load",
+    );
+
+    assert_eq!(
+        page.event_cursor.sequence, inserted.event.sequence,
+        "event cursor should come from the primary event stream"
+    );
+    assert_eq!(
+        page.messages
+            .iter()
+            .map(|message| message.message.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["primary message"],
+        "history page snapshot should come from the same primary source as the cursor"
     );
 }
 

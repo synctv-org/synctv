@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH progress_update AS (\n               UPDATE room_playback_progress\n               SET \"position\" = $2, version = version + 1\n               WHERE id = $1\n               RETURNING room_id\n           )\n           UPDATE room_playback_state state\n           SET version = version + 1, updated_at = NOW()\n           FROM progress_update\n           WHERE state.room_id = progress_update.room_id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8cd076d53443097b90908cf7bbd1d34115fc94a991ebf5a1d47c91d46f22dc56"
+}

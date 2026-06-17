@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO room_settings (room_id, key, value, version) VALUES ($1, '_settings', 'not valid json!!!', 1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ab8239d12c97c1a4d7ba8b3cbff376ebc3c3a233c44c707308cf6e10a35dc4c7"
+}

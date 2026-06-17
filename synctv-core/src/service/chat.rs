@@ -15,18 +15,19 @@ use crate::{
     models::{
         AuditAction, AuditTargetType, ChatAttachment, ChatEventKind, ChatHistoryCursor,
         ChatHistoryPage, ChatMessage, ChatMessageContext, ChatMessageEvent, ChatMessageEventLog,
-        ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType,
-        ChatMessageWithAttachments, ChatPlaybackMessagesQuery, ChatReactionUsersCursor,
-        ChatReactionUsersPage, ChatReadStateWithUnread, CompleteFileUploadSession,
-        CompleteFileUploadSessionResult, CreateChatAttachmentUploadSession, DeleteChatMessage,
-        EditChatMessage, FileBlob, FileObjectDownload, FileRangeRequest, FileUploadRange,
-        FileUploadSessionCreateResult, GetFileObject, MarkChatRead, RoomId, SendChatMessage,
-        SetChatReaction, StoreFileUpload, StoreFileUploadResult, SubmittedFileReference,
-        SubmittedFileReferenceKind, UserId,
+        ChatMessageOperationKind, ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType,
+        ChatMessageWithAttachments, ChatPinEvent, ChatPinnedMessage, ChatPlaybackMessagesQuery,
+        ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadStateWithUnread,
+        CompleteFileUploadSession, CompleteFileUploadSessionResult,
+        CreateChatAttachmentUploadSession, DeleteChatMessage, EditChatMessage, FileBlob,
+        FileObjectDownload, FileRangeRequest, FileUploadRange, FileUploadSessionCreateResult,
+        GetFileObject, MarkChatRead, PinChatMessage, RoomId, SendChatMessage, SetChatReaction,
+        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
+        UnpinChatMessage, UserId, CHAT_PIN_NOTE_MAX_CHARS,
     },
     repository::{
         ChatMessageOperationIdempotency, ChatRepository, DeleteChatMessageEventRequest,
-        EditChatMessageEventRequest,
+        EditChatMessageEventRequest, PinChatMessageEventRequest, UnpinChatMessageEventRequest,
     },
     service::{
         audit::{AuditEventParams, AuditService},
@@ -74,12 +75,20 @@ pub struct ChatService {
     audit_service: Option<Arc<AuditService>>,
     /// Local room event bus for chat/domain notifications
     notification_service: NotificationService,
+    settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
     reaction_detail_cache: AsyncCache<ChatReactionDetailCacheKey, ChatReactionUsersPage>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ChatMessageEventOutcome {
     pub event: ChatMessageEvent,
+    pub inserted: bool,
+    pub pin_event: Option<ChatPinEvent>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatPinEventOutcome {
+    pub event: ChatPinEvent,
     pub inserted: bool,
 }
 
@@ -98,6 +107,7 @@ pub struct ChatDependencies {
     pub file_storage_service: Arc<dyn FileStorageService>,
     pub audit_service: Option<Arc<AuditService>>,
     pub notification_service: NotificationService,
+    pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
 }
 
 impl std::fmt::Debug for ChatService {
@@ -126,6 +136,7 @@ impl ChatService {
             file_storage_service,
             audit_service,
             notification_service,
+            settings_registry,
         } = dependencies;
 
         Self {
@@ -139,6 +150,7 @@ impl ChatService {
             file_storage_service,
             audit_service,
             notification_service,
+            settings_registry,
             reaction_detail_cache: AsyncCache::builder()
                 .max_capacity(CHAT_REACTION_DETAIL_CACHE_CAPACITY)
                 .time_to_live(Duration::from_secs(CHAT_REACTION_DETAIL_CACHE_TTL_SECS))
@@ -246,6 +258,19 @@ impl ChatService {
     #[must_use]
     pub const fn room_settings_service(&self) -> &RoomSettingsService {
         &self.room_settings_service
+    }
+
+    fn max_pinned_chat_messages_per_room(&self) -> Result<Option<i64>> {
+        let Some(settings_registry) = &self.settings_registry else {
+            return Ok(None);
+        };
+        let limit = settings_registry.max_pinned_chat_messages_per_room.get()?;
+        if limit == 0 {
+            return Ok(None);
+        }
+        i64::try_from(limit)
+            .map(Some)
+            .map_err(|_| Error::Internal("max pinned chat message limit exceeds i64".to_string()))
     }
 
     /// Send a chat message
@@ -380,6 +405,7 @@ impl ChatService {
                 return Ok(ChatMessageEventOutcome {
                     event: event.event,
                     inserted: false,
+                    pin_event: None,
                 });
             }
         }
@@ -493,6 +519,7 @@ impl ChatService {
         Ok(ChatMessageEventOutcome {
             event,
             inserted: created.inserted,
+            pin_event: created.pin_event.map(|event| event.event),
         })
     }
 
@@ -730,7 +757,7 @@ impl ChatService {
 
         let message = self
             .chat_repository
-            .get_by_room_and_id(&request.room_id, request.message_id)
+            .get_by_room_and_id_from_primary(&request.room_id, request.message_id)
             .await?
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
         if message.status == ChatMessageStatus::Deleted {
@@ -818,7 +845,7 @@ impl ChatService {
 
         let message = self
             .chat_repository
-            .get_by_room_and_id(room_id, message_id)
+            .get_by_room_and_id_from_primary(room_id, message_id)
             .await?
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
         if message.status == ChatMessageStatus::Deleted {
@@ -876,7 +903,7 @@ impl ChatService {
                     &request.room_id,
                     &request.user_id,
                     client_operation_id,
-                    ChatEventKind::Edited,
+                    ChatMessageOperationKind::Edit,
                     &request_hash,
                 )
                 .await?
@@ -884,13 +911,14 @@ impl ChatService {
                 return Ok(ChatMessageEventOutcome {
                     event: event.event,
                     inserted: false,
+                    pin_event: None,
                 });
             }
         }
 
         let current = self
             .chat_repository
-            .get_by_room_and_id(&request.room_id, request.message_id)
+            .get_by_room_and_id_from_primary(&request.room_id, request.message_id)
             .await?
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
         ensure_message_owner(&current, &request.user_id)?;
@@ -921,6 +949,7 @@ impl ChatService {
                     return Ok(ChatMessageEventOutcome {
                         event,
                         inserted: false,
+                        pin_event: None,
                     });
                 }
                 return Err(Error::OptimisticLockConflict);
@@ -931,7 +960,7 @@ impl ChatService {
             .as_deref()
             .map(|client_operation_id| ChatMessageOperationIdempotency {
                 client_operation_id,
-                operation_kind: ChatEventKind::Edited,
+                operation_kind: ChatMessageOperationKind::Edit,
                 request_hash: &request_hash,
                 message_id: request.message_id,
                 message_created_at: current.created_at,
@@ -954,7 +983,7 @@ impl ChatService {
         let Some(updated) = updated else {
             let current = self
                 .chat_repository
-                .get_by_room_and_id(&request.room_id, request.message_id)
+                .get_by_room_and_id_from_primary(&request.room_id, request.message_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
             if current.status == ChatMessageStatus::Deleted {
@@ -973,6 +1002,7 @@ impl ChatService {
                     return Ok(ChatMessageEventOutcome {
                         event,
                         inserted: false,
+                        pin_event: None,
                     });
                 }
             }
@@ -982,6 +1012,7 @@ impl ChatService {
         Ok(ChatMessageEventOutcome {
             event: updated.event.event,
             inserted: updated.inserted,
+            pin_event: updated.pin_event.map(|event| event.event),
         })
     }
 
@@ -998,7 +1029,7 @@ impl ChatService {
     ) -> Result<ChatMessageEventOutcome> {
         let current_with_attachments = self
             .chat_repository
-            .get_with_attachments_by_room_and_id(&request.room_id, request.message_id)
+            .get_with_attachments_by_room_and_id_from_primary(&request.room_id, request.message_id)
             .await?
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
         let current = &current_with_attachments.message;
@@ -1022,7 +1053,7 @@ impl ChatService {
                     &request.room_id,
                     &request.user_id,
                     client_operation_id,
-                    ChatEventKind::Deleted,
+                    ChatMessageOperationKind::Delete,
                     &request_hash,
                 )
                 .await?
@@ -1030,6 +1061,7 @@ impl ChatService {
                 return Ok(ChatMessageEventOutcome {
                     event: event.event,
                     inserted: false,
+                    pin_event: None,
                 });
             }
         }
@@ -1038,6 +1070,7 @@ impl ChatService {
                 return Ok(ChatMessageEventOutcome {
                     event,
                     inserted: false,
+                    pin_event: None,
                 });
             }
             return Err(Error::Conflict(
@@ -1056,7 +1089,7 @@ impl ChatService {
             .as_deref()
             .map(|client_operation_id| ChatMessageOperationIdempotency {
                 client_operation_id,
-                operation_kind: ChatEventKind::Deleted,
+                operation_kind: ChatMessageOperationKind::Delete,
                 request_hash: &request_hash,
                 message_id: request.message_id,
                 message_created_at: current.created_at,
@@ -1078,13 +1111,14 @@ impl ChatService {
         let Some(deleted) = deleted else {
             let current = self
                 .chat_repository
-                .get_by_room_and_id(&request.room_id, request.message_id)
+                .get_by_room_and_id_from_primary(&request.room_id, request.message_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
             if let Some(event) = self.existing_delete_event(&request, &current).await? {
                 return Ok(ChatMessageEventOutcome {
                     event,
                     inserted: false,
+                    pin_event: None,
                 });
             }
             if current.status == ChatMessageStatus::Deleted {
@@ -1144,6 +1178,7 @@ impl ChatService {
         Ok(ChatMessageEventOutcome {
             event: deleted.event.event,
             inserted: deleted.inserted,
+            pin_event: deleted.pin_event.map(|event| event.event),
         })
     }
 
@@ -1174,6 +1209,178 @@ impl ChatService {
         .map(|_| true)
     }
 
+    pub async fn list_pinned_messages(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        limit: i32,
+    ) -> Result<Vec<ChatPinnedMessage>> {
+        self.permission_service
+            .check_permission(
+                room_id,
+                user_id,
+                crate::models::RoomPermission::VIEW_CHAT_HISTORY,
+            )
+            .await?;
+
+        self.chat_repository
+            .list_pinned_messages_for_viewer(room_id, limit.clamp(1, 100), Some(user_id))
+            .await
+    }
+
+    pub async fn list_pinned_messages_for_authorized_viewer(
+        &self,
+        room_id: &RoomId,
+        viewer_user_id: Option<&UserId>,
+        limit: i32,
+    ) -> Result<Vec<ChatPinnedMessage>> {
+        self.chat_repository
+            .list_pinned_messages_for_viewer(room_id, limit.clamp(1, 100), viewer_user_id)
+            .await
+    }
+
+    pub async fn pin_message_event_outcome(
+        &self,
+        request: PinChatMessage,
+    ) -> Result<ChatPinEventOutcome> {
+        validate_client_operation_id(request.client_operation_id.as_deref())?;
+        if let Some(note) = request.note.as_deref() {
+            if note.trim().is_empty() || note.chars().count() > CHAT_PIN_NOTE_MAX_CHARS {
+                return Err(Error::InvalidInput(format!(
+                    "chat pin note must be between 1 and {CHAT_PIN_NOTE_MAX_CHARS} characters"
+                )));
+            }
+        }
+        self.permission_service
+            .check_permission(
+                &request.room_id,
+                &request.user_id,
+                crate::models::RoomPermission::DELETE_CHAT,
+            )
+            .await?;
+
+        let request_hash = chat_pin_request_hash(&request)?;
+        if let Some(client_operation_id) = request.client_operation_id.as_deref() {
+            if let Some(event) = self
+                .chat_repository
+                .replay_pin_operation_event(
+                    &request.room_id,
+                    &request.user_id,
+                    client_operation_id,
+                    ChatMessageOperationKind::Pin,
+                    &request_hash,
+                )
+                .await?
+            {
+                return Ok(ChatPinEventOutcome {
+                    event: event.event,
+                    inserted: false,
+                });
+            }
+        }
+
+        let current = self
+            .chat_repository
+            .get_by_room_and_id_from_primary(&request.room_id, request.message_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+        if current.status == ChatMessageStatus::Deleted {
+            return Err(Error::Conflict("Message has been deleted".to_string()));
+        }
+        let operation = request
+            .client_operation_id
+            .as_deref()
+            .map(|client_operation_id| ChatMessageOperationIdempotency {
+                client_operation_id,
+                operation_kind: ChatMessageOperationKind::Pin,
+                request_hash: &request_hash,
+                message_id: request.message_id,
+                message_created_at: current.created_at,
+            });
+        let event = self
+            .chat_repository
+            .pin_message_with_event(PinChatMessageEventRequest {
+                room_id: &request.room_id,
+                message_id: request.message_id,
+                pinned_by: &request.user_id,
+                note: request.note.as_deref(),
+                max_pins_per_room: self.max_pinned_chat_messages_per_room()?,
+                event_id: &synctv_common::snanoid!(16),
+                occurred_at: Utc::now(),
+                operation: operation.as_ref(),
+            })
+            .await?;
+        Ok(ChatPinEventOutcome {
+            event: event.event.event,
+            inserted: event.inserted,
+        })
+    }
+
+    pub async fn unpin_message_event_outcome(
+        &self,
+        request: UnpinChatMessage,
+    ) -> Result<ChatPinEventOutcome> {
+        validate_client_operation_id(request.client_operation_id.as_deref())?;
+        self.permission_service
+            .check_permission(
+                &request.room_id,
+                &request.user_id,
+                crate::models::RoomPermission::DELETE_CHAT,
+            )
+            .await?;
+
+        let request_hash = chat_unpin_request_hash(&request)?;
+        if let Some(client_operation_id) = request.client_operation_id.as_deref() {
+            if let Some(event) = self
+                .chat_repository
+                .replay_pin_operation_event(
+                    &request.room_id,
+                    &request.user_id,
+                    client_operation_id,
+                    ChatMessageOperationKind::Unpin,
+                    &request_hash,
+                )
+                .await?
+            {
+                return Ok(ChatPinEventOutcome {
+                    event: event.event,
+                    inserted: false,
+                });
+            }
+        }
+
+        let current = self
+            .chat_repository
+            .get_by_room_and_id_from_primary(&request.room_id, request.message_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+        let operation = request
+            .client_operation_id
+            .as_deref()
+            .map(|client_operation_id| ChatMessageOperationIdempotency {
+                client_operation_id,
+                operation_kind: ChatMessageOperationKind::Unpin,
+                request_hash: &request_hash,
+                message_id: request.message_id,
+                message_created_at: current.created_at,
+            });
+        let event = self
+            .chat_repository
+            .unpin_message_with_event(UnpinChatMessageEventRequest {
+                room_id: &request.room_id,
+                message_id: request.message_id,
+                unpinned_by: &request.user_id,
+                event_id: &synctv_common::snanoid!(16),
+                occurred_at: Utc::now(),
+                operation: operation.as_ref(),
+            })
+            .await?;
+        Ok(ChatPinEventOutcome {
+            event: event.event.event,
+            inserted: event.inserted,
+        })
+    }
+
     pub async fn set_reaction_event_outcome(
         &self,
         request: SetChatReaction,
@@ -1187,7 +1394,7 @@ impl ChatService {
             .await?;
         validate_chat_reaction_key(&request.reaction_key)?;
 
-        let event = self
+        let inserted = self
             .chat_repository
             .set_reaction_with_event(&request, &synctv_common::snanoid!(16), Utc::now())
             .await?;
@@ -1204,13 +1411,14 @@ impl ChatService {
             message_id = %request.message_id,
             reaction_key = %request.reaction_key,
             enabled = request.enabled,
-            event_id = %event.event.event_id,
+            event_id = %inserted.event.event.event_id,
             "Chat message reaction changed"
         );
 
         Ok(ChatMessageEventOutcome {
-            event: event.event,
-            inserted: true,
+            event: inserted.event.event,
+            inserted: inserted.inserted,
+            pin_event: inserted.pin_event.map(|event| event.event),
         })
     }
 
@@ -1430,7 +1638,7 @@ impl ChatService {
         };
         let reply = self
             .chat_repository
-            .get_by_room_and_id(room_id, reply_to_message_id)
+            .get_by_room_and_id_from_primary(room_id, reply_to_message_id)
             .await?
             .ok_or_else(|| Error::NotFound("Reply target message not found".to_string()))?;
         if reply.status == ChatMessageStatus::Deleted {

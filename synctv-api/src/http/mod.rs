@@ -982,6 +982,10 @@ fn register_write_routes() -> Router<AppState> {
             axum::routing::delete(room::delete_chat_message),
         )
         .route(
+            "/api/rooms/{room_id}/chat/messages/{message_id}/pin",
+            axum::routing::put(room::pin_chat_message).delete(room::unpin_chat_message),
+        )
+        .route(
             "/api/rooms/{room_id}/chat/messages/{message_id}/reactions/{reaction_key}",
             axum::routing::put(room::set_chat_reaction).delete(room::clear_chat_reaction),
         )
@@ -1020,6 +1024,10 @@ fn register_read_routes() -> Router<AppState> {
         .route(
             "/api/rooms/{room_id}/chat/playback-messages",
             get(room::get_chat_playback_messages),
+        )
+        .route(
+            "/api/rooms/{room_id}/chat/pinned-messages",
+            get(room::list_pinned_chat_messages),
         )
         .route(
             "/api/rooms/{room_id}/chat/messages/{message_id}",

@@ -19,14 +19,16 @@ pub(crate) use chat::{
     __path_clear_chat_reaction, __path_delete_chat_message, __path_edit_chat_message,
     __path_get_chat_history, __path_get_chat_message, __path_get_chat_message_context,
     __path_get_chat_message_read_receipts, __path_get_chat_read_state,
-    __path_list_chat_reaction_users, __path_mark_chat_read, __path_send_chat_message,
-    __path_set_chat_reaction,
+    __path_list_chat_reaction_users, __path_list_pinned_chat_messages, __path_mark_chat_read,
+    __path_pin_chat_message, __path_send_chat_message, __path_set_chat_reaction,
+    __path_unpin_chat_message,
 };
 pub use chat::{
     clear_chat_reaction, delete_chat_message, edit_chat_message, get_chat_history,
     get_chat_message, get_chat_message_context, get_chat_message_read_receipts,
-    get_chat_playback_messages, get_chat_read_state, list_chat_reaction_users, mark_chat_read,
-    send_chat_message, set_chat_reaction,
+    get_chat_playback_messages, get_chat_read_state, list_chat_reaction_users,
+    list_pinned_chat_messages, mark_chat_read, pin_chat_message, send_chat_message,
+    set_chat_reaction, unpin_chat_message,
 };
 pub(crate) use execute::execute_room_actor_endpoint;
 use execute::request_metadata;

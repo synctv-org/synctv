@@ -269,6 +269,7 @@ mod tests {
                 start: 0,
                 length: 6,
             }],
+            pin: None,
         };
         let bytes = msg.encode_to_vec();
         let decoded = crate::client::ChatMessageReceive::decode(bytes.as_slice()).unwrap();
@@ -2219,6 +2220,23 @@ mod tests {
         )
         .expect("Chat edit should allow omitted metadata");
         assert!(decoded.metadata.is_empty());
+
+        let decoded: crate::client::ListPinnedChatMessagesRequest =
+            serde_json::from_str(r"{}").expect("Pinned chat list should allow omitted limit");
+        assert_eq!(decoded.limit, 0);
+
+        let decoded: crate::client::PinChatMessageRequest = serde_json::from_str(
+            r#"{"note":"important"}"#,
+        )
+        .expect("Pin request should allow path-supplied message_id and omitted operation id");
+        assert_eq!(decoded.message_id, "");
+        assert_eq!(decoded.note, "important");
+        assert_eq!(decoded.client_operation_id, "");
+
+        let decoded: crate::client::UnpinChatMessageRequest = serde_json::from_str(r"{}")
+            .expect("Unpin request should allow path-supplied message_id and omitted operation id");
+        assert_eq!(decoded.message_id, "");
+        assert_eq!(decoded.client_operation_id, "");
 
         let decoded: crate::client::GetChatPlaybackMessagesRequest =
             serde_json::from_str(r#"{"playback_media_id":"med_probe"}"#)

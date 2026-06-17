@@ -113,10 +113,12 @@ async fn test_chat_message_default_partition_routing() {
 
     // Verify we can retrieve it
     let count: i64 = ok(
-        sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE id = $1")
-            .bind(created.id)
-            .fetch_one(&pool)
-            .await,
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM chat_messages WHERE id = $1"#,
+            created.id
+        )
+        .fetch_one(&pool)
+        .await,
         "chat message count query should succeed",
     );
     assert_eq!(count, 1);
@@ -137,11 +139,11 @@ async fn test_chat_partition_manager_creates_future_partitions() {
 
     // Verify partitions exist
     let partition_count: i64 = ok(
-        sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pg_tables
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM pg_tables
          WHERE schemaname = 'public'
            AND tablename LIKE 'chat_messages_%'
-           AND tablename ~ '^chat_messages_[0-9]{4}_[0-9]{2}_[0-9]{2}$'",
+           AND tablename ~ '^chat_messages_[0-9]{4}_[0-9]{2}_[0-9]{2}$'"#,
         )
         .fetch_one(&pool)
         .await,
@@ -159,13 +161,14 @@ async fn test_audit_logs_default_partition_routing() {
 
     // Insert an audit log entry with a far-future date
     let far_future = Utc::now() + Duration::days(365 * 2);
-    let result =
-        sqlx::query("INSERT INTO audit_logs (actor_id, action, created_at) VALUES ($1, $2, $3)")
-            .bind(UserId::expect_positive(1))
-            .bind(i16::from(AuditAction::SettingsUpdated))
-            .bind(far_future)
-            .execute(&pool)
-            .await;
+    let result = sqlx::query!(
+        "INSERT INTO audit_logs (actor_id, action, created_at) VALUES ($1, $2, $3)",
+        UserId::expect_positive(1).as_i64(),
+        i16::from(AuditAction::SettingsUpdated),
+        far_future,
+    )
+    .execute(&pool)
+    .await;
 
     assert!(
         result.is_ok(),

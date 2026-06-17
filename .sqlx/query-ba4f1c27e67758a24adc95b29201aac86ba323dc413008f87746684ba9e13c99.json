@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT action AS \"action!\" FROM audit_logs WHERE actor_username = 'action_tester' ORDER BY created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "action!",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "action"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ba4f1c27e67758a24adc95b29201aac86ba323dc413008f87746684ba9e13c99"
+}

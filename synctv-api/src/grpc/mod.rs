@@ -1380,6 +1380,7 @@ mod tests {
                 file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
                 audit_service,
                 notification_service: NotificationService::default(),
+                settings_registry: None,
             },
         )))
     }

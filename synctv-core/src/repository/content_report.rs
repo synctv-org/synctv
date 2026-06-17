@@ -90,8 +90,9 @@ impl ContentReportRepository {
             _ => None,
         };
 
-        let report = sqlx::query_as::<_, ContentReport>(
-            r"
+        let report = sqlx::query_as!(
+            ContentReport,
+            r#"
             INSERT INTO content_reports (
                 reporter_user_id,
                 room_id,
@@ -109,40 +110,40 @@ impl ContentReportRepository {
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING
-                id,
-                reporter_user_id,
-                room_id,
-                target_type,
-                target_room_id,
-                target_user_id,
-                target_member_room_id,
-                target_member_user_id,
+                id AS "id!: ContentReportId",
+                reporter_user_id AS "reporter_user_id!: UserId",
+                room_id AS "room_id?: RoomId",
+                target_type AS "target_type!: ContentReportTargetType",
+                target_room_id AS "target_room_id?: RoomId",
+                target_user_id AS "target_user_id?: UserId",
+                target_member_room_id AS "target_member_room_id?: RoomId",
+                target_member_user_id AS "target_member_user_id?: UserId",
                 target_chat_message_id,
                 target_chat_message_created_at,
                 reason_code,
                 reason,
-                metadata,
-                status,
-                reviewed_by,
+                metadata AS "metadata!: serde_json::Value",
+                status AS "status!: ContentReportStatus",
+                reviewed_by AS "reviewed_by?: UserId",
                 reviewed_at,
                 resolution_note,
                 created_at,
                 updated_at
-            ",
+            "#,
+            request.reporter_user_id as UserId,
+            room_id.map(i64::from),
+            i16::from(target_type),
+            target_room_id.map(i64::from),
+            target_user_id.map(i64::from),
+            target_member_room_id.map(i64::from),
+            target_member_user_id.map(i64::from),
+            target_chat_message_id,
+            chat_message_created_at,
+            request.reason_code,
+            request.reason,
+            request.metadata,
+            i16::from(ContentReportStatus::Open),
         )
-        .bind(request.reporter_user_id.as_i64())
-        .bind(room_id.map(|id| id.as_i64()))
-        .bind(i16::from(target_type))
-        .bind(target_room_id.map(|id| id.as_i64()))
-        .bind(target_user_id.map(|id| id.as_i64()))
-        .bind(target_member_room_id.map(|id| id.as_i64()))
-        .bind(target_member_user_id.map(|id| id.as_i64()))
-        .bind(target_chat_message_id)
-        .bind(chat_message_created_at)
-        .bind(request.reason_code)
-        .bind(request.reason)
-        .bind(request.metadata)
-        .bind(i16::from(ContentReportStatus::Open))
         .fetch_one(&self.pool)
         .await?;
 

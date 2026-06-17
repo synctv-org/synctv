@@ -10,9 +10,9 @@ use super::super::{
 };
 use super::RoomService;
 use crate::grpc::client_service::streaming::{
-    watch_chat_events_event, watch_playback_event, watch_playback_state_event,
-    watch_playlist_items_event, watch_room_member_events_event, watch_room_settings_event,
-    GrpcMessageSender, GrpcStreamMessage, MESSAGE_STREAM_BUFFER_SIZE,
+    watch_chat_events_event, watch_chat_pin_events_event, watch_playback_event,
+    watch_playback_state_event, watch_playlist_items_event, watch_room_member_events_event,
+    watch_room_settings_event, GrpcMessageSender, GrpcStreamMessage, MESSAGE_STREAM_BUFFER_SIZE,
 };
 use crate::impls::messaging::{
     GuestRealtimeIdentity, MessageConcurrencyConfig, MessageSender, RealtimePrincipal,
@@ -301,5 +301,17 @@ pub(super) async fn watch_chat_events(
         .map_err(Status::invalid_argument)?;
     service
         .open_watch_stream(metadata, room_id, observe, watch_chat_events_event)
+        .await
+}
+
+pub(super) async fn watch_chat_pin_events(
+    service: &ClientServiceImpl,
+    request: Request<WatchChatPinEventsRequest>,
+) -> Result<Response<<ClientServiceImpl as RoomService>::WatchChatPinEventsStream>, Status> {
+    let (metadata, room_id) = service.internal_room_request_context(&request)?;
+    let observe = crate::impls::messaging::watch_chat_pin_events_observe(request.into_inner())
+        .map_err(Status::invalid_argument)?;
+    service
+        .open_watch_stream(metadata, room_id, observe, watch_chat_pin_events_event)
         .await
 }

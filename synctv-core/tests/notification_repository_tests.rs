@@ -202,13 +202,14 @@ async fn test_delete_older_than_boundary() {
 
     let old_date = Utc::now() - Duration::days(31);
     ok(
-        sqlx::query(
+        sqlx::query!(
             r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
-          VALUES ($1, $2, 'Old Notif', 'old', '{}', false, $3, $3)"
+          VALUES ($1, $2, 'Old Notif', 'old', $3, false, $4, $4)",
+            user.id.as_i64(),
+            i16::from(NotificationType::SystemAnnouncement),
+            serde_json::json!({}),
+            old_date
         )
-        .bind(user.id)
-        .bind(i16::from(NotificationType::SystemAnnouncement))
-        .bind(old_date)
         .execute(&pool)
         .await,
         "old notification fixture should be inserted",
@@ -354,13 +355,14 @@ async fn test_list_by_user_with_count_has_partition_pruning() {
     // Insert a notification older than 6 months via raw SQL
     let old_date = Utc::now() - Duration::days(200);
     ok(
-        sqlx::query(
+        sqlx::query!(
             r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
-          VALUES ($1, $2, 'Old Notif', 'old', '{}', false, $3, $3)",
+          VALUES ($1, $2, 'Old Notif', 'old', $3, false, $4, $4)",
+            user.id.as_i64(),
+            i16::from(NotificationType::SystemAnnouncement),
+            serde_json::json!({}),
+            old_date
         )
-        .bind(user.id)
-        .bind(i16::from(NotificationType::SystemAnnouncement))
-        .bind(old_date)
         .execute(&pool)
         .await,
         "old notification fixture should be inserted",
@@ -409,13 +411,14 @@ async fn test_count_by_user_has_partition_pruning() {
     // Insert a notification older than 6 months
     let old_date = Utc::now() - Duration::days(200);
     ok(
-        sqlx::query(
+        sqlx::query!(
             r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
-          VALUES ($1, $2, 'Old', 'old', '{}', false, $3, $3)",
+          VALUES ($1, $2, 'Old', 'old', $3, false, $4, $4)",
+            user.id.as_i64(),
+            i16::from(NotificationType::SystemAnnouncement),
+            serde_json::json!({}),
+            old_date
         )
-        .bind(user.id)
-        .bind(i16::from(NotificationType::SystemAnnouncement))
-        .bind(old_date)
         .execute(&pool)
         .await,
         "old notification fixture should be inserted",
@@ -451,13 +454,14 @@ async fn test_count_unread_has_partition_pruning() {
     // Insert an old unread notification (> 6 months)
     let old_date = Utc::now() - Duration::days(200);
     ok(
-        sqlx::query(
+        sqlx::query!(
             r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
-          VALUES ($1, $2, 'Old Unread', 'old', '{}', false, $3, $3)",
+          VALUES ($1, $2, 'Old Unread', 'old', $3, false, $4, $4)",
+            user.id.as_i64(),
+            i16::from(NotificationType::SystemAnnouncement),
+            serde_json::json!({}),
+            old_date
         )
-        .bind(user.id)
-        .bind(i16::from(NotificationType::SystemAnnouncement))
-        .bind(old_date)
         .execute(&pool)
         .await,
         "old unread notification fixture should be inserted",

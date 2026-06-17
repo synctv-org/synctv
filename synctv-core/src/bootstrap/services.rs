@@ -838,6 +838,7 @@ pub async fn init_services_with_options(
 
     let room_service = build_room_service(RoomServiceBuildArgs {
         pool: pool.clone(),
+        read_pool: Some(read_pool.clone()),
         user_service: (*user_service).clone(),
         credential_repo: credential_encryption_for_services
             .as_ref()
@@ -872,7 +873,10 @@ pub async fn init_services_with_options(
     // The task will be cancelled via settings_cancel.
 
     // Initialize ChatService with proper business logic (permissions, rate limiting, filtering)
-    let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
+    let chat_repo = Arc::new(ChatRepository::new_with_read_pool(
+        pool.clone(),
+        read_pool.clone(),
+    ));
     let room_settings_repo_for_chat = RoomSettingsRepo::new(pool.clone());
     let room_notification_service = Arc::new(room_service.notification_service().clone());
     let room_settings_service_for_chat = RoomSettingsService::new_with_version_fence(
@@ -910,6 +914,7 @@ pub async fn init_services_with_options(
             file_storage_service: Arc::new(chat_file_storage),
             audit_service: Some(audit_service.clone()),
             notification_service: (*room_service.notification_service()).clone(),
+            settings_registry: Some(settings_registry.clone()),
         },
     );
     info!("ChatService initialized");
@@ -1026,6 +1031,7 @@ fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
 
 struct RoomServiceBuildArgs {
     pool: PgPool,
+    read_pool: Option<PgPool>,
     user_service: UserService,
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
@@ -1131,6 +1137,7 @@ fn build_room_service_runtime(
 fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService> {
     let RoomServiceBuildArgs {
         pool,
+        read_pool,
         user_service,
         credential_repo,
         credential_encryption,
@@ -1174,6 +1181,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
             providers_manager,
             permission_service,
             crate::service::room::RoomServiceOptions {
+                read_pool,
                 distributed_lock: runtime.distributed_lock,
                 cache_invalidation: Some(cache_invalidation),
                 version_fence,
@@ -1561,6 +1569,7 @@ mod tests {
 
         let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
+            read_pool: None,
             user_service,
             credential_repo: None,
             credential_encryption: None,
@@ -1625,6 +1634,7 @@ mod tests {
 
         let standalone_room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
+            read_pool: None,
             user_service: user_service.clone(),
             credential_repo: None,
             credential_encryption: None,
@@ -1668,6 +1678,7 @@ mod tests {
 
         let cluster_room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
+            read_pool: None,
             user_service,
             credential_repo: None,
             credential_encryption: None,
@@ -1726,6 +1737,7 @@ mod tests {
 
         let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
+            read_pool: None,
             user_service: user_service.clone(),
             credential_repo: None,
             credential_encryption: None,
@@ -1772,6 +1784,7 @@ mod tests {
 
         let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
+            read_pool: None,
             user_service,
             credential_repo: None,
             credential_encryption: None,
@@ -1821,6 +1834,7 @@ mod tests {
             .checked("credential encryption should construct");
         let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
+            read_pool: None,
             user_service,
             credential_repo: Some(Arc::new(
                 UserProviderCredentialRepository::new_with_encryption(

@@ -35,36 +35,36 @@ async fn test_get_all_ordering_by_group_name() {
     let repo = SettingsRepository::new(pool.clone());
 
     ok(
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING",
+            "z_test.key1",
+            "z_group",
+            "value1"
         )
-        .bind("z_test.key1")
-        .bind("z_group")
-        .bind("value1")
         .execute(&pool)
         .await,
         "insert key1",
     );
 
     ok(
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING",
+            "a_test.key2",
+            "a_group",
+            "value2"
         )
-        .bind("a_test.key2")
-        .bind("a_group")
-        .bind("value2")
         .execute(&pool)
         .await,
         "insert key2",
     );
 
     ok(
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING",
+            "m_test.key3",
+            "m_group",
+            "value3"
         )
-        .bind("m_test.key3")
-        .bind("m_group")
-        .bind("value3")
         .execute(&pool)
         .await,
         "insert key3",
@@ -91,7 +91,7 @@ async fn test_get_all_returns_empty_when_no_settings() {
     let repo = SettingsRepository::new(pool.clone());
 
     ok(
-        sqlx::query("DELETE FROM settings").execute(&pool).await,
+        sqlx::query!("DELETE FROM settings").execute(&pool).await,
         "settings should delete",
     );
 
@@ -106,12 +106,12 @@ async fn test_get_and_update_round_trip() {
     let repo = SettingsRepository::new(pool.clone());
 
     ok(
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING",
+            "roundtrip_key",
+            "test_group",
+            "original_value"
         )
-        .bind("roundtrip_key")
-        .bind("test_group")
-        .bind("original_value")
         .execute(&pool)
         .await,
         "roundtrip setting insert",
@@ -145,12 +145,12 @@ async fn test_update_with_version_increments_version() {
     let repo = SettingsRepository::new(pool.clone());
 
     ok(
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING",
+            "version_test_key",
+            "test_group",
+            "value_v0"
         )
-        .bind("version_test_key")
-        .bind("test_group")
-        .bind("value_v0")
         .execute(&pool)
         .await,
         "version setting insert",
@@ -196,12 +196,12 @@ async fn test_update_with_wrong_version_fails() {
     let repo = SettingsRepository::new(pool.clone());
 
     ok(
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING",
+            "wrong_version_key",
+            "test_group",
+            "original"
         )
-        .bind("wrong_version_key")
-        .bind("test_group")
-        .bind("original")
         .execute(&pool)
         .await,
         "wrong version setting insert",

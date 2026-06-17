@@ -314,11 +314,11 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
         .join_room(room.id, pending_target.id, None)
         .await
         .unwrap();
-    let pending_request_id: i64 = sqlx::query_scalar(
-        "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
+    let pending_request_id: i64 = sqlx::query_scalar!(
+        r#"SELECT id AS "id!" FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL"#,
+        room.id.as_i64(),
+        pending_target.id.as_i64()
     )
-    .bind(room.id)
-    .bind(pending_target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -855,17 +855,17 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .join_room(joined_room.id, actor.id, None)
         .await
         .unwrap();
-    let actor_join_request_id = sqlx::query_scalar::<_, i64>(
-        r"
+    let actor_join_request_id = sqlx::query_scalar!(
+        r#"
         SELECT id
         FROM room_join_requests
         WHERE room_id = $1
           AND user_id = $2
           AND reviewed_at IS NULL
-        ",
+        "#,
+        joined_room.id.as_i64(),
+        actor.id.as_i64()
     )
-    .bind(joined_room.id)
-    .bind(actor.id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -1084,7 +1084,7 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
         .await
         .unwrap();
     let pending_registration_id = UserId::new();
-    sqlx::query(
+    sqlx::query!(
         r"
         INSERT INTO user_registration_requests (
             id, username, email, opaque_record,
@@ -1093,16 +1093,16 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ",
+        pending_registration_id.as_i64(),
+        "user_matrix_pending",
+        "user_matrix_pending@test.com",
+        b"opaque-record".as_slice(),
+        b"opaque-id".as_slice(),
+        "opaque-ristretto255-sha512-argon2id",
+        1_i32,
+        i16::from(SignupMethod::Email),
+        i16::from(ReviewStatus::Pending)
     )
-    .bind(pending_registration_id)
-    .bind("user_matrix_pending")
-    .bind("user_matrix_pending@test.com")
-    .bind(b"opaque-record".as_slice())
-    .bind(b"opaque-id".as_slice())
-    .bind("opaque-ristretto255-sha512-argon2id")
-    .bind(1_i32)
-    .bind(SignupMethod::Email)
-    .bind(i16::from(ReviewStatus::Pending))
     .execute(&pool)
     .await
     .unwrap();

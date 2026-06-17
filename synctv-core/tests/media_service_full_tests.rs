@@ -763,10 +763,12 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
 
     let bumper = tokio::spawn(async move {
         while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-            sqlx::query("UPDATE media SET position = position + 1 WHERE id = $1::bigint")
-                .bind(media_id)
-                .execute(&pool_clone)
-                .await?;
+            sqlx::query!(
+                "UPDATE media SET position = position + 1 WHERE id = $1::bigint",
+                media_id
+            )
+            .execute(&pool_clone)
+            .await?;
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
         Ok::<_, sqlx::Error>(())

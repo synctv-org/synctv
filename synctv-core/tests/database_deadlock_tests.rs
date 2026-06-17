@@ -124,26 +124,26 @@ async fn test_deadlock_detection_opposite_lock_order() {
             let mut tx = pool1.begin().await?;
 
             // Lock user1 first
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3",
+                100_i64,
+                room_id1.as_i64(),
+                user1_clone.as_i64()
             )
-            .bind(100i64)
-            .bind(room_id1)
-            .bind(user1_clone)
             .execute(&mut *tx)
             .await?;
 
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
             // Then lock user2
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3",
+                200_i64,
+                room_id1.as_i64(),
+                user2_clone1.as_i64()
             )
-            .bind(200i64)
-            .bind(room_id1)
-            .bind(user2_clone1)
             .execute(&mut *tx)
             .await?;
 
@@ -168,26 +168,26 @@ async fn test_deadlock_detection_opposite_lock_order() {
             let mut tx = pool2.begin().await?;
 
             // Lock user2 first (opposite order)
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3",
+                300_i64,
+                room_id2.as_i64(),
+                user2_clone2.as_i64()
             )
-            .bind(300i64)
-            .bind(room_id2)
-            .bind(user2_clone2)
             .execute(&mut *tx)
             .await?;
 
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
             // Then lock user1 (creates potential deadlock)
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3",
+                400_i64,
+                room_id2.as_i64(),
+                user1_clone2.as_i64()
             )
-            .bind(400i64)
-            .bind(room_id2)
-            .bind(user1_clone2)
             .execute(&mut *tx)
             .await?;
 
@@ -252,13 +252,13 @@ async fn test_deadlock_with_for_update_nowait() {
             let mut tx = pool1.begin().await?;
 
             // Lock with FOR UPDATE
-            sqlx::query(
-                "SELECT * FROM room_members
+            sqlx::query!(
+                r#"SELECT 1 AS "one!" FROM room_members
                  WHERE room_id = $1 AND user_id = $2
-                 FOR UPDATE",
+                 FOR UPDATE"#,
+                room_id1.as_i64(),
+                user_id1.as_i64()
             )
-            .bind(room_id1)
-            .bind(user_id1)
             .fetch_optional(&mut *tx)
             .await?;
 
@@ -286,13 +286,13 @@ async fn test_deadlock_with_for_update_nowait() {
             let mut tx = pool2.begin().await?;
 
             // Try to lock with FOR UPDATE NOWAIT
-            let result = sqlx::query(
-                "SELECT * FROM room_members
+            let result = sqlx::query!(
+                r#"SELECT 1 AS "one!" FROM room_members
                  WHERE room_id = $1 AND user_id = $2
-                 FOR UPDATE NOWAIT",
+                 FOR UPDATE NOWAIT"#,
+                room_id2.as_i64(),
+                user_id2.as_i64()
             )
-            .bind(room_id2)
-            .bind(user_id2)
             .fetch_optional(&mut *tx)
             .await;
 
@@ -375,23 +375,23 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
             let mut tx = pool1.begin().await?;
 
             // Lock in consistent order
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3",
+                100_i64,
+                room_id1.as_i64(),
+                first_user1.as_i64()
             )
-            .bind(100i64)
-            .bind(room_id1)
-            .bind(first_user1)
             .execute(&mut *tx)
             .await?;
 
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3",
+                200_i64,
+                room_id1.as_i64(),
+                second_user1.as_i64()
             )
-            .bind(200i64)
-            .bind(room_id1)
-            .bind(second_user1)
             .execute(&mut *tx)
             .await?;
 
@@ -416,23 +416,23 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
             let mut tx = pool2.begin().await?;
 
             // Lock in same consistent order
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3",
+                300_i64,
+                room_id2.as_i64(),
+                first_user2.as_i64()
             )
-            .bind(300i64)
-            .bind(room_id2)
-            .bind(first_user2)
             .execute(&mut *tx)
             .await?;
 
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3",
+                400_i64,
+                room_id2.as_i64(),
+                second_user2.as_i64()
             )
-            .bind(400i64)
-            .bind(room_id2)
-            .bind(second_user2)
             .execute(&mut *tx)
             .await?;
 
@@ -480,13 +480,13 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
         let mut tx = pool1.begin().await?;
 
         // Lock the row
-        sqlx::query(
-            "SELECT * FROM room_members
+        sqlx::query!(
+            r#"SELECT 1 AS "one!" FROM room_members
              WHERE room_id = $1 AND user_id = $2
-             FOR UPDATE",
+             FOR UPDATE"#,
+            room_id1.as_i64(),
+            user_id1.as_i64()
         )
-        .bind(room_id1)
-        .bind(user_id1)
         .fetch_optional(&mut *tx)
         .await?;
 
@@ -506,13 +506,13 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
     let timeout_result = tokio::time::timeout(tokio::time::Duration::from_secs(1), async move {
         let mut tx = pool2.begin().await?;
 
-        sqlx::query(
-            "SELECT * FROM room_members
+        sqlx::query!(
+            r#"SELECT 1 AS "one!" FROM room_members
                  WHERE room_id = $1 AND user_id = $2
-                 FOR UPDATE",
+                 FOR UPDATE"#,
+            room_id2.as_i64(),
+            user_id2.as_i64()
         )
-        .bind(room_id2)
-        .bind(user_id2)
         .fetch_optional(&mut *tx)
         .await?;
 

@@ -11,17 +11,18 @@ use crate::service::file_storage::{
 use crate::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        ChatMentionInput, ChatReadState, CreateFileUploadSession, FileUploadManifestPart,
-        FileUploadSession, FileUploadSessionCreateResult, NewStoredFile, SignupMethod,
-        SubmittedFileReference, User,
+        ChatMentionInput, ChatPinEvent, ChatPinEventKind, ChatReadState, CreateFileUploadSession,
+        FileUploadManifestPart, FileUploadSession, FileUploadSessionCreateResult, NewStoredFile,
+        PinChatMessage, SignupMethod, SubmittedFileReference, UnpinChatMessage, User,
     },
     repository::{
-        FileStorageRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
-        UpsertFileObject, UserRepository,
+        FileStorageRepository, RoomMemberRepository, RoomRepository, RoomResourceEventRepository,
+        RoomSettingsRepository, UpsertFileObject, UserRepository,
     },
     service::{
         auth::JwtService, chat_attachment_upload_policy, BruteForceProtection,
         DisabledFileStorageService, InMemoryTokenBlacklistStore, RateLimiter, RoomService,
+        SettingsRegistry,
     },
 };
 use opendal::Operator;
@@ -521,6 +522,28 @@ fn test_chat_service_with_file_storage(
     username_cache: UsernameCache,
     file_storage_service: Arc<dyn FileStorageService>,
 ) -> ChatService {
+    test_chat_service_with_options(pool, username_cache, file_storage_service, None)
+}
+
+fn test_chat_service_with_settings_registry(
+    pool: &sqlx::PgPool,
+    username_cache: UsernameCache,
+    settings_registry: Arc<SettingsRegistry>,
+) -> ChatService {
+    test_chat_service_with_options(
+        pool,
+        username_cache,
+        Arc::new(DisabledFileStorageService),
+        Some(settings_registry),
+    )
+}
+
+fn test_chat_service_with_options(
+    pool: &sqlx::PgPool,
+    username_cache: UsernameCache,
+    file_storage_service: Arc<dyn FileStorageService>,
+    settings_registry: Option<Arc<SettingsRegistry>>,
+) -> ChatService {
     let permission_service = ok(
         PermissionService::new_with_runtime(
             RoomMemberRepository::new(pool.clone()),
@@ -554,6 +577,7 @@ fn test_chat_service_with_file_storage(
             file_storage_service,
             audit_service: None,
             notification_service: NotificationService::default(),
+            settings_registry,
         },
     )
 }
@@ -630,6 +654,7 @@ fn read_state_allows_forward_event_on_same_message() {
                 attachments: Vec::new(),
                 reactions: Vec::new(),
                 mentions: Vec::new(),
+                pin: None,
             },
             occurred_at: Utc::now(),
         },
@@ -2456,16 +2481,16 @@ async fn concurrent_idempotent_send_returns_existing_created_event() {
     );
 
     let message_count = ok(
-        sqlx::query_scalar::<_, i64>(
-            r"
-        SELECT COUNT(*) AS count
+        sqlx::query_scalar!(
+            r#"
+        SELECT COUNT(*) AS "count!"
         FROM chat_messages
         WHERE room_id = $1 AND user_id = $2 AND client_message_id = $3
-        ",
+        "#,
+            room.id.as_i64(),
+            user.id.as_i64(),
+            "same-client-message-id",
         )
-        .bind(room.id.as_i64())
-        .bind(user.id.as_i64())
-        .bind("same-client-message-id")
         .fetch_one(&pool)
         .await,
         "message count should load",
@@ -2473,18 +2498,18 @@ async fn concurrent_idempotent_send_returns_existing_created_event() {
     assert_eq!(message_count, 1);
 
     let event_count = ok(
-        sqlx::query_scalar::<_, i64>(
-            r"
-        SELECT COUNT(*) AS count
+        sqlx::query_scalar!(
+            r#"
+        SELECT COUNT(*) AS "count!"
         FROM chat_message_events
         WHERE room_id = $1
           AND message_id = $2
           AND event_type = $3
-        ",
+        "#,
+            room.id.as_i64(),
+            first.message.message.id,
+            "chat_message_created",
         )
-        .bind(room.id.as_i64())
-        .bind(first.message.message.id)
-        .bind("chat_message_created")
         .fetch_one(&pool)
         .await,
         "event count should load",
@@ -2597,18 +2622,18 @@ async fn concurrent_same_edit_returns_existing_edit_event() {
     );
 
     let edit_event_count = ok(
-        sqlx::query_scalar::<_, i64>(
-            r"
-        SELECT COUNT(*) AS count
+        sqlx::query_scalar!(
+            r#"
+        SELECT COUNT(*) AS "count!"
         FROM chat_message_events
         WHERE room_id = $1
           AND message_id = $2
           AND event_type = $3
-        ",
+        "#,
+            room.id.as_i64(),
+            created.message.message.id,
+            "chat_message_edited",
         )
-        .bind(room.id.as_i64())
-        .bind(created.message.message.id)
-        .bind("chat_message_edited")
         .fetch_one(&pool)
         .await,
         "edit event count should load",
@@ -2720,18 +2745,18 @@ async fn concurrent_same_delete_returns_existing_delete_event() {
     );
 
     let delete_event_count = ok(
-        sqlx::query_scalar::<_, i64>(
-            r"
-        SELECT COUNT(*) AS count
+        sqlx::query_scalar!(
+            r#"
+        SELECT COUNT(*) AS "count!"
         FROM chat_message_events
         WHERE room_id = $1
           AND message_id = $2
           AND event_type = $3
-        ",
+        "#,
+            room.id.as_i64(),
+            created.message.message.id,
+            "chat_message_deleted",
         )
-        .bind(room.id.as_i64())
-        .bind(created.message.message.id)
-        .bind("chat_message_deleted")
         .fetch_one(&pool)
         .await,
         "delete event count should load",
@@ -2987,6 +3012,375 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
 }
 
 #[tokio::test]
+async fn pinned_chat_messages_list_and_emit_state_events() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let username_cache = UsernameCache::local_only("test:chat:pins:".to_string(), 100, 60);
+    let service = test_chat_service(&pool, username_cache.clone());
+    let user_repository = Arc::new(UserRepository::new(pool.clone()));
+    let owner = ok(
+        user_repository
+            .create(&User::new(
+                "chat_pin_owner".to_string(),
+                SignupMethod::Password,
+            ))
+            .await,
+        "owner should be created",
+    );
+    ok(
+        username_cache.set(&owner.id, &owner.username).await,
+        "owner username cache should write",
+    );
+    let room_service = ok(
+        RoomService::new_for_tests(
+            pool.clone(),
+            (*test_user_service(
+                &pool,
+                UsernameCache::local_only("test:chat:pins:room:".to_string(), 100, 60),
+            ))
+            .clone(),
+        ),
+        "room service should build",
+    );
+    let (room, _) = ok(
+        room_service
+            .create_room(
+                "Pinned Chat Room".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+        "room should be created",
+    );
+
+    let message = ok(
+        service
+            .send_message_event(SendChatMessage {
+                room_id: room.id,
+                user_id: owner.id,
+                client_message_id: Some("pin-message".to_string()),
+                content: "pin this".to_string(),
+                message_type: ChatMessageType::Text,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                attachments: Vec::new(),
+                mentions: Vec::new(),
+            })
+            .await,
+        "message should be stored",
+    );
+
+    let pin_request = PinChatMessage {
+        room_id: room.id,
+        message_id: message.message.message.id,
+        user_id: owner.id,
+        client_operation_id: Some("pin-op".to_string()),
+        note: Some("important".to_string()),
+    };
+    let pinned = ok(
+        service.pin_message_event_outcome(pin_request.clone()).await,
+        "message should pin",
+    );
+    assert!(pinned.inserted);
+    assert_eq!(pinned.event.kind, ChatPinEventKind::Pinned);
+    assert_eq!(pinned.event.message.message.id, message.message.message.id);
+
+    let replay = ok(
+        service.pin_message_event_outcome(pin_request).await,
+        "pin operation should replay",
+    );
+    assert!(!replay.inserted);
+    assert_eq!(replay.event.event_id, pinned.event.event_id);
+
+    let pinned_messages = ok(
+        service.list_pinned_messages(&room.id, &owner.id, 10).await,
+        "pinned messages should list",
+    );
+    assert_eq!(pinned_messages.len(), 1);
+    assert_eq!(
+        pinned_messages[0].message.message.id,
+        message.message.message.id
+    );
+    assert_eq!(pinned_messages[0].pin.pinned_by, Some(owner.id));
+    assert_eq!(
+        pinned_messages[0].pin.pinned_by_username.as_deref(),
+        Some("chat_pin_owner")
+    );
+    assert_eq!(pinned_messages[0].pin.note.as_deref(), Some("important"));
+
+    let edited = ok(
+        service
+            .edit_message_outcome(EditChatMessage {
+                room_id: room.id,
+                message_id: message.message.message.id,
+                user_id: owner.id,
+                client_operation_id: Some("edit-pinned-op".to_string()),
+                content: "pin this after edit".to_string(),
+                metadata: serde_json::Value::Object(Default::default()),
+                expected_version: Some(message.message.message.version),
+            })
+            .await,
+        "pinned message should edit",
+    );
+    assert!(edited.inserted);
+    let edit_pin_event = some(
+        edited.pin_event,
+        "editing a pinned message should emit a pin event",
+    );
+    assert_eq!(edit_pin_event.kind, ChatPinEventKind::MessageUpdated);
+    assert_eq!(
+        edit_pin_event.message.message.id,
+        message.message.message.id
+    );
+    assert!(edit_pin_event.pin.is_some());
+
+    let pin_resource_events = ok(
+        RoomResourceEventRepository::new(pool.clone())
+            .list_room_events_after_sequence_for_resource_types(&room.id, &["chat_pins"], 0, 10)
+            .await,
+        "chat pin room resource events should replay",
+    );
+    let replayed_edit_pin_event = some(
+        pin_resource_events
+            .iter()
+            .filter(|event| event.event_type == ChatPinEventKind::MessageUpdated.as_str())
+            .filter_map(|event| event.payload.clone())
+            .find_map(|payload| serde_json::from_value::<ChatPinEvent>(payload).ok()),
+        "editing a pinned message should persist a replayable chat pin event",
+    );
+    assert_eq!(replayed_edit_pin_event.event_id, edit_pin_event.event_id);
+    assert_eq!(
+        replayed_edit_pin_event.message.message.content,
+        "pin this after edit"
+    );
+
+    let reacted = ok(
+        service
+            .set_reaction_event_outcome(SetChatReaction {
+                room_id: room.id,
+                message_id: message.message.message.id,
+                user_id: owner.id,
+                reaction_key: "like".to_string(),
+                enabled: true,
+            })
+            .await,
+        "pinned message reaction should update",
+    );
+    assert!(reacted.inserted);
+    let reaction_pin_event = some(
+        reacted.pin_event,
+        "reacting to a pinned message should emit a pin event",
+    );
+    assert_eq!(reaction_pin_event.kind, ChatPinEventKind::MessageUpdated);
+    assert_eq!(
+        reaction_pin_event.message.message.id,
+        message.message.message.id
+    );
+    assert!(reaction_pin_event.pin.is_some());
+
+    let message_for_delete = ok(
+        service
+            .send_message_event(SendChatMessage {
+                room_id: room.id,
+                user_id: owner.id,
+                client_message_id: Some("pin-delete-message".to_string()),
+                content: "delete this pin".to_string(),
+                message_type: ChatMessageType::Text,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                attachments: Vec::new(),
+                mentions: Vec::new(),
+            })
+            .await,
+        "second message should be stored",
+    );
+    ok(
+        service
+            .pin_message_event_outcome(PinChatMessage {
+                room_id: room.id,
+                message_id: message_for_delete.message.message.id,
+                user_id: owner.id,
+                client_operation_id: Some("pin-delete-op".to_string()),
+                note: None,
+            })
+            .await,
+        "second message should pin",
+    );
+    let deleted = ok(
+        service
+            .delete_message_event_outcome(DeleteChatMessage {
+                room_id: room.id,
+                message_id: message_for_delete.message.message.id,
+                user_id: owner.id,
+                client_operation_id: Some("delete-pinned-op".to_string()),
+                reason: Some("cleanup".to_string()),
+                expected_version: Some(message_for_delete.message.message.version),
+            })
+            .await,
+        "pinned message should delete",
+    );
+    assert!(deleted.inserted);
+    let delete_pin_event = some(
+        deleted.pin_event,
+        "deleting a pinned message should emit a pin event",
+    );
+    assert_eq!(delete_pin_event.kind, ChatPinEventKind::MessageDeleted);
+    assert_eq!(
+        delete_pin_event.message.message.id,
+        message_for_delete.message.message.id
+    );
+    assert!(delete_pin_event.pin.is_none());
+
+    let unpinned = ok(
+        service
+            .unpin_message_event_outcome(UnpinChatMessage {
+                room_id: room.id,
+                message_id: message.message.message.id,
+                user_id: owner.id,
+                client_operation_id: Some("unpin-op".to_string()),
+            })
+            .await,
+        "message should unpin",
+    );
+    assert!(unpinned.inserted);
+    assert_eq!(unpinned.event.kind, ChatPinEventKind::Unpinned);
+
+    let pinned_messages = ok(
+        service.list_pinned_messages(&room.id, &owner.id, 10).await,
+        "pinned messages should reload",
+    );
+    assert!(pinned_messages.is_empty());
+}
+
+#[tokio::test]
+async fn pinning_chat_message_respects_runtime_room_pin_limit() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let settings_registry = Arc::new(SettingsRegistry::new_for_tests());
+    ok(
+        settings_registry
+            .max_pinned_chat_messages_per_room
+            .set_for_test(&1),
+        "pin limit setting should seed",
+    );
+    let username_cache = UsernameCache::local_only("test:chat:pin-limit:".to_string(), 100, 60);
+    let service =
+        test_chat_service_with_settings_registry(&pool, username_cache.clone(), settings_registry);
+    let user_repository = Arc::new(UserRepository::new(pool.clone()));
+    let owner = ok(
+        user_repository
+            .create(&User::new(
+                "chat_pin_limit_owner".to_string(),
+                SignupMethod::Password,
+            ))
+            .await,
+        "owner should be created",
+    );
+    ok(
+        username_cache.set(&owner.id, &owner.username).await,
+        "owner username cache should write",
+    );
+    let room_service = ok(
+        RoomService::new_for_tests(
+            pool.clone(),
+            (*test_user_service(
+                &pool,
+                UsernameCache::local_only("test:chat:pin-limit:room:".to_string(), 100, 60),
+            ))
+            .clone(),
+        ),
+        "room service should build",
+    );
+    let (room, _) = ok(
+        room_service
+            .create_room(
+                "Pinned Chat Limit Room".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+        "room should be created",
+    );
+
+    let first = ok(
+        service
+            .send_message_event(SendChatMessage {
+                room_id: room.id,
+                user_id: owner.id,
+                client_message_id: Some("pin-limit-first".to_string()),
+                content: "first pin".to_string(),
+                message_type: ChatMessageType::Text,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                attachments: Vec::new(),
+                mentions: Vec::new(),
+            })
+            .await,
+        "first message should be stored",
+    );
+    let second = ok(
+        service
+            .send_message_event(SendChatMessage {
+                room_id: room.id,
+                user_id: owner.id,
+                client_message_id: Some("pin-limit-second".to_string()),
+                content: "second pin".to_string(),
+                message_type: ChatMessageType::Text,
+                reply_to_message_id: None,
+                metadata: serde_json::Value::Object(Default::default()),
+                attachments: Vec::new(),
+                mentions: Vec::new(),
+            })
+            .await,
+        "second message should be stored",
+    );
+
+    ok(
+        service
+            .pin_message_event_outcome(PinChatMessage {
+                room_id: room.id,
+                message_id: first.message.message.id,
+                user_id: owner.id,
+                client_operation_id: Some("pin-limit-first-op".to_string()),
+                note: None,
+            })
+            .await,
+        "first message should pin",
+    );
+    let replay = ok(
+        service
+            .pin_message_event_outcome(PinChatMessage {
+                room_id: room.id,
+                message_id: first.message.message.id,
+                user_id: owner.id,
+                client_operation_id: Some("pin-limit-first-op-replay".to_string()),
+                note: None,
+            })
+            .await,
+        "existing pin should replay without consuming limit",
+    );
+    assert!(!replay.inserted);
+
+    let error = err(
+        service
+            .pin_message_event_outcome(PinChatMessage {
+                room_id: room.id,
+                message_id: second.message.message.id,
+                user_id: owner.id,
+                client_operation_id: Some("pin-limit-second-op".to_string()),
+                note: None,
+            })
+            .await,
+        "second new pin should hit runtime limit",
+    );
+    assert!(
+        matches!(error, Error::Conflict(message) if message.contains("pinned chat message limit"))
+    );
+}
+
+#[tokio::test]
 async fn read_state_tracks_unread_count_and_stays_monotonic() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache = UsernameCache::local_only("test:chat:read-state:".to_string(), 100, 60);
@@ -3132,15 +3526,15 @@ async fn read_state_tracks_unread_count_and_stays_monotonic() {
         Some(first.message.message.id)
     );
     ok(
-        sqlx::query(
-            r"
+        sqlx::query!(
+            r#"
         UPDATE chat_read_states
         SET last_read_message_id = NULL, last_read_message_created_at = NULL
         WHERE room_id = $1 AND user_id = $2
-        ",
+        "#,
+            room.id.as_i64(),
+            reader.id.as_i64(),
         )
-        .bind(room.id.as_i64())
-        .bind(reader.id.as_i64())
         .execute(&pool)
         .await,
         "read state message cursor should be cleared",

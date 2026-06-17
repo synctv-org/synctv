@@ -543,11 +543,11 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
 
     let bumper = tokio::spawn(async move {
         while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE room_members SET version = version + 1 WHERE room_id = $1 AND user_id = $2",
+                room_id.as_i64(),
+                target_id.as_i64()
             )
-            .bind(room_id)
-            .bind(target_id)
             .execute(&pool_clone)
             .await?;
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;

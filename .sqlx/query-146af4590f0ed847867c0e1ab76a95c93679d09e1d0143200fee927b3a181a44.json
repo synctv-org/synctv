@@ -1,0 +1,256 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO content_reports (\n                reporter_user_id,\n                room_id,\n                target_type,\n                target_room_id,\n                target_user_id,\n                target_member_room_id,\n                target_member_user_id,\n                target_chat_message_id,\n                target_chat_message_created_at,\n                reason_code,\n                reason,\n                metadata,\n                status\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n            RETURNING\n                id AS \"id!: ContentReportId\",\n                reporter_user_id AS \"reporter_user_id!: UserId\",\n                room_id AS \"room_id?: RoomId\",\n                target_type AS \"target_type!: ContentReportTargetType\",\n                target_room_id AS \"target_room_id?: RoomId\",\n                target_user_id AS \"target_user_id?: UserId\",\n                target_member_room_id AS \"target_member_room_id?: RoomId\",\n                target_member_user_id AS \"target_member_user_id?: UserId\",\n                target_chat_message_id,\n                target_chat_message_created_at,\n                reason_code,\n                reason,\n                metadata AS \"metadata!: serde_json::Value\",\n                status AS \"status!: ContentReportStatus\",\n                reviewed_by AS \"reviewed_by?: UserId\",\n                reviewed_at,\n                resolution_note,\n                created_at,\n                updated_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: ContentReportId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "reporter_user_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "reporter_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "room_id?: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "target_type!: ContentReportTargetType",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_type"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "target_room_id?: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "target_user_id?: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "target_member_room_id?: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_member_room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "target_member_user_id?: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_member_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "target_chat_message_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_chat_message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "target_chat_message_created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "target_chat_message_created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "reason_code",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "reason_code"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "metadata!: serde_json::Value",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "metadata"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "status!: ContentReportStatus",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "reviewed_by?: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "reviewed_by"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "reviewed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "reviewed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "resolution_note",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "resolution_note"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "content_reports",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int2",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "146af4590f0ed847867c0e1ab76a95c93679d09e1d0143200fee927b3a181a44"
+}

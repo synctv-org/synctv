@@ -18,7 +18,8 @@ use crate::impls::client::convert::{
 };
 use crate::impls::client::RoomActor;
 use crate::impls::messaging::{
-    chat_message_event_to_proto, online_event_to_proto, room_member_event_to_proto,
+    chat_message_event_to_proto, chat_pin_event_to_proto, online_event_to_proto,
+    room_member_event_to_proto,
 };
 use crate::impls::playback::PlaybackService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
@@ -40,6 +41,15 @@ const ONLINE_COUNT_REFRESH_INTERVAL_SECONDS: i64 = 10;
 
 fn event_cursor_for_chat_event(
     event: &synctv_core::models::ChatMessageEvent,
+) -> synctv_proto::client::EventCursor {
+    synctv_proto::client::EventCursor {
+        event_id: Some(event.event_id.clone()),
+        sequence: event.sequence,
+    }
+}
+
+fn event_cursor_for_chat_pin_event(
+    event: &synctv_core::models::ChatPinEvent,
 ) -> synctv_proto::client::EventCursor {
     synctv_proto::client::EventCursor {
         event_id: Some(event.event_id.clone()),
@@ -126,6 +136,9 @@ enum ObservationEvaluationKey {
         delivery_mode: i32,
     },
     ChatEvents {
+        delivery_mode: i32,
+    },
+    ChatPinEvents {
         delivery_mode: i32,
     },
     OnlineCount {
@@ -353,6 +366,7 @@ enum ObservedResource {
     RoomMemberEvents,
     SelfRoomMember,
     ChatEvents,
+    ChatPinEvents,
     OnlineCount {
         roles: Vec<i32>,
         user_ids: Vec<UserId>,
@@ -378,13 +392,16 @@ impl ResourceObservation {
             ObservedResource::RoomMemberEvents => Some(&["room_member_events"]),
             ObservedResource::SelfRoomMember => Some(&["room_member_events", "room_settings"]),
             ObservedResource::ChatEvents | ObservedResource::OnlineEvent { .. } => None,
+            ObservedResource::ChatPinEvents => Some(&["chat_pins"]),
             ObservedResource::OnlineCount { .. } => Some(&["online_count"]),
         }
     }
 
     fn exposes_client_event_cursor(&self) -> bool {
-        matches!(self.resource, ObservedResource::ChatEvents)
-            || self.room_resource_cursor_types().is_some()
+        matches!(
+            self.resource,
+            ObservedResource::ChatEvents | ObservedResource::ChatPinEvents
+        ) || self.room_resource_cursor_types().is_some()
     }
 
     fn evaluation_key(&self) -> ObservationEvaluationKey {
@@ -417,6 +434,9 @@ impl ResourceObservation {
                 ObservationEvaluationKey::SelfRoomMember { delivery_mode }
             }
             ObservedResource::ChatEvents => ObservationEvaluationKey::ChatEvents { delivery_mode },
+            ObservedResource::ChatPinEvents => {
+                ObservationEvaluationKey::ChatPinEvents { delivery_mode }
+            }
             ObservedResource::OnlineCount { roles, user_ids } => {
                 ObservationEvaluationKey::OnlineCount {
                     delivery_mode,
@@ -717,6 +737,9 @@ impl ResourceObserver {
                     observe.after_event_sequence
                 }
                 synctv_proto::client::observe_resource::Resource::ChatEvents(observe) => {
+                    observe.after_event_sequence
+                }
+                synctv_proto::client::observe_resource::Resource::ChatPinEvents(observe) => {
                     observe.after_event_sequence
                 }
             })
@@ -1228,6 +1251,67 @@ impl MediaResourceHub {
                     continue;
                 }
 
+                if let ResourceInvalidation::ChatPinEvents { event } = invalidation {
+                    if !ResourceObserver::observation_invalidated_by_invalidation(
+                        observation,
+                        invalidation,
+                    ) {
+                        continue;
+                    }
+                    let mut updated_observation = observation.clone();
+                    let cursor = event_cursor_for_chat_pin_event(event);
+                    if !ResourceObserver::apply_event_cursor_to_observation(
+                        &mut updated_observation,
+                        &cursor,
+                    ) {
+                        continue;
+                    }
+                    let event_payload =
+                        match chat_pin_event_to_proto(event, &observer.public_id_codec) {
+                            Ok(event) => event,
+                            Err(error) => {
+                                tracing::warn!(
+                                    room_id = %observer.room_id,
+                                    user_id = %observer.user_id,
+                                    observe_id = %updated_observation.observe_id,
+                                    error = %error,
+                                    "Failed to convert chat pin event for resource observer"
+                                );
+                                chat_outcome.record_send_failure(key.connection_id.clone(), error);
+                                continue;
+                            }
+                        };
+                    let changed = synctv_proto::client::ResourceEvent {
+                        observe_id: updated_observation.observe_id.clone(),
+                        payload: Some(synctv_proto::client::resource_event::Payload::ChatPinEvent(
+                            event_payload,
+                        )),
+                        event_cursor: Some(cursor),
+                    };
+                    match self
+                        .send_and_commit_subscription_update(
+                            key,
+                            *revision,
+                            &observer,
+                            updated_observation.clone(),
+                            Some(changed),
+                        )
+                        .await
+                    {
+                        SubscriptionRefreshCommit::Committed => {
+                            observer
+                                .replace_local_observation(updated_observation)
+                                .await;
+                        }
+                        SubscriptionRefreshCommit::Stale => {}
+                        SubscriptionRefreshCommit::SendFailed(error) => {
+                            observer.remove_local_observation(&key.observe_id).await;
+                            chat_outcome.record_send_failure(key.connection_id.clone(), error);
+                        }
+                    }
+                    continue;
+                }
+
                 let should_refresh = if let ResourceInvalidation::ProviderCredential {
                     user_id,
                     provider,
@@ -1426,6 +1510,62 @@ impl MediaResourceHub {
                             observe_id: updated_observation.observe_id.clone(),
                             payload: Some(
                                 synctv_proto::client::resource_event::Payload::ChatEvent(
+                                    event_payload,
+                                ),
+                            ),
+                            event_cursor: Some(cursor),
+                        };
+                        match self
+                            .send_and_commit_subscription_update(
+                                key,
+                                *revision,
+                                &observer,
+                                updated_observation.clone(),
+                                Some(changed),
+                            )
+                            .await
+                        {
+                            SubscriptionRefreshCommit::Committed => {
+                                observer
+                                    .replace_local_observation(updated_observation)
+                                    .await;
+                            }
+                            SubscriptionRefreshCommit::Stale => {}
+                            SubscriptionRefreshCommit::SendFailed(error) => {
+                                observer.remove_local_observation(&key.observe_id).await;
+                                event_outcome.record_send_failure(key.connection_id.clone(), error);
+                            }
+                        }
+                    }
+                    ResourceInvalidation::ChatPinEvents { event } => {
+                        let mut updated_observation = observation.clone();
+                        let cursor = event_cursor_for_chat_pin_event(event);
+                        if !ResourceObserver::apply_event_cursor_to_observation(
+                            &mut updated_observation,
+                            &cursor,
+                        ) {
+                            continue;
+                        }
+                        let event_payload =
+                            match chat_pin_event_to_proto(event, &observer.public_id_codec) {
+                                Ok(event) => event,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        room_id = %observer.room_id,
+                                        user_id = %observer.user_id,
+                                        observe_id = %updated_observation.observe_id,
+                                        error = %error,
+                                        "Failed to convert chat pin event for resource observer"
+                                    );
+                                    event_outcome
+                                        .record_send_failure(key.connection_id.clone(), error);
+                                    continue;
+                                }
+                            };
+                        let changed = synctv_proto::client::ResourceEvent {
+                            observe_id: updated_observation.observe_id.clone(),
+                            payload: Some(
+                                synctv_proto::client::resource_event::Payload::ChatPinEvent(
                                     event_payload,
                                 ),
                             ),
@@ -1974,6 +2114,7 @@ impl ResourceObserver {
             Resource::RoomMemberEvents(_) => ObservedResource::RoomMemberEvents,
             Resource::SelfRoomMember(_) => ObservedResource::SelfRoomMember,
             Resource::ChatEvents(_) => ObservedResource::ChatEvents,
+            Resource::ChatPinEvents(_) => ObservedResource::ChatPinEvents,
             Resource::OnlineCount(observe) => ObservedResource::OnlineCount {
                 roles: observe.roles.clone(),
                 user_ids: observe
@@ -2044,7 +2185,10 @@ impl ResourceObserver {
         }
 
         let start_sequence = Self::observation_start_sequence(&observation, request);
-        let is_chat_observation = matches!(observation.resource, ObservedResource::ChatEvents);
+        let is_event_only_observation = matches!(
+            observation.resource,
+            ObservedResource::ChatEvents | ObservedResource::ChatPinEvents
+        );
         let exposes_client_event_cursor = observation.exposes_client_event_cursor();
         let has_requested_replay_sequence = Self::requested_replay_sequence(request).is_some();
         let initial_cursor = self
@@ -2061,7 +2205,7 @@ impl ResourceObserver {
         let observed_cursor = initial_cursor.clone();
         match self.evaluate_observation(&mut observation).await {
             Ok(mut update) => {
-                if is_chat_observation {
+                if is_event_only_observation {
                     update.changed = false;
                     update.changed_message = None;
                 }
@@ -2288,6 +2432,37 @@ impl ResourceObserver {
                     self.room_hub.register_observation(self, observation).await;
                     continue;
                 };
+                if matches!(observation.resource, ObservedResource::ChatPinEvents) {
+                    let mut event: synctv_core::models::ChatPinEvent =
+                        serde_json::from_value(payload).map_err(|error| {
+                            format!(
+                            "Failed to decode chat pin resource event {} at sequence {}: {error}",
+                            logged.event_id, logged.sequence
+                        )
+                        })?;
+                    event.sequence = logged.sequence;
+                    if !Self::apply_event_cursor_to_observation(&mut observation, &cursor) {
+                        continue;
+                    }
+                    self.send_server_message(ServerMessage {
+                        message: Some(
+                            synctv_proto::client::server_message::Message::ResourceEvent(
+                                synctv_proto::client::ResourceEvent {
+                                    observe_id: observe_id.to_string(),
+                                    payload: Some(
+                                        synctv_proto::client::resource_event::Payload::ChatPinEvent(
+                                            chat_pin_event_to_proto(&event, &self.public_id_codec)?,
+                                        ),
+                                    ),
+                                    event_cursor: Some(cursor),
+                                },
+                            ),
+                        ),
+                    })?;
+                    self.replace_local_observation(observation.clone()).await;
+                    self.room_hub.register_observation(self, observation).await;
+                    continue;
+                }
                 let realtime_event: RealtimeEvent =
                     serde_json::from_value(payload).map_err(|error| {
                         format!(
@@ -2573,6 +2748,9 @@ impl ResourceObserver {
             ObservedResource::ChatEvents => {
                 matches!(invalidation, ResourceInvalidation::ChatEvents { .. })
             }
+            ObservedResource::ChatPinEvents => {
+                matches!(invalidation, ResourceInvalidation::ChatPinEvents { .. })
+            }
             ObservedResource::OnlineCount { .. } => {
                 matches!(invalidation, ResourceInvalidation::OnlineCount)
             }
@@ -2720,6 +2898,7 @@ impl ResourceObserver {
             | ObservedResource::RoomMemberEvents
             | ObservedResource::SelfRoomMember
             | ObservedResource::ChatEvents
+            | ObservedResource::ChatPinEvents
             | ObservedResource::OnlineEvent { .. } => Some(self.user_id),
             ObservedResource::OnlineCount { roles, user_ids } => {
                 (!roles.is_empty() || !user_ids.is_empty()).then_some(self.user_id)
@@ -2734,6 +2913,7 @@ impl ResourceObserver {
         match resource {
             ObservedResource::PlaybackState
             | ObservedResource::ChatEvents
+            | ObservedResource::ChatPinEvents
             | ObservedResource::RoomMemberEvents
             | ObservedResource::SelfRoomMember
             | ObservedResource::OnlineCount { .. }
@@ -2881,7 +3061,7 @@ impl ResourceObserver {
                 };
                 (hex::encode(fingerprint), None, payload)
             }
-            ObservedResource::ChatEvents => {
+            ObservedResource::ChatEvents | ObservedResource::ChatPinEvents => {
                 let version = chrono::Utc::now().timestamp_millis().to_string();
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly

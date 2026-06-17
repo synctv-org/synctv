@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT content_manifest_sha256\n            FROM file_objects\n            WHERE storage_backend = $1 AND object_key = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "content_manifest_sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_objects",
+            "name": "content_manifest_sha256"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "becbd4105a2fe1ca2322f2e543fd3c0ae375e5219a9bc86e4ab5d34461c1e484"
+}

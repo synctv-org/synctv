@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use synctv_core::models::id::{MediaId, PlaylistId, RoomId, UserId};
 use synctv_core::models::playback::RoomPlaybackState;
 use synctv_core::models::RoomPermissionSet;
-use synctv_core::models::{ChatMessageEvent, Playlist};
+use synctv_core::models::{ChatMessageEvent, ChatPinEvent, Playlist};
 
 /// The kind of cache to invalidate in a `CacheInvalidate` realtime event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +67,15 @@ pub enum RealtimeEvent {
         room_id: RoomId,
         actor_user_id: UserId,
         event: ChatMessageEvent,
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Durable chat pin resource event for pin list changes.
+    ChatPinEvent {
+        event_id: String,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        event: ChatPinEvent,
         timestamp: DateTime<Utc>,
     },
 
@@ -446,6 +455,7 @@ impl RealtimeEvent {
         match self {
             Self::ChatMessage { event_id, .. }
             | Self::ChatMessageEvent { event_id, .. }
+            | Self::ChatPinEvent { event_id, .. }
             | Self::PlaybackStateChanged { event_id, .. }
             | Self::UserJoined { event_id, .. }
             | Self::GuestJoined { event_id, .. }
@@ -484,6 +494,7 @@ impl RealtimeEvent {
         match self {
             Self::ChatMessage { room_id, .. }
             | Self::ChatMessageEvent { room_id, .. }
+            | Self::ChatPinEvent { room_id, .. }
             | Self::PlaybackStateChanged { room_id, .. }
             | Self::UserJoined { room_id, .. }
             | Self::GuestJoined { room_id, .. }
@@ -533,6 +544,7 @@ impl RealtimeEvent {
             | Self::SystemNotification { .. } => RealtimeDeliveryRoute::Admin,
             Self::ChatMessage { .. }
             | Self::ChatMessageEvent { .. }
+            | Self::ChatPinEvent { .. }
             | Self::PlaybackStateChanged { .. }
             | Self::UserJoined { .. }
             | Self::GuestJoined { .. }
@@ -591,7 +603,8 @@ impl RealtimeEvent {
             | Self::KickUserFromRoom { user_id, .. }
             | Self::UserNotification { user_id, .. }
             | Self::ProviderCredentialChanged { user_id, .. } => Some(user_id),
-            Self::ChatMessageEvent { actor_user_id, .. } => Some(actor_user_id),
+            Self::ChatMessageEvent { actor_user_id, .. }
+            | Self::ChatPinEvent { actor_user_id, .. } => Some(actor_user_id),
             Self::RoomCreated { creator_id, .. } => Some(creator_id),
             Self::RoomDeleted { deleted_by, .. } => Some(deleted_by),
             Self::RoomBanned { banned_by, .. } => Some(banned_by),
@@ -614,6 +627,7 @@ impl RealtimeEvent {
         match self {
             Self::ChatMessage { timestamp, .. }
             | Self::ChatMessageEvent { timestamp, .. }
+            | Self::ChatPinEvent { timestamp, .. }
             | Self::PlaybackStateChanged { timestamp, .. }
             | Self::UserJoined { timestamp, .. }
             | Self::GuestJoined { timestamp, .. }
@@ -700,6 +714,7 @@ impl RealtimeEvent {
         match self {
             Self::ChatMessage { .. } => "chat_message",
             Self::ChatMessageEvent { .. } => "chat_message_event",
+            Self::ChatPinEvent { .. } => "chat_pin_event",
             Self::PlaybackStateChanged { .. } => "playback_state_changed",
             Self::UserJoined { .. } => "user_joined",
             Self::GuestJoined { .. } => "guest_joined",

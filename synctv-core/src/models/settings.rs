@@ -12,6 +12,7 @@ const EMAIL_GROUP: &str = "email";
 const OAUTH_GROUP: &str = "oauth";
 const RATE_LIMIT_GROUP: &str = "rate_limit";
 const CONTENT_MODERATION_GROUP: &str = "content_moderation";
+const CHAT_GROUP: &str = "chat";
 
 /// System settings group
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -114,6 +115,11 @@ pub fn get_default_settings(group_name: &str) -> Option<JsonValue> {
             "filter_profanity": false,
             "max_message_length": 1000,
             "link_filter_enabled": false
+        })),
+        CHAT_GROUP => Some(serde_json::json!({
+            "max_messages_per_room": 500,
+            "max_pinned_messages_per_room": 20,
+            "message_retention_days": 90
         })),
         _ => None,
     }

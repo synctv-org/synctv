@@ -702,8 +702,9 @@ impl CleanupService {
         }
 
         let attachments = if let Some(storage) = &self.file_storage_service {
-            let attachments = sqlx::query_as::<_, ChatAttachment>(
-                r"
+            let attachments = sqlx::query_as!(
+                ChatAttachment,
+                r#"
                 WITH ranked AS (
                     SELECT id, created_at,
                            ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC, id DESC) AS rn
@@ -715,8 +716,8 @@ impl CleanupService {
                     WHERE rn > $1
                 )
                 SELECT i.id,
-                       i.kind,
-                       i.room_id,
+                       i.kind AS "kind!: crate::models::ChatAttachmentKind",
+                       i.room_id AS "room_id!: crate::models::RoomId",
                        i.message_id,
                        i.message_created_at,
                        i.filename,
@@ -727,15 +728,17 @@ impl CleanupService {
                        i.size_bytes,
                        i.width,
                        i.height,
-                       i.metadata,
-                       i.created_at
+                       i.metadata AS "metadata!: serde_json::Value",
+                       i.created_at,
+                       NULL::TEXT AS "reuse_token?",
+                       NULL::TIMESTAMPTZ AS "reuse_expires_at?"
                 FROM chat_message_attachments i
                 INNER JOIN candidates c
                     ON c.id = i.message_id AND c.created_at = i.message_created_at
                 ORDER BY i.message_created_at, i.message_id, i.created_at
-                ",
+                "#,
+                keep_count,
             )
-            .bind(keep_count)
             .fetch_all(&self.pool)
             .await
             .internal_with_err("Failed to collect chat attachment cleanup candidates")?;

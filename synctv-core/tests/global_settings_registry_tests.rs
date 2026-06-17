@@ -89,6 +89,8 @@ fn test_public_settings_skips_empty_custom_publish_host() {
     );
 
     assert!(!json.contains("custom_publish_host"));
+    assert_eq!(defaults.max_pinned_chat_messages_per_room, 20);
+    assert!(json.contains("max_pinned_chat_messages_per_room"));
 }
 
 #[test]

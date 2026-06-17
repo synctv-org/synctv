@@ -710,6 +710,7 @@ mod websocket_e2e {
                 ),
                 audit_service: None,
                 notification_service: synctv_core::service::NotificationService::default(),
+                settings_registry: None,
             },
         ))
     }

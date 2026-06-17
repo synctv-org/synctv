@@ -149,29 +149,30 @@ impl NotificationRepository {
     pub async fn create(&self, req: &CreateNotificationRequest) -> Result<Notification> {
         let now = Utc::now();
 
-        let row = sqlx::query_as::<_, NotificationRow>(
-            r"
+        let row = sqlx::query_as!(
+            NotificationRow,
+            r#"
             INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id,
-                      user_id,
-                      type AS notification_type,
+                      user_id AS "user_id: UserId",
+                      type AS "notification_type: NotificationType",
                       title,
                       content,
-                      data,
+                      data AS "data!: serde_json::Value",
                       is_read,
                       created_at,
                       updated_at
-            ",
+            "#,
+            req.user_id as UserId,
+            i16::from(req.notification_type),
+            req.title.as_str(),
+            req.content.as_str(),
+            req.data.clone(),
+            false,
+            now,
+            now,
         )
-        .bind(req.user_id.as_i64())
-        .bind(i16::from(req.notification_type))
-        .bind(req.title.as_str())
-        .bind(req.content.as_str())
-        .bind(req.data.clone())
-        .bind(false)
-        .bind(now)
-        .bind(now)
         .fetch_one(&self.pool)
         .await?;
 
@@ -188,14 +189,15 @@ impl NotificationRepository {
         let now = Utc::now();
         let one_year_ago = now - chrono::Duration::days(365);
 
-        let row = sqlx::query_as::<_, NotificationRow>(
-            r"
+        let row = sqlx::query_as!(
+            NotificationRow,
+            r#"
             SELECT id,
-                   user_id,
-                   type AS notification_type,
+                   user_id AS "user_id: UserId",
+                   type AS "notification_type: NotificationType",
                    title,
                    content,
-                   data,
+                   data AS "data!: serde_json::Value",
                    is_read,
                    created_at,
                    updated_at
@@ -203,11 +205,11 @@ impl NotificationRepository {
             WHERE id = $1
               AND created_at >= $2
               AND created_at <= $3
-            ",
+            "#,
+            notification_id,
+            one_year_ago,
+            now,
         )
-        .bind(notification_id)
-        .bind(one_year_ago)
-        .bind(now)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -223,14 +225,15 @@ impl NotificationRepository {
         let now = Utc::now();
         let one_year_ago = now - chrono::Duration::days(365);
 
-        let row = sqlx::query_as::<_, NotificationRow>(
-            r"
+        let row = sqlx::query_as!(
+            NotificationRow,
+            r#"
             SELECT id,
-                   user_id,
-                   type AS notification_type,
+                   user_id AS "user_id: UserId",
+                   type AS "notification_type: NotificationType",
                    title,
                    content,
-                   data,
+                   data AS "data!: serde_json::Value",
                    is_read,
                    created_at,
                    updated_at
@@ -239,12 +242,12 @@ impl NotificationRepository {
               AND id = $2
               AND created_at >= $3
               AND created_at <= $4
-            ",
+            "#,
+            user_id as &UserId,
+            notification_id,
+            one_year_ago,
+            now,
         )
-        .bind(user_id.as_i64())
-        .bind(notification_id)
-        .bind(one_year_ago)
-        .bind(now)
         .fetch_optional(&self.pool)
         .await?;
 

@@ -187,6 +187,13 @@ impl RoomService for ClientServiceImpl {
     type WatchChatEventsStream = std::pin::Pin<
         Box<dyn tokio_stream::Stream<Item = Result<WatchChatEventsEvent, Status>> + Send + 'static>,
     >;
+    type WatchChatPinEventsStream = std::pin::Pin<
+        Box<
+            dyn tokio_stream::Stream<Item = Result<WatchChatPinEventsEvent, Status>>
+                + Send
+                + 'static,
+        >,
+    >;
     type GetChatAttachmentObjectStream = std::pin::Pin<
         Box<
             dyn futures::Stream<Item = Result<ChatAttachmentObjectResponse, Status>>
@@ -268,6 +275,13 @@ impl RoomService for ClientServiceImpl {
         request: Request<WatchChatEventsRequest>,
     ) -> Result<Response<Self::WatchChatEventsStream>, Status> {
         streaming::watch_chat_events(self, request).await
+    }
+
+    async fn watch_chat_pin_events(
+        &self,
+        request: Request<WatchChatPinEventsRequest>,
+    ) -> Result<Response<Self::WatchChatPinEventsStream>, Status> {
+        streaming::watch_chat_pin_events(self, request).await
     }
 
     async fn create_chat_attachment_upload_session(
@@ -394,6 +408,27 @@ impl RoomService for ClientServiceImpl {
         request: Request<DeleteChatMessageRequest>,
     ) -> Result<Response<ChatMessageEventResponse>, Status> {
         chat::delete_chat_message(self, request).await
+    }
+
+    async fn list_pinned_chat_messages(
+        &self,
+        request: Request<ListPinnedChatMessagesRequest>,
+    ) -> Result<Response<ListPinnedChatMessagesResponse>, Status> {
+        chat::list_pinned_chat_messages(self, request).await
+    }
+
+    async fn pin_chat_message(
+        &self,
+        request: Request<PinChatMessageRequest>,
+    ) -> Result<Response<ChatPinEventResponse>, Status> {
+        chat::pin_chat_message(self, request).await
+    }
+
+    async fn unpin_chat_message(
+        &self,
+        request: Request<UnpinChatMessageRequest>,
+    ) -> Result<Response<ChatPinEventResponse>, Status> {
+        chat::unpin_chat_message(self, request).await
     }
 
     async fn set_chat_reaction(

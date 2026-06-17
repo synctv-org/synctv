@@ -70,6 +70,13 @@ fn make_chat_message(room_id: &RoomId, user_id: &UserId, content: &str) -> ChatM
     ChatMessage::new(*room_id, *user_id, content.to_string())
 }
 
+fn explain_json_plan(
+    result: Result<Option<serde_json::Value>, sqlx::Error>,
+    context: &str,
+) -> serde_json::Value {
+    some(ok(result, context), "query plan should be non-null")
+}
+
 // ─── list_by_room_cursor pagination ──────────────────────────────────
 
 #[tokio::test]
@@ -256,14 +263,14 @@ async fn test_get_by_id_old_message_succeeds() {
 
     // Insert directly with backdated created_at
     ok(
-        sqlx::query(
-            r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
-          VALUES ($1, $2, $3, 'old message', 1, $4)",
+        sqlx::query!(
+            r#"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
+          VALUES ($1, $2, $3, 'old message', 1, $4)"#,
+            msg_id,
+            room.id.as_i64(),
+            user.id.as_i64(),
+            old_date,
         )
-        .bind(msg_id)
-        .bind(room.id)
-        .bind(user.id)
-        .bind(old_date)
         .execute(&pool)
         .await,
         "old chat message should be inserted",
@@ -298,14 +305,14 @@ async fn test_get_by_id_very_old_message_succeeds() {
 
     // Insert directly with backdated created_at (1 year ago)
     ok(
-        sqlx::query(
-            r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
-          VALUES ($1, $2, $3, 'very old message from a year ago', 1, $4)",
+        sqlx::query!(
+            r#"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
+          VALUES ($1, $2, $3, 'very old message from a year ago', 1, $4)"#,
+            msg_id,
+            room.id.as_i64(),
+            user.id.as_i64(),
+            very_old_date,
         )
-        .bind(msg_id)
-        .bind(room.id)
-        .bind(user.id)
-        .bind(very_old_date)
         .execute(&pool)
         .await,
         "very old chat message should be inserted",
@@ -455,9 +462,9 @@ async fn test_created_at_index_exists_for_partition_pruning() {
 
     // Check that the index exists on at least one partition (they all have the same structure)
     // The index should be created as part of partition creation
-    let index_exists: bool = ok(
-        sqlx::query_scalar(
-            r"
+    let index_exists = ok(
+        sqlx::query_scalar!(
+            r#"
         SELECT EXISTS (
             SELECT 1
             FROM pg_indexes
@@ -465,12 +472,13 @@ async fn test_created_at_index_exists_for_partition_pruning() {
               AND tablename LIKE 'chat_messages_%'
               AND indexname LIKE '%created_at%'
         )
-        ",
+        "#,
         )
         .fetch_one(&pool)
         .await,
         "pg_indexes query should succeed",
-    );
+    )
+    .unwrap_or(false);
 
     assert!(
         index_exists,
@@ -495,13 +503,13 @@ async fn test_time_range_query_uses_index() {
 
     // Run a query that should use the created_at index
     // (delete_messages_older_than_retention uses this pattern)
-    let plan: serde_json::Value = ok(
-        sqlx::query_scalar(
-            r"
+    let plan: serde_json::Value = explain_json_plan(
+        sqlx::query_scalar!(
+            r#"
         EXPLAIN (FORMAT JSON)
         DELETE FROM chat_messages
         WHERE created_at <= NOW() - INTERVAL '90 days'
-        ",
+        "#,
         )
         .fetch_one(&pool)
         .await,
@@ -533,9 +541,9 @@ async fn test_cleanup_all_rooms_has_partition_pruning_filter() {
     let (_container, pool) = create_test_pool().await;
 
     // Get the EXPLAIN plan for cleanup_all_rooms
-    let plan: serde_json::Value = ok(
-        sqlx::query_scalar(
-            r"
+    let plan: serde_json::Value = explain_json_plan(
+        sqlx::query_scalar!(
+            r#"
         EXPLAIN (FORMAT JSON)
         DELETE FROM chat_messages
         WHERE created_at > NOW() - INTERVAL '90 days'
@@ -553,7 +561,7 @@ async fn test_cleanup_all_rooms_has_partition_pruning_filter() {
             ) ranked_messages
             WHERE rn > 100
         )
-        ",
+        "#,
         )
         .fetch_one(&pool)
         .await,
@@ -591,9 +599,9 @@ async fn test_cleanup_old_messages_partition_pruning_detailed() {
     }
 
     // Get detailed query plan using EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
-    let plan: serde_json::Value = ok(
-        sqlx::query_scalar(
-            r"
+    let plan: serde_json::Value = explain_json_plan(
+        sqlx::query_scalar!(
+            r#"
         EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
         DELETE FROM chat_messages
         WHERE room_id = $1
@@ -608,9 +616,9 @@ async fn test_cleanup_old_messages_partition_pruning_detailed() {
             ) ranked
             WHERE rn > 5
         )
-        ",
+        "#,
+            room.id.as_i64(),
         )
-        .bind(room.id)
         .fetch_one(&pool)
         .await,
         "cleanup-old-messages query plan should load",
@@ -654,9 +662,9 @@ async fn test_cleanup_all_rooms_partition_pruning_detailed() {
     }
 
     // Get detailed query plan
-    let plan: serde_json::Value = ok(
-        sqlx::query_scalar(
-            r"
+    let plan: serde_json::Value = explain_json_plan(
+        sqlx::query_scalar!(
+            r#"
         EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
         DELETE FROM chat_messages
         WHERE created_at > NOW() - INTERVAL '90 days'
@@ -674,7 +682,7 @@ async fn test_cleanup_all_rooms_partition_pruning_detailed() {
             ) ranked_messages
             WHERE rn > 5
         )
-        ",
+        "#,
         )
         .fetch_one(&pool)
         .await,
@@ -707,13 +715,13 @@ async fn test_delete_old_messages_partition_pruning() {
     let (_container, pool) = create_test_pool().await;
 
     // Get query plan for retention cleanup
-    let plan: serde_json::Value = ok(
-        sqlx::query_scalar(
-            r"
+    let plan: serde_json::Value = explain_json_plan(
+        sqlx::query_scalar!(
+            r#"
         EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
         DELETE FROM chat_messages
         WHERE created_at <= NOW() - INTERVAL '90 days'
-        ",
+        "#,
         )
         .fetch_one(&pool)
         .await,
@@ -747,14 +755,14 @@ async fn test_list_by_room_initial_load_has_partition_lower_bound() {
     let old_date = Utc::now() - Duration::days(100);
     let old_msg_id = synctv_core::models::generate_id();
     ok(
-        sqlx::query(
-            r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
-          VALUES ($1, $2, $3, 'old message', 1, $4)",
+        sqlx::query!(
+            r#"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
+          VALUES ($1, $2, $3, 'old message', 1, $4)"#,
+            old_msg_id,
+            room.id.as_i64(),
+            user.id.as_i64(),
+            old_date,
         )
-        .bind(old_msg_id)
-        .bind(room.id)
-        .bind(user.id)
-        .bind(old_date)
         .execute(&pool)
         .await,
         "old initial-load chat message should be inserted",
@@ -799,14 +807,14 @@ async fn test_list_by_room_cursor_initial_load_has_partition_lower_bound() {
     let old_date = Utc::now() - Duration::days(100);
     let old_msg_id = synctv_core::models::generate_id();
     ok(
-        sqlx::query(
-            r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
-          VALUES ($1, $2, $3, 'old cursor message', 1, $4)",
+        sqlx::query!(
+            r#"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
+          VALUES ($1, $2, $3, 'old cursor message', 1, $4)"#,
+            old_msg_id,
+            room.id.as_i64(),
+            user.id.as_i64(),
+            old_date,
         )
-        .bind(old_msg_id)
-        .bind(room.id)
-        .bind(user.id)
-        .bind(old_date)
         .execute(&pool)
         .await,
         "old cursor chat message should be inserted",
@@ -851,9 +859,9 @@ async fn test_cleanup_query_keeps_partition_pruning_filter() {
     }
 
     // Query WITH partition pruning filter (correct implementation)
-    let plan_with_filter: serde_json::Value = ok(
-        sqlx::query_scalar(
-            r"
+    let plan_with_filter: serde_json::Value = explain_json_plan(
+        sqlx::query_scalar!(
+            r#"
         EXPLAIN (FORMAT JSON)
         DELETE FROM chat_messages
         WHERE created_at > NOW() - INTERVAL '90 days'
@@ -868,18 +876,18 @@ async fn test_cleanup_query_keeps_partition_pruning_filter() {
             ) ranked
             WHERE rn > 10
         )
-        ",
+        "#,
+            room.id.as_i64(),
         )
-        .bind(room.id)
         .fetch_one(&pool)
         .await,
         "query plan with partition filter should load",
     );
 
     // Query WITHOUT partition pruning filter (buggy reference shape)
-    let plan_without_filter: serde_json::Value = ok(
-        sqlx::query_scalar(
-            r"
+    let plan_without_filter: serde_json::Value = explain_json_plan(
+        sqlx::query_scalar!(
+            r#"
         EXPLAIN (FORMAT JSON)
         DELETE FROM chat_messages
         WHERE room_id = $1
@@ -893,9 +901,9 @@ async fn test_cleanup_query_keeps_partition_pruning_filter() {
             ) ranked
             WHERE rn > 10
         )
-        ",
+        "#,
+            room.id.as_i64(),
         )
-        .bind(room.id)
         .fetch_one(&pool)
         .await,
         "query plan without partition filter should load",

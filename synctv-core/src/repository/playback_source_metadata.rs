@@ -1,4 +1,5 @@
-use sqlx::{PgPool, Row as _};
+use chrono::{DateTime, Utc};
+use sqlx::PgPool;
 
 use crate::{
     models::{
@@ -13,6 +14,64 @@ pub struct PlaybackSourceMetadataRepository {
     pool: PgPool,
 }
 
+#[derive(Debug)]
+struct PlaybackSourceWithStateRow {
+    metadata_room_id: RoomId,
+    metadata_media_id: Option<MediaId>,
+    metadata_playlist_id: Option<PlaylistId>,
+    metadata_target_hash: String,
+    duration_seconds: Option<f64>,
+    metadata_duration_status: PlaybackDurationStatus,
+    metadata_duration_source: Option<PlaybackDurationSource>,
+    duration_error: Option<String>,
+    next_retry_at: Option<DateTime<Utc>>,
+    metadata_created_at: DateTime<Utc>,
+    metadata_updated_at: DateTime<Utc>,
+    metadata_version: i64,
+    state_room_id: RoomId,
+    state_playing_media_id: Option<MediaId>,
+    state_playing_playlist_id: Option<PlaylistId>,
+    state_target: Vec<u8>,
+    state_current_progress_id: Option<i64>,
+    state_position: f64,
+    state_speed: f64,
+    state_is_playing: bool,
+    state_updated_at: DateTime<Utc>,
+    state_version: i64,
+}
+
+impl PlaybackSourceWithStateRow {
+    fn into_parts(self) -> (PlaybackSourceMetadata, RoomPlaybackState) {
+        let metadata = PlaybackSourceMetadata {
+            room_id: self.metadata_room_id,
+            media_id: self.metadata_media_id,
+            playlist_id: self.metadata_playlist_id,
+            target_hash: self.metadata_target_hash,
+            duration_seconds: self.duration_seconds,
+            duration_status: self.metadata_duration_status,
+            duration_source: self.metadata_duration_source,
+            duration_error: self.duration_error,
+            next_retry_at: self.next_retry_at,
+            created_at: self.metadata_created_at,
+            updated_at: self.metadata_updated_at,
+            version: self.metadata_version,
+        };
+        let state = RoomPlaybackState {
+            room_id: self.state_room_id,
+            playing_media_id: self.state_playing_media_id,
+            playing_playlist_id: self.state_playing_playlist_id,
+            target: self.state_target,
+            current_progress_id: self.state_current_progress_id,
+            position: self.state_position,
+            speed: self.state_speed,
+            is_playing: self.state_is_playing,
+            updated_at: self.state_updated_at,
+            version: self.state_version,
+        };
+        (metadata, state)
+    }
+}
+
 impl PlaybackSourceMetadataRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
@@ -23,15 +82,16 @@ impl PlaybackSourceMetadataRepository {
         &self,
         identity: &PlaybackSourceIdentity,
     ) -> Result<Option<PlaybackSourceMetadata>> {
-        let metadata = sqlx::query_as::<_, PlaybackSourceMetadata>(
-            r"
-            SELECT room_id,
-                   media_id,
-                   playlist_id,
+        let metadata = sqlx::query_as!(
+            PlaybackSourceMetadata,
+            r#"
+            SELECT room_id AS "room_id!: RoomId",
+                   media_id AS "media_id?: MediaId",
+                   playlist_id AS "playlist_id?: PlaylistId",
                    target_hash,
                    duration_seconds,
-                   duration_status,
-                   duration_source,
+                   duration_status AS "duration_status!: PlaybackDurationStatus",
+                   duration_source AS "duration_source?: PlaybackDurationSource",
                    duration_error,
                    next_retry_at,
                    created_at,
@@ -42,12 +102,12 @@ impl PlaybackSourceMetadataRepository {
               AND media_id IS NOT DISTINCT FROM $2
               AND playlist_id IS NOT DISTINCT FROM $3
               AND target_hash = $4
-            ",
+            "#,
+            identity.room_id as RoomId,
+            identity.media_id.map(i64::from),
+            identity.playlist_id.map(i64::from),
+            &identity.target_hash,
         )
-        .bind(identity.room_id)
-        .bind(identity.media_id)
-        .bind(identity.playlist_id)
-        .bind(&identity.target_hash)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -59,8 +119,9 @@ impl PlaybackSourceMetadataRepository {
         identity: &PlaybackSourceIdentity,
         duration_seconds: f64,
     ) -> Result<PlaybackSourceMetadata> {
-        let metadata = sqlx::query_as::<_, PlaybackSourceMetadata>(
-            r"
+        let metadata = sqlx::query_as!(
+            PlaybackSourceMetadata,
+            r#"
             INSERT INTO playback_source_metadata (
                 room_id,
                 media_id,
@@ -85,27 +146,27 @@ impl PlaybackSourceMetadataRepository {
                           duration_error = NULL,
                           next_retry_at = NULL,
                           version = playback_source_metadata.version + 1
-            RETURNING room_id,
-                      media_id,
-                      playlist_id,
+            RETURNING room_id AS "room_id!: RoomId",
+                      media_id AS "media_id?: MediaId",
+                      playlist_id AS "playlist_id?: PlaylistId",
                       target_hash,
                       duration_seconds,
-                      duration_status,
-                      duration_source,
+                      duration_status AS "duration_status!: PlaybackDurationStatus",
+                      duration_source AS "duration_source?: PlaybackDurationSource",
                       duration_error,
                       next_retry_at,
                       created_at,
                       updated_at,
                       version
-            ",
+            "#,
+            identity.room_id as RoomId,
+            identity.media_id.map(i64::from),
+            identity.playlist_id.map(i64::from),
+            &identity.target_hash,
+            duration_seconds,
+            i16::from(PlaybackDurationStatus::Available),
+            i16::from(PlaybackDurationSource::Provider),
         )
-        .bind(identity.room_id)
-        .bind(identity.media_id)
-        .bind(identity.playlist_id)
-        .bind(&identity.target_hash)
-        .bind(duration_seconds)
-        .bind(i16::from(PlaybackDurationStatus::Available))
-        .bind(i16::from(PlaybackDurationSource::Provider))
         .fetch_one(&self.pool)
         .await?;
 
@@ -116,8 +177,9 @@ impl PlaybackSourceMetadataRepository {
         &self,
         identity: &PlaybackSourceIdentity,
     ) -> Result<PlaybackSourceMetadata> {
-        let metadata = sqlx::query_as::<_, PlaybackSourceMetadata>(
-            r"
+        let metadata = sqlx::query_as!(
+            PlaybackSourceMetadata,
+            r#"
             INSERT INTO playback_source_metadata (
                 room_id,
                 media_id,
@@ -133,25 +195,25 @@ impl PlaybackSourceMetadataRepository {
                 target_hash
             )
             DO UPDATE SET target_hash = playback_source_metadata.target_hash
-            RETURNING room_id,
-                      media_id,
-                      playlist_id,
+            RETURNING room_id AS "room_id!: RoomId",
+                      media_id AS "media_id?: MediaId",
+                      playlist_id AS "playlist_id?: PlaylistId",
                       target_hash,
                       duration_seconds,
-                      duration_status,
-                      duration_source,
+                      duration_status AS "duration_status!: PlaybackDurationStatus",
+                      duration_source AS "duration_source?: PlaybackDurationSource",
                       duration_error,
                       next_retry_at,
                       created_at,
                       updated_at,
                       version
-            ",
+            "#,
+            identity.room_id as RoomId,
+            identity.media_id.map(i64::from),
+            identity.playlist_id.map(i64::from),
+            &identity.target_hash,
+            i16::from(PlaybackDurationStatus::Unknown),
         )
-        .bind(identity.room_id)
-        .bind(identity.media_id)
-        .bind(identity.playlist_id)
-        .bind(&identity.target_hash)
-        .bind(i16::from(PlaybackDurationStatus::Unknown))
         .fetch_one(&self.pool)
         .await?;
 
@@ -162,26 +224,27 @@ impl PlaybackSourceMetadataRepository {
         &self,
         limit: i64,
     ) -> Result<Vec<(PlaybackSourceMetadata, RoomPlaybackState)>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as!(
+            PlaybackSourceWithStateRow,
             r#"
-            SELECT metadata.room_id AS metadata_room_id,
-                   metadata.media_id AS metadata_media_id,
-                   metadata.playlist_id AS metadata_playlist_id,
+            SELECT metadata.room_id AS "metadata_room_id!: RoomId",
+                   metadata.media_id AS "metadata_media_id?: MediaId",
+                   metadata.playlist_id AS "metadata_playlist_id?: PlaylistId",
                    metadata.target_hash AS metadata_target_hash,
                    metadata.duration_seconds,
-                   metadata.duration_status AS metadata_duration_status,
-                   metadata.duration_source AS metadata_duration_source,
+                   metadata.duration_status AS "metadata_duration_status!: PlaybackDurationStatus",
+                   metadata.duration_source AS "metadata_duration_source?: PlaybackDurationSource",
                    metadata.duration_error,
                    metadata.next_retry_at,
                    metadata.created_at AS metadata_created_at,
                    metadata.updated_at AS metadata_updated_at,
                    metadata.version AS metadata_version,
-                   state.room_id AS state_room_id,
-                   state.playing_media_id AS state_playing_media_id,
-                   state.playing_playlist_id AS state_playing_playlist_id,
+                   state.room_id AS "state_room_id!: RoomId",
+                   state.playing_media_id AS "state_playing_media_id?: MediaId",
+                   state.playing_playlist_id AS "state_playing_playlist_id?: PlaylistId",
                    state.target AS state_target,
                    state.current_progress_id AS state_current_progress_id,
-                   COALESCE(progress."position", 0.0) AS state_position,
+                   COALESCE(progress."position", 0.0) AS "state_position!",
                    state.speed AS state_speed,
                    state.is_playing AS state_is_playing,
                    state.updated_at AS state_updated_at,
@@ -199,44 +262,13 @@ impl PlaybackSourceMetadataRepository {
             ORDER BY state.updated_at ASC
             LIMIT $2
             "#,
+            i16::from(PlaybackDurationStatus::Available),
+            limit,
         )
-        .bind(i16::from(PlaybackDurationStatus::Available))
-        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
-        let sources = rows
-            .into_iter()
-            .map(|row| {
-                let metadata = PlaybackSourceMetadata {
-                    room_id: row.get::<RoomId, _>("metadata_room_id"),
-                    media_id: row.get::<Option<MediaId>, _>("metadata_media_id"),
-                    playlist_id: row.get::<Option<PlaylistId>, _>("metadata_playlist_id"),
-                    target_hash: row.get("metadata_target_hash"),
-                    duration_seconds: row.get("duration_seconds"),
-                    duration_status: row.get("metadata_duration_status"),
-                    duration_source: row.get("metadata_duration_source"),
-                    duration_error: row.get("duration_error"),
-                    next_retry_at: row.get("next_retry_at"),
-                    created_at: row.get("metadata_created_at"),
-                    updated_at: row.get("metadata_updated_at"),
-                    version: row.get("metadata_version"),
-                };
-                let state = RoomPlaybackState {
-                    room_id: row.get("state_room_id"),
-                    playing_media_id: row.get("state_playing_media_id"),
-                    playing_playlist_id: row.get("state_playing_playlist_id"),
-                    target: row.get("state_target"),
-                    current_progress_id: row.get("state_current_progress_id"),
-                    position: row.get("state_position"),
-                    speed: row.get("state_speed"),
-                    is_playing: row.get("state_is_playing"),
-                    updated_at: row.get("state_updated_at"),
-                    version: row.get("state_version"),
-                };
-                (metadata, state)
-            })
-            .collect();
+        let sources = rows.into_iter().map(PlaybackSourceWithStateRow::into_parts).collect();
 
         Ok(sources)
     }
@@ -245,7 +277,8 @@ impl PlaybackSourceMetadataRepository {
         &self,
         limit: i64,
     ) -> Result<Vec<ClaimedPlaybackDurationProbe>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as!(
+            PlaybackSourceWithStateRow,
             r#"
             WITH claimed AS (
                 SELECT metadata.room_id,
@@ -298,24 +331,24 @@ impl PlaybackSourceMetadataRepository {
                           metadata.updated_at,
                           metadata.version
             )
-            SELECT updated.room_id AS metadata_room_id,
-                   updated.media_id AS metadata_media_id,
-                   updated.playlist_id AS metadata_playlist_id,
+            SELECT updated.room_id AS "metadata_room_id!: RoomId",
+                   updated.media_id AS "metadata_media_id?: MediaId",
+                   updated.playlist_id AS "metadata_playlist_id?: PlaylistId",
                    updated.target_hash AS metadata_target_hash,
                    updated.duration_seconds,
-                   updated.duration_status AS metadata_duration_status,
-                   updated.duration_source AS metadata_duration_source,
+                   updated.duration_status AS "metadata_duration_status!: PlaybackDurationStatus",
+                   updated.duration_source AS "metadata_duration_source?: PlaybackDurationSource",
                    updated.duration_error,
                    updated.next_retry_at,
                    updated.created_at AS metadata_created_at,
                    updated.updated_at AS metadata_updated_at,
                    updated.version AS metadata_version,
-                   state.room_id AS state_room_id,
-                   state.playing_media_id AS state_playing_media_id,
-                   state.playing_playlist_id AS state_playing_playlist_id,
+                   state.room_id AS "state_room_id!: RoomId",
+                   state.playing_media_id AS "state_playing_media_id?: MediaId",
+                   state.playing_playlist_id AS "state_playing_playlist_id?: PlaylistId",
                    state.target AS state_target,
                    state.current_progress_id AS state_current_progress_id,
-                   COALESCE(progress."position", 0.0) AS state_position,
+                   COALESCE(progress."position", 0.0) AS "state_position!",
                    state.speed AS state_speed,
                    state.is_playing AS state_is_playing,
                    state.updated_at AS state_updated_at,
@@ -329,45 +362,20 @@ impl PlaybackSourceMetadataRepository {
               ON progress.id = state.current_progress_id
              AND progress.target_hash = updated.target_hash
             "#,
+            i16::from(PlaybackDurationStatus::Unknown),
+            i16::from(PlaybackDurationStatus::Failed),
+            i16::from(PlaybackDurationStatus::Unavailable),
+            i16::from(PlaybackDurationStatus::Pending),
+            limit,
+            i16::from(PlaybackDurationStatus::Pending),
         )
-        .bind(i16::from(PlaybackDurationStatus::Unknown))
-        .bind(i16::from(PlaybackDurationStatus::Failed))
-        .bind(i16::from(PlaybackDurationStatus::Unavailable))
-        .bind(i16::from(PlaybackDurationStatus::Pending))
-        .bind(limit)
-        .bind(i16::from(PlaybackDurationStatus::Pending))
         .fetch_all(&self.pool)
         .await?;
 
         let probes = rows
             .into_iter()
             .map(|row| {
-                let metadata = PlaybackSourceMetadata {
-                    room_id: row.get::<RoomId, _>("metadata_room_id"),
-                    media_id: row.get::<Option<MediaId>, _>("metadata_media_id"),
-                    playlist_id: row.get::<Option<PlaylistId>, _>("metadata_playlist_id"),
-                    target_hash: row.get("metadata_target_hash"),
-                    duration_seconds: row.get("duration_seconds"),
-                    duration_status: row.get("metadata_duration_status"),
-                    duration_source: row.get("metadata_duration_source"),
-                    duration_error: row.get("duration_error"),
-                    next_retry_at: row.get("next_retry_at"),
-                    created_at: row.get("metadata_created_at"),
-                    updated_at: row.get("metadata_updated_at"),
-                    version: row.get("metadata_version"),
-                };
-                let state = RoomPlaybackState {
-                    room_id: row.get("state_room_id"),
-                    playing_media_id: row.get("state_playing_media_id"),
-                    playing_playlist_id: row.get("state_playing_playlist_id"),
-                    target: row.get("state_target"),
-                    current_progress_id: row.get("state_current_progress_id"),
-                    position: row.get("state_position"),
-                    speed: row.get("state_speed"),
-                    is_playing: row.get("state_is_playing"),
-                    updated_at: row.get("state_updated_at"),
-                    version: row.get("state_version"),
-                };
+                let (metadata, state) = row.into_parts();
                 ClaimedPlaybackDurationProbe { metadata, state }
             })
             .collect();
@@ -381,7 +389,7 @@ impl PlaybackSourceMetadataRepository {
         expected_version: i64,
         duration_seconds: f64,
     ) -> Result<bool> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE playback_source_metadata
                SET duration_seconds = $5,
@@ -396,15 +404,15 @@ impl PlaybackSourceMetadataRepository {
                AND target_hash = $4
                AND version = $8
             ",
+            identity.room_id as RoomId,
+            identity.media_id.map(i64::from),
+            identity.playlist_id.map(i64::from),
+            &identity.target_hash,
+            duration_seconds,
+            i16::from(PlaybackDurationStatus::Available),
+            i16::from(PlaybackDurationSource::Probe),
+            expected_version,
         )
-        .bind(identity.room_id)
-        .bind(identity.media_id)
-        .bind(identity.playlist_id)
-        .bind(&identity.target_hash)
-        .bind(duration_seconds)
-        .bind(i16::from(PlaybackDurationStatus::Available))
-        .bind(i16::from(PlaybackDurationSource::Probe))
-        .bind(expected_version)
         .execute(&self.pool)
         .await?;
 
@@ -420,7 +428,8 @@ impl PlaybackSourceMetadataRepository {
         retry_after: chrono::Duration,
     ) -> Result<bool> {
         let next_retry_at = chrono::Utc::now() + retry_after;
-        let result = sqlx::query(
+        let error = error.chars().take(500).collect::<String>();
+        let result = sqlx::query!(
             r"
             UPDATE playback_source_metadata
                SET duration_status = $5,
@@ -433,15 +442,15 @@ impl PlaybackSourceMetadataRepository {
                AND target_hash = $4
                AND version = $8
             ",
+            identity.room_id as RoomId,
+            identity.media_id.map(i64::from),
+            identity.playlist_id.map(i64::from),
+            &identity.target_hash,
+            i16::from(status),
+            error,
+            next_retry_at,
+            expected_version,
         )
-        .bind(identity.room_id)
-        .bind(identity.media_id)
-        .bind(identity.playlist_id)
-        .bind(&identity.target_hash)
-        .bind(i16::from(status))
-        .bind(error.chars().take(500).collect::<String>())
-        .bind(next_retry_at)
-        .bind(expected_version)
         .execute(&self.pool)
         .await?;
 

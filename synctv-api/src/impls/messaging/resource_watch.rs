@@ -31,6 +31,7 @@ pub enum WatchResourceKind {
     PlaylistItems,
     RoomMemberEvents,
     ChatEvents,
+    ChatPinEvents,
 }
 
 impl WatchResourceKind {
@@ -42,6 +43,7 @@ impl WatchResourceKind {
             Self::PlaylistItems => "playlist_items",
             Self::RoomMemberEvents => "room_member_events",
             Self::ChatEvents => "chat_events",
+            Self::ChatPinEvents => "chat_pin_events",
         }
     }
 }
@@ -526,7 +528,8 @@ impl ResourceWatchSession {
                 }
                 Ok(())
             }
-            synctv_proto::client::observe_resource::Resource::ChatEvents(_) => {
+            synctv_proto::client::observe_resource::Resource::ChatEvents(_)
+            | synctv_proto::client::observe_resource::Resource::ChatPinEvents(_) => {
                 if self.principal.is_guest() {
                     self.ensure_guest_admission_for_action().await?;
                 }
@@ -618,6 +621,17 @@ pub fn watch_chat_events_observe(
         WatchResourceKind::ChatEvents,
         req.delivery_mode,
         synctv_proto::client::observe_resource::Resource::ChatEvents(chat_events),
+    )
+}
+
+pub fn watch_chat_pin_events_observe(
+    req: synctv_proto::client::WatchChatPinEventsRequest,
+) -> Result<ObserveResource, String> {
+    let chat_pin_events = req.chat_pin_events.unwrap_or_default();
+    build_watch_observe(
+        WatchResourceKind::ChatPinEvents,
+        req.delivery_mode,
+        synctv_proto::client::observe_resource::Resource::ChatPinEvents(chat_pin_events),
     )
 }
 

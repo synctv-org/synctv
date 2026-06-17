@@ -9,13 +9,15 @@ use crate::http::validation::ProtoQuery;
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
-    ChatMessageEventResponse, ChatReadStateResponse, DeleteChatMessageRequest,
-    EditChatMessageRequest, GetChatHistoryRequest, GetChatHistoryResponse,
-    GetChatMessageContextRequest, GetChatMessageContextResponse, GetChatMessageReadReceiptsRequest,
-    GetChatMessageReadReceiptsResponse, GetChatMessageRequest, GetChatMessageResponse,
-    GetChatPlaybackMessagesRequest, GetChatPlaybackMessagesResponse, GetChatReadStateRequest,
-    ListChatReactionUsersRequest, ListChatReactionUsersResponse, MarkChatReadRequest,
-    SendChatMessageRequest, SetChatReactionRequest, SetChatReactionResponse,
+    ChatMessageEventResponse, ChatPinEventResponse, ChatReadStateResponse,
+    DeleteChatMessageRequest, EditChatMessageRequest, GetChatHistoryRequest,
+    GetChatHistoryResponse, GetChatMessageContextRequest, GetChatMessageContextResponse,
+    GetChatMessageReadReceiptsRequest, GetChatMessageReadReceiptsResponse, GetChatMessageRequest,
+    GetChatMessageResponse, GetChatPlaybackMessagesRequest, GetChatPlaybackMessagesResponse,
+    GetChatReadStateRequest, ListChatReactionUsersRequest, ListChatReactionUsersResponse,
+    ListPinnedChatMessagesRequest, ListPinnedChatMessagesResponse, MarkChatReadRequest,
+    PinChatMessageRequest, SendChatMessageRequest, SetChatReactionRequest, SetChatReactionResponse,
+    UnpinChatMessageRequest,
 };
 
 #[cfg_attr(
@@ -341,6 +343,143 @@ pub async fn delete_chat_message(
         EndpointRateLimitScope::RoomChat,
         move |client_api, actor| async move {
             client_api.delete_chat_message_for_actor(&actor, req).await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/chat/pinned-messages",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("limit" = Option<i32>, Query, description = "Maximum pinned messages to return")
+        ),
+        responses(
+            (status = 200, description = "Pinned chat messages", body = ListPinnedChatMessagesResponse),
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn list_pinned_chat_messages(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
+    ProtoQuery(req): ProtoQuery<ListPinnedChatMessagesRequest>,
+) -> AppResult<Json<ListPinnedChatMessagesResponse>> {
+    let room_id = path.room_id;
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        room_id,
+        EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomChat,
+        move |client_api, actor| async move {
+            client_api
+                .list_pinned_chat_messages_for_actor(&actor, req)
+                .await
+        },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        put,
+        path = "/api/rooms/{room_id}/chat/messages/{message_id}/pin",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("message_id" = String, Path, description = "Chat message ID")
+        ),
+        request_body = PinChatMessageRequest,
+        responses(
+            (status = 200, description = "Chat message pinned event", body = ChatPinEventResponse),
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "DELETE_CHAT permission required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Message not found", body = synctv_proto::client::ApiErrorResponse),
+            (status = 409, description = "Message state conflict", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn pin_chat_message(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<ChatMessagePath>,
+    Json(mut req): Json<PinChatMessageRequest>,
+) -> AppResult<Json<ChatPinEventResponse>> {
+    req.message_id = path.message_id;
+    let response =
+        execute_room_actor_endpoint(
+            &state,
+            request_meta,
+            path.room_id,
+            EndpointRateLimitCategory::Write,
+            EndpointRateLimitScope::RoomChat,
+            move |client_api, actor| async move {
+                client_api.pin_chat_message_for_actor(&actor, req).await
+            },
+        )
+        .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{room_id}/chat/messages/{message_id}/pin",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("message_id" = String, Path, description = "Chat message ID"),
+            ("client_operation_id" = Option<String>, Query, description = "Client-generated idempotency key")
+        ),
+        responses(
+            (status = 200, description = "Chat message unpinned event", body = ChatPinEventResponse),
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "DELETE_CHAT permission required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 404, description = "Message or pin not found", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn unpin_chat_message(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<ChatMessagePath>,
+    ProtoQuery(mut req): ProtoQuery<UnpinChatMessageRequest>,
+) -> AppResult<Json<ChatPinEventResponse>> {
+    req.message_id = path.message_id;
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        path.room_id,
+        EndpointRateLimitCategory::Write,
+        EndpointRateLimitScope::RoomChat,
+        move |client_api, actor| async move {
+            client_api.unpin_chat_message_for_actor(&actor, req).await
         },
     )
     .await?;

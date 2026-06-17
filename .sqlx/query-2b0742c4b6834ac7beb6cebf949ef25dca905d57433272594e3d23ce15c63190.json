@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO auth_webauthn_credentials (\n            user_id, credential_id, passkey, public_key, name\n        )\n        VALUES ($1, $2, '{}'::jsonb, '{}'::jsonb, 'test passkey')\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2b0742c4b6834ac7beb6cebf949ef25dca905d57433272594e3d23ce15c63190"
+}

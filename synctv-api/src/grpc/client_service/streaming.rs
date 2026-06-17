@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use crate::impls::messaging::{MessageSender, StreamMessage};
 use synctv_proto::client::{
-    ClientMessage, ServerMessage, WatchChatEventsEvent, WatchPlaybackEvent,
-    WatchPlaybackStateEvent, WatchPlaylistItemsEvent, WatchRoomMemberEventsEvent,
-    WatchRoomSettingsEvent,
+    ClientMessage, ServerMessage, WatchChatEventsEvent, WatchChatPinEventsEvent,
+    WatchPlaybackEvent, WatchPlaybackStateEvent, WatchPlaylistItemsEvent,
+    WatchRoomMemberEventsEvent, WatchRoomSettingsEvent,
 };
 
 pub(super) const MESSAGE_STREAM_BUFFER_SIZE: usize = 100;
@@ -147,6 +147,19 @@ pub(super) fn watch_room_member_events_event(
 pub(super) fn watch_chat_events_event(message: ServerMessage) -> Option<WatchChatEventsEvent> {
     use synctv_proto::client::watch_chat_events_event::Event;
     watch_event_from_server_message(message, |event| WatchChatEventsEvent {
+        event: Some(match event {
+            GrpcWatchEvent::Observed(value) => Event::Observed(value),
+            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
+            GrpcWatchEvent::Error(value) => Event::Error(value),
+        }),
+    })
+}
+
+pub(super) fn watch_chat_pin_events_event(
+    message: ServerMessage,
+) -> Option<WatchChatPinEventsEvent> {
+    use synctv_proto::client::watch_chat_pin_events_event::Event;
+    watch_event_from_server_message(message, |event| WatchChatPinEventsEvent {
         event: Some(match event {
             GrpcWatchEvent::Observed(value) => Event::Observed(value),
             GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),

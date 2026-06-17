@@ -120,6 +120,23 @@ fn test_guest_actor_cannot_satisfy_signed_in_room_operations() {
 }
 
 #[test]
+fn test_guest_actor_can_authorize_chat_history_snapshots_without_user_id() -> TestResult {
+    let actor = super::RoomActor::Guest(guest_access(RoomPermissionSet(
+        synctv_core::models::RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
+    )));
+
+    assert!(actor.user_id().is_none());
+    api_ok(super::ClientApiImpl::require_guest_permission(
+        match &actor {
+            super::RoomActor::Guest(access) => access,
+            super::RoomActor::User { .. } => return Err(test_error("expected guest actor")),
+        },
+        RoomPermission::VIEW_CHAT_HISTORY,
+    ))?;
+    Ok(())
+}
+
+#[test]
 fn test_room_actor_executor_rejects_malformed_authorization_header() {
     let err = super::ClientApiImpl::bearer_token_from_authorization("malformed-token")
         .expect_err("malformed authorization must fail before room actor resolution");

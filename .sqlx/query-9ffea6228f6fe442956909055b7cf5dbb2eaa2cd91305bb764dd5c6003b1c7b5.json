@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE file_references\n            SET metadata = $5,\n                updated_at = CURRENT_TIMESTAMP\n            WHERE reference_kind = $1\n              AND reference_id = $2\n              AND storage_backend = $3\n              AND object_key = $4\n              AND released_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9ffea6228f6fe442956909055b7cf5dbb2eaa2cd91305bb764dd5c6003b1c7b5"
+}

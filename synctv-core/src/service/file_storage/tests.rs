@@ -609,20 +609,21 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
     assert_eq!(stored.data, payload);
 
     let row = ok(
-        sqlx::query_as::<_, (i16, Option<i64>)>(
-            r"
+        sqlx::query!(
+            r#"
             SELECT compression, octet_length(data)::BIGINT AS stored_size_bytes
             FROM file_blob_parts
             WHERE storage_backend = $1 AND object_key = $2
-            ",
+            "#,
+            "database",
+            &stored.object_key,
         )
-        .bind("database")
-        .bind(&stored.object_key)
         .fetch_one(&pool)
         .await,
         "stored blob row should load",
     );
-    let (compression, stored_size_bytes) = row;
+    let compression = row.compression;
+    let stored_size_bytes = row.stored_size_bytes;
     assert_eq!(compression, i16::from(FileBlobCompression::Zstd));
     assert!(
         some(stored_size_bytes, "stored size should exist") < payload_size(&payload),
@@ -765,20 +766,21 @@ async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
     assert_eq!(stored.data, payload);
 
     let row = ok(
-        sqlx::query_as::<_, (i16, Option<i64>)>(
-            r"
+        sqlx::query!(
+            r#"
             SELECT compression, octet_length(data)::BIGINT AS stored_size_bytes
             FROM file_blob_parts
             WHERE storage_backend = $1 AND object_key = $2
-            ",
+            "#,
+            "database",
+            &stored.object_key,
         )
-        .bind("database")
-        .bind(&stored.object_key)
         .fetch_one(&pool)
         .await,
         "stored blob row should load",
     );
-    let (compression, stored_size_bytes) = row;
+    let compression = row.compression;
+    let stored_size_bytes = row.stored_size_bytes;
     assert_eq!(compression, i16::from(FileBlobCompression::Lz4));
     assert!(
         some(stored_size_bytes, "stored size should exist") < payload_size(&payload),
@@ -1530,20 +1532,22 @@ async fn database_storage_skips_compression_below_threshold() {
         "object should store",
     );
 
-    let (compression, stored_size_bytes) = ok(
-        sqlx::query_as::<_, (i16, Option<i64>)>(
-            r"
-            SELECT compression, octet_length(data)::BIGINT
+    let row = ok(
+        sqlx::query!(
+            r#"
+            SELECT compression, octet_length(data)::BIGINT AS stored_size_bytes
             FROM file_blob_parts
             WHERE storage_backend = $1 AND object_key = $2
-            ",
+            "#,
+            "database",
+            &stored.object_key,
         )
-        .bind("database")
-        .bind(&stored.object_key)
         .fetch_one(&pool)
         .await,
         "stored blob should load",
     );
+    let compression = row.compression;
+    let stored_size_bytes = row.stored_size_bytes;
     assert_eq!(compression, i16::from(FileBlobCompression::None));
     assert_eq!(
         some(stored_size_bytes, "stored size should exist"),
@@ -1609,20 +1613,22 @@ async fn database_storage_skips_low_savings_compression() {
         "object should store",
     );
 
-    let (compression, stored_size_bytes) = ok(
-        sqlx::query_as::<_, (i16, Option<i64>)>(
-            r"
-            SELECT compression, octet_length(data)::BIGINT
+    let row = ok(
+        sqlx::query!(
+            r#"
+            SELECT compression, octet_length(data)::BIGINT AS stored_size_bytes
             FROM file_blob_parts
             WHERE storage_backend = $1 AND object_key = $2
-            ",
+            "#,
+            "database",
+            &stored.object_key,
         )
-        .bind("database")
-        .bind(&stored.object_key)
         .fetch_one(&pool)
         .await,
         "stored blob should load",
     );
+    let compression = row.compression;
+    let stored_size_bytes = row.stored_size_bytes;
     assert_eq!(compression, i16::from(FileBlobCompression::None));
     assert_eq!(
         some(stored_size_bytes, "stored size should exist"),
@@ -2081,15 +2087,15 @@ async fn database_storage_multipart_stores_manifest_identity() {
     );
     assert_eq!(loaded.data, payload);
     let object_content_manifest_sha256 = ok(
-        sqlx::query_scalar::<_, String>(
-            r"
+        sqlx::query_scalar!(
+            r#"
             SELECT content_manifest_sha256
             FROM file_objects
             WHERE storage_backend = $1 AND object_key = $2
-            ",
+            "#,
+            "database",
+            &blob.object_key,
         )
-        .bind("database")
-        .bind(&blob.object_key)
         .fetch_one(&pool)
         .await,
         "stored file object should load",
@@ -2998,15 +3004,15 @@ async fn s3_multipart_completion_uses_all_recorded_parts() {
     assert_eq!(second.uploaded_size_bytes, payload_size(&payload));
     assert_eq!(second.uploaded_parts, vec![1, 2]);
     let object_content_manifest_sha256 = ok(
-        sqlx::query_scalar::<_, String>(
-            r"
+        sqlx::query_scalar!(
+            r#"
             SELECT content_manifest_sha256
             FROM file_objects
             WHERE storage_backend = $1 AND object_key = $2
-            ",
+            "#,
+            "s3_public",
+            &blob.object_key,
         )
-        .bind("s3_public")
-        .bind(&blob.object_key)
         .fetch_one(&pool)
         .await,
         "stored S3 file object should load",

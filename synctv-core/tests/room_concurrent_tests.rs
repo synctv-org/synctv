@@ -232,12 +232,13 @@ async fn test_concurrent_join_respects_max_members() {
     );
 
     // Verify final member count
-    let member_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(pool)
-            .await
-            .checked("members should be counted");
+    let member_count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM room_members WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(pool)
+    .await
+    .checked("members should be counted");
 
     assert_eq!(member_count, 10, "Final member count should be 10");
 }
@@ -647,11 +648,11 @@ async fn test_optimistic_lock_conflict_on_role_update() {
 
     let bumper = tokio::spawn(async move {
         while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE room_members SET version = version + 1 WHERE room_id = $1 AND user_id = $2",
+                room_id.as_i64(),
+                target_id.as_i64()
             )
-            .bind(room_id)
-            .bind(target_id)
             .execute(&pool_clone)
             .await?;
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -817,12 +818,13 @@ async fn test_concurrent_leave_and_rejoin() {
     assert_eq!(join_success, 10, "All join operations should succeed");
 
     // Final count: owner (1) + 10 new = 11
-    let final_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(pool)
-            .await
-            .checked("members should be counted");
+    let final_count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM room_members WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(pool)
+    .await
+    .checked("members should be counted");
 
     assert_eq!(
         final_count, 11,

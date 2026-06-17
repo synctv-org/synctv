@@ -6,11 +6,11 @@ use crate::{
     models::{
         ChatAttachment, ChatMessage, ChatMessageEventLog, ChatPlaybackMessagesQuery, ChatReadState,
         CreateChatAttachmentUploadSession, CreateFileUploadSession, DeleteChatMessage,
-        EditChatMessage, NewStoredFile, RoomId, SendChatMessage, SubmittedFileReference,
-        SubmittedFileReferenceKind, UserId, CHAT_ATTACHMENT_FILENAME_MAX_CHARS,
-        CHAT_ATTACHMENT_ID_MAX_CHARS, CHAT_CLIENT_MESSAGE_ID_MAX_CHARS,
-        CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS,
-        FILE_STORAGE_BACKEND_MAX_CHARS,
+        EditChatMessage, NewStoredFile, PinChatMessage, RoomId, SendChatMessage,
+        SubmittedFileReference, SubmittedFileReferenceKind, UnpinChatMessage, UserId,
+        CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
+        CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
+        CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
     },
     Error, Result,
 };
@@ -457,6 +457,25 @@ pub(super) fn chat_delete_request_hash(request: &DeleteChatMessage) -> Result<St
         "message_id": request.message_id,
         "reason": request.reason,
         "expected_version": request.expected_version,
+    });
+    let bytes = serde_json::to_vec(&payload)?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+pub(super) fn chat_pin_request_hash(request: &PinChatMessage) -> Result<String> {
+    let payload = json!({
+        "room_id": request.room_id.as_i64(),
+        "message_id": request.message_id,
+        "note": request.note,
+    });
+    let bytes = serde_json::to_vec(&payload)?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+pub(super) fn chat_unpin_request_hash(request: &UnpinChatMessage) -> Result<String> {
+    let payload = json!({
+        "room_id": request.room_id.as_i64(),
+        "message_id": request.message_id,
     });
     let bytes = serde_json::to_vec(&payload)?;
     Ok(hex::encode(Sha256::digest(bytes)))

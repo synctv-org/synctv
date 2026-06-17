@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE media SET position = position + 1 WHERE id = $1::bigint",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f08302354fc1a63224cbcb63f51218fbae342b0d23a0e3056e97fe3e8aeb50d1"
+}

@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT status AS \"status!\",\n               reviewed_at IS NOT NULL AS \"reviewed!\"\n        FROM room_join_requests\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status!",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "room_join_requests",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "reviewed!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "c435802bbbdbfa2973d5f5a1c33060e526f113c49c3a13762f8dbb19f78dfcad"
+}

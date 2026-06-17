@@ -81,25 +81,26 @@ mod playback;
 pub(crate) use playback::should_persist_playback_progress;
 mod resource_watch;
 pub use resource_watch::{
-    watch_chat_events_observe, watch_playback_observe, watch_playback_state_observe,
-    watch_playlist_items_observe, watch_room_member_events_observe, watch_room_settings_observe,
-    PreparedResourceWatchSession, ResourceWatchSession, ResourceWatchSessionConfig,
-    WatchResourceKind,
+    watch_chat_events_observe, watch_chat_pin_events_observe, watch_playback_observe,
+    watch_playback_state_observe, watch_playlist_items_observe, watch_room_member_events_observe,
+    watch_room_settings_observe, PreparedResourceWatchSession, ResourceWatchSession,
+    ResourceWatchSessionConfig, WatchResourceKind,
 };
 mod webrtc;
 
 mod codec;
 pub use codec::ProtoCodec;
-pub(crate) use codec::{
-    chat_display_color_from_metadata, chat_display_position_from_metadata,
-    chat_event_kind_to_proto, chat_message_event_to_proto, chat_metadata_for_send,
-    chat_playback_metadata_from_metadata, core_chat_attachment_to_proto, online_event_to_proto,
-    room_member_event_to_proto,
-};
 #[cfg(test)]
 pub(crate) use codec::{
-    chat_playback_media_id_from_metadata, chat_playback_playlist_id_from_metadata,
-    chat_playback_target_from_metadata, chat_playback_target_hash,
+    chat_display_color_from_metadata, chat_display_position_from_metadata,
+    chat_playback_media_id_from_metadata, chat_playback_metadata_from_metadata,
+    chat_playback_playlist_id_from_metadata, chat_playback_target_from_metadata,
+    chat_playback_target_hash, core_chat_attachment_to_proto,
+};
+pub(crate) use codec::{
+    chat_event_kind_to_proto, chat_message_event_to_proto, chat_message_receive_to_proto,
+    chat_metadata_for_send, chat_pin_event_to_proto, online_event_to_proto,
+    room_member_event_to_proto,
 };
 mod event_policy;
 pub(crate) use event_policy::{
@@ -642,7 +643,8 @@ impl StreamMessageHandler {
                 }
                 Ok(())
             }
-            synctv_proto::client::observe_resource::Resource::ChatEvents(_) => {
+            synctv_proto::client::observe_resource::Resource::ChatEvents(_)
+            | synctv_proto::client::observe_resource::Resource::ChatPinEvents(_) => {
                 if self.principal.is_guest() {
                     self.ensure_guest_admission_for_action().await?;
                 }

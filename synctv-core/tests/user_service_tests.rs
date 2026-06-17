@@ -365,32 +365,32 @@ async fn password_verification_id(
 }
 
 async fn insert_trusted_email_identity(pool: &PgPool, user_id: &UserId, email: &str) {
-    sqlx::query(
+    sqlx::query!(
         r"
         INSERT INTO auth_email_identities (user_id, email, created_at, updated_at)
         VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT (user_id)
         DO UPDATE SET email = EXCLUDED.email, updated_at = EXCLUDED.updated_at
         ",
+        user_id.as_i64(),
+        email
     )
-    .bind(user_id)
-    .bind(email)
     .execute(pool)
     .await
     .checked("trusted email identity should be inserted");
 }
 
 async fn insert_test_passkey(pool: &PgPool, user_id: &UserId, credential_id: &[u8]) {
-    sqlx::query(
+    sqlx::query!(
         r"
         INSERT INTO auth_webauthn_credentials (
             user_id, credential_id, passkey, public_key, name
         )
         VALUES ($1, $2, '{}'::jsonb, '{}'::jsonb, 'test passkey')
         ",
+        user_id.as_i64(),
+        credential_id
     )
-    .bind(user_id)
-    .bind(credential_id)
     .execute(pool)
     .await
     .checked("insert test passkey");
@@ -402,18 +402,18 @@ async fn insert_oauth2_identity(
     provider_instance_name: &str,
     provider_user_id: &str,
 ) {
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO auth_oauth2_identities (
              provider_type, provider_instance_name, provider_user_id, user_id, username, email
          )
          VALUES ($1, $2, $3, $4, $5, $6)",
+        2_i16,
+        provider_instance_name,
+        provider_user_id,
+        user_id.as_i64(),
+        provider_user_id,
+        &format!("{provider_user_id}@example.com")
     )
-    .bind(2_i16)
-    .bind(provider_instance_name)
-    .bind(provider_user_id)
-    .bind(user_id)
-    .bind(provider_user_id)
-    .bind(format!("{provider_user_id}@example.com"))
     .execute(pool)
     .await
     .checked("oauth2 identity should be inserted");
@@ -788,66 +788,66 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         .await
         .checked("create surviving media");
 
-    let foreign_progress_id: i64 = sqlx::query_scalar(
-        "INSERT INTO room_playback_progress
-             (room_id, media_id, playlist_id, target, target_hash, \"position\", version)
+    let foreign_progress_id: i64 = sqlx::query_scalar!(
+        r#"INSERT INTO room_playback_progress
+             (room_id, media_id, playlist_id, target, target_hash, "position", version)
          VALUES ($1, $2, NULL, ''::bytea, $3, 12.5, 0)
-         RETURNING id",
+         RETURNING id AS "id!""#,
+        foreign_room.id.as_i64(),
+        foreign_media.id.as_i64(),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     )
-    .bind(foreign_room.id)
-    .bind(foreign_media.id)
-    .bind("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
     .fetch_one(&pool)
     .await
     .checked("create playback progress");
 
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO room_playback_state
              (room_id, playing_media_id, playing_playlist_id, target, current_progress_id, speed, is_playing, updated_at, version)
          VALUES ($1, $2, NULL, ''::bytea, $3, 1.0, TRUE, NOW(), 0)",
+        foreign_room.id.as_i64(),
+        foreign_media.id.as_i64(),
+        foreign_progress_id
     )
-    .bind(foreign_room.id)
-    .bind(foreign_media.id)
-    .bind(foreign_progress_id)
     .execute(&pool)
     .await
     .checked("create playback state");
 
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO auth_oauth2_identities (
              provider_type, provider_instance_name, provider_user_id, user_id, username, email
          )
          VALUES ($1, $2, $3, $4, $5, $6)",
+        2_i16,
+        "github",
+        "delete-owner-gh",
+        doomed_user.id.as_i64(),
+        "delete_owner",
+        "delete_owner@example.com"
     )
-    .bind(2_i16)
-    .bind("github")
-    .bind("delete-owner-gh")
-    .bind(doomed_user.id)
-    .bind("delete_owner")
-    .bind("delete_owner@example.com")
     .execute(&pool)
     .await
     .checked("create oauth2 mapping");
 
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO notifications (user_id, title, content, type, is_read, created_at, updated_at)
          VALUES ($1, $2, $3, $4, FALSE, NOW(), NOW())",
+        doomed_user.id.as_i64(),
+        "title",
+        "body",
+        i16::from(NotificationType::SystemAnnouncement)
     )
-    .bind(doomed_user.id)
-    .bind("title")
-    .bind("body")
-    .bind(i16::from(NotificationType::SystemAnnouncement))
     .execute(&pool)
     .await
     .checked("create notification");
 
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO chat_messages (room_id, user_id, content, message_type, created_at)
          VALUES ($1, $2, $3, 1, NOW())",
+        foreign_room.id.as_i64(),
+        doomed_user.id.as_i64(),
+        "hello"
     )
-    .bind(foreign_room.id)
-    .bind(doomed_user.id)
-    .bind("hello")
     .execute(&pool)
     .await
     .checked("create chat message");
@@ -955,41 +955,52 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         "deleted user must no longer be an active member of surviving rooms"
     );
 
-    let playback_row = sqlx::query_as::<_, (Option<String>, Option<String>, bool)>(
-        "SELECT playing_media_id, playing_playlist_id, is_playing
+    let playback_row = sqlx::query!(
+        r#"SELECT playing_media_id AS "playing_media_id?: MediaId",
+                  playing_playlist_id AS "playing_playlist_id?: PlaylistId",
+                  is_playing AS "is_playing!"
          FROM room_playback_state
-         WHERE room_id = $1",
+         WHERE room_id = $1"#,
+        foreign_room.id.as_i64()
     )
-    .bind(foreign_room.id)
     .fetch_one(&pool)
     .await
     .checked("query playback");
-    assert_eq!(playback_row.0, None, "playing media must be cleared");
-    assert_eq!(playback_row.1, None, "playing playlist must be cleared");
-    assert!(!playback_row.2, "playback must be stopped");
+    assert_eq!(
+        playback_row.playing_media_id, None,
+        "playing media must be cleared"
+    );
+    assert_eq!(
+        playback_row.playing_playlist_id, None,
+        "playing playlist must be cleared"
+    );
+    assert!(!playback_row.is_playing, "playback must be stopped");
 
-    let oauth2_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM auth_oauth2_identities WHERE user_id = $1")
-            .bind(doomed_user.id)
-            .fetch_one(&pool)
-            .await
-            .checked("count oauth2 mappings");
+    let oauth2_count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM auth_oauth2_identities WHERE user_id = $1"#,
+        doomed_user.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("count oauth2 mappings");
     assert_eq!(oauth2_count, 0, "oauth2 mappings must be deleted");
 
-    let notification_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE user_id = $1")
-            .bind(doomed_user.id)
-            .fetch_one(&pool)
-            .await
-            .checked("count notifications");
+    let notification_count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM notifications WHERE user_id = $1"#,
+        doomed_user.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("count notifications");
     assert_eq!(notification_count, 0, "notifications must be deleted");
 
-    let chat_user_ids: Vec<Option<String>> =
-        sqlx::query_scalar("SELECT user_id FROM chat_messages WHERE room_id = $1")
-            .bind(foreign_room.id)
-            .fetch_all(&pool)
-            .await
-            .checked("query chat messages");
+    let chat_user_ids: Vec<Option<UserId>> = sqlx::query_scalar!(
+        r#"SELECT user_id AS "user_id?: UserId" FROM chat_messages WHERE room_id = $1"#,
+        foreign_room.id.as_i64()
+    )
+    .fetch_all(&pool)
+    .await
+    .checked("query chat messages");
     assert_eq!(
         chat_user_ids,
         vec![None],
@@ -1883,13 +1894,13 @@ async fn assert_refresh_token_rejects_unbound_oauth2_identity(pool: PgPool) {
         }
     };
 
-    sqlx::query(
+    sqlx::query!(
         "DELETE FROM auth_oauth2_identities
          WHERE user_id = $1 AND provider_instance_name = $2 AND provider_user_id = $3",
+        user.id.as_i64(),
+        "github",
+        "oauth-refresh-provider-user"
     )
-    .bind(user.id)
-    .bind("github")
-    .bind("oauth-refresh-provider-user")
     .execute(&pool)
     .await
     .checked("delete oauth2 identity");
@@ -1922,11 +1933,13 @@ async fn assert_refresh_token_rejects_unbound_email_identity(pool: PgPool) {
         }
     };
 
-    sqlx::query("DELETE FROM auth_email_identities WHERE user_id = $1")
-        .bind(user.id)
-        .execute(&pool)
-        .await
-        .checked("delete email identity");
+    sqlx::query!(
+        "DELETE FROM auth_email_identities WHERE user_id = $1",
+        user.id.as_i64()
+    )
+    .execute(&pool)
+    .await
+    .checked("delete email identity");
 
     let result = service.refresh_token(refresh_token).await;
     assert!(
@@ -1965,12 +1978,14 @@ async fn assert_refresh_token_rejects_deleted_passkey_binding(pool: PgPool) {
         }
     };
 
-    sqlx::query("DELETE FROM auth_webauthn_credentials WHERE user_id = $1 AND credential_id = $2")
-        .bind(user.id)
-        .bind(credential_id.as_slice())
-        .execute(&pool)
-        .await
-        .checked("delete passkey credential");
+    sqlx::query!(
+        "DELETE FROM auth_webauthn_credentials WHERE user_id = $1 AND credential_id = $2",
+        user.id.as_i64(),
+        credential_id.as_slice()
+    )
+    .execute(&pool)
+    .await
+    .checked("delete passkey credential");
 
     let result = service.refresh_token(refresh_token).await;
     assert!(

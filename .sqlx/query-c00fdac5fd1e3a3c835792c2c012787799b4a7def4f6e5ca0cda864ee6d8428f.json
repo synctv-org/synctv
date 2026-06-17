@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DROP FUNCTION IF EXISTS fail_token_blacklist_family_insert()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "c00fdac5fd1e3a3c835792c2c012787799b4a7def4f6e5ca0cda864ee6d8428f"
+}

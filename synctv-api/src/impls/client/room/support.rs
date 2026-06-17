@@ -246,22 +246,6 @@ pub(super) fn i64_to_i32_api(value: i64, field: &'static str) -> Result<i32, Api
     i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
 }
 
-pub(super) fn chat_status_to_proto(
-    status: synctv_core::models::ChatMessageStatus,
-) -> synctv_proto::client::ChatMessageStatus {
-    match status {
-        synctv_core::models::ChatMessageStatus::Active => {
-            synctv_proto::client::ChatMessageStatus::Active
-        }
-        synctv_core::models::ChatMessageStatus::Edited => {
-            synctv_proto::client::ChatMessageStatus::Edited
-        }
-        synctv_core::models::ChatMessageStatus::Deleted => {
-            synctv_proto::client::ChatMessageStatus::Deleted
-        }
-    }
-}
-
 pub(super) async fn username_for_chat_message(
     api: &ClientApiImpl,
     message: &synctv_core::models::ChatMessage,
@@ -274,13 +258,6 @@ pub(super) async fn username_for_chat_message(
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Chat message author not found".to_string()))
-}
-
-pub(super) fn chat_attachment_to_proto(
-    attachment: &synctv_core::models::ChatAttachment,
-) -> Result<synctv_proto::client::ChatAttachment, ApiError> {
-    crate::impls::messaging::core_chat_attachment_to_proto(attachment)
-        .map_err(|error| ApiError::Internal(error.clone()))
 }
 
 #[cfg(test)]
@@ -327,102 +304,11 @@ pub(super) fn upload_session_chat_attachment_to_proto(
 
 pub(super) fn chat_message_to_proto(
     api: &ClientApiImpl,
-    message: ChatMessageWithAttachments,
+    message: &ChatMessageWithAttachments,
     username: String,
 ) -> Result<synctv_proto::client::ChatMessageReceive, ApiError> {
-    let msg = message.message;
-    let room_id = api
-        .public_id_codec
-        .encode_room_id(msg.room_id)
-        .map_err(|error| ApiError::Internal(format!("Failed to encode chat room id: {error}")))?;
-    let user_id = msg
-        .user_id
-        .map(|id| {
-            api.public_id_codec.encode_user_id(id).map_err(|error| {
-                ApiError::Internal(format!("Failed to encode chat user id: {error}"))
-            })
-        })
-        .transpose()?
-        .unwrap_or_default();
-    let deleted_by_user_id = msg
-        .deleted_by
-        .map(|id| {
-            api.public_id_codec.encode_user_id(id).map_err(|error| {
-                ApiError::Internal(format!("Failed to encode chat deleted_by user id: {error}"))
-            })
-        })
-        .transpose()?
-        .unwrap_or_default();
-    let reactions = message
-        .reactions
-        .iter()
-        .map(chat_reaction_summary_to_proto)
-        .collect::<Result<Vec<_>, _>>()?;
-    let reaction_count = chat_reaction_count(&reactions)?;
-    let mentions = message
-        .mentions
-        .iter()
-        .map(|mention| {
-            Ok(synctv_proto::client::ChatMention {
-                user_id: api
-                    .public_id_codec
-                    .encode_user_id(mention.mentioned_user_id)
-                    .map_err(|error| {
-                        ApiError::Internal(format!("Failed to encode mention user id: {error}"))
-                    })?,
-                username: mention.username.clone().unwrap_or_default(),
-                start: mention.start,
-                length: mention.length,
-            })
-        })
-        .collect::<Result<Vec<_>, ApiError>>()?;
-    let playback = crate::impls::messaging::chat_playback_metadata_from_metadata(
-        &msg.metadata,
-        &api.public_id_codec,
-    )
-    .map_err(ApiError::Internal)?;
-    Ok(synctv_proto::client::ChatMessageReceive {
-        id: msg.id.to_string(),
-        room_id,
-        user_id,
-        username,
-        content: msg.content,
-        timestamp: msg.created_at.timestamp(),
-        display_position: crate::impls::messaging::chat_display_position_from_metadata(
-            &msg.metadata,
-        )
-        .map_err(ApiError::Internal)?,
-        display_color: crate::impls::messaging::chat_display_color_from_metadata(&msg.metadata)
-            .map_err(ApiError::Internal)?,
-        client_message_id: msg.client_message_id.unwrap_or_default(),
-        status: chat_status_to_proto(msg.status) as i32,
-        version: msg.version,
-        edited_at: msg.edited_at.map_or(0, |ts| ts.timestamp()),
-        deleted_at: msg.deleted_at.map_or(0, |ts| ts.timestamp()),
-        reply_to_message_id: msg
-            .reply_to_message_id
-            .map(|id| id.to_string())
-            .unwrap_or_default(),
-        attachments: message
-            .attachments
-            .iter()
-            .map(chat_attachment_to_proto)
-            .collect::<Result<Vec<_>, _>>()?,
-        deleted_by_user_id,
-        delete_reason: msg.delete_reason.unwrap_or_default(),
-        playback_media_id: playback.media_id,
-        playback_playlist_id: playback.playlist_id,
-        playback_target: playback.target,
-        playback_target_hash: playback.target_hash,
-        playback_position_seconds: playback.position_seconds,
-        reactions,
-        reaction_count,
-        metadata: crate::impls::client::convert::json_to_vec(
-            &msg.metadata,
-            "chat message metadata",
-        )?,
-        mentions,
-    })
+    crate::impls::messaging::chat_message_receive_to_proto(message, &api.public_id_codec, username)
+        .map_err(ApiError::Internal)
 }
 
 pub(crate) fn chat_reaction_summary_to_proto(
@@ -482,10 +368,23 @@ pub(super) async fn chat_event_to_proto(
         event_id: event.event_id,
         room_id,
         kind: crate::impls::messaging::chat_event_kind_to_proto(event.kind) as i32,
-        message: Some(chat_message_to_proto(api, event.message, username)?),
+        message: Some(chat_message_to_proto(api, &event.message, username)?),
         occurred_at: event.occurred_at.timestamp(),
         sequence: event.sequence,
     })
+}
+
+pub(super) async fn chat_pin_event_to_proto(
+    api: &ClientApiImpl,
+    event: synctv_core::models::ChatPinEvent,
+) -> Result<synctv_proto::client::ChatPinEvent, ApiError> {
+    let username = username_for_chat_message(api, &event.message.message).await?;
+    let mut proto = crate::impls::messaging::chat_pin_event_to_proto(&event, &api.public_id_codec)
+        .map_err(ApiError::Internal)?;
+    if let Some(message) = proto.message.as_mut() {
+        message.username = username;
+    }
+    Ok(proto)
 }
 
 pub(super) fn optional_chat_expected_version(raw: i64) -> Result<Option<i64>, ApiError> {
@@ -658,6 +557,57 @@ pub(super) fn delete_chat_message_request_to_core(
         client_operation_id: optional_trimmed_string(&req.client_operation_id),
         reason: optional_trimmed_string(&req.reason),
         expected_version: optional_chat_expected_version(req.expected_version)?,
+    })
+}
+
+pub(super) fn pin_chat_message_request_to_core(
+    room_id: synctv_core::models::RoomId,
+    user_id: synctv_core::models::UserId,
+    req: &synctv_proto::client::PinChatMessageRequest,
+) -> Result<synctv_core::models::PinChatMessage, ApiError> {
+    Ok(synctv_core::models::PinChatMessage {
+        room_id,
+        message_id: parse_chat_message_id(&req.message_id)?,
+        user_id,
+        client_operation_id: optional_trimmed_string(&req.client_operation_id),
+        note: optional_trimmed_string(&req.note),
+    })
+}
+
+pub(super) fn unpin_chat_message_request_to_core(
+    room_id: synctv_core::models::RoomId,
+    user_id: synctv_core::models::UserId,
+    req: &synctv_proto::client::UnpinChatMessageRequest,
+) -> Result<synctv_core::models::UnpinChatMessage, ApiError> {
+    Ok(synctv_core::models::UnpinChatMessage {
+        room_id,
+        message_id: parse_chat_message_id(&req.message_id)?,
+        user_id,
+        client_operation_id: optional_trimmed_string(&req.client_operation_id),
+    })
+}
+
+pub(super) async fn chat_pinned_message_to_proto(
+    api: &ClientApiImpl,
+    pinned: synctv_core::models::ChatPinnedMessage,
+) -> Result<synctv_proto::client::ChatPinnedMessage, ApiError> {
+    let username = username_for_chat_message(api, &pinned.message.message).await?;
+    let pinned_by_user_id = pinned
+        .pin
+        .pinned_by
+        .map(|id| {
+            api.public_id_codec.encode_user_id(id).map_err(|error| {
+                ApiError::Internal(format!("Failed to encode chat pinned_by user id: {error}"))
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(synctv_proto::client::ChatPinnedMessage {
+        message: Some(chat_message_to_proto(api, &pinned.message, username)?),
+        pinned_by_user_id,
+        pinned_by_username: pinned.pin.pinned_by_username.unwrap_or_default(),
+        note: pinned.pin.note.unwrap_or_default(),
+        pinned_at: pinned.pin.pinned_at.timestamp(),
     })
 }
 

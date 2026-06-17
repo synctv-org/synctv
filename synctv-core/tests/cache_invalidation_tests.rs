@@ -815,13 +815,14 @@ async fn test_cache_invalidation_after_commit() {
 
     // At the moment invalidation becomes observable, the DB mutation must
     // already be committed.
-    let deleted_at: Option<chrono::DateTime<chrono::Utc>> =
-        sqlx::query_scalar("SELECT deleted_at FROM rooms WHERE id = $1")
-            .bind(room_id)
-            .fetch_optional(&pool)
-            .await
-            .checked("Failed to query room")
-            .flatten();
+    let deleted_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar!(
+        "SELECT deleted_at FROM rooms WHERE id = $1",
+        room_id.as_i64()
+    )
+    .fetch_optional(&pool)
+    .await
+    .checked("Failed to query room")
+    .flatten();
 
     assert!(
         deleted_at.is_some(),
@@ -953,13 +954,13 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
         pool.begin().await.checked("Failed to start transaction");
 
     // Mark room as deleted (same as delete_room does)
-    let _deleted = sqlx::query(
+    let _deleted = sqlx::query!(
         "UPDATE rooms
          SET deleted_at = $2, updated_at = $2
          WHERE id = $1 AND deleted_at IS NULL",
+        room_id.as_i64(),
+        chrono::Utc::now()
     )
-    .bind(room_id)
-    .bind(chrono::Utc::now())
     .execute(&mut *tx)
     .await
     .checked("Failed to delete room");

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM file_blob_parts WHERE storage_backend = $1 AND object_key = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "82f48e814d1e9c12530f189d9bdedefcc617d890d8e826fb71f523d5d80f658b"
+}

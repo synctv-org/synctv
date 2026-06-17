@@ -116,6 +116,7 @@ service RoomService {
   rpc WatchPlaylistItems(WatchPlaylistItemsRequest) returns (stream WatchPlaylistItemsEvent);
   rpc WatchRoomMemberEvents(WatchRoomMemberEventsRequest) returns (stream WatchRoomMemberEventsEvent);
   rpc WatchChatEvents(WatchChatEventsRequest) returns (stream WatchChatEventsEvent);
+  rpc WatchChatPinEvents(WatchChatPinEventsRequest) returns (stream WatchChatPinEventsEvent);
   rpc CreateChatAttachmentUploadSession(CreateChatAttachmentUploadSessionRequest) returns (CreateChatAttachmentUploadSessionResponse);
   rpc UploadChatAttachmentObject(UploadChatAttachmentObjectRequest) returns (UploadChatAttachmentObjectResponse);
   rpc CompleteChatAttachmentUploadSession(CompleteChatAttachmentUploadSessionRequest) returns (CompleteChatAttachmentUploadSessionResponse);
@@ -133,6 +134,9 @@ service RoomService {
   rpc GetChatMessage(GetChatMessageRequest) returns (GetChatMessageResponse);
   rpc GetChatMessageContext(GetChatMessageContextRequest) returns (GetChatMessageContextResponse);
   rpc GetChatPlaybackMessages(GetChatPlaybackMessagesRequest) returns (GetChatPlaybackMessagesResponse);
+  rpc ListPinnedChatMessages(ListPinnedChatMessagesRequest) returns (ListPinnedChatMessagesResponse);
+  rpc PinChatMessage(PinChatMessageRequest) returns (ChatPinEventResponse);
+  rpc UnpinChatMessage(UnpinChatMessageRequest) returns (ChatPinEventResponse);
   rpc SetChatReaction(SetChatReactionRequest) returns (SetChatReactionResponse);
   rpc ListChatReactionUsers(ListChatReactionUsersRequest) returns (ListChatReactionUsersResponse);
   rpc MarkChatRead(MarkChatReadRequest) returns (ChatReadStateResponse);
@@ -2203,6 +2207,7 @@ message ObserveResource {
     ObserveOnlineCount online_count = 10;
     ObserveOnlineEvent online_event = 11;
     ObserveSelfRoomMember self_room_member = 12;
+    ObserveChatPinEvents chat_pin_events = 13;
   }
 }
 
@@ -2284,6 +2289,12 @@ message ObserveChatEvents {
   optional int64 after_event_sequence = 1;
 }
 
+message ObserveChatPinEvents {
+  // Replays durable per-room pin resource events greater than this value.
+  // Use ListPinnedChatMessages for the current full pinned-message snapshot.
+  optional int64 after_event_sequence = 1;
+}
+
 message WatchPlaybackStateRequest {
   ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
   ObservePlaybackState playback_state = 2;
@@ -2312,6 +2323,11 @@ message WatchRoomMemberEventsRequest {
 message WatchChatEventsRequest {
   ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
   ObserveChatEvents chat_events = 2;
+}
+
+message WatchChatPinEventsRequest {
+  ResourceDeliveryMode delivery_mode = 1 [(buf.validate.field).enum.defined_only = true];
+  ObserveChatPinEvents chat_pin_events = 2;
 }
 
 message WatchPlaybackStateEvent {
@@ -2362,6 +2378,14 @@ message WatchChatEventsEvent {
   }
 }
 
+message WatchChatPinEventsEvent {
+  oneof event {
+    ResourceObserved observed = 1;
+    ResourceEvent resource_event = 2;
+    ResourceObserveError error = 3;
+  }
+}
+
 message ServerMessage {
   oneof message {
     HeartbeatAck heartbeat_ack = 6;
@@ -2396,6 +2420,7 @@ message ResourceEvent {
     OnlineEvent online_event = 12;
     WebRtcEvent webrtc_event = 13;
     synctv.common.RoomMember self_room_member = 14;
+    ChatPinEvent chat_pin_event = 15;
   }
   EventCursor event_cursor = 11;
 }
@@ -2461,6 +2486,14 @@ message ChatMessageReceive {
   int32 reaction_count = 24;
   bytes metadata = 25; // JSON object.
   repeated ChatMention mentions = 26;
+  optional ChatMessagePin pin = 27;
+}
+
+message ChatMessagePin {
+  string pinned_by_user_id = 1;
+  string pinned_by_username = 2;
+  string note = 3;
+  int64 pinned_at = 4;
 }
 
 message ChatReactionSummary {
@@ -2488,6 +2521,14 @@ enum ChatMessageEventKind {
   CHAT_MESSAGE_EVENT_KIND_EDITED = 2;
   CHAT_MESSAGE_EVENT_KIND_DELETED = 3;
   CHAT_MESSAGE_EVENT_KIND_REACTIONS_CHANGED = 4;
+}
+
+enum ChatPinEventKind {
+  CHAT_PIN_EVENT_KIND_UNSPECIFIED = 0;
+  CHAT_PIN_EVENT_KIND_PINNED = 1;
+  CHAT_PIN_EVENT_KIND_UNPINNED = 2;
+  CHAT_PIN_EVENT_KIND_MESSAGE_UPDATED = 3;
+  CHAT_PIN_EVENT_KIND_MESSAGE_DELETED = 4;
 }
 
 enum RoomMemberEventKind {
@@ -3109,6 +3150,16 @@ message ChatMessageEvent {
   int64 sequence = 6;
 }
 
+message ChatPinEvent {
+  string event_id = 1;
+  string room_id = 2;
+  ChatPinEventKind kind = 3;
+  ChatMessageReceive message = 4;
+  ChatMessagePin pin = 5;
+  int64 occurred_at = 6;
+  int64 sequence = 7;
+}
+
 message RoomMemberEvent {
   string event_id = 1;
   string room_id = 2;
@@ -3207,6 +3258,38 @@ message DeleteChatMessageRequest {
   int64 expected_version = 2;
   string reason = 3;
   string client_operation_id = 4; // Client-generated idempotency key for delete operations.
+}
+
+message ChatPinnedMessage {
+  ChatMessageReceive message = 1;
+  string pinned_by_user_id = 2;
+  string pinned_by_username = 3;
+  string note = 4;
+  int64 pinned_at = 5;
+}
+
+message ListPinnedChatMessagesRequest {
+  option (buf.validate.message).cel = {
+    id: "list_pinned_chat_messages.limit"
+    message: "limit must be 0 (use default) or between 1 and 100"
+    expression: "this.limit == 0 || (this.limit >= 1 && this.limit <= 100)"
+  };
+  int32 limit = 1;
+}
+
+message ListPinnedChatMessagesResponse {
+  repeated ChatPinnedMessage messages = 1;
+}
+
+message PinChatMessageRequest {
+  string message_id = 1;
+  string note = 2 [(buf.validate.field).string.max_len = 500];
+  string client_operation_id = 3;
+}
+
+message UnpinChatMessageRequest {
+  string message_id = 1;
+  string client_operation_id = 2;
 }
 
 message SetChatReactionRequest {
@@ -3388,6 +3471,10 @@ message ListChatReactionUsersResponse {
 
 message ChatMessageEventResponse {
   ChatMessageEvent event = 1;
+}
+
+message ChatPinEventResponse {
+  ChatPinEvent event = 1;
 }
 
 message GetChatHistoryRequest {
@@ -3707,6 +3794,7 @@ message GetPublicSettingsResponse {
   bool enable_webauthn = 25;
   bool enable_webauthn_signup = 22;
   bool webauthn_signup_need_review = 23;
+  uint64 max_pinned_chat_messages_per_room = 27;
 
   // Proxy settings
   bool movie_proxy = 11;

@@ -1,4 +1,4 @@
-use synctv_core::models::{ChatMessageEvent, MediaId, PlaylistId, RoomId, UserId};
+use synctv_core::models::{ChatMessageEvent, ChatPinEvent, MediaId, PlaylistId, RoomId, UserId};
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
 #[derive(Debug, Clone)]
@@ -12,6 +12,9 @@ pub enum ResourceInvalidation {
     OnlineEvent,
     ChatEvents {
         event: Box<ChatMessageEvent>,
+    },
+    ChatPinEvents {
+        event: Box<ChatPinEvent>,
     },
     ProviderCredential {
         user_id: UserId,
@@ -31,6 +34,9 @@ impl PartialEq for ResourceInvalidation {
             | (Self::OnlineEvent, Self::OnlineEvent) => true,
             (Self::Playback(left), Self::Playback(right)) => left == right,
             (Self::ChatEvents { event: left }, Self::ChatEvents { event: right }) => {
+                left.event_id == right.event_id
+            }
+            (Self::ChatPinEvents { event: left }, Self::ChatPinEvents { event: right }) => {
                 left.event_id == right.event_id
             }
             (
@@ -120,6 +126,11 @@ pub fn resource_invalidations_for_room_event(event: &RealtimeEvent) -> Vec<Resou
         }
         RealtimeEvent::ChatMessageEvent { event, .. } => {
             vec![ResourceInvalidation::ChatEvents {
+                event: Box::new(event.clone()),
+            }]
+        }
+        RealtimeEvent::ChatPinEvent { event, .. } => {
+            vec![ResourceInvalidation::ChatPinEvents {
                 event: Box::new(event.clone()),
             }]
         }
@@ -239,6 +250,7 @@ mod tests {
                 attachments: Vec::new(),
                 reactions: Vec::new(),
                 mentions: Vec::new(),
+                pin: None,
             },
             occurred_at: now,
         }

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO user_registration_requests (\n            id, username, email, opaque_record,\n            opaque_credential_identifier, opaque_ciphersuite,\n            opaque_server_setup_version, signup_method, status\n        )\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar",
+        "Varchar",
+        "Bytea",
+        "Bytea",
+        "Varchar",
+        "Int4",
+        "Int2",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6fe65ffeb4cdb7ac6bea28f73a1cc3130ebcafc04734de8530a969eb2e7b4556"
+}

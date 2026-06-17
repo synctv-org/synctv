@@ -599,41 +599,42 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
     tracing::debug!(batch_size = batch_size, "Flushing audit event batch");
 
     // Build a batch insert using UNNEST for efficiency
-    let mut actor_ids: Vec<Option<i64>> = Vec::with_capacity(batch_size);
+    let mut actor_ids: Vec<i64> = Vec::with_capacity(batch_size);
     let mut actor_usernames = Vec::with_capacity(batch_size);
     let mut actions = Vec::with_capacity(batch_size);
     let mut target_types = Vec::with_capacity(batch_size);
-    let mut target_ids: Vec<Option<String>> = Vec::with_capacity(batch_size);
+    let mut target_ids: Vec<String> = Vec::with_capacity(batch_size);
     let mut details_list: Vec<serde_json::Value> = Vec::with_capacity(batch_size);
-    let mut ip_addresses: Vec<Option<String>> = Vec::with_capacity(batch_size);
-    let mut user_agents: Vec<Option<String>> = Vec::with_capacity(batch_size);
+    let mut ip_addresses: Vec<String> = Vec::with_capacity(batch_size);
+    let mut user_agents: Vec<String> = Vec::with_capacity(batch_size);
     let mut created_ats: Vec<DateTime<Utc>> = Vec::with_capacity(batch_size);
 
     for record in buffer.iter() {
-        actor_ids.push(parse_actor_id_for_storage(&record.actor_id));
+        actor_ids.push(parse_actor_id_for_storage(&record.actor_id).unwrap_or(0));
         actor_usernames.push(record.actor_username.clone());
         actions.push(record.action.as_i16());
         target_types.push(record.target_type.as_i16());
-        target_ids.push(record.target_id.clone());
+        target_ids.push(record.target_id.clone().unwrap_or_default());
         details_list.push(record.details.clone());
-        ip_addresses.push(record.ip_address.clone());
-        user_agents.push(record.user_agent.clone());
+        ip_addresses.push(record.ip_address.clone().unwrap_or_default());
+        user_agents.push(record.user_agent.clone().unwrap_or_default());
         created_ats.push(record.created_at);
     }
 
-    let query = r"
+    match sqlx::query!(
+        r#"
         INSERT INTO audit_logs (
             actor_id, actor_username, action, target_type, target_id,
             details, ip_address, user_agent, created_at
         )
-        SELECT actor_id::bigint,
+        SELECT NULLIF(actor_id, 0)::bigint,
                actor_username::text,
                action::smallint,
                target_type::smallint,
-               target_id::text,
+               NULLIF(target_id, '')::text,
                details::jsonb,
-               ip_address::text,
-               user_agent::text,
+               NULLIF(ip_address, '')::text,
+               NULLIF(user_agent, '')::text,
                created_at::timestamptz
         FROM UNNEST(
             $1::bigint[],
@@ -656,19 +657,19 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
             user_agent,
             created_at
         )
-        ";
-    match sqlx::query(query)
-        .bind(&actor_ids)
-        .bind(&actor_usernames)
-        .bind(&actions)
-        .bind(&target_types)
-        .bind(&target_ids)
-        .bind(&details_list)
-        .bind(&ip_addresses)
-        .bind(&user_agents)
-        .bind(&created_ats)
-        .execute(pool)
-        .await
+        "#,
+        &actor_ids,
+        &actor_usernames,
+        &actions,
+        &target_types,
+        &target_ids,
+        &details_list,
+        &ip_addresses,
+        &user_agents,
+        &created_ats,
+    )
+    .execute(pool)
+    .await
     {
         Ok(_) => {
             tracing::debug!(batch_size = batch_size, "Audit batch flushed successfully");

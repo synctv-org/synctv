@@ -140,6 +140,7 @@ impl AuthorizedAdminActor {
 
 #[derive(Clone)]
 pub struct RoomServiceOptions {
+    pub read_pool: Option<sqlx::PgPool>,
     pub distributed_lock: Option<Arc<dyn crate::service::distributed_lock::CoordinationLock>>,
     pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
     pub version_fence: Arc<dyn crate::cache::VersionFenceStore>,
@@ -183,6 +184,7 @@ impl RoomServiceOptions {
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_defaults() -> Self {
         Self {
+            read_pool: None,
             distributed_lock: None,
             cache_invalidation: None,
             version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),

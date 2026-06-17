@@ -790,9 +790,11 @@ async fn test_reset_permissions_zeroes_all_four_columns() {
         .checked("test operation should succeed");
 
     // Also set admin permissions via raw SQL (since atomic ops only touch member-level)
-    sqlx::query("UPDATE room_members SET admin_added_permissions = 42, admin_removed_permissions = 84 WHERE room_id = $1 AND user_id = $2")
-        .bind(room.id)
-        .bind(user.id)
+    sqlx::query!(
+        "UPDATE room_members SET admin_added_permissions = 42, admin_removed_permissions = 84 WHERE room_id = $1 AND user_id = $2",
+        room.id.as_i64(),
+        user.id.as_i64()
+    )
         .execute(&pool)
         .await
         .checked("test operation should succeed");

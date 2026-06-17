@@ -16,6 +16,7 @@ pub const CHAT_EVENT_TYPE_MAX_CHARS: usize = 128;
 pub const CHAT_ATTACHMENT_ID_MAX_CHARS: usize = 128;
 pub const CHAT_ATTACHMENT_FILENAME_MAX_CHARS: usize = 255;
 pub const CHAT_REACTION_KEY_MAX_CHARS: usize = 64;
+pub const CHAT_PIN_NOTE_MAX_CHARS: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -279,6 +280,41 @@ pub struct ChatMessageWithAttachments {
     pub attachments: Vec<ChatAttachment>,
     pub reactions: Vec<ChatReactionSummary>,
     pub mentions: Vec<ChatMention>,
+    pub pin: Option<ChatMessagePin>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ChatMessagePin {
+    pub room_id: RoomId,
+    pub message_id: i64,
+    pub message_created_at: DateTime<Utc>,
+    pub pinned_by: Option<UserId>,
+    pub pinned_by_username: Option<String>,
+    pub note: Option<String>,
+    pub pinned_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatPinnedMessage {
+    pub pin: ChatMessagePin,
+    pub message: ChatMessageWithAttachments,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PinChatMessage {
+    pub room_id: RoomId,
+    pub message_id: i64,
+    pub user_id: UserId,
+    pub client_operation_id: Option<String>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnpinChatMessage {
+    pub room_id: RoomId,
+    pub message_id: i64,
+    pub user_id: UserId,
+    pub client_operation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -420,6 +456,67 @@ pub struct ChatMessageEvent {
 pub struct ChatMessageEventLog {
     pub sequence: i64,
     pub event: ChatMessageEvent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i16)]
+pub enum ChatMessageOperationKind {
+    Edit = 1,
+    Delete = 2,
+    Pin = 3,
+    Unpin = 4,
+}
+
+impl From<ChatMessageOperationKind> for i16 {
+    fn from(value: ChatMessageOperationKind) -> Self {
+        value as Self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i16)]
+pub enum ChatPinEventKind {
+    Pinned = 1,
+    Unpinned = 2,
+    MessageUpdated = 3,
+    MessageDeleted = 4,
+}
+
+impl ChatPinEventKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pinned => "chat_pin_pinned",
+            Self::Unpinned => "chat_pin_unpinned",
+            Self::MessageUpdated => "chat_pin_message_updated",
+            Self::MessageDeleted => "chat_pin_message_deleted",
+        }
+    }
+}
+
+impl From<ChatPinEventKind> for i16 {
+    fn from(value: ChatPinEventKind) -> Self {
+        value as Self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatPinEvent {
+    pub event_id: String,
+    #[serde(default)]
+    pub sequence: i64,
+    pub room_id: RoomId,
+    pub actor_user_id: UserId,
+    pub kind: ChatPinEventKind,
+    pub message: ChatMessageWithAttachments,
+    pub pin: Option<ChatMessagePin>,
+    pub occurred_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatPinEventLog {
+    pub sequence: i64,
+    pub event: ChatPinEvent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

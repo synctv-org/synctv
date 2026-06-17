@@ -160,13 +160,16 @@ async fn old_chat_message_cleanup_deletes_image_objects() {
     .clone();
     assert_eq!(deleted_origins, vec!["retention_expired".to_string()]);
 
-    let message_exists: bool = ok(
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_messages WHERE id = $1)")
-            .bind(9_001_i64)
-            .fetch_one(&pool)
-            .await,
+    let message_exists = ok(
+        sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM chat_messages WHERE id = $1)",
+            9_001_i64
+        )
+        .fetch_one(&pool)
+        .await,
         "message existence query should succeed",
-    );
+    )
+    .unwrap_or(false);
     assert!(!message_exists);
 }
 
@@ -203,10 +206,10 @@ async fn failed_old_file_cleanup_is_persisted_and_retried() {
     );
 
     let queued: i64 = ok(
-        sqlx::query_scalar(
-            "SELECT COUNT(*)::BIGINT FROM file_cleanup_jobs WHERE object_key = $1 AND completed_at IS NULL",
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*)::BIGINT AS "count!" FROM file_cleanup_jobs WHERE object_key = $1 AND completed_at IS NULL"#,
+            "normalized/raw/retry-image.webp",
         )
-        .bind("normalized/raw/retry-image.webp")
         .fetch_one(&pool)
         .await,
         "queued cleanup job should be queryable",
@@ -243,15 +246,16 @@ async fn failed_old_file_cleanup_is_persisted_and_retried() {
     .clone();
     assert_eq!(deleted_origins, vec!["cleanup_retry".to_string()]);
 
-    let completed: bool = ok(
-        sqlx::query_scalar(
+    let completed = ok(
+        sqlx::query_scalar!(
             "SELECT completed_at IS NOT NULL FROM file_cleanup_jobs WHERE object_key = $1",
+            "normalized/raw/retry-image.webp",
         )
-        .bind("normalized/raw/retry-image.webp")
         .fetch_one(&pool)
         .await,
         "completed cleanup job should be queryable",
-    );
+    )
+    .unwrap_or(false);
     assert!(completed);
     let due_after_retry = ok(
         FileStorageRepository::new(pool.clone())
@@ -374,8 +378,8 @@ async fn insert_old_chat_message_with_image(
     object_key: &str,
     created_at: chrono::DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r"
+    sqlx::query!(
+        r#"
         INSERT INTO chat_messages (
             id, room_id, user_id, client_message_id, content, message_type, status, version,
             reply_to_message_id, metadata, edited_at, deleted_at, deleted_by, delete_reason,
@@ -385,38 +389,38 @@ async fn insert_old_chat_message_with_image(
             NULL, $8, NULL, NULL, NULL, NULL,
             $9
         )
-        ",
+        "#,
+        message_id,
+        room_id.as_i64(),
+        user_id.as_i64(),
+        "attachment message",
+        4_i16,
+        1_i16,
+        1_i64,
+        serde_json::Value::Object(Default::default()),
+        created_at,
     )
-    .bind(message_id)
-    .bind(room_id)
-    .bind(user_id)
-    .bind("attachment message")
-    .bind(4_i16)
-    .bind(1_i16)
-    .bind(1_i64)
-    .bind(serde_json::Value::Object(Default::default()))
-    .bind(created_at)
     .execute(pool)
     .await?;
 
-    sqlx::query(
-        r"
+    sqlx::query!(
+        r#"
         INSERT INTO chat_message_attachments (
             id, kind, room_id, message_id, message_created_at, filename, storage_backend, object_key, url,
             mime_type, size_bytes, width, height, metadata, created_at
         ) VALUES (
             $1, 2, $2, $3, $4, NULL, $5, $6, NULL, NULL, NULL, NULL, NULL, $7, $8
         )
-        ",
+        "#,
+        image_id,
+        room_id.as_i64(),
+        message_id,
+        created_at,
+        "test-storage",
+        object_key,
+        serde_json::Value::Object(Default::default()),
+        created_at,
     )
-    .bind(image_id)
-    .bind(room_id)
-    .bind(message_id)
-    .bind(created_at)
-    .bind("test-storage")
-    .bind(object_key)
-    .bind(serde_json::Value::Object(Default::default()))
-    .bind(created_at)
     .execute(pool)
     .await?;
 

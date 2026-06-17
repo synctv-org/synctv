@@ -98,7 +98,7 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
     );
 
     ok(
-        sqlx::query(
+        sqlx::query!(
             "DROP TRIGGER IF EXISTS trg_fail_token_blacklist_family_insert ON auth_token_blacklist",
         )
         .execute(&pool)
@@ -106,7 +106,7 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
         "existing failure trigger should be dropped",
     );
     ok(
-        sqlx::query(
+        sqlx::query!(
             r"
         CREATE TRIGGER trg_fail_token_blacklist_family_insert
         BEFORE INSERT OR UPDATE ON auth_token_blacklist
@@ -126,10 +126,12 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
     );
 
     let row_exists: bool = ok(
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM auth_token_blacklist WHERE jti = $1)")
-            .bind(&key)
-            .fetch_one(&pool)
-            .await,
+        sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM auth_token_blacklist WHERE jti = $1) AS "exists!""#,
+            &key
+        )
+        .fetch_one(&pool)
+        .await,
         "partial blacklist row lookup should succeed",
     );
 
@@ -139,7 +141,7 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
     );
 
     ok(
-        sqlx::query(
+        sqlx::query!(
             "DROP TRIGGER IF EXISTS trg_fail_token_blacklist_family_insert ON auth_token_blacklist",
         )
         .execute(&pool)
@@ -147,7 +149,7 @@ async fn test_pg_family_revocation_is_atomic_when_timestamp_write_fails() {
         "failure trigger should be dropped",
     );
     ok(
-        sqlx::query("DROP FUNCTION IF EXISTS fail_token_blacklist_family_insert()")
+        sqlx::query!("DROP FUNCTION IF EXISTS fail_token_blacklist_family_insert()")
             .execute(&pool)
             .await,
         "failure trigger function should be dropped",

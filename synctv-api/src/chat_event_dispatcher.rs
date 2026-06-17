@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use synctv_core::models::ChatMessageEvent;
+use synctv_core::models::{ChatMessageEvent, ChatPinEvent};
 use synctv_realtime::sync::RealtimeEvent;
 
 use crate::runtime::{RealtimeDeliveryOutcome, RealtimeEventService};
 
 pub trait ChatEventDispatcher: Send + Sync {
     fn dispatch(&self, event: &ChatMessageEvent) -> RealtimeDeliveryOutcome;
+    fn dispatch_pin(&self, event: &ChatPinEvent) -> RealtimeDeliveryOutcome;
 }
 
 pub struct RealtimeChatEventDispatcher {
@@ -37,6 +38,23 @@ impl ChatEventDispatcher for RealtimeChatEventDispatcher {
         }
         outcome
     }
+
+    fn dispatch_pin(&self, event: &ChatPinEvent) -> RealtimeDeliveryOutcome {
+        let outcome = self
+            .event_service
+            .broadcast_outcome(chat_pin_event_to_realtime(event));
+        if outcome.distributed_delivery_missed() {
+            tracing::warn!(
+                room_id = %event.room_id,
+                event_id = %event.event_id,
+                "ChatPinEvent broadcast missed the distributed fan-out path"
+            );
+            synctv_core::metrics::cluster::REALTIME_EVENTS_DROPPED
+                .with_label_values(&["chat_pin_event_no_redis"])
+                .inc();
+        }
+        outcome
+    }
 }
 
 #[must_use]
@@ -49,6 +67,17 @@ pub fn default_chat_event_dispatcher(
 #[must_use]
 pub fn chat_message_event_to_realtime(event: &ChatMessageEvent) -> RealtimeEvent {
     RealtimeEvent::ChatMessageEvent {
+        event_id: event.event_id.clone(),
+        room_id: event.room_id,
+        actor_user_id: event.actor_user_id,
+        event: event.clone(),
+        timestamp: event.occurred_at,
+    }
+}
+
+#[must_use]
+pub fn chat_pin_event_to_realtime(event: &ChatPinEvent) -> RealtimeEvent {
+    RealtimeEvent::ChatPinEvent {
         event_id: event.event_id.clone(),
         room_id: event.room_id,
         actor_user_id: event.actor_user_id,
@@ -91,6 +120,7 @@ mod tests {
                 attachments: Vec::new(),
                 reactions: Vec::new(),
                 mentions: Vec::new(),
+                pin: None,
             },
             occurred_at,
         }

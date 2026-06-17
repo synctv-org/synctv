@@ -14,7 +14,7 @@ use redis::AsyncCommands;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{CacheL2Backend, KeyBuilder, PlaybackStateCache, RedisCacheL2, UsernameCache},
-    models::{Media, MediaId, RoomId, User, UserId, UserRole, UserStatus},
+    models::{Media, MediaId, PlaylistId, RoomId, User, UserId, UserRole, UserStatus},
     repository::{MediaRepository, RoomPlaybackStateRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
@@ -280,22 +280,23 @@ async fn test_playback_state_l2_miss_reads_from_db() {
     assert!(state.version >= 0, "Should have valid state from DB");
 
     // Verify in PostgreSQL directly
-    let db_state: synctv_core::models::RoomPlaybackState = sqlx::query_as(
-        "SELECT state.room_id,
-                state.playing_media_id,
-                state.playing_playlist_id,
+    let db_state: synctv_core::models::RoomPlaybackState = sqlx::query_as!(
+        synctv_core::models::RoomPlaybackState,
+        r#"SELECT state.room_id AS "room_id!: RoomId",
+                state.playing_media_id AS "playing_media_id?: MediaId",
+                state.playing_playlist_id AS "playing_playlist_id?: PlaylistId",
                 state.target,
                 state.current_progress_id,
-                COALESCE(progress.\"position\", 0.0) AS \"position\",
+                COALESCE(progress."position", 0.0) AS "position!",
                 state.speed,
                 state.is_playing,
                 state.updated_at,
                 state.version
          FROM room_playback_state state
          LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id
-         WHERE state.room_id = $1",
+         WHERE state.room_id = $1"#,
+        room.id.as_i64(),
     )
-    .bind(room.id)
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");
@@ -328,11 +329,13 @@ async fn test_playback_state_get_state_persists_missing_row() {
         .await
         .checked("test operation should succeed");
 
-    sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
-        .bind(room.id)
-        .execute(&pool)
-        .await
-        .checked("test operation should succeed");
+    sqlx::query!(
+        "DELETE FROM room_playback_state WHERE room_id = $1",
+        room.id.as_i64()
+    )
+    .execute(&pool)
+    .await
+    .checked("test operation should succeed");
 
     let state = room_service
         .playback_service()
@@ -340,12 +343,13 @@ async fn test_playback_state_get_state_persists_missing_row() {
         .await
         .checked("test operation should succeed");
 
-    let persisted: Option<(RoomId,)> =
-        sqlx::query_as("SELECT room_id FROM room_playback_state WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_optional(&pool)
-            .await
-            .checked("test operation should succeed");
+    let persisted = sqlx::query!(
+        r#"SELECT room_id AS "room_id!: RoomId" FROM room_playback_state WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_optional(&pool)
+    .await
+    .checked("test operation should succeed");
 
     assert_eq!(state.room_id, room.id);
     assert!(
@@ -531,7 +535,7 @@ async fn test_playback_get_state_bypasses_stale_l1_without_invalidation() {
         .await
         .checked("test operation should succeed");
 
-    sqlx::query(
+    sqlx::query!(
         r#"WITH progress_update AS (
                UPDATE room_playback_progress
                SET "position" = $2, version = version + 1
@@ -542,13 +546,11 @@ async fn test_playback_get_state_bypasses_stale_l1_without_invalidation() {
            SET version = version + 1, updated_at = NOW()
            FROM progress_update
            WHERE state.room_id = progress_update.room_id"#,
-    )
-    .bind(
         attached_state
             .current_progress_id
             .checked("current progress id"),
+        77.0_f64,
     )
-    .bind(77.0_f64)
     .execute(&pool)
     .await
     .checked("test operation should succeed");

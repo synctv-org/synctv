@@ -77,6 +77,66 @@ fn review_request_public_id(id: i64) -> String {
         .unwrap()
 }
 
+async fn pending_join_request_id(
+    pool: &sqlx::PgPool,
+    room_id: synctv_core::models::RoomId,
+    user_id: UserId,
+) -> i64 {
+    sqlx::query_scalar!(
+        r#"
+        SELECT id AS "id!"
+        FROM room_join_requests
+        WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL
+        "#,
+        room_id.as_i64(),
+        user_id.as_i64()
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn join_request_status(pool: &sqlx::PgPool, request_id: i64) -> i16 {
+    sqlx::query_scalar!(
+        r#"SELECT status AS "status!" FROM room_join_requests WHERE id = $1"#,
+        request_id
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn room_member_exists(
+    pool: &sqlx::PgPool,
+    room_id: synctv_core::models::RoomId,
+    user_id: UserId,
+) -> bool {
+    sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2) AS "exists!""#,
+        room_id.as_i64(),
+        user_id.as_i64()
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn join_request_review_state(pool: &sqlx::PgPool, request_id: i64) -> (i16, bool) {
+    let row = sqlx::query!(
+        r#"
+        SELECT status AS "status!",
+               reviewed_at IS NOT NULL AS "reviewed!"
+        FROM room_join_requests
+        WHERE id = $1
+        "#,
+        request_id
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    (row.status, row.reviewed)
+}
+
 fn make_client_api(
     user_service: Arc<UserService>,
     room_service: Arc<RoomService>,
@@ -268,14 +328,7 @@ async fn test_client_member_approval_api_contracts() {
         .join_room(room.id, reject_target.id, None)
         .await
         .unwrap();
-    let reject_request_id: i64 = sqlx::query_scalar(
-        "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
-    )
-    .bind(room.id)
-    .bind(reject_target.id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let reject_request_id = pending_join_request_id(&pool, room.id, reject_target.id).await;
     let rejected = client_api
         .reject_room_join_review(
             &owner.id,
@@ -289,24 +342,12 @@ async fn test_client_member_approval_api_contracts() {
         .unwrap();
     assert!(rejected.success);
 
-    let rejected_member_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2)",
-    )
-    .bind(room.id)
-    .bind(reject_target.id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let rejected_member_exists = room_member_exists(&pool, room.id, reject_target.id).await;
     assert!(
         !rejected_member_exists,
         "rejected room join reviews must not create member rows"
     );
-    let rejected_status: i16 =
-        sqlx::query_scalar("SELECT status FROM room_join_requests WHERE id = $1")
-            .bind(reject_request_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let rejected_status = join_request_status(&pool, reject_request_id).await;
     assert_eq!(rejected_status, i16::from(ReviewStatus::Rejected));
 }
 
@@ -383,14 +424,7 @@ async fn test_admin_member_approval_api_contracts() {
         .join_room(room.id, approve_target.id, None)
         .await
         .unwrap();
-    let approve_request_id: i64 = sqlx::query_scalar(
-        "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
-    )
-    .bind(room.id)
-    .bind(approve_target.id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let approve_request_id = pending_join_request_id(&pool, room.id, approve_target.id).await;
     let approved = admin_api
         .approve_room_join_review(
             synctv_proto::admin::ApproveRoomJoinReviewRequest {
@@ -412,14 +446,7 @@ async fn test_admin_member_approval_api_contracts() {
         .join_room(room.id, reject_target.id, None)
         .await
         .unwrap();
-    let reject_request_id: i64 = sqlx::query_scalar(
-        "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
-    )
-    .bind(room.id)
-    .bind(reject_target.id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let reject_request_id = pending_join_request_id(&pool, room.id, reject_target.id).await;
     let rejected = admin_api
         .reject_room_join_review(
             synctv_proto::admin::RejectRoomJoinReviewRequest {
@@ -433,24 +460,12 @@ async fn test_admin_member_approval_api_contracts() {
         .unwrap();
     assert!(rejected.success);
 
-    let rejected_member_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2)",
-    )
-    .bind(room.id)
-    .bind(reject_target.id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let rejected_member_exists = room_member_exists(&pool, room.id, reject_target.id).await;
     assert!(
         !rejected_member_exists,
         "rejected room join reviews must not create member rows"
     );
-    let rejected_status: i16 =
-        sqlx::query_scalar("SELECT status FROM room_join_requests WHERE id = $1")
-            .bind(reject_request_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let rejected_status = join_request_status(&pool, reject_request_id).await;
     assert_eq!(rejected_status, i16::from(ReviewStatus::Rejected));
 }
 
@@ -496,14 +511,7 @@ async fn test_client_room_join_review_uses_request_id_not_user_id() {
         .await
         .unwrap();
     let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
-    let old_request_id: i64 = sqlx::query_scalar(
-        "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
-    )
-    .bind(room.id)
-    .bind(target.id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let old_request_id = pending_join_request_id(&pool, room.id, target.id).await;
     client_api
         .reject_room_join_review(
             &owner.id,
@@ -520,14 +528,7 @@ async fn test_client_room_join_review_uses_request_id_not_user_id() {
         .join_room(room.id, target.id, None)
         .await
         .unwrap();
-    let new_request_id: i64 = sqlx::query_scalar(
-        "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
-    )
-    .bind(room.id)
-    .bind(target.id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let new_request_id = pending_join_request_id(&pool, room.id, target.id).await;
     assert_ne!(old_request_id, new_request_id);
 
     let stale_approve_error = client_api
@@ -545,21 +546,10 @@ async fn test_client_room_join_review_uses_request_id_not_user_id() {
         "stale request-id review must not fall back to user-id approval, got: {stale_approve_error:?}"
     );
 
-    let new_status: i16 = sqlx::query_scalar("SELECT status FROM room_join_requests WHERE id = $1")
-        .bind(new_request_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let new_status = join_request_status(&pool, new_request_id).await;
     assert_eq!(new_status, i16::from(ReviewStatus::Pending));
 
-    let member_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2)",
-    )
-    .bind(room.id)
-    .bind(target.id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let member_exists = room_member_exists(&pool, room.id, target.id).await;
     assert!(!member_exists);
 }
 
@@ -604,14 +594,7 @@ async fn test_admin_room_join_review_uses_request_id_not_user_id() {
         .join_room(room.id, target.id, None)
         .await
         .unwrap();
-    let old_request_id: i64 = sqlx::query_scalar(
-        "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
-    )
-    .bind(room.id)
-    .bind(target.id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let old_request_id = pending_join_request_id(&pool, room.id, target.id).await;
     admin_api
         .reject_room_join_review(
             synctv_proto::admin::RejectRoomJoinReviewRequest {
@@ -628,14 +611,7 @@ async fn test_admin_room_join_review_uses_request_id_not_user_id() {
         .join_room(room.id, target.id, None)
         .await
         .unwrap();
-    let new_request_id: i64 = sqlx::query_scalar(
-        "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
-    )
-    .bind(room.id)
-    .bind(target.id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let new_request_id = pending_join_request_id(&pool, room.id, target.id).await;
     assert_ne!(old_request_id, new_request_id);
 
     let stale_approve_error = admin_api
@@ -653,11 +629,7 @@ async fn test_admin_room_join_review_uses_request_id_not_user_id() {
         "admin stale request-id review must not fall back to user-id approval, got: {stale_approve_error:?}"
     );
 
-    let new_status: i16 = sqlx::query_scalar("SELECT status FROM room_join_requests WHERE id = $1")
-        .bind(new_request_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let new_status = join_request_status(&pool, new_request_id).await;
     assert_eq!(new_status, i16::from(ReviewStatus::Pending));
 }
 
@@ -703,14 +675,7 @@ async fn test_room_join_review_approval_rejects_globally_banned_target() {
         .await
         .unwrap();
     let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
-    let request_id: i64 = sqlx::query_scalar(
-        "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
-    )
-    .bind(room.id)
-    .bind(target.id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let request_id = pending_join_request_id(&pool, room.id, target.id).await;
 
     user_repo
         .ban(&target.id, None, Some("test ban".to_string()))
@@ -732,24 +697,11 @@ async fn test_room_join_review_approval_rejects_globally_banned_target() {
         "approval should fail with a ban-related authorization error, got: {approve_error:?}"
     );
 
-    let review_state: (i16, bool) = sqlx::query_as(
-        "SELECT status, reviewed_at IS NOT NULL AS reviewed FROM room_join_requests WHERE id = $1",
-    )
-    .bind(request_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let review_state = join_request_review_state(&pool, request_id).await;
     assert_eq!(review_state.0, i16::from(ReviewStatus::Pending));
     assert!(!review_state.1);
 
-    let member_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2)",
-    )
-    .bind(room.id)
-    .bind(target.id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let member_exists = room_member_exists(&pool, room.id, target.id).await;
     assert!(!member_exists);
 }
 
@@ -797,14 +749,7 @@ async fn test_add_member_resolves_existing_room_join_review() {
     let codec = public_id_codec();
     let room_public_id = codec.encode_room_id(room.id).unwrap();
     let target_public_id = codec.encode_user_id(target.id).unwrap();
-    let request_id: i64 = sqlx::query_scalar(
-        "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
-    )
-    .bind(room.id)
-    .bind(target.id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let request_id = pending_join_request_id(&pool, room.id, target.id).await;
 
     client_api
         .add_member(
@@ -819,13 +764,7 @@ async fn test_add_member_resolves_existing_room_join_review() {
         .await
         .unwrap();
 
-    let review_state: (i16, bool) = sqlx::query_as(
-        "SELECT status, reviewed_at IS NOT NULL AS reviewed FROM room_join_requests WHERE id = $1",
-    )
-    .bind(request_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let review_state = join_request_review_state(&pool, request_id).await;
     assert_eq!(review_state.0, i16::from(ReviewStatus::Approved));
     assert!(review_state.1);
 

@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT event_id AS \"event_id!\",\n                   sequence AS \"sequence!\",\n                   payload AS \"event_payload?: serde_json::Value\",\n                   occurred_at AS \"occurred_at!\"\n            FROM room_resource_events\n            WHERE room_id = $1\n              AND event_id = $2\n              AND resource_type = 'chat_pins'\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_id!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_resource_events",
+            "name": "event_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sequence!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_resource_events",
+            "name": "sequence"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "event_payload?: serde_json::Value",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "room_resource_events",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "occurred_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_resource_events",
+            "name": "occurred_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "07ac47640b35e1e0fc3514031c6676567ebfba2997153cccf4ea07b1faf4dea2"
+}

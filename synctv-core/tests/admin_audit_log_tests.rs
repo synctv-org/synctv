@@ -60,13 +60,21 @@ async fn test_audit_log_integrity_all_fields() {
         "audit log should be written",
     );
 
-    let row: AuditLogRow = ok(
-        sqlx::query_as(
-            r"
-        SELECT id, actor_id, actor_username, action, target_type, target_id, ip_address, user_agent
+    let row = ok(
+        sqlx::query_as!(
+            AuditLogRow,
+            r#"
+        SELECT id AS "id!",
+               actor_id AS "actor_id!",
+               actor_username AS "actor_username!",
+               action AS "action!",
+               target_type AS "target_type!",
+               target_id,
+               ip_address,
+               user_agent
         FROM audit_logs
         WHERE actor_id = 100101
-        ",
+        "#,
         )
         .fetch_one(&pool)
         .await,
@@ -141,18 +149,20 @@ async fn test_audit_log_details_json_integrity() {
         "audit log should be written",
     );
 
-    let row: (serde_json::Value,) = ok(
-        sqlx::query_as("SELECT details FROM audit_logs WHERE actor_id = '100102'")
-            .fetch_one(&pool)
-            .await,
+    let details: serde_json::Value = ok(
+        sqlx::query_scalar!(
+            r#"SELECT details AS "details!: serde_json::Value" FROM audit_logs WHERE actor_id = '100102'"#
+        )
+        .fetch_one(&pool)
+        .await,
         "audit log details should be fetched",
     );
 
-    assert_eq!(row.0["nested"]["deeply"]["value"], 42);
-    assert_eq!(row.0["array"], serde_json::json!([1, 2, 3]));
-    assert_eq!(row.0["string"], "test");
-    assert_eq!(row.0["boolean"], true);
-    assert!(row.0["null"].is_null());
+    assert_eq!(details["nested"]["deeply"]["value"], 42);
+    assert_eq!(details["array"], serde_json::json!([1, 2, 3]));
+    assert_eq!(details["string"], "test");
+    assert_eq!(details["boolean"], true);
+    assert!(details["null"].is_null());
 }
 
 #[tokio::test]
@@ -182,15 +192,17 @@ async fn test_audit_log_created_at_timestamp() {
 
     let after = chrono::Utc::now();
 
-    let row: (chrono::DateTime<chrono::Utc>,) = ok(
-        sqlx::query_as("SELECT created_at FROM audit_logs WHERE actor_id = '100103'")
-            .fetch_one(&pool)
-            .await,
+    let created_at: chrono::DateTime<chrono::Utc> = ok(
+        sqlx::query_scalar!(
+            r#"SELECT created_at AS "created_at!" FROM audit_logs WHERE actor_id = '100103'"#
+        )
+        .fetch_one(&pool)
+        .await,
         "audit log timestamp should be fetched",
     );
 
-    assert!(row.0 >= before, "created_at should be >= before");
-    assert!(row.0 <= after, "created_at should be <= after");
+    assert!(created_at >= before, "created_at should be >= before");
+    assert!(created_at <= after, "created_at should be <= after");
 }
 
 #[tokio::test]
@@ -231,18 +243,22 @@ async fn test_audit_log_multiple_actions_same_actor() {
     }
 
     let count: i64 = ok(
-        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id = '100104'")
-            .fetch_one(&pool)
-            .await,
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM audit_logs WHERE actor_id = '100104'"#
+        )
+        .fetch_one(&pool)
+        .await,
         "audit log count should be fetched",
     );
 
     assert_eq!(usize::try_from(count), Ok(actions.len()));
 
-    let ids: Vec<(i64,)> = ok(
-        sqlx::query_as("SELECT id FROM audit_logs WHERE actor_id = '100104' ORDER BY created_at")
-            .fetch_all(&pool)
-            .await,
+    let ids: Vec<i64> = ok(
+        sqlx::query_scalar!(
+            r#"SELECT id AS "id!" FROM audit_logs WHERE actor_id = '100104' ORDER BY created_at"#
+        )
+        .fetch_all(&pool)
+        .await,
         "audit log ids should be fetched",
     );
 
@@ -295,9 +311,11 @@ async fn test_concurrent_audit_logging() {
     assert_eq!(success_count, 20, "All concurrent logs should succeed");
 
     let count: i64 = ok(
-        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id::text LIKE '1002%'")
-            .fetch_one(&pool)
-            .await,
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM audit_logs WHERE actor_id::text LIKE '1002%'"#
+        )
+        .fetch_one(&pool)
+        .await,
         "concurrent audit log count should be fetched",
     );
 
@@ -355,9 +373,9 @@ async fn test_all_audit_actions_are_logged() {
         );
     }
 
-    let logged_actions: Vec<(i16,)> = ok(
-        sqlx::query_as(
-            "SELECT action FROM audit_logs WHERE actor_username = 'action_tester' ORDER BY created_at",
+    let logged_actions: Vec<i16> = ok(
+        sqlx::query_scalar!(
+            r#"SELECT action AS "action!" FROM audit_logs WHERE actor_username = 'action_tester' ORDER BY created_at"#
         )
         .fetch_all(&pool)
         .await,
@@ -366,7 +384,7 @@ async fn test_all_audit_actions_are_logged() {
 
     assert_eq!(logged_actions.len(), actions.len());
 
-    for ((logged,), expected) in logged_actions.iter().zip(actions.iter()) {
+    for (logged, expected) in logged_actions.iter().zip(actions.iter()) {
         assert_eq!(audit_action(*logged), *expected, "Action code should match");
     }
 }
@@ -404,9 +422,9 @@ async fn test_all_target_types_are_logged() {
         );
     }
 
-    let logged_types: Vec<(Option<i16>,)> = ok(
-        sqlx::query_as(
-            "SELECT target_type FROM audit_logs WHERE actor_username = 'target_tester' ORDER BY created_at",
+    let logged_types: Vec<Option<i16>> = ok(
+        sqlx::query_scalar!(
+            "SELECT target_type FROM audit_logs WHERE actor_username = 'target_tester' ORDER BY created_at"
         )
         .fetch_all(&pool)
         .await,
@@ -415,7 +433,7 @@ async fn test_all_target_types_are_logged() {
 
     assert_eq!(logged_types.len(), target_types.len());
 
-    for ((logged,), expected) in logged_types.iter().zip(target_types.iter()) {
+    for (logged, expected) in logged_types.iter().zip(target_types.iter()) {
         assert_eq!(
             logged.map(audit_target_type),
             Some(*expected),
@@ -447,8 +465,8 @@ async fn test_audit_log_with_all_null_optionals() {
         "audit log should be written",
     );
 
-    let row: (Option<String>, Option<String>, Option<String>) = ok(
-        sqlx::query_as(
+    let row = ok(
+        sqlx::query!(
             "SELECT target_id, ip_address, user_agent FROM audit_logs WHERE actor_id = '100106'",
         )
         .fetch_one(&pool)
@@ -456,9 +474,9 @@ async fn test_audit_log_with_all_null_optionals() {
         "audit log optional fields should be fetched",
     );
 
-    assert_eq!(row.0, None, "Target ID should be NULL");
-    assert_eq!(row.1, None, "IP address should be NULL");
-    assert_eq!(row.2, None, "User agent should be NULL");
+    assert_eq!(row.target_id, None, "Target ID should be NULL");
+    assert_eq!(row.ip_address, None, "IP address should be NULL");
+    assert_eq!(row.user_agent, None, "User agent should be NULL");
 }
 
 #[tokio::test]
@@ -484,19 +502,19 @@ async fn test_audit_log_with_all_optionals() {
         "audit log should be written",
     );
 
-    let row: (Option<String>, Option<String>, Option<String>, serde_json::Value) = ok(
-        sqlx::query_as(
-            "SELECT target_id, ip_address, user_agent, details FROM audit_logs WHERE actor_id = '100107'",
+    let row = ok(
+        sqlx::query!(
+            r#"SELECT target_id, ip_address, user_agent, details AS "details!: serde_json::Value" FROM audit_logs WHERE actor_id = '100107'"#,
         )
         .fetch_one(&pool)
         .await,
         "audit log optional fields should be fetched",
     );
 
-    assert_eq!(row.0, Some("target_id".to_string()));
-    assert_eq!(row.1, Some("10.0.0.1".to_string()));
-    assert_eq!(row.2, Some("TestClient/2.0".to_string()));
-    assert_eq!(row.3["key"], "value");
+    assert_eq!(row.target_id, Some("target_id".to_string()));
+    assert_eq!(row.ip_address, Some("10.0.0.1".to_string()));
+    assert_eq!(row.user_agent, Some("TestClient/2.0".to_string()));
+    assert_eq!(row.details["key"], "value");
 }
 
 #[tokio::test]
@@ -521,26 +539,30 @@ async fn test_log_stream_kicked_helper() {
         "stream kick audit log should be written",
     );
 
-    let row: (i16, i16, Option<String>, String, serde_json::Value) = ok(
-        sqlx::query_as(
-            r"
-        SELECT action, target_type, target_id, actor_username, details
+    let row = ok(
+        sqlx::query!(
+            r#"
+        SELECT action AS "action!",
+               target_type AS "target_type!",
+               target_id,
+               actor_username AS "actor_username!",
+               details AS "details!: serde_json::Value"
         FROM audit_logs
         WHERE actor_id = '100108'
-        ",
+        "#,
         )
         .fetch_one(&pool)
         .await,
         "stream kick audit row should be fetched",
     );
 
-    assert_eq!(audit_action(row.0), AuditAction::StreamKicked);
-    assert_eq!(audit_target_type(row.1), AuditTargetType::Stream);
-    assert_eq!(row.2, Some("room_123:media_456".to_string()));
-    assert_eq!(row.3, "stream_kicker");
-    assert_eq!(row.4["room_id"], "room_123");
-    assert_eq!(row.4["media_id"], "media_456");
-    assert_eq!(row.4["reason"], "Inappropriate content");
+    assert_eq!(audit_action(row.action), AuditAction::StreamKicked);
+    assert_eq!(audit_target_type(row.target_type), AuditTargetType::Stream);
+    assert_eq!(row.target_id, Some("room_123:media_456".to_string()));
+    assert_eq!(row.actor_username, "stream_kicker");
+    assert_eq!(row.details["room_id"], "room_123");
+    assert_eq!(row.details["media_id"], "media_456");
+    assert_eq!(row.details["reason"], "Inappropriate content");
 }
 
 #[tokio::test]
@@ -565,16 +587,18 @@ async fn test_log_stream_kicked_without_reason() {
         "stream kick audit log should be written",
     );
 
-    let row: (serde_json::Value,) = ok(
-        sqlx::query_as("SELECT details FROM audit_logs WHERE actor_id = '100109'")
-            .fetch_one(&pool)
-            .await,
+    let details: serde_json::Value = ok(
+        sqlx::query_scalar!(
+            r#"SELECT details AS "details!: serde_json::Value" FROM audit_logs WHERE actor_id = '100109'"#
+        )
+        .fetch_one(&pool)
+        .await,
         "stream kick audit details should be fetched",
     );
 
-    assert_eq!(row.0["room_id"], "room_abc");
-    assert_eq!(row.0["media_id"], "media_xyz");
-    assert_eq!(row.0["reason"], serde_json::Value::Null);
+    assert_eq!(details["room_id"], "room_abc");
+    assert_eq!(details["media_id"], "media_xyz");
+    assert_eq!(details["reason"], serde_json::Value::Null);
 }
 
 #[tokio::test]
@@ -603,27 +627,37 @@ async fn test_settings_viewed_audit_log() {
         "settings viewed audit log should be written",
     );
 
-    let row: (i16, i16, Option<String>, Option<String>, serde_json::Value) = ok(
-        sqlx::query_as(
-            r"
-        SELECT action, target_type, ip_address, user_agent, details
+    let row = ok(
+        sqlx::query!(
+            r#"
+        SELECT action AS "action!",
+               target_type AS "target_type!",
+               ip_address,
+               user_agent,
+               details AS "details!: serde_json::Value"
         FROM audit_logs
         WHERE actor_id = '100110'
-        ",
+        "#,
         )
         .fetch_one(&pool)
         .await,
         "settings viewed audit row should be fetched",
     );
 
-    assert_eq!(audit_action(row.0), AuditAction::SettingsViewed);
-    assert_eq!(audit_target_type(row.1), AuditTargetType::Settings);
-    assert_eq!(row.2, Some("192.168.1.50".to_string()));
-    assert_eq!(row.3, Some("Mozilla/5.0 AdminClient/1.0".to_string()));
-    assert_eq!(row.4["group_count"], 5);
+    assert_eq!(audit_action(row.action), AuditAction::SettingsViewed);
+    assert_eq!(
+        audit_target_type(row.target_type),
+        AuditTargetType::Settings
+    );
+    assert_eq!(row.ip_address, Some("192.168.1.50".to_string()));
+    assert_eq!(
+        row.user_agent,
+        Some("Mozilla/5.0 AdminClient/1.0".to_string())
+    );
+    assert_eq!(row.details["group_count"], 5);
     assert_eq!(
         some(
-            row.4["groups"].as_array(),
+            row.details["groups"].as_array(),
             "settings groups should be an array"
         )
         .len(),
@@ -656,20 +690,25 @@ async fn test_settings_group_viewed_audit_log() {
         "settings group viewed audit log should be written",
     );
 
-    let row: (i16, i16, serde_json::Value) = ok(
-        sqlx::query_as(
-            r"
-        SELECT action, target_type, details
+    let row = ok(
+        sqlx::query!(
+            r#"
+        SELECT action AS "action!",
+               target_type AS "target_type!",
+               details AS "details!: serde_json::Value"
         FROM audit_logs
         WHERE actor_id = '100111'
-        ",
+        "#,
         )
         .fetch_one(&pool)
         .await,
         "settings group viewed audit row should be fetched",
     );
 
-    assert_eq!(audit_action(row.0), AuditAction::SettingsGroupViewed);
-    assert_eq!(audit_target_type(row.1), AuditTargetType::Settings);
-    assert_eq!(row.2["group"], "security");
+    assert_eq!(audit_action(row.action), AuditAction::SettingsGroupViewed);
+    assert_eq!(
+        audit_target_type(row.target_type),
+        AuditTargetType::Settings
+    );
+    assert_eq!(row.details["group"], "security");
 }

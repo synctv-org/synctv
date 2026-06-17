@@ -584,6 +584,7 @@ async fn test_app_state_with_websocket_runtime(
             file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
             audit_service: None,
             notification_service: synctv_core::service::NotificationService::default(),
+            settings_registry: None,
         },
     );
     router_config.chat_service = Some(Arc::new(chat_service));
@@ -663,6 +664,7 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
             file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
             audit_service: None,
             notification_service,
+            settings_registry: None,
         },
     );
 

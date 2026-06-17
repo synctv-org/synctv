@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM rooms",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "f29fcefb1b4e99facaf7c5a3cb3cdbd66b36005c5f0f9a699665739bbb054cf8"
+}

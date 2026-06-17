@@ -15,7 +15,7 @@ use opaque_ke::{
     ClientLogin, ClientLoginFinishParameters, ClientRegistration,
     ClientRegistrationFinishParameters, CredentialResponse, RegistrationResponse,
 };
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 use synctv_common::ssrf::SsrfGuard;
 use synctv_core::{
     cache::{CacheL2Backend, KeyBuilder, UsernameCache},
@@ -736,19 +736,30 @@ fn expect_complete_login(login: AuthenticatedLogin) -> (synctv_core::models::Use
     }
 }
 
-async fn load_password_credential_row(pool: &PgPool, user_id: UserId) -> sqlx::postgres::PgRow {
-    sqlx::query(
-        r"
+struct PasswordCredentialRow {
+    opaque_record: Option<Vec<u8>>,
+    opaque_credential_identifier: Option<Vec<u8>>,
+    version: i32,
+}
+
+async fn load_password_credential_row(pool: &PgPool, user_id: UserId) -> PasswordCredentialRow {
+    let row = sqlx::query!(
+        r#"
         SELECT opaque_record, opaque_credential_identifier, opaque_ciphersuite,
-               opaque_server_setup_version, version
+               opaque_server_setup_version, version AS "version!"
         FROM auth_password_credentials
         WHERE user_id = $1
-        ",
+        "#,
+        user_id.as_i64()
     )
-    .bind(user_id)
     .fetch_one(pool)
     .await
-    .checked("password credential row should exist")
+    .checked("password credential row should exist");
+    PasswordCredentialRow {
+        opaque_record: row.opaque_record,
+        opaque_credential_identifier: row.opaque_credential_identifier,
+        version: row.version,
+    }
 }
 
 // S1: UserService::refresh_token (Refresh Token Rotation)
@@ -1042,11 +1053,13 @@ async fn test_refresh_token_rejects_invalid_user_state_and_password_version() {
         std::panic::panic_any("expected tokens");
     };
 
-    sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(deleted_user.id)
-        .execute(&pool)
-        .await
-        .checked("Failed to soft-delete");
+    sqlx::query!(
+        "UPDATE users SET deleted_at = NOW() WHERE id = $1",
+        deleted_user.id.as_i64()
+    )
+    .execute(&pool)
+    .await
+    .checked("Failed to soft-delete");
 
     let result = service.refresh_token(deleted_refresh_token).await;
     assert!(
@@ -1163,14 +1176,8 @@ async fn test_opaque_registration_persists_login_credential() {
         .await
         .checked("registered user should be fetchable");
     let row = load_password_credential_row(&pool, created.id).await;
-    let opaque_record: Option<Vec<u8>> = row
-        .try_get("opaque_record")
-        .checked("test operation should succeed");
-    let opaque_identifier: Option<Vec<u8>> = row
-        .try_get("opaque_credential_identifier")
-        .checked("test operation should succeed");
     assert!(
-        opaque_record.is_some() && opaque_identifier.is_some(),
+        row.opaque_record.is_some() && row.opaque_credential_identifier.is_some(),
         "OPAQUE registration must persist OPAQUE credential material"
     );
 
@@ -1225,7 +1232,7 @@ async fn test_login_rejects_inactive_accounts() {
     .await
     .checked("Registration should succeed");
 
-    sqlx::query(
+    sqlx::query!(
         r"
         INSERT INTO user_registration_requests (
             id, username, email, opaque_record,
@@ -1235,17 +1242,17 @@ async fn test_login_rejects_inactive_accounts() {
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $10)
         ",
+        synctv_core::models::generate_id(),
+        &format!("rejected_request_{}", synctv_common::snanoid!(6)),
+        Option::<String>::None,
+        b"not-used-opaque-record".as_slice(),
+        b"not-used-opaque-id".as_slice(),
+        "opaque-ristretto255-sha512-argon2id",
+        1_i32,
+        i16::from(rejected_user.signup_method),
+        i16::from(synctv_core::models::ReviewStatus::Rejected),
+        "rejected by test"
     )
-    .bind(synctv_core::models::generate_id())
-    .bind(format!("rejected_request_{}", synctv_common::snanoid!(6)))
-    .bind(Option::<String>::None)
-    .bind(b"not-used-opaque-record".as_slice())
-    .bind(b"not-used-opaque-id".as_slice())
-    .bind("opaque-ristretto255-sha512-argon2id")
-    .bind(1_i32)
-    .bind(rejected_user.signup_method)
-    .bind(synctv_core::models::ReviewStatus::Rejected)
-    .bind("rejected by test")
     .execute(&pool)
     .await
     .checked("Failed to create rejected registration request");
@@ -1278,11 +1285,13 @@ async fn test_login_rejects_inactive_accounts() {
     .await
     .checked("Registration should succeed");
 
-    sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(deleted_user.id)
-        .execute(&pool)
-        .await
-        .checked("Failed to soft-delete");
+    sqlx::query!(
+        "UPDATE users SET deleted_at = NOW() WHERE id = $1",
+        deleted_user.id.as_i64()
+    )
+    .execute(&pool)
+    .await
+    .checked("Failed to soft-delete");
 
     let result = opaque_login_user(&service, deleted_username, "StrongPass1").await;
     assert!(
@@ -1393,12 +1402,13 @@ async fn test_delete_user_transaction_atomicity_with_oauth2() {
         .await
         .checked("Delete with OAuth2 cleanup should succeed");
 
-    let deleted_user: Option<(i64,)> =
-        sqlx::query_as("SELECT id FROM users WHERE id = $1 AND deleted_at IS NOT NULL")
-            .bind(user.id)
-            .fetch_optional(&pool)
-            .await
-            .checked("Query should succeed");
+    let deleted_user: Option<i64> = sqlx::query_scalar!(
+        r#"SELECT id AS "id!" FROM users WHERE id = $1 AND deleted_at IS NOT NULL"#,
+        user.id.as_i64()
+    )
+    .fetch_optional(&pool)
+    .await
+    .checked("Query should succeed");
     assert!(
         deleted_user.is_some(),
         "User should be soft-deleted in the database"
@@ -1422,19 +1432,13 @@ async fn test_force_password_reset_revokes_password_credential_and_bumps_version
     .await
     .checked("Registration should succeed");
 
-    let old_version: i32 = load_password_credential_row(&pool, user.id)
-        .await
-        .try_get("version")
-        .checked("test operation should succeed");
+    let old_version = load_password_credential_row(&pool, user.id).await.version;
 
     let _updated_user = service
         .force_password_reset(&user.id)
         .await
         .checked("forced password reset should succeed");
-    let after_version: i32 = load_password_credential_row(&pool, user.id)
-        .await
-        .try_get("version")
-        .checked("test operation should succeed");
+    let after_version = load_password_credential_row(&pool, user.id).await.version;
 
     assert_eq!(
         after_version,
@@ -1443,11 +1447,8 @@ async fn test_force_password_reset_revokes_password_credential_and_bumps_version
     );
 
     let row = load_password_credential_row(&pool, user.id).await;
-    let opaque_record: Option<Vec<u8>> = row
-        .try_get("opaque_record")
-        .checked("test operation should succeed");
     assert!(
-        opaque_record.is_none(),
+        row.opaque_record.is_none(),
         "forced password reset must revoke OPAQUE credential material"
     );
 }
@@ -1477,14 +1478,8 @@ async fn test_opaque_registration_creates_opaque_only_password_credential() {
     );
 
     let row = load_password_credential_row(&pool, user.id).await;
-    let opaque_record: Option<Vec<u8>> = row
-        .try_get("opaque_record")
-        .checked("test operation should succeed");
-    let opaque_identifier: Option<Vec<u8>> = row
-        .try_get("opaque_credential_identifier")
-        .checked("test operation should succeed");
     assert!(
-        opaque_record.is_some() && opaque_identifier.is_some(),
+        row.opaque_record.is_some() && row.opaque_credential_identifier.is_some(),
         "OPAQUE-specific registration must persist OPAQUE credential material"
     );
     assert!(
@@ -1556,35 +1551,25 @@ async fn test_opaque_password_update_replaces_opaque_password_credential() {
     let (user, username) = register_password_user_with_username(&service, "opaque_update").await;
 
     let before = load_password_credential_row(&pool, user.id).await;
-    let before_opaque_record: Option<Vec<u8>> = before
-        .try_get("opaque_record")
-        .checked("test operation should succeed");
-    let before_version: i32 = before
-        .try_get("version")
-        .checked("test operation should succeed");
     assert!(
-        before_opaque_record.is_some(),
+        before.opaque_record.is_some(),
         "password registration should store OPAQUE credential material"
     );
+    let before_version = before.version;
 
     let updated_user = opaque_update_password(&service, &user.id, "StrongPass1", "NewStrongPass1")
         .await
         .checked("OPAQUE password update should succeed");
     let after = load_password_credential_row(&pool, user.id).await;
-    let after_version: i32 = after
-        .try_get("version")
-        .checked("test operation should succeed");
+    let after_version = after.version;
     assert_eq!(
         after_version,
         before_version + 1,
         "OPAQUE password update must invalidate existing tokens by bumping version"
     );
 
-    let after_opaque_record: Option<Vec<u8>> = after
-        .try_get("opaque_record")
-        .checked("test operation should succeed");
     assert!(
-        after_opaque_record.is_some(),
+        after.opaque_record.is_some(),
         "OPAQUE password update must persist the new OPAQUE credential"
     );
     assert!(
@@ -1618,36 +1603,26 @@ async fn test_opaque_password_reset_replaces_opaque_password_credential() {
     let (user, username) = register_password_user_with_username(&service, "opaque_reset").await;
 
     let before = load_password_credential_row(&pool, user.id).await;
-    let before_opaque_record: Option<Vec<u8>> = before
-        .try_get("opaque_record")
-        .checked("test operation should succeed");
-    let before_version: i32 = before
-        .try_get("version")
-        .checked("test operation should succeed");
     assert!(
-        before_opaque_record.is_some(),
+        before.opaque_record.is_some(),
         "password registration should store OPAQUE credential material"
     );
+    let before_version = before.version;
 
     let _updated_user =
         opaque_reset_password_after_external_verification(&service, &user.id, "NewStrongPass1")
             .await
             .checked("OPAQUE password reset should succeed");
     let after = load_password_credential_row(&pool, user.id).await;
-    let after_version: i32 = after
-        .try_get("version")
-        .checked("test operation should succeed");
+    let after_version = after.version;
     assert_eq!(
         after_version,
         before_version + 1,
         "OPAQUE password reset must invalidate existing tokens by bumping version"
     );
 
-    let after_opaque_record: Option<Vec<u8>> = after
-        .try_get("opaque_record")
-        .checked("test operation should succeed");
     assert!(
-        after_opaque_record.is_some(),
+        after.opaque_record.is_some(),
         "OPAQUE password reset must persist the new OPAQUE credential"
     );
 
@@ -1896,18 +1871,12 @@ async fn test_update_profile_updates_username_only() {
     let (user, old_username) =
         register_password_user_with_username(&service, "profile_atomic").await;
 
-    let before_version: i32 = load_password_credential_row(&pool, user.id)
-        .await
-        .try_get("version")
-        .checked("test operation should succeed");
+    let before_version = load_password_credential_row(&pool, user.id).await.version;
     let updated_user = service
         .update_profile(&user.id, Some(new_username.to_uppercase()))
         .await
         .checked("Profile username update should succeed");
-    let after_version: i32 = load_password_credential_row(&pool, user.id)
-        .await
-        .try_get("version")
-        .checked("test operation should succeed");
+    let after_version = load_password_credential_row(&pool, user.id).await.version;
 
     assert_eq!(updated_user.username, new_username.to_lowercase());
     assert_eq!(
@@ -2361,18 +2330,18 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
     assert_eq!(mapping.user_id, first_user_id);
 
     let user_repo = UserRepository::new(pool.clone());
-    let oauth2_user_count: i64 = sqlx::query_scalar(
-        r"
-        SELECT COUNT(*)
+    let oauth2_user_count: i64 = sqlx::query_scalar!(
+        r#"
+        SELECT COUNT(*) AS "count!"
         FROM users u
         JOIN auth_oauth2_identities oc ON oc.user_id = u.id
         WHERE oc.provider_instance_name = $1
           AND oc.provider_user_id = $2
           AND u.deleted_at IS NULL
-        ",
+        "#,
+        "google",
+        &user_info.provider_user_id
     )
-    .bind("google")
-    .bind(&user_info.provider_user_id)
     .fetch_one(&pool)
     .await
     .checked("user count query must succeed");
@@ -2451,7 +2420,7 @@ async fn test_find_or_create_and_link_review_signup_rejects_existing_pending_ema
         "oauth_pending_email_{}@test.com",
         synctv_common::snanoid!(6)
     );
-    sqlx::query(
+    sqlx::query!(
         r"
         INSERT INTO user_registration_requests (
             username, email, opaque_record, opaque_credential_identifier,
@@ -2460,15 +2429,15 @@ async fn test_find_or_create_and_link_review_signup_rejects_existing_pending_ema
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
         ",
+        &format!("pending_email_seed_{}", synctv_common::snanoid!(6)),
+        shared_email.to_uppercase(),
+        b"pending-email-test-opaque-record".as_slice(),
+        b"pending-email-test-opaque-id".as_slice(),
+        "opaque-ristretto255-sha512-argon2id",
+        1_i32,
+        i16::from(synctv_core::models::SignupMethod::Email),
+        i16::from(synctv_core::models::ReviewStatus::Pending)
     )
-    .bind(format!("pending_email_seed_{}", synctv_common::snanoid!(6)))
-    .bind(shared_email.to_uppercase())
-    .bind(b"pending-email-test-opaque-record".as_slice())
-    .bind(b"pending-email-test-opaque-id".as_slice())
-    .bind("opaque-ristretto255-sha512-argon2id")
-    .bind(1_i32)
-    .bind(i16::from(synctv_core::models::SignupMethod::Email))
-    .bind(i16::from(synctv_core::models::ReviewStatus::Pending))
     .execute(&pool)
     .await
     .checked("seed pending registration should insert");
@@ -2491,15 +2460,15 @@ async fn test_find_or_create_and_link_review_signup_rejects_existing_pending_ema
         "OAuth2 review signup should reject a case-insensitive pending email collision"
     );
 
-    let pending_count: i64 = sqlx::query_scalar(
-        r"
-        SELECT COUNT(*)
+    let pending_count: i64 = sqlx::query_scalar!(
+        r#"
+        SELECT COUNT(*) AS "count!"
         FROM user_registration_requests
         WHERE reviewed_at IS NULL
           AND LOWER(email) = LOWER($1)
-        ",
+        "#,
+        &shared_email
     )
-    .bind(shared_email)
     .fetch_one(&pool)
     .await
     .checked("pending count query should succeed");
@@ -2545,14 +2514,14 @@ async fn test_find_or_create_and_link_review_signup_skips_existing_usernames() {
         std::panic::panic_any("OAuth2 signup should require review in this test");
     };
 
-    let pending_username: String = sqlx::query_scalar(
-        r"
-        SELECT username
+    let pending_username: String = sqlx::query_scalar!(
+        r#"
+        SELECT username AS "username!"
         FROM user_registration_requests
         WHERE id = $1
-        ",
+        "#,
+        pending.request_id.as_i64()
     )
-    .bind(pending.request_id.as_i64())
     .fetch_one(&pool)
     .await
     .checked("pending registration request should exist");

@@ -263,8 +263,9 @@ impl RealtimeOutboxRepository {
         worker_id: &str,
         limit: i64,
     ) -> Result<Vec<RealtimeOutboxEvent>> {
-        let rows = sqlx::query_as::<_, RealtimeOutboxEventRow>(
-            r"
+        let rows = sqlx::query_as!(
+            RealtimeOutboxEventRow,
+            r#"
             WITH picked AS (
                 SELECT id
                 FROM realtime_outbox
@@ -287,7 +288,7 @@ impl RealtimeOutboxRepository {
                 o.event_type,
                 o.event_version,
                 o.aggregate_version,
-                o.payload,
+                o.payload AS "payload!: serde_json::Value",
                 o.status,
                 o.attempts,
                 o.next_retry_at,
@@ -296,12 +297,12 @@ impl RealtimeOutboxRepository {
                 o.created_at,
                 o.dispatched_at,
                 o.last_error
-            ",
+            "#,
+            limit,
+            RealtimeOutboxStatus::Pending.as_i16(),
+            RealtimeOutboxStatus::Processing.as_i16(),
+            worker_id,
         )
-        .bind(limit)
-        .bind(RealtimeOutboxStatus::Pending.as_i16())
-        .bind(RealtimeOutboxStatus::Processing.as_i16())
-        .bind(worker_id)
         .fetch_all(&self.pool)
         .await?;
 

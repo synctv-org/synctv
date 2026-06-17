@@ -227,11 +227,12 @@ impl DatabaseMaintenanceService {
         let interval = format!("{retention_days} days");
 
         let attachments = if let Some(storage) = &self.file_storage_service {
-            let attachments = sqlx::query_as::<_, ChatAttachment>(
-                r"
+            let attachments = sqlx::query_as!(
+                ChatAttachment,
+                r#"
                 SELECT i.id,
-                       i.kind,
-                       i.room_id,
+                       i.kind AS "kind!: crate::models::ChatAttachmentKind",
+                       i.room_id AS "room_id!: crate::models::RoomId",
                        i.message_id,
                        i.message_created_at,
                        i.filename,
@@ -242,16 +243,18 @@ impl DatabaseMaintenanceService {
                        i.size_bytes,
                        i.width,
                        i.height,
-                       i.metadata,
-                       i.created_at
+                       i.metadata AS "metadata!: serde_json::Value",
+                       i.created_at,
+                       NULL::TEXT AS "reuse_token?",
+                       NULL::TIMESTAMPTZ AS "reuse_expires_at?"
                 FROM chat_message_attachments i
                 INNER JOIN chat_messages m
                     ON m.id = i.message_id AND m.created_at = i.message_created_at
                 WHERE m.created_at <= NOW() - $1::text::interval
                 ORDER BY m.created_at, m.id, i.created_at
-                ",
+                "#,
+                interval,
             )
-            .bind(&interval)
             .fetch_all(&self.pool)
             .await?;
             if attachments.is_empty() {

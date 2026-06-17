@@ -18,25 +18,24 @@ async fn insert_audit_log(
     target_id: Option<&str>,
     created_at: chrono::DateTime<Utc>,
 ) -> i64 {
-    let row: (i64,) = ok(
-        sqlx::query_as(
-            r"
+    ok(
+        sqlx::query_scalar!(
+            r#"
         INSERT INTO audit_logs (actor_id, actor_username, action, target_type, target_id, created_at)
         VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id
-        ",
+        RETURNING id AS "id!"
+        "#,
+            actor_id.map(|id| id.as_i64()),
+            actor_username,
+            i16::from(action),
+            target_type.map(i16::from),
+            target_id,
+            created_at
         )
-        .bind(actor_id)
-        .bind(actor_username)
-        .bind(i16::from(action))
-        .bind(target_type.map(i16::from))
-        .bind(target_id)
-        .bind(created_at)
         .fetch_one(pool)
         .await,
         "audit log should be inserted",
-    );
-    row.0
+    )
 }
 
 // ─── list filter tests ───────────────────────────────────────────────

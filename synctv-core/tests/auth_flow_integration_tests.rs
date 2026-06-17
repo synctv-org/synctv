@@ -1,7 +1,6 @@
 //! Authentication flow integration tests //!
 //! Tests the complete authentication flow: register → login
 
-use sqlx::Row;
 use synctv_core::{
     models::{OpaquePasswordRecord, SignupMethod, User, UserId, UserRole, UserStatus},
     repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
@@ -31,47 +30,29 @@ fn test_opaque_password_service() -> OpaquePasswordService {
 
 async fn stored_opaque_record(pool: &sqlx::PgPool, user_id: UserId) -> OpaquePasswordRecord {
     let row = ok(
-        sqlx::query(
+        sqlx::query!(
             r"
         SELECT opaque_record, opaque_credential_identifier, opaque_ciphersuite,
                opaque_server_setup_version
         FROM auth_password_credentials
         WHERE user_id = $1
         ",
+            user_id.as_i64()
         )
-        .bind(user_id)
         .fetch_one(pool)
         .await,
         "password credential query should succeed",
     );
 
     OpaquePasswordRecord {
-        record: some(
-            ok(
-                row.try_get::<Option<Vec<u8>>, _>("opaque_record"),
-                "opaque record should decode",
-            ),
-            "opaque record should exist",
-        ),
+        record: some(row.opaque_record, "opaque record should exist"),
         credential_identifier: some(
-            ok(
-                row.try_get::<Option<Vec<u8>>, _>("opaque_credential_identifier"),
-                "opaque credential identifier should decode",
-            ),
+            row.opaque_credential_identifier,
             "opaque credential identifier should exist",
         ),
-        ciphersuite: some(
-            ok(
-                row.try_get::<Option<String>, _>("opaque_ciphersuite"),
-                "opaque ciphersuite should decode",
-            ),
-            "opaque ciphersuite should exist",
-        ),
+        ciphersuite: some(row.opaque_ciphersuite, "opaque ciphersuite should exist"),
         server_setup_version: some(
-            ok(
-                row.try_get::<Option<i32>, _>("opaque_server_setup_version"),
-                "opaque setup version should decode",
-            ),
+            row.opaque_server_setup_version,
             "opaque setup version should exist",
         ),
     }
@@ -372,29 +353,20 @@ async fn test_password_credential_update_replaces_opaque_record() {
     assert_eq!(fetched_user.id, created_user.id);
 
     let row = ok(
-        sqlx::query(
-            r"
-        SELECT opaque_record, version
+        sqlx::query!(
+            r#"
+        SELECT opaque_record, version AS "version!"
         FROM auth_password_credentials
         WHERE user_id = $1
-        ",
+        "#,
+            created_user.id.as_i64()
         )
-        .bind(created_user.id.as_i64())
         .fetch_one(&pool)
         .await,
         "password credential row should exist",
     );
-    assert_eq!(
-        ok(
-            row.try_get::<Option<Vec<u8>>, _>("opaque_record"),
-            "opaque record should decode",
-        ),
-        Some(b"opaque-record-v2".to_vec())
-    );
-    assert_eq!(
-        ok(row.try_get::<i32, _>("version"), "version should decode"),
-        old_state.version + 1
-    );
+    assert_eq!(row.opaque_record, Some(b"opaque-record-v2".to_vec()));
+    assert_eq!(row.version, old_state.version + 1);
 }
 
 #[tokio::test]

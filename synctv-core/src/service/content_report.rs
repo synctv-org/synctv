@@ -38,11 +38,11 @@ impl ContentReportService {
     #[must_use]
     pub fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
         Self {
-            reports: ContentReportRepository::new_with_read_pool(pool.clone(), read_pool),
+            reports: ContentReportRepository::new_with_read_pool(pool.clone(), read_pool.clone()),
             rooms: RoomRepository::new(pool.clone()),
             users: UserRepository::new(pool.clone()),
             members: RoomMemberRepository::new(pool.clone()),
-            chat: ChatRepository::new(pool),
+            chat: ChatRepository::new_with_read_pool(pool, read_pool),
         }
     }
 

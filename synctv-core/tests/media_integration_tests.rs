@@ -364,20 +364,20 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
         .checked("test operation should succeed");
 
     let media_id = MediaId::new();
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO media (
             id, playlist_id, room_id, creator_id, name, position,
             source_provider, source_config, provider_instance_name, added_at, updated_at, version
         ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW(), 0)",
+        media_id.as_i64(),
+        room.id.as_i64(),
+        owner.id.as_i64(),
+        "root-media.mp4",
+        0.0,
+        ProviderType::DirectUrl.as_i16(),
+        json!({"url": "https://example.com/root.mp4"}),
+        Option::<String>::None
     )
-    .bind(media_id)
-    .bind(room.id)
-    .bind(owner.id)
-    .bind("root-media.mp4")
-    .bind(0.0)
-    .bind(ProviderType::DirectUrl.as_i16())
-    .bind(json!({"url": "https://example.com/root.mp4"}))
-    .bind(Option::<String>::None)
     .execute(&pool)
     .await
     .checked("test operation should succeed");

@@ -244,8 +244,7 @@ async fn test_cascade_delete_user_deletes_rooms() {
 
     // Attempting to delete the user while rooms still exist should fail
     // because of ON DELETE RESTRICT on rooms.created_by.
-    let delete_result = sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(owner.id)
+    let delete_result = sqlx::query!("DELETE FROM users WHERE id = $1", owner.id.as_i64())
         .execute(&pool)
         .await;
     assert!(
@@ -264,25 +263,28 @@ async fn test_cascade_delete_user_deletes_rooms() {
         .checked("test operation should succeed");
 
     // Now that rooms are soft-deleted, hard-delete the rows so the FK is clear.
-    sqlx::query("DELETE FROM rooms WHERE id = $1 OR id = $2")
-        .bind(room1.id)
-        .bind(room2.id)
-        .execute(&pool)
-        .await
-        .checked("test operation should succeed");
+    sqlx::query!(
+        "DELETE FROM rooms WHERE id = $1 OR id = $2",
+        room1.id.as_i64(),
+        room2.id.as_i64()
+    )
+    .execute(&pool)
+    .await
+    .checked("test operation should succeed");
 
-    sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(owner.id)
+    sqlx::query!("DELETE FROM users WHERE id = $1", owner.id.as_i64())
         .execute(&pool)
         .await
         .checked("test operation should succeed");
 
     // User should be gone
-    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = $1")
-        .bind(owner.id)
-        .fetch_one(&pool)
-        .await
-        .checked("test operation should succeed");
+    let user_count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM users WHERE id = $1"#,
+        owner.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(
         user_count, 0,
         "User should be deleted after rooms are removed"
@@ -358,21 +360,23 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
     assert!(deleted);
 
     // Check members are gone
-    let member_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let member_count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM room_members WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(member_count, 0, "Room members should be explicitly deleted");
 
     // Check playlists are gone
-    let playlist_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
-            .bind(room.id)
-            .fetch_one(&pool)
-            .await
-            .checked("test operation should succeed");
+    let playlist_count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM playlists WHERE room_id = $1"#,
+        room.id.as_i64()
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(playlist_count, 0, "Playlists should be explicitly deleted");
 }
 

@@ -199,7 +199,7 @@ fn bench_list_rooms_with_data(c: &mut Criterion) {
         });
 
         // Cleanup for next iteration
-        rt.block_on(sqlx::query("DELETE FROM rooms").execute(&pool))
+        rt.block_on(sqlx::query!("DELETE FROM rooms").execute(&pool))
             .unwrap();
     }
 
@@ -269,7 +269,7 @@ fn bench_list_media_with_data(c: &mut Criterion) {
         });
 
         // Cleanup
-        rt.block_on(sqlx::query("DELETE FROM media").execute(&pool))
+        rt.block_on(sqlx::query!("DELETE FROM media").execute(&pool))
             .unwrap();
     }
 

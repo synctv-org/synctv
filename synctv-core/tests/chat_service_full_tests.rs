@@ -153,6 +153,7 @@ fn make_chat_service_with_options(
             file_storage_service,
             audit_service,
             notification_service,
+            settings_registry: None,
         },
     );
     (service, username_cache)
@@ -481,6 +482,7 @@ async fn test_send_message_rate_limit_triggers() {
             file_storage_service: Arc::new(DisabledFileStorageService),
             audit_service: None,
             notification_service: NotificationService::default(),
+            settings_registry: None,
         },
     );
 
@@ -773,50 +775,56 @@ async fn test_admin_delete_records_actor_reason_and_original_author() {
         Some("policy violation")
     );
 
-    let audit_row: (String, Option<i16>, Option<String>, serde_json::Value) = sqlx::query_as(
-        r"
-        SELECT actor_username, target_type, target_id, details
+    let audit_row = sqlx::query!(
+        r#"
+        SELECT actor_username AS "actor_username!",
+               target_type,
+               target_id,
+               details AS "details!: serde_json::Value"
         FROM audit_logs
         WHERE actor_id = $1 AND action = $2
-        ",
+        "#,
+        admin.id.as_i64(),
+        AuditAction::ChatMessageDeleted.as_i16()
     )
-    .bind(admin.id.as_i64())
-    .bind(AuditAction::ChatMessageDeleted.as_i16())
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");
 
-    assert_eq!(audit_row.0, admin.username);
+    assert_eq!(audit_row.actor_username, admin.username);
     assert_eq!(
         audit_row
-            .1
+            .target_type
             .map(|value| AuditTargetType::try_from(value).checked("test operation should succeed")),
         Some(AuditTargetType::ChatMessage)
     );
-    assert_eq!(audit_row.2, Some(format!("{}:{}", room.id, msg.id)));
+    assert_eq!(audit_row.target_id, Some(format!("{}:{}", room.id, msg.id)));
     let expected_room_id = room.id.to_string();
     let expected_creator_id = creator.id.to_string();
     let expected_admin_id = admin.id.to_string();
     assert_eq!(
-        audit_row.3["room_id"].as_str(),
+        audit_row.details["room_id"].as_str(),
         Some(expected_room_id.as_str())
     );
-    assert_eq!(audit_row.3["message_id"].as_i64(), Some(msg.id));
+    assert_eq!(audit_row.details["message_id"].as_i64(), Some(msg.id));
     assert_eq!(
-        audit_row.3["original_author_id"].as_str(),
+        audit_row.details["original_author_id"].as_str(),
         Some(expected_creator_id.as_str())
     );
     assert_eq!(
-        audit_row.3["deleted_by"].as_str(),
+        audit_row.details["deleted_by"].as_str(),
         Some(expected_admin_id.as_str())
     );
-    assert_eq!(audit_row.3["reason"].as_str(), Some("policy violation"));
     assert_eq!(
-        audit_row.3["event_id"].as_str(),
+        audit_row.details["reason"].as_str(),
+        Some("policy violation")
+    );
+    assert_eq!(
+        audit_row.details["event_id"].as_str(),
         Some(deleted.event_id.as_str())
     );
     assert_eq!(
-        audit_row.3["client_operation_id"].as_str(),
+        audit_row.details["client_operation_id"].as_str(),
         Some("admin-delete-op")
     );
 }
@@ -882,6 +890,7 @@ async fn test_send_message_broadcasts_to_room_members() {
             file_storage_service: Arc::new(DisabledFileStorageService),
             audit_service: None,
             notification_service,
+            settings_registry: None,
         },
     );
 
@@ -1252,12 +1261,14 @@ async fn test_chat_history_with_deleted_user_returns_none_user_id() {
 
     // Simulate user deletion: SET NULL on user_id via raw SQL
     // (foreign key ON DELETE SET NULL)
-    sqlx::query("UPDATE chat_messages SET user_id = NULL WHERE id = $1 AND created_at = $2")
-        .bind(msg.id)
-        .bind(msg.created_at)
-        .execute(&pool)
-        .await
-        .checked("test operation should succeed");
+    sqlx::query!(
+        "UPDATE chat_messages SET user_id = NULL WHERE id = $1 AND created_at = $2",
+        msg.id,
+        msg.created_at
+    )
+    .execute(&pool)
+    .await
+    .checked("test operation should succeed");
 
     // Retrieve the message from history
     let (history, _) = chat_service
@@ -2317,7 +2328,7 @@ async fn test_chat_message_attachments_require_matching_room_id() {
         .await
         .checked("test operation should succeed");
 
-    let result = sqlx::query(
+    let result = sqlx::query!(
         r"
         INSERT INTO chat_message_attachments (
             id, kind, room_id, message_id, message_created_at, filename, storage_backend,
@@ -2325,18 +2336,18 @@ async fn test_chat_message_attachments_require_matching_room_id() {
         )
         VALUES ($1, 2, $2, $3, $4, NULL, $5, $6, NULL, $7, $8, $9, $10, $11)
         ",
+        "wrong-room-attachment",
+        other_room.id.as_i64(),
+        event.message.message.id,
+        event.message.message.created_at,
+        "local",
+        "rooms/wrong/image.webp",
+        "image/webp",
+        42_i64,
+        640_i32,
+        480_i32,
+        serde_json::Value::Object(Default::default())
     )
-    .bind("wrong-room-attachment")
-    .bind(other_room.id)
-    .bind(event.message.message.id)
-    .bind(event.message.message.created_at)
-    .bind("local")
-    .bind("rooms/wrong/image.webp")
-    .bind("image/webp")
-    .bind(42_i64)
-    .bind(640_i32)
-    .bind(480_i32)
-    .bind(serde_json::Value::Object(Default::default()))
     .execute(&pool)
     .await;
 
@@ -2728,12 +2739,14 @@ async fn test_delete_message_with_deleted_user_requires_permission() {
         .checked("test operation should succeed");
 
     // Simulate user deletion: SET user_id to NULL
-    sqlx::query("UPDATE chat_messages SET user_id = NULL WHERE id = $1 AND created_at = $2")
-        .bind(msg.id)
-        .bind(msg.created_at)
-        .execute(&pool)
-        .await
-        .checked("test operation should succeed");
+    sqlx::query!(
+        "UPDATE chat_messages SET user_id = NULL WHERE id = $1 AND created_at = $2",
+        msg.id,
+        msg.created_at
+    )
+    .execute(&pool)
+    .await
+    .checked("test operation should succeed");
 
     // Member (without DELETE_CHAT permission) tries to delete orphaned message
     // Since user_id is NULL, they are not the sender, so they need DELETE_CHAT permission

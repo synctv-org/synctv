@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COUNT(*) AS \"count!\"\n        FROM users u\n        JOIN auth_oauth2_identities oc ON oc.user_id = u.id\n        WHERE oc.provider_instance_name = $1\n          AND oc.provider_user_id = $2\n          AND u.deleted_at IS NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5dedaf44dc6686ab1f1cfc91e728ef1f25ffe7231910dc1531127ea630de1ba3"
+}

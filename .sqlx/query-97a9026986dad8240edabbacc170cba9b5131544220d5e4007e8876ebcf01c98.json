@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT action AS \"action!\",\n               target_type AS \"target_type!\",\n               target_id,\n               actor_username AS \"actor_username!\",\n               details AS \"details!: serde_json::Value\"\n        FROM audit_logs\n        WHERE actor_id = '100108'\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "action!",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "action"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "target_type!",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "target_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "target_id",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "target_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "actor_username!",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "actor_username"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "details!: serde_json::Value",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "details"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "97a9026986dad8240edabbacc170cba9b5131544220d5e4007e8876ebcf01c98"
+}

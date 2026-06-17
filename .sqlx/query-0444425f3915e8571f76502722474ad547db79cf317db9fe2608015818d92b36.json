@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE chat_read_states\n        SET last_read_message_id = NULL, last_read_message_created_at = NULL\n        WHERE room_id = $1 AND user_id = $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0444425f3915e8571f76502722474ad547db79cf317db9fe2608015818d92b36"
+}

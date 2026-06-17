@@ -546,10 +546,10 @@ async fn test_blank_provider_instance_name_is_normalized_to_null() {
         .await
         .checked("test operation should succeed");
 
-    let stored: Option<Option<String>> = sqlx::query_scalar(
+    let stored: Option<Option<String>> = sqlx::query_scalar!(
         "SELECT provider_instance_name FROM user_media_provider_credentials WHERE id = $1",
+        credential.id
     )
-    .bind(credential.id)
     .fetch_optional(&pool)
     .await
     .checked("test operation should succeed");
@@ -592,12 +592,12 @@ async fn test_upsert_by_user_provider_server_replaces_existing_credential_atomic
         .await
         .checked("test operation should succeed");
 
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2 AND server_id = $3",
+    let count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2 AND server_id = $3"#,
+        user.id.as_i64(),
+        provider_code(ProviderType::Bilibili),
+        &server_id
     )
-    .bind(user.id)
-    .bind(provider_code(ProviderType::Bilibili))
-    .bind(&server_id)
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");

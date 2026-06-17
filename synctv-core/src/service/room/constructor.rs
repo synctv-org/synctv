@@ -123,7 +123,10 @@ impl RoomService {
         let playlist_repo = PlaylistRepository::new(pool.clone());
         let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
         let playback_source_metadata_repo = PlaybackSourceMetadataRepository::new(pool.clone());
-        let chat_repo = ChatRepository::new(pool.clone());
+        let chat_repo = options.read_pool.clone().map_or_else(
+            || ChatRepository::new(pool.clone()),
+            |read_pool| ChatRepository::new_with_read_pool(pool.clone(), read_pool),
+        );
         let room_password_repo = RoomPasswordRepository::new(pool.clone());
 
         let notification_service = NotificationService::default();

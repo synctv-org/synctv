@@ -419,11 +419,11 @@ async fn test_create_allows_multiple_unused_tokens_for_same_user_and_type() {
     assert_eq!(second.user_id, user.id);
     assert_eq!(second.token_type, i16::from(EmailTokenType::EmailBind));
 
-    let remaining: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM auth_email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
+    let remaining: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM auth_email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL"#,
+        user.id.as_i64(),
+        i16::from(EmailTokenType::EmailBind)
     )
-    .bind(user.id)
-    .bind(i16::from(EmailTokenType::EmailBind))
     .fetch_one(&pool)
     .await
     .checked("test operation should succeed");
@@ -461,11 +461,11 @@ async fn test_failed_verification_email_send_does_not_leave_valid_token() {
         .await;
     assert!(result.is_err(), "SMTP failure should surface as an error");
 
-    let remaining: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM auth_email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
+    let remaining: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM auth_email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL"#,
+        user.id.as_i64(),
+        i16::from(EmailTokenType::EmailBind)
     )
-    .bind(user.id)
-    .bind(i16::from(EmailTokenType::EmailBind))
     .fetch_one(user_repo.pool())
     .await
     .checked("test operation should succeed");

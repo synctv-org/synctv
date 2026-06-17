@@ -168,21 +168,21 @@ async fn test_create_oauth2_user_without_password_skips_password_credentials() {
         .create(&user)
         .await
         .checked("OAuth2 user should be created without password credentials");
-    let credential_exists = sqlx::query_scalar::<_, bool>(
-        r"
+    let credential_exists = sqlx::query_scalar!(
+        r#"
         SELECT EXISTS(
             SELECT 1
             FROM auth_password_credentials
             WHERE user_id = $1
         )
-        ",
+        "#,
+        created.id.as_i64(),
     )
-    .bind(created.id.as_i64())
     .fetch_one(&pool)
     .await
     .checked("credential existence query should succeed");
 
-    assert!(!credential_exists);
+    assert!(!credential_exists.unwrap_or(false));
 }
 
 #[tokio::test]

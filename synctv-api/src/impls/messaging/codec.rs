@@ -1,6 +1,9 @@
 use prost::Message;
 use sha2::{Digest, Sha256};
-use synctv_core::models::{ChatEventKind, ChatMessageEvent, ChatMessageStatus, RoomPlaybackState};
+use synctv_core::models::{
+    ChatEventKind, ChatMessageEvent, ChatMessagePin, ChatMessageStatus, ChatMessageWithAttachments,
+    ChatPinEvent, ChatPinEventKind, RoomPlaybackState,
+};
 
 use synctv_proto::client::{ClientMessage, ServerMessage};
 
@@ -312,6 +315,17 @@ pub(crate) fn chat_event_kind_to_proto(
     }
 }
 
+pub(crate) fn chat_pin_event_kind_to_proto(
+    kind: ChatPinEventKind,
+) -> synctv_proto::client::ChatPinEventKind {
+    match kind {
+        ChatPinEventKind::Pinned => synctv_proto::client::ChatPinEventKind::Pinned,
+        ChatPinEventKind::Unpinned => synctv_proto::client::ChatPinEventKind::Unpinned,
+        ChatPinEventKind::MessageUpdated => synctv_proto::client::ChatPinEventKind::MessageUpdated,
+        ChatPinEventKind::MessageDeleted => synctv_proto::client::ChatPinEventKind::MessageDeleted,
+    }
+}
+
 pub(crate) fn chat_status_to_proto(
     status: ChatMessageStatus,
 ) -> synctv_proto::client::ChatMessageStatus {
@@ -591,30 +605,97 @@ pub(crate) fn chat_message_event_to_proto(
     event: &ChatMessageEvent,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::ChatMessageEvent, String> {
-    let message = &event.message.message;
+    let room_id = public_id_codec
+        .encode_room_id(event.room_id)
+        .map_err(|error| format!("Failed to encode chat event room id: {error}"))?;
+    Ok(synctv_proto::client::ChatMessageEvent {
+        event_id: event.event_id.clone(),
+        room_id,
+        kind: chat_event_kind_to_proto(event.kind) as i32,
+        message: Some(chat_message_receive_to_proto(
+            &event.message,
+            public_id_codec,
+            String::new(),
+        )?),
+        occurred_at: event.occurred_at.timestamp(),
+        sequence: event.sequence,
+    })
+}
+
+pub(crate) fn chat_pin_event_to_proto(
+    event: &ChatPinEvent,
+    public_id_codec: &synctv_core::PublicIdCodec,
+) -> Result<synctv_proto::client::ChatPinEvent, String> {
+    let room_id = public_id_codec
+        .encode_room_id(event.room_id)
+        .map_err(|error| format!("Failed to encode chat pin event room id: {error}"))?;
+    Ok(synctv_proto::client::ChatPinEvent {
+        event_id: event.event_id.clone(),
+        room_id,
+        kind: chat_pin_event_kind_to_proto(event.kind) as i32,
+        message: Some(chat_message_receive_to_proto(
+            &event.message,
+            public_id_codec,
+            String::new(),
+        )?),
+        pin: event
+            .pin
+            .as_ref()
+            .map(|pin| chat_message_pin_to_proto(pin, public_id_codec))
+            .transpose()?,
+        occurred_at: event.occurred_at.timestamp(),
+        sequence: event.sequence,
+    })
+}
+
+pub(crate) fn chat_message_pin_to_proto(
+    pin: &ChatMessagePin,
+    public_id_codec: &synctv_core::PublicIdCodec,
+) -> Result<synctv_proto::client::ChatMessagePin, String> {
+    Ok(synctv_proto::client::ChatMessagePin {
+        pinned_by_user_id: pin
+            .pinned_by
+            .map(|id| {
+                public_id_codec
+                    .encode_user_id(id)
+                    .map_err(|error| format!("Failed to encode pinned_by user id: {error}"))
+            })
+            .transpose()?
+            .unwrap_or_default(),
+        pinned_by_username: pin.pinned_by_username.clone().unwrap_or_default(),
+        note: pin.note.clone().unwrap_or_default(),
+        pinned_at: pin.pinned_at.timestamp(),
+    })
+}
+
+pub(crate) fn chat_message_receive_to_proto(
+    value: &ChatMessageWithAttachments,
+    public_id_codec: &synctv_core::PublicIdCodec,
+    username: String,
+) -> Result<synctv_proto::client::ChatMessageReceive, String> {
+    let message = &value.message;
     let room_id = public_id_codec
         .encode_room_id(message.room_id)
-        .map_err(|error| format!("Failed to encode chat event room id: {error}"))?;
+        .map_err(|error| format!("Failed to encode chat message room id: {error}"))?;
     let user_id = message
         .user_id
         .map(|id| {
             public_id_codec
                 .encode_user_id(id)
-                .map_err(|error| format!("Failed to encode chat event user id: {error}"))
+                .map_err(|error| format!("Failed to encode chat message user id: {error}"))
         })
         .transpose()?
         .unwrap_or_default();
     let deleted_by_user_id = message
         .deleted_by
         .map(|id| {
-            public_id_codec
-                .encode_user_id(id)
-                .map_err(|error| format!("Failed to encode chat event deleted_by user id: {error}"))
+            public_id_codec.encode_user_id(id).map_err(|error| {
+                format!("Failed to encode chat message deleted_by user id: {error}")
+            })
         })
         .transpose()?
         .unwrap_or_default();
-    let reactions = event
-        .message
+    let reactions = value
         .reactions
         .iter()
         .map(crate::impls::client::chat_reaction_summary_to_proto)
@@ -622,8 +703,7 @@ pub(crate) fn chat_message_event_to_proto(
         .map_err(|error| error.to_string())?;
     let reaction_count =
         crate::impls::client::chat_reaction_count(&reactions).map_err(|e| e.to_string())?;
-    let mentions = event
-        .message
+    let mentions = value
         .mentions
         .iter()
         .map(|mention| {
@@ -638,52 +718,49 @@ pub(crate) fn chat_message_event_to_proto(
         })
         .collect::<Result<Vec<_>, String>>()?;
     let playback = chat_playback_metadata_from_metadata(&message.metadata, public_id_codec)?;
-    Ok(synctv_proto::client::ChatMessageEvent {
-        event_id: event.event_id.clone(),
-        room_id: room_id.clone(),
-        kind: chat_event_kind_to_proto(event.kind) as i32,
-        message: Some(synctv_proto::client::ChatMessageReceive {
-            id: message.id.to_string(),
-            room_id,
-            user_id,
-            username: String::new(),
-            content: message.content.clone(),
-            timestamp: message.created_at.timestamp(),
-            display_position: chat_display_position_from_metadata(&message.metadata)?,
-            display_color: chat_display_color_from_metadata(&message.metadata)?,
-            client_message_id: message.client_message_id.clone().unwrap_or_default(),
-            status: chat_status_to_proto(message.status) as i32,
-            version: message.version,
-            edited_at: message.edited_at.map_or(0, |ts| ts.timestamp()),
-            deleted_at: message.deleted_at.map_or(0, |ts| ts.timestamp()),
-            reply_to_message_id: message
-                .reply_to_message_id
-                .map(|id| id.to_string())
-                .unwrap_or_default(),
-            attachments: event
-                .message
-                .attachments
-                .iter()
-                .map(core_chat_attachment_to_proto)
-                .collect::<Result<Vec<_>, _>>()?,
-            deleted_by_user_id,
-            delete_reason: message.delete_reason.clone().unwrap_or_default(),
-            playback_media_id: playback.media_id,
-            playback_playlist_id: playback.playlist_id,
-            playback_target: playback.target,
-            playback_target_hash: playback.target_hash,
-            playback_position_seconds: playback.position_seconds,
-            reactions,
-            reaction_count,
-            metadata: crate::impls::client::convert::json_to_vec(
-                &message.metadata,
-                "chat message metadata",
-            )
-            .map_err(|error| error.to_string())?,
-            mentions,
-        }),
-        occurred_at: event.occurred_at.timestamp(),
-        sequence: event.sequence,
+    Ok(synctv_proto::client::ChatMessageReceive {
+        id: message.id.to_string(),
+        room_id,
+        user_id,
+        username,
+        content: message.content.clone(),
+        timestamp: message.created_at.timestamp(),
+        display_position: chat_display_position_from_metadata(&message.metadata)?,
+        display_color: chat_display_color_from_metadata(&message.metadata)?,
+        client_message_id: message.client_message_id.clone().unwrap_or_default(),
+        status: chat_status_to_proto(message.status) as i32,
+        version: message.version,
+        edited_at: message.edited_at.map_or(0, |ts| ts.timestamp()),
+        deleted_at: message.deleted_at.map_or(0, |ts| ts.timestamp()),
+        reply_to_message_id: message
+            .reply_to_message_id
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
+        attachments: value
+            .attachments
+            .iter()
+            .map(core_chat_attachment_to_proto)
+            .collect::<Result<Vec<_>, _>>()?,
+        deleted_by_user_id,
+        delete_reason: message.delete_reason.clone().unwrap_or_default(),
+        playback_media_id: playback.media_id,
+        playback_playlist_id: playback.playlist_id,
+        playback_target: playback.target,
+        playback_target_hash: playback.target_hash,
+        playback_position_seconds: playback.position_seconds,
+        reactions,
+        reaction_count,
+        metadata: crate::impls::client::convert::json_to_vec(
+            &message.metadata,
+            "chat message metadata",
+        )
+        .map_err(|error| error.to_string())?,
+        mentions,
+        pin: value
+            .pin
+            .as_ref()
+            .map(|pin| chat_message_pin_to_proto(pin, public_id_codec))
+            .transpose()?,
     })
 }
 

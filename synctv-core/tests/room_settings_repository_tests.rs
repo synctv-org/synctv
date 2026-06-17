@@ -233,10 +233,10 @@ async fn test_get_batch_rejects_invalid_json() {
 
     // Insert invalid JSON for room2 directly via SQL
     ok(
-        sqlx::query(
-            r"INSERT INTO room_settings (room_id, key, value, version) VALUES ($1, '_settings', 'not valid json!!!', 1)"
+        sqlx::query!(
+            r"INSERT INTO room_settings (room_id, key, value, version) VALUES ($1, '_settings', 'not valid json!!!', 1)",
+            room2.id.as_i64()
         )
-        .bind(room2.id)
         .execute(&pool)
         .await,
         "invalid JSON settings fixture should be inserted",

@@ -165,20 +165,20 @@ impl OAuth2Service {
 
         let mut pending_request_id = None;
         for candidate in candidates {
-            let username_in_use = sqlx::query_scalar::<_, bool>(
-                r"
+            let username_in_use = sqlx::query_scalar!(
+                r#"
                 SELECT EXISTS(
                     SELECT 1
                     FROM users
                     WHERE LOWER(username) = LOWER($1)
                       AND deleted_at IS NULL
                 )
-                ",
+                "#,
+                candidate,
             )
-            .bind(candidate)
             .fetch_one(&mut *tx)
             .await?;
-            if username_in_use {
+            if username_in_use.unwrap_or(false) {
                 continue;
             }
 

@@ -254,7 +254,7 @@ async fn abort_test_task(handle: tokio::task::JoinHandle<()>) {
 }
 
 async fn flush_provider_instances(infra: &TestInfra) {
-    sqlx::query("TRUNCATE TABLE media_provider_instances RESTART IDENTITY CASCADE")
+    sqlx::query!("TRUNCATE TABLE media_provider_instances RESTART IDENTITY CASCADE")
         .execute(&infra.pool)
         .await
         .checked("Failed to truncate media_provider_instances");
@@ -1906,12 +1906,13 @@ async fn scenario_concurrent_duplicate_add_returns_one_success_and_one_already_e
         duplicate_errors[0]
     );
 
-    let stored_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM media_provider_instances WHERE name = $1")
-            .bind("test-instance-15-concurrent-dup")
-            .fetch_one(&infra.pool)
-            .await
-            .checked("test operation should succeed");
+    let stored_count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM media_provider_instances WHERE name = $1"#,
+        "test-instance-15-concurrent-dup"
+    )
+    .fetch_one(&infra.pool)
+    .await
+    .checked("test operation should succeed");
     assert_eq!(stored_count, 1, "only one DB row should be persisted");
 
     abort_test_task(health_handle).await;

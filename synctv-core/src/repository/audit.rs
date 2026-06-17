@@ -182,13 +182,24 @@ impl AuditLogRepository {
     ///
     /// Scans recent partitions only (last 365 days) to avoid full partition scan.
     pub async fn get_by_id(&self, id: i64) -> Result<Option<AuditLogRow>> {
-        let row = sqlx::query_as::<_, AuditLogDbRow>(
-            "SELECT id, actor_id, actor_username, action, target_type, target_id, \
-             details, ip_address, user_agent, created_at \
-             FROM audit_logs \
-             WHERE id = $1 AND created_at >= NOW() - INTERVAL '365 days'",
+        let row = sqlx::query_as!(
+            AuditLogDbRow,
+            r#"
+            SELECT id,
+                   actor_id AS "actor_id?: UserId",
+                   actor_username,
+                   action,
+                   target_type,
+                   target_id,
+                   details AS "details?: serde_json::Value",
+                   ip_address,
+                   user_agent,
+                   created_at
+            FROM audit_logs
+            WHERE id = $1 AND created_at >= NOW() - INTERVAL '365 days'
+            "#,
+            id,
         )
-        .bind(id)
         .fetch_optional(&self.pool)
         .await?;
 

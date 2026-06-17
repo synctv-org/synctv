@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO media_provider_instances (name, endpoint, jwt_secret, custom_ca, timeout, tls, insecure_tls, providers, enabled) VALUES ($1, $2, NULL, NULL, $3, $4, $5, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Bool",
+        "Bool",
+        "Int2Array",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7dadb439b88754d666bbae780bea3411620de357620c0002be3883fb22929e0b"
+}

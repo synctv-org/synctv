@@ -231,40 +231,40 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
 
     let forty_days_ago = Utc::now() - Duration::days(40);
     ok(
-        sqlx::query(
+        sqlx::query!(
             "UPDATE users
          SET deleted_at = $2, updated_at = $2
          WHERE id = $1",
+            deleted_user.id.as_i64(),
+            forty_days_ago,
         )
-        .bind(deleted_user.id)
-        .bind(forty_days_ago)
         .execute(&pool)
         .await,
         "test user should be soft-deleted",
     );
 
     ok(
-        sqlx::query(
+        sqlx::query!(
             "UPDATE rooms
          SET deleted_at = $2, updated_at = $2
          WHERE id = $1",
+            deleted_owned_room.id.as_i64(),
+            forty_days_ago,
         )
-        .bind(deleted_owned_room.id)
-        .bind(forty_days_ago)
         .execute(&pool)
         .await,
         "owned room should be soft-deleted",
     );
 
     ok(
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO room_members (room_id, user_id, role, joined_at, version)
          VALUES ($1, $2, $3, $4, 0)",
+            surviving_room.id.as_i64(),
+            deleted_user.id.as_i64(),
+            3_i16,
+            forty_days_ago,
         )
-        .bind(surviving_room.id)
-        .bind(deleted_user.id)
-        .bind(3_i16)
-        .bind(forty_days_ago)
         .execute(&pool)
         .await,
         "historical room membership should be inserted",
@@ -298,25 +298,31 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
         "Cleanup should purge the soft-deleted user in the same run"
     );
 
-    let user_still_exists: bool = ok(
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
-            .bind(deleted_user.id)
-            .fetch_one(&pool)
-            .await,
+    let user_still_exists = ok(
+        sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)",
+            deleted_user.id.as_i64()
+        )
+        .fetch_one(&pool)
+        .await,
         "deleted user existence query should succeed",
-    );
+    )
+    .unwrap_or(false);
     assert!(
         !user_still_exists,
         "Soft-deleted user should be hard-deleted"
     );
 
-    let membership_still_exists: bool = ok(
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM room_members WHERE user_id = $1)")
-            .bind(deleted_user.id)
-            .fetch_one(&pool)
-            .await,
+    let membership_still_exists = ok(
+        sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM room_members WHERE user_id = $1)",
+            deleted_user.id.as_i64()
+        )
+        .fetch_one(&pool)
+        .await,
         "historical membership existence query should succeed",
-    );
+    )
+    .unwrap_or(false);
     assert!(
         !membership_still_exists,
         "Historical room_members rows must not block hard deletion of soft-deleted users"
@@ -399,20 +405,26 @@ async fn test_chat_message_cap_cleanup_deletes_image_objects() {
     .clone();
     assert_eq!(deleted_origins, vec!["reference_cap_exceeded".to_string()]);
 
-    let old_exists: bool = ok(
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_messages WHERE id = $1)")
-            .bind(9_101_i64)
-            .fetch_one(&pool)
-            .await,
+    let old_exists = ok(
+        sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM chat_messages WHERE id = $1)",
+            9_101_i64
+        )
+        .fetch_one(&pool)
+        .await,
         "old message existence query should succeed",
-    );
-    let kept_exists: bool = ok(
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_messages WHERE id = $1)")
-            .bind(9_102_i64)
-            .fetch_one(&pool)
-            .await,
+    )
+    .unwrap_or(false);
+    let kept_exists = ok(
+        sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM chat_messages WHERE id = $1)",
+            9_102_i64
+        )
+        .fetch_one(&pool)
+        .await,
         "kept message existence query should succeed",
-    );
+    )
+    .unwrap_or(false);
     assert!(!old_exists);
     assert!(kept_exists);
 }
@@ -453,8 +465,8 @@ async fn insert_chat_message_with_image(
     object_key: &str,
 ) {
     ok(
-        sqlx::query(
-            r"
+        sqlx::query!(
+            r#"
         INSERT INTO chat_messages (
             id, room_id, user_id, client_message_id, content, message_type, status, version,
             reply_to_message_id, metadata, edited_at, deleted_at, deleted_by, delete_reason,
@@ -464,41 +476,41 @@ async fn insert_chat_message_with_image(
             NULL, $8, NULL, NULL, NULL, NULL,
             $9
         )
-        ",
+        "#,
+            message_id,
+            room_id.as_i64(),
+            user_id.as_i64(),
+            "attachment message",
+            4_i16,
+            1_i16,
+            1_i64,
+            serde_json::Value::Object(Default::default()),
+            created_at,
         )
-        .bind(message_id)
-        .bind(room_id)
-        .bind(user_id)
-        .bind("attachment message")
-        .bind(4_i16)
-        .bind(1_i16)
-        .bind(1_i64)
-        .bind(serde_json::Value::Object(Default::default()))
-        .bind(created_at)
         .execute(pool)
         .await,
         "chat message fixture should be inserted",
     );
 
     ok(
-        sqlx::query(
-            r"
+        sqlx::query!(
+            r#"
         INSERT INTO chat_message_attachments (
             id, kind, room_id, message_id, message_created_at, filename, storage_backend, object_key, url,
             mime_type, size_bytes, width, height, metadata, created_at
         ) VALUES (
             $1, 2, $2, $3, $4, NULL, $5, $6, NULL, NULL, NULL, NULL, NULL, $7, $8
         )
-        ",
+        "#,
+            image_id,
+            room_id.as_i64(),
+            message_id,
+            created_at,
+            "test-storage",
+            object_key,
+            serde_json::Value::Object(Default::default()),
+            created_at,
         )
-        .bind(image_id)
-        .bind(room_id)
-        .bind(message_id)
-        .bind(created_at)
-        .bind("test-storage")
-        .bind(object_key)
-        .bind(serde_json::Value::Object(Default::default()))
-        .bind(created_at)
         .execute(pool)
         .await,
         "chat attachment fixture should be inserted",

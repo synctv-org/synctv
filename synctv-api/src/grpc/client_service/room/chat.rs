@@ -368,6 +368,65 @@ pub(super) async fn delete_chat_message(
     Ok(Response::new(response))
 }
 
+pub(super) async fn list_pinned_chat_messages(
+    service: &ClientServiceImpl,
+    request: Request<ListPinnedChatMessagesRequest>,
+) -> Result<Response<ListPinnedChatMessagesResponse>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .execute_room_actor_endpoint(
+            metadata,
+            room_id,
+            EndpointRateLimitCategory::Read,
+            move |client_api, actor| async move {
+                client_api
+                    .list_pinned_chat_messages_for_actor(&actor, req)
+                    .await
+            },
+        )
+        .await?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn pin_chat_message(
+    service: &ClientServiceImpl,
+    request: Request<PinChatMessageRequest>,
+) -> Result<Response<ChatPinEventResponse>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .execute_room_actor_endpoint(
+            metadata,
+            room_id,
+            EndpointRateLimitCategory::Write,
+            move |client_api, actor| async move {
+                client_api.pin_chat_message_for_actor(&actor, req).await
+            },
+        )
+        .await?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn unpin_chat_message(
+    service: &ClientServiceImpl,
+    request: Request<UnpinChatMessageRequest>,
+) -> Result<Response<ChatPinEventResponse>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .execute_room_actor_endpoint(
+            metadata,
+            room_id,
+            EndpointRateLimitCategory::Write,
+            move |client_api, actor| async move {
+                client_api.unpin_chat_message_for_actor(&actor, req).await
+            },
+        )
+        .await?;
+    Ok(Response::new(response))
+}
+
 pub(super) async fn set_chat_reaction(
     service: &ClientServiceImpl,
     request: Request<SetChatReactionRequest>,

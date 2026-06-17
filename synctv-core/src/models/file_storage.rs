@@ -57,6 +57,31 @@ impl TryFrom<i16> for FileBlobCompression {
     }
 }
 
+impl sqlx::Type<sqlx::Postgres> for FileBlobCompression {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Postgres> for FileBlobCompression {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&i16::from(*self), buf)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for FileBlobCompression {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let value = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        Self::try_from(value)
+            .map_err(|()| format!("unknown file blob compression value {value}").into())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileBlob {
     pub storage_backend: String,
@@ -163,6 +188,31 @@ impl TryFrom<i16> for FileUploadSessionKind {
             2 => Ok(Self::S3Multipart),
             _ => Err(()),
         }
+    }
+}
+
+impl sqlx::Type<sqlx::Postgres> for FileUploadSessionKind {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Postgres> for FileUploadSessionKind {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&i16::from(*self), buf)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for FileUploadSessionKind {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let value = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        Self::try_from(value)
+            .map_err(|()| format!("unknown file upload session kind {value}").into())
     }
 }
 

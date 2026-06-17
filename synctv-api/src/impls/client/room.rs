@@ -3,7 +3,7 @@
 use crate::impls::ApiError;
 use std::collections::HashMap;
 use synctv_core::models::{
-    ChatMentionInput, ChatMessageEvent, ChatMessageType, ChatMessageWithAttachments,
+    ChatMentionInput, ChatMessageEvent, ChatMessageType, ChatMessageWithAttachments, ChatPinEvent,
     ChatPlaybackMessagesQuery, CreateChatAttachmentUploadSession, MarkChatRead, PageParams,
     RoomListQuery, RoomListSortBy, RoomStatus, SendChatMessage, SetChatReaction, SortDirection,
     StoreFileUploadResult, UserId,
@@ -1279,6 +1279,7 @@ impl ClientApiImpl {
             allow_room_creation: s.allow_room_creation,
             max_rooms_per_user: s.max_rooms_per_user,
             max_members_per_room: s.max_members_per_room,
+            max_pinned_chat_messages_per_room: s.max_pinned_chat_messages_per_room,
             disable_create_room: s.disable_create_room,
             create_room_need_review: s.create_room_need_review,
             room_password_policy: s.room_password_policy.to_string(),
@@ -1571,7 +1572,7 @@ impl ClientApiImpl {
                     None => (String::new(), "[deleted]".to_string()),
                 };
 
-                let mut proto = chat_message_to_proto(self, m, username)?;
+                let mut proto = chat_message_to_proto(self, &m, username)?;
                 proto.user_id = user_id_str;
                 Ok(proto)
             })
@@ -1636,6 +1637,9 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         if outcome.inserted {
             self.broadcast_chat_event(&outcome.event);
+            if let Some(pin_event) = &outcome.pin_event {
+                self.broadcast_chat_pin_event(pin_event);
+            }
         }
         Ok(synctv_proto::client::ChatMessageEventResponse {
             event: Some(chat_event_to_proto(self, outcome.event).await?),
@@ -1782,6 +1786,9 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         if outcome.inserted {
             self.broadcast_chat_event(&outcome.event);
+            if let Some(pin_event) = &outcome.pin_event {
+                self.broadcast_chat_pin_event(pin_event);
+            }
         }
         Ok(synctv_proto::client::ChatMessageEventResponse {
             event: Some(chat_event_to_proto(self, outcome.event).await?),
@@ -1808,9 +1815,98 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         if outcome.inserted {
             self.broadcast_chat_event(&outcome.event);
+            if let Some(pin_event) = &outcome.pin_event {
+                self.broadcast_chat_pin_event(pin_event);
+            }
         }
         Ok(synctv_proto::client::ChatMessageEventResponse {
             event: Some(chat_event_to_proto(self, outcome.event).await?),
+        })
+    }
+
+    pub async fn list_pinned_chat_messages_for_actor(
+        &self,
+        actor: &RoomActor,
+        req: synctv_proto::client::ListPinnedChatMessagesRequest,
+    ) -> Result<synctv_proto::client::ListPinnedChatMessagesResponse, ApiError> {
+        self.require_room_permission(
+            actor,
+            synctv_core::models::RoomPermission::VIEW_CHAT_HISTORY,
+        )
+        .await?;
+        let chat_service = self
+            .chat_service
+            .as_ref()
+            .ok_or_else(chat_service_unavailable_error)?;
+        let limit = if req.limit <= 0 {
+            20
+        } else {
+            req.limit.min(100)
+        };
+        let pinned = chat_service
+            .list_pinned_messages_for_authorized_viewer(
+                &actor.room_id(),
+                actor.user_id().as_ref(),
+                limit,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        let mut messages = Vec::with_capacity(pinned.len());
+        for message in pinned {
+            messages.push(chat_pinned_message_to_proto(self, message).await?);
+        }
+        Ok(synctv_proto::client::ListPinnedChatMessagesResponse { messages })
+    }
+
+    pub async fn pin_chat_message_for_actor(
+        &self,
+        actor: &RoomActor,
+        req: synctv_proto::client::PinChatMessageRequest,
+    ) -> Result<synctv_proto::client::ChatPinEventResponse, ApiError> {
+        let user_id = actor.require_user_id()?;
+        let chat_service = self
+            .chat_service
+            .as_ref()
+            .ok_or_else(chat_service_unavailable_error)?;
+        let outcome = chat_service
+            .pin_message_event_outcome(pin_chat_message_request_to_core(
+                actor.room_id(),
+                user_id,
+                &req,
+            )?)
+            .await
+            .map_err(ApiError::from)?;
+        if outcome.inserted {
+            self.broadcast_chat_pin_event(&outcome.event);
+        }
+        Ok(synctv_proto::client::ChatPinEventResponse {
+            event: Some(chat_pin_event_to_proto(self, outcome.event).await?),
+        })
+    }
+
+    pub async fn unpin_chat_message_for_actor(
+        &self,
+        actor: &RoomActor,
+        req: synctv_proto::client::UnpinChatMessageRequest,
+    ) -> Result<synctv_proto::client::ChatPinEventResponse, ApiError> {
+        let user_id = actor.require_user_id()?;
+        let chat_service = self
+            .chat_service
+            .as_ref()
+            .ok_or_else(chat_service_unavailable_error)?;
+        let outcome = chat_service
+            .unpin_message_event_outcome(unpin_chat_message_request_to_core(
+                actor.room_id(),
+                user_id,
+                &req,
+            )?)
+            .await
+            .map_err(ApiError::from)?;
+        if outcome.inserted {
+            self.broadcast_chat_pin_event(&outcome.event);
+        }
+        Ok(synctv_proto::client::ChatPinEventResponse {
+            event: Some(chat_pin_event_to_proto(self, outcome.event).await?),
         })
     }
 
@@ -1834,7 +1930,12 @@ impl ClientApiImpl {
             })
             .await
             .map_err(ApiError::from)?;
-        self.broadcast_chat_event(&outcome.event);
+        if outcome.inserted {
+            self.broadcast_chat_event(&outcome.event);
+            if let Some(pin_event) = &outcome.pin_event {
+                self.broadcast_chat_pin_event(pin_event);
+            }
+        }
         Ok(synctv_proto::client::SetChatReactionResponse {
             event: Some(chat_event_to_proto(self, outcome.event).await?),
         })
@@ -2000,6 +2101,10 @@ impl ClientApiImpl {
         self.chat_event_dispatcher.dispatch(event);
     }
 
+    fn broadcast_chat_pin_event(&self, event: &ChatPinEvent) {
+        self.chat_event_dispatcher.dispatch_pin(event);
+    }
+
     pub async fn get_chat_history_as_guest(
         &self,
         access: &GuestRoomAccess,
@@ -2048,7 +2153,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         let username = username_for_chat_message(self, &message.message).await?;
         Ok(synctv_proto::client::GetChatMessageResponse {
-            message: Some(chat_message_to_proto(self, message, username)?),
+            message: Some(chat_message_to_proto(self, &message, username)?),
         })
     }
 
@@ -2079,7 +2184,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         let before = self.chat_messages_to_proto(context.before).await?;
         let username = username_for_chat_message(self, &context.anchor.message).await?;
-        let message = chat_message_to_proto(self, context.anchor, username)?;
+        let message = chat_message_to_proto(self, &context.anchor, username)?;
         let after = self.chat_messages_to_proto(context.after).await?;
         Ok(synctv_proto::client::GetChatMessageContextResponse {
             before,
@@ -2161,7 +2266,7 @@ impl ClientApiImpl {
                 })?,
                 None => "[deleted]".to_string(),
             };
-            converted.push(chat_message_to_proto(self, message, username)?);
+            converted.push(chat_message_to_proto(self, &message, username)?);
         }
         Ok(converted)
     }
@@ -2206,15 +2311,24 @@ mod tests {
     use super::{
         build_check_room_request, build_create_websocket_ticket_request,
         build_get_chat_history_request, build_my_room_list_query, build_public_room_list_query,
-        build_transfer_room_ownership_request, delete_chat_message_request_to_core,
-        edit_chat_message_request_to_core, optional_positive_limit,
-        optional_positive_window_seconds, optional_trimmed_string, parse_json_metadata,
-        parse_proto_chat_attachments, required_playback_position_seconds,
+        build_transfer_room_ownership_request, chat_pin_event_to_proto,
+        delete_chat_message_request_to_core, edit_chat_message_request_to_core,
+        optional_positive_limit, optional_positive_window_seconds, optional_trimmed_string,
+        parse_json_metadata, parse_proto_chat_attachments, required_playback_position_seconds,
         required_room_availability, settings_registry_unavailable_error,
     };
     use crate::impls::ErrorKind;
+    use chrono::Utc;
     use std::collections::HashMap;
     use synctv_core::service::room::ClientResourceAvailability;
+    use synctv_core::{
+        models::{
+            ChatMessage, ChatMessagePin, ChatMessageWithAttachments, ChatPinEvent,
+            ChatPinEventKind, RoomId, SignupMethod, User,
+        },
+        repository::UserRepository,
+        service::RoomService,
+    };
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
@@ -2235,6 +2349,39 @@ mod tests {
 
     fn codec_ok<T>(result: Result<T, String>) -> TestResult<T> {
         result.map_err(test_error)
+    }
+
+    fn test_client_api(
+        pool: sqlx::PgPool,
+        user_service: std::sync::Arc<synctv_core::service::UserService>,
+    ) -> super::ClientApiImpl {
+        let room_service = std::sync::Arc::new(
+            RoomService::new_for_tests(pool, (*user_service).clone())
+                .expect("room service should build"),
+        );
+        super::ClientApiImpl::new_with_runtime(
+            crate::impls::ClientApiConfig {
+                read_pool: None,
+                user_service,
+                room_service,
+                chat_service: None,
+                connection_service: std::sync::Arc::new(
+                    synctv_realtime::sync::ConnectionManager::default(),
+                ),
+                config: std::sync::Arc::new(synctv_core::Config::default()),
+                publish_key_service: None,
+                jwt_service: synctv_core_testing::create_test_jwt_service(),
+                live_streaming_infrastructure: None,
+                settings_registry: None,
+                provider_stores: std::sync::Arc::new(
+                    synctv_core::provider::ProviderStoreRegistry::local_only("test:chat-pin-api:"),
+                ),
+                public_id_codec: std::sync::Arc::new(synctv_core::PublicIdCodec::plain()),
+                email_api: None,
+                passkey_service: None,
+            },
+            crate::test_support::client_api_runtime(),
+        )
     }
 
     #[test]
@@ -2698,6 +2845,58 @@ mod tests {
             }
             other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn chat_pin_event_response_populates_message_username() -> TestResult {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let user_service =
+            std::sync::Arc::new(synctv_core_testing::create_test_user_service(pool.clone()));
+        let user = UserRepository::new(pool.clone())
+            .create(&User::new(
+                "pin_response_author".to_string(),
+                SignupMethod::Password,
+            ))
+            .await
+            .map_err(|error| test_error(error.to_string()))?;
+        let api = test_client_api(pool, user_service);
+        let room_id = RoomId::expect_positive(7);
+        let occurred_at = Utc::now();
+        let mut message = ChatMessage::new(room_id, user.id, "pinned body".to_string());
+        message.id = 42;
+        message.created_at = occurred_at;
+        let pin = ChatMessagePin {
+            room_id,
+            message_id: message.id,
+            message_created_at: message.created_at,
+            pinned_by: Some(user.id),
+            pinned_by_username: Some(user.username.clone()),
+            note: None,
+            pinned_at: occurred_at,
+        };
+        let event = ChatPinEvent {
+            event_id: "pin-response-event".to_string(),
+            sequence: 5,
+            room_id,
+            actor_user_id: user.id,
+            kind: ChatPinEventKind::Pinned,
+            message: ChatMessageWithAttachments {
+                message,
+                attachments: Vec::new(),
+                reactions: Vec::new(),
+                mentions: Vec::new(),
+                pin: Some(pin.clone()),
+            },
+            pin: Some(pin),
+            occurred_at,
+        };
+
+        let proto = api_ok(chat_pin_event_to_proto(&api, event).await)?;
+        let message = proto
+            .message
+            .ok_or_else(|| test_error("pin event response should contain message"))?;
+        assert_eq!(message.username, "pin_response_author");
         Ok(())
     }
 

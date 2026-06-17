@@ -790,19 +790,20 @@ impl UserProviderCredentialRepository {
         provider: &str,
         server_id: &str,
     ) -> Result<Option<UserProviderCredential>> {
-        let rows = sqlx::query_as::<_, UserProviderCredentialRow>(
-            r"
-            SELECT id, user_id, provider, server_id,
-                   provider_instance_name, credential_data,
+        let rows = sqlx::query_as!(
+            UserProviderCredentialRow,
+            r#"
+            SELECT id, user_id as "user_id: UserId", provider, server_id,
+                   provider_instance_name, credential_data as "credential_data!: serde_json::Value",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1 AND provider = $2 AND server_id = $3
             ORDER BY created_at DESC
-            ",
+            "#,
+            user_id as UserId,
+            provider_type_code(provider)?,
+            server_id,
         )
-        .bind(user_id)
-        .bind(provider_type_code(provider)?)
-        .bind(server_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -845,18 +846,19 @@ impl UserProviderCredentialRepository {
         user_id: UserId,
         provider: &str,
     ) -> Result<Vec<UserProviderCredential>> {
-        let rows = sqlx::query_as::<_, UserProviderCredentialRow>(
-            r"
-            SELECT id, user_id, provider, server_id,
-                   provider_instance_name, credential_data,
+        let rows = sqlx::query_as!(
+            UserProviderCredentialRow,
+            r#"
+            SELECT id, user_id as "user_id: UserId", provider, server_id,
+                   provider_instance_name, credential_data as "credential_data!: serde_json::Value",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1 AND provider = $2
             ORDER BY created_at DESC
-            ",
+            "#,
+            user_id as UserId,
+            provider_type_code(provider)?,
         )
-        .bind(user_id)
-        .bind(provider_type_code(provider)?)
         .fetch_all(&self.pool)
         .await?;
 

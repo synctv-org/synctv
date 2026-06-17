@@ -48,6 +48,8 @@ pub use types::{
 
 /// Maximum allowed value for `max_chat_messages` setting (0 = unlimited)
 const MAX_CHAT_MESSAGES_LIMIT: u64 = 10_000;
+/// Maximum allowed value for `max_pinned_messages_per_room` setting (0 = unlimited)
+const MAX_PINNED_CHAT_MESSAGES_PER_ROOM_LIMIT: u64 = 1_000;
 
 fn validate_email_whitelist_domains(raw: &str) -> crate::Result<()> {
     for entry in raw
@@ -166,6 +168,8 @@ pub struct SettingsRegistry {
     // Chat message retention settings
     /// Maximum number of messages to keep per room (0 = unlimited)
     pub max_chat_messages_per_room: Setting<u64>,
+    /// Maximum number of pinned chat messages per room (0 = unlimited)
+    pub max_pinned_chat_messages_per_room: Setting<u64>,
     /// Absolute retention cap in days for chat messages (default: 90)
     pub chat_message_retention_days: Setting<i64>,
 
@@ -648,6 +652,21 @@ impl SettingsRegistry {
                     }
                 }
             ),
+            max_pinned_chat_messages_per_room: setting!(
+                u64,
+                "chat.max_pinned_messages_per_room",
+                storage.clone(),
+                20,
+                |v: &u64| -> crate::Result<()> {
+                    if *v <= MAX_PINNED_CHAT_MESSAGES_PER_ROOM_LIMIT {
+                        Ok(())
+                    } else {
+                        Err(crate::Error::InvalidInput(format!(
+                            "max_pinned_chat_messages_per_room must be <= {MAX_PINNED_CHAT_MESSAGES_PER_ROOM_LIMIT} (0 = unlimited)"
+                        )))
+                    }
+                }
+            ),
             chat_message_retention_days: setting!(
                 i64,
                 "chat.message_retention_days",
@@ -742,6 +761,7 @@ impl SettingsRegistry {
             allow_room_creation: self.allow_room_creation.get()?,
             max_rooms_per_user: self.max_rooms_per_user.get()?,
             max_members_per_room: self.max_members_per_room.get()?,
+            max_pinned_chat_messages_per_room: self.max_pinned_chat_messages_per_room.get()?,
             disable_create_room: self.disable_create_room.get()?,
             create_room_need_review: self.create_room_need_review.get()?,
             room_password_policy: self.room_password_policy.get()?,

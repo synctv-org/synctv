@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)\n          VALUES ($1, $2, 'Old Notif', 'old', $3, false, $4, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Jsonb",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6ee5f93585cee634e20ddec7d31564a68561ae1e37561c033c3d513d5e00cfa3"
+}

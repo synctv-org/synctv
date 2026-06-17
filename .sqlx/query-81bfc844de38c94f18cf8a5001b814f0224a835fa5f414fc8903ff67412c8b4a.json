@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT target_id, ip_address, user_agent FROM audit_logs WHERE actor_id = '100106'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "target_id",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "target_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "ip_address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "ip_address"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "user_agent",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_logs",
+            "name": "user_agent"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "81bfc844de38c94f18cf8a5001b814f0224a835fa5f414fc8903ff67412c8b4a"
+}

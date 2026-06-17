@@ -37,7 +37,7 @@ pub use ban::{
 };
 pub use chat::{
     ChatMessageOperationIdempotency, ChatRepository, DeleteChatMessageEventRequest,
-    EditChatMessageEventRequest,
+    EditChatMessageEventRequest, PinChatMessageEventRequest, UnpinChatMessageEventRequest,
 };
 pub use content_report::{
     ContentReportListQuery, ContentReportListScope, ContentReportPage, ContentReportRepository,

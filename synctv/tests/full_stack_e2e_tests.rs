@@ -5916,11 +5916,12 @@ async fn full_stack_cli_db_status_reports_migration_readiness_and_db_migrate_is_
     );
 
     let pool = connect_test_pool_url(&database_url).await;
-    let applied_migrations: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE success = true")
-            .fetch_one(&pool)
-            .await
-            .expect("_sqlx_migrations should exist after db migrate");
+    let applied_migrations: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM _sqlx_migrations WHERE success = true"#
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("_sqlx_migrations should exist after db migrate");
     assert!(
         applied_migrations > 0,
         "db migrate should apply embedded migrations"
@@ -5969,10 +5970,10 @@ async fn full_stack_cli_db_status_reports_migration_readiness_and_db_migrate_is_
     );
 
     let pool = connect_test_pool_url(&database_url).await;
-    sqlx::query(
+    sqlx::query!(
         "UPDATE _sqlx_migrations \
          SET checksum = decode('00', 'hex') \
-         WHERE version = (SELECT MIN(version) FROM _sqlx_migrations WHERE success = true)",
+         WHERE version = (SELECT MIN(version) FROM _sqlx_migrations WHERE success = true)"
     )
     .execute(&pool)
     .await

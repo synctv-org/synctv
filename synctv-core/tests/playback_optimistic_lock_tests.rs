@@ -813,11 +813,13 @@ async fn test_version_handles_large_values() {
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
     // Manually set version to a large value
-    sqlx::query("UPDATE room_playback_state SET version = 999998 WHERE room_id = $1")
-        .bind(room.id)
-        .execute(&pool)
-        .await
-        .checked("test operation should succeed");
+    sqlx::query!(
+        "UPDATE room_playback_state SET version = 999998 WHERE room_id = $1",
+        room.id.as_i64()
+    )
+    .execute(&pool)
+    .await
+    .checked("test operation should succeed");
 
     // Get state (should have version 999998)
     let mut state = playback_repo

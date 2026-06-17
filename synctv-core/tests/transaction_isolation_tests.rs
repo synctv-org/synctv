@@ -40,7 +40,7 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         banned_reason: None,
     };
     ok(
-        sqlx::query(
+        sqlx::query!(
             r"
         INSERT INTO users (
             id, username, signup_method, role,
@@ -48,38 +48,38 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         )
         VALUES ($1, $2, $3, $4, $5, $6)
         ",
+            user.id.as_i64(),
+            &user.username,
+            i16::from(user.signup_method),
+            i16::from(user.role),
+            user.created_at,
+            user.updated_at
         )
-        .bind(user.id)
-        .bind(&user.username)
-        .bind(user.signup_method)
-        .bind(user.role)
-        .bind(user.created_at)
-        .bind(user.updated_at)
         .execute(pool)
         .await,
         "test user should be inserted",
     );
 
     ok(
-        sqlx::query(
+        sqlx::query!(
             r"
         INSERT INTO auth_email_identities (
             user_id, email, created_at, updated_at
         )
         VALUES ($1, $2, $3, $4)
         ",
+            user.id.as_i64(),
+            &format!("{user_id}@test.com"),
+            user.created_at,
+            user.updated_at
         )
-        .bind(user.id)
-        .bind(format!("{user_id}@test.com"))
-        .bind(user.created_at)
-        .bind(user.updated_at)
         .execute(pool)
         .await,
         "test user email identity should be inserted",
     );
 
     ok(
-        sqlx::query(
+        sqlx::query!(
             r"
         INSERT INTO auth_password_credentials (
             user_id, opaque_record, opaque_credential_identifier, opaque_ciphersuite,
@@ -88,16 +88,16 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ",
+            user.id.as_i64(),
+            b"test-opaque-record".as_slice(),
+            b"test-opaque-id".as_slice(),
+            "opaque-ristretto255-sha512-argon2id",
+            1_i32,
+            user.created_at,
+            0_i32,
+            user.created_at,
+            user.updated_at
         )
-        .bind(user.id)
-        .bind(b"test-opaque-record".as_slice())
-        .bind(b"test-opaque-id".as_slice())
-        .bind("opaque-ristretto255-sha512-argon2id")
-        .bind(1_i32)
-        .bind(user.created_at)
-        .bind(0_i32)
-        .bind(user.created_at)
-        .bind(user.updated_at)
         .execute(pool)
         .await,
         "test user password credential should be inserted",
@@ -177,13 +177,13 @@ async fn test_concurrent_member_role_updates_isolated() {
 
         let mut tx = pool1.begin().await?;
 
-        sqlx::query(
+        sqlx::query!(
             "UPDATE room_members SET added_permissions = $1
              WHERE room_id = $2 AND user_id = $3",
+            0xFF_i64,
+            room_id.as_i64(),
+            user1_clone.as_i64()
         )
-        .bind(0xFF_i64)
-        .bind(room_id)
-        .bind(user1_clone)
         .execute(&mut *tx)
         .await?;
 
@@ -200,13 +200,13 @@ async fn test_concurrent_member_role_updates_isolated() {
 
         let mut tx = pool2.begin().await?;
 
-        sqlx::query(
+        sqlx::query!(
             "UPDATE room_members SET added_permissions = $1
              WHERE room_id = $2 AND user_id = $3",
+            0xFF_i64,
+            room_id2.as_i64(),
+            user2_clone.as_i64()
         )
-        .bind(0xFF_i64)
-        .bind(room_id2)
-        .bind(user2_clone)
         .execute(&mut *tx)
         .await?;
 
@@ -273,20 +273,23 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
     let handle1 = tokio::spawn(async move {
         let mut tx = pool1.begin().await?;
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-            .bind(room_id1)
-            .fetch_one(&mut *tx)
-            .await?;
+        let count: i64 = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM room_members WHERE room_id = $1"#,
+            room_id1.as_i64()
+        )
+        .fetch_one(&mut *tx)
+        .await?;
 
         assert_eq!(count, 0);
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        let count2: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-                .bind(room_id1)
-                .fetch_one(&mut *tx)
-                .await?;
+        let count2: i64 = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM room_members WHERE room_id = $1"#,
+            room_id1.as_i64()
+        )
+        .fetch_one(&mut *tx)
+        .await?;
 
         tx.commit().await?;
 

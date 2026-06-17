@@ -617,6 +617,7 @@ fn chat_event_with_content(
             attachments: Vec::new(),
             reactions: Vec::new(),
             mentions: Vec::new(),
+            pin: None,
         },
         occurred_at: now,
     }
@@ -1212,6 +1213,7 @@ fn test_chat_service(pool: sqlx::PgPool) -> Arc<ChatService> {
             file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
             audit_service: None,
             notification_service: NotificationService::default(),
+            settings_registry: None,
         },
     ))
 }
@@ -6416,6 +6418,7 @@ fn test_durable_chat_message_event_conversion() {
                 attachments: Vec::new(),
                 reactions: Vec::new(),
                 mentions: Vec::new(),
+                pin: None,
             },
             occurred_at: created_at,
         },

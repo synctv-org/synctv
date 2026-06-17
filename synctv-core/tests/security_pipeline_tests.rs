@@ -61,7 +61,7 @@ async fn insert_user(pool: &PgPool, user: &User) -> User {
 
 async fn set_version(pool: &PgPool, user_id: &UserId, version: i32) {
     ok(
-        sqlx::query(
+        sqlx::query!(
             r"
         INSERT INTO auth_password_credentials (
             user_id, opaque_record, opaque_credential_identifier, opaque_ciphersuite,
@@ -75,9 +75,9 @@ async fn set_version(pool: &PgPool, user_id: &UserId, version: i32) {
             version = EXCLUDED.version,
             updated_at = EXCLUDED.updated_at
         ",
+            user_id.as_i64(),
+            version
         )
-        .bind(user_id)
-        .bind(version)
         .execute(pool)
         .await,
         "password credential version should be set",
@@ -301,10 +301,12 @@ async fn test_deleted_user_rejected() {
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
     // UserRepository::create does not write deleted_at, so set it via raw SQL
     ok(
-        sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-            .bind(user.id)
-            .execute(&pool)
-            .await,
+        sqlx::query!(
+            "UPDATE users SET deleted_at = NOW() WHERE id = $1",
+            user.id.as_i64()
+        )
+        .execute(&pool)
+        .await,
         "user should be soft-deleted",
     );
     let user_service = Arc::new(create_user_service(&pool));

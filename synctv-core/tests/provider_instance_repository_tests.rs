@@ -57,18 +57,18 @@ fn make_instance(
 async fn test_plaintext_jwt_secret_is_not_a_schema_policy() {
     let (_container, pool) = create_test_pool().await;
 
-    let result = sqlx::query(
+    let result = sqlx::query!(
         "INSERT INTO media_provider_instances (name, endpoint, jwt_secret, timeout, tls, insecure_tls, providers, enabled) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "constraint_test_jwt",
+        "http://localhost:50051",
+        "plaintext_secret",
+        "10s",
+        false,
+        false,
+        &provider_codes(&[ProviderType::Bilibili]),
+        true
     )
-    .bind("constraint_test_jwt")
-    .bind("http://localhost:50051")
-    .bind("plaintext_secret") // NOT enc: prefixed
-    .bind("10s")
-    .bind(false)
-    .bind(false)
-    .bind(provider_codes(&[ProviderType::Bilibili]))
-    .bind(true)
     .execute(&pool)
     .await;
 
@@ -84,18 +84,18 @@ async fn test_plaintext_jwt_secret_is_not_a_schema_policy() {
 async fn test_plaintext_custom_ca_is_not_a_schema_policy() {
     let (_container, pool) = create_test_pool().await;
 
-    let result = sqlx::query(
+    let result = sqlx::query!(
         "INSERT INTO media_provider_instances (name, endpoint, custom_ca, timeout, tls, insecure_tls, providers, enabled) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "constraint_test_ca",
+        "http://localhost:50051",
+        "-----BEGIN CERTIFICATE-----\nplaintext_cert\n-----END CERTIFICATE-----",
+        "10s",
+        false,
+        false,
+        &provider_codes(&[ProviderType::Bilibili]),
+        true
     )
-    .bind("constraint_test_ca")
-    .bind("http://localhost:50051")
-    .bind("-----BEGIN CERTIFICATE-----\nplaintext_cert\n-----END CERTIFICATE-----") // NOT enc: prefixed
-    .bind("10s")
-    .bind(false)
-    .bind(false)
-    .bind(provider_codes(&[ProviderType::Bilibili]))
-    .bind(true)
     .execute(&pool)
     .await;
 
@@ -114,17 +114,17 @@ async fn test_null_secrets_allowed_by_schema() {
     let (_container, pool) = create_test_pool().await;
 
     // NULL secrets should be allowed
-    let result = sqlx::query(
+    let result = sqlx::query!(
         "INSERT INTO media_provider_instances (name, endpoint, jwt_secret, custom_ca, timeout, tls, insecure_tls, providers, enabled) \
          VALUES ($1, $2, NULL, NULL, $3, $4, $5, $6, $7)",
+        "constraint_test_null",
+        "http://localhost:50051",
+        "10s",
+        false,
+        false,
+        &provider_codes(&[ProviderType::Bilibili]),
+        true
     )
-    .bind("constraint_test_null")
-    .bind("http://localhost:50051")
-    .bind("10s")
-    .bind(false)
-    .bind(false)
-    .bind(provider_codes(&[ProviderType::Bilibili]))
-    .bind(true)
     .execute(&pool)
     .await;
 
@@ -143,19 +143,19 @@ async fn test_enc_prefixed_secrets_allowed_by_schema() {
     let (_container, pool) = create_test_pool().await;
 
     // enc: prefixed secrets should be allowed
-    let result = sqlx::query(
+    let result = sqlx::query!(
         "INSERT INTO media_provider_instances (name, endpoint, jwt_secret, custom_ca, timeout, tls, insecure_tls, providers, enabled) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        "constraint_test_enc",
+        "http://localhost:50051",
+        "enc:encrypted_jwt_secret_data",
+        "enc:encrypted_custom_ca_data",
+        "10s",
+        false,
+        false,
+        &provider_codes(&[ProviderType::Bilibili]),
+        true
     )
-    .bind("constraint_test_enc")
-    .bind("http://localhost:50051")
-    .bind("enc:encrypted_jwt_secret_data")
-    .bind("enc:encrypted_custom_ca_data")
-    .bind("10s")
-    .bind(false)
-    .bind(false)
-    .bind(provider_codes(&[ProviderType::Bilibili]))
-    .bind(true)
     .execute(&pool)
     .await;
 
@@ -178,35 +178,37 @@ async fn test_delete_referenced_provider_instance_is_rejected() {
     );
 
     let user_id: i64 = ok(
-        sqlx::query_scalar(
-            "INSERT INTO users (username, signup_method, role) VALUES ($1, $2, 3) RETURNING id",
+        sqlx::query_scalar!(
+            r#"INSERT INTO users (username, signup_method, role) VALUES ($1, $2, 3) RETURNING id AS "id!""#,
+            "provider_ref_owner",
+            i16::from(SignupMethod::Email)
         )
-        .bind("provider_ref_owner")
-        .bind(i16::from(SignupMethod::Email))
         .fetch_one(&pool)
         .await,
         "provider reference owner should be inserted",
     );
     let room_id: i64 = ok(
-        sqlx::query_scalar("INSERT INTO rooms (name, created_by) VALUES ($1, $2) RETURNING id")
-            .bind("Provider Ref Room")
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await,
+        sqlx::query_scalar!(
+            r#"INSERT INTO rooms (name, created_by) VALUES ($1, $2) RETURNING id AS "id!""#,
+            "Provider Ref Room",
+            user_id
+        )
+        .fetch_one(&pool)
+        .await,
         "provider reference room should be inserted",
     );
     ok(
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO playlists (room_id, creator_id, name, position, source_provider, source_config, provider_instance_name) \
          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)",
+            room_id,
+            user_id,
+            "Remote Folder",
+            1.0_f64,
+            ProviderType::Bilibili.as_i16(),
+            serde_json::json!({}),
+            "referenced_instance"
         )
-        .bind(room_id)
-        .bind(user_id)
-        .bind("Remote Folder")
-        .bind(1.0_f64)
-        .bind(ProviderType::Bilibili.as_i16())
-        .bind("{}")
-        .bind("referenced_instance")
         .execute(&pool)
         .await,
         "referencing playlist should be inserted",
@@ -275,15 +277,17 @@ async fn test_create_and_read_with_encryption() {
     );
 
     // Verify the stored value is encrypted (not plaintext)
-    let raw: Option<(Option<String>,)> = ok(
-        sqlx::query_as("SELECT jwt_secret FROM media_provider_instances WHERE name = $1")
-            .bind("enc_create_test")
-            .fetch_optional(&pool)
-            .await,
+    let raw: Option<Option<String>> = ok(
+        sqlx::query_scalar!(
+            "SELECT jwt_secret FROM media_provider_instances WHERE name = $1",
+            "enc_create_test"
+        )
+        .fetch_optional(&pool)
+        .await,
         "encrypted provider instance row should be queried",
     );
     let raw_jwt = some(
-        some(raw, "encrypted provider instance row should exist").0,
+        some(raw, "encrypted provider instance row should exist"),
         "encrypted JWT secret should exist",
     );
     assert!(

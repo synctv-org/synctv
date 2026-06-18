@@ -547,6 +547,7 @@ fn test_app_state_with_rate_limits(
         messaging_rate_limit_config: RateLimitConfig::default(),
         heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
         providers_manager,
+        playback_duration_probe: None,
     };
     test_fixture(build_app_state(router_config)).with_test_database_leases(vec![database])
 }
@@ -867,6 +868,7 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
         messaging_rate_limit_config: RateLimitConfig::default(),
         heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
         providers_manager,
+        playback_duration_probe: None,
     })?
     .with_test_database_leases(vec![database]);
 

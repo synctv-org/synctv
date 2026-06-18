@@ -81,6 +81,12 @@ pub struct ProviderCredentialDependency {
     pub provider: String,
     pub user_id: String,
     pub server_id: String,
+    #[serde(default = "default_required_provider_credential_dependency")]
+    pub required: bool,
+}
+
+const fn default_required_provider_credential_dependency() -> bool {
+    true
 }
 
 impl ProviderCredentialDependency {
@@ -94,6 +100,21 @@ impl ProviderCredentialDependency {
             provider: provider.into(),
             user_id: user_id.into(),
             server_id: server_id.into(),
+            required: true,
+        }
+    }
+
+    #[must_use]
+    pub fn optional(
+        provider: impl Into<String>,
+        user_id: impl Into<String>,
+        server_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            user_id: user_id.into(),
+            server_id: server_id.into(),
+            required: false,
         }
     }
 
@@ -214,10 +235,13 @@ pub struct DynamicListQuery {
     pub refresh: bool,
 }
 
-/// Media provider trait
+/// Media provider trait.
 ///
-/// Core interface that all providers must implement.
-/// Only `generate_playback()` is mandatory.
+/// Core interface that all providers must implement. The maintenance contract
+/// for playback mode selection, signing, proxy siblings, and verification lives
+/// in `docs/src/content/docs/en/develop/implementation-contracts.mdx`.
+/// Keep that document updated when a provider adds modes, headers, proxy
+/// actions, manifest metadata, or live lifecycle behavior.
 ///
 /// Note: `MediaProvider` is a provider-type adapter, not necessarily a concrete backend.
 /// It may route through a top-level provider instance binding via `RemoteProviderManager`.
@@ -228,7 +252,21 @@ pub trait MediaProvider: Send + Sync {
 
     /// Generate playback information from `source_config`
     ///
-    /// This is the ONLY mandatory method. Called when user plays media.
+    /// This is the mandatory playback decision boundary. Called when user plays media.
+    ///
+    /// Provider-specific delivery decisions happen here. A provider returns
+    /// every delivery mode that is valid for the source, typically an
+    /// upstream/direct mode plus a `proxy_*` sibling when SyncTV can serve the
+    /// same content through provider proxy routes. Signing, default-mode
+    /// selection, header exposure, manifest rewriting, subtitle rewriting, and
+    /// live resource lifecycle metadata belong in this provider-owned generation
+    /// path because those rules differ by provider and by source type.
+    ///
+    /// The matching proxy resolver must accept every signed URL produced here,
+    /// including HLS/DASH manifests, indexed segments, subtitles, danmaku,
+    /// thumbnails, FLV, and live resource cleanup hooks. Provider changes need
+    /// CLI plus curl end-to-end evidence for every returned mode and auxiliary
+    /// URL, including cached playback and expiry behavior.
     ///
     /// # Flow
     /// 1. Read media from database (includes `source_config`)
@@ -240,17 +278,18 @@ pub trait MediaProvider: Send + Sync {
     ///
     /// # Returns
     /// `PlaybackResult` with multiple modes:
-    /// - "direct": Direct URLs from provider API
-    /// - "proxied": URLs proxied through `SyncTV` server
-    /// - Custom modes: Provider-specific (e.g., "cdn1", "cdn2")
+    /// - Provider-native modes, such as `direct`, `dash`, `hls`, or quality names
+    /// - Proxy sibling modes, such as `proxy_direct` or `proxy_dash`
+    /// - Provider-specific modes, such as transcoding qualities or live formats
     ///
     /// # Example
     /// ```rust
     /// // Bilibili video:
     /// // source_config = {"type": "video", "bvid": "BV1xx", "cid": 123, "shared": false}
-    /// // Returns: {
-    /// //   playback_infos: {"direct": {...}, "proxied": {...}},
-    /// //   default_mode: "direct"
+    /// // Returns provider-owned modes, for example:
+    /// // {
+    /// //   playback_infos: {"dash": {...}, "proxy_dash": {...}},
+    /// //   default_mode: "proxy_dash"
     /// // }
     /// ```
     async fn generate_playback(

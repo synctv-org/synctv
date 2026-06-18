@@ -8,7 +8,7 @@ use synctv_core::spawn::spawn_monitored;
 use super::resource_observer::ResourceObserver;
 use crate::impls::playback::PlaybackService;
 
-const OBSERVED_PLAYBACK_LIFECYCLE_TICK_INTERVAL: Duration = Duration::from_secs(10);
+const OBSERVED_PLAYBACK_LIFECYCLE_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const OBSERVED_PLAYBACK_LIFECYCLE_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Clone)]
@@ -57,6 +57,34 @@ impl ObservedPlaybackLifecycleSubscriber for ProviderPlaybackProgressSubscriber 
                 false,
                 false,
             )
+            .await;
+        Ok(())
+    }
+}
+
+pub struct PlaybackAutoAdvanceSubscriber {
+    playback_service: Arc<dyn PlaybackService>,
+}
+
+impl PlaybackAutoAdvanceSubscriber {
+    #[must_use]
+    pub fn new(playback_service: Arc<dyn PlaybackService>) -> Self {
+        Self { playback_service }
+    }
+}
+
+#[async_trait]
+impl ObservedPlaybackLifecycleSubscriber for PlaybackAutoAdvanceSubscriber {
+    async fn handle_observed_playback_lifecycle_event(
+        &self,
+        event: ObservedPlaybackLifecycleEvent,
+    ) -> Result<(), String> {
+        if !event.state.is_playing {
+            return Ok(());
+        }
+
+        self.playback_service
+            .refresh_observed_playback_metadata_and_auto_advance(&event.room_id, &event.state)
             .await;
         Ok(())
     }

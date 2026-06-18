@@ -38,6 +38,7 @@ impl MediaService {
         playlist_id: &PlaylistId,
         target: Option<&[u8]>,
         query: DynamicListQuery,
+        public_credential_owner_id: Option<&str>,
     ) -> Result<Vec<DirectoryItem>> {
         let playlist = self
             .playlist_repo
@@ -61,6 +62,7 @@ impl MediaService {
             Some(&admin_user_id),
             &room_id,
             playlist.creator_id.as_ref().or(Some(&admin_user_id)),
+            public_credential_owner_id,
             playlist.provider_instance_name.as_deref(),
         );
 
@@ -99,6 +101,7 @@ impl MediaService {
             Some(&admin_user_id),
             &room_id,
             playlist.creator_id.as_ref().or(Some(&admin_user_id)),
+            None,
             playlist.provider_instance_name.as_deref(),
         );
 
@@ -115,6 +118,7 @@ impl MediaService {
         playlist_id: &PlaylistId,
         target: Option<&[u8]>,
         query: DynamicListQuery,
+        public_credential_owner_id: Option<&str>,
     ) -> Result<Vec<DirectoryItem>> {
         self.permission_service
             .check_permission(
@@ -147,6 +151,7 @@ impl MediaService {
             Some(&user_id),
             &room_id,
             playlist.creator_id.as_ref().or(Some(&user_id)),
+            public_credential_owner_id,
             playlist.provider_instance_name.as_deref(),
         );
 
@@ -186,6 +191,7 @@ impl MediaService {
             Some(&user_id),
             &room_id,
             playlist.creator_id.as_ref().or(Some(&user_id)),
+            None,
             playlist.provider_instance_name.as_deref(),
         );
 
@@ -225,6 +231,7 @@ impl MediaService {
             Some(&user_id),
             &room_id,
             playlist.creator_id.as_ref().or(Some(&user_id)),
+            None,
             playlist.provider_instance_name.as_deref(),
         );
 
@@ -280,6 +287,7 @@ impl MediaService {
             None,
             room_id,
             playlist.creator_id.as_ref(),
+            None,
             current_dynamic_media.provider_instance_name.as_deref(),
         );
 

@@ -152,11 +152,17 @@ impl MediaProvider for AlistCredentialDependencyCheckProvider {
             .as_ref()
             .ok_or_else(|| ProviderError::Internal("missing user_id".to_string()))?;
 
-        Ok(vec![ProviderCredentialDependency::new(
-            self.name(),
-            user_id.to_string(),
-            server_id,
-        )])
+        let optional = source_config
+            .get("credential_optional")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let dependency = if optional {
+            ProviderCredentialDependency::optional(self.name(), user_id.to_string(), server_id)
+        } else {
+            ProviderCredentialDependency::new(self.name(), user_id.to_string(), server_id)
+        };
+
+        Ok(vec![dependency])
     }
 }
 
@@ -556,6 +562,37 @@ async fn validate_dynamic_playlist_source_rejects_missing_credential_dependency(
         }
         other => std::panic::panic_any(format!("expected InvalidInput, got {other:?}")),
     }
+}
+
+#[tokio::test]
+async fn validate_dynamic_playlist_source_allows_missing_optional_credential_dependency() {
+    let providers_manager = test_alist_dependency_check_providers_manager().await;
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let credential_encryption = test_credential_encryption();
+    let credential_repo = Arc::new(UserProviderCredentialRepository::new_with_encryption(
+        pool,
+        credential_encryption.clone(),
+    ));
+
+    ok(
+        validate_dynamic_playlist_source_with_dependencies(
+            DynamicPlaylistValidationDeps {
+                providers_manager: &providers_manager,
+                credential_encryption: Some(&credential_encryption),
+                credential_repo: Some(&credential_repo),
+            },
+            &RoomId::new(),
+            &UserId::new(),
+            crate::provider::AlistProvider::NAME.to_string(),
+            serde_json::json!({
+                "credential_server_id": "viewer-optional-server",
+                "credential_optional": true
+            }),
+            None,
+        )
+        .await,
+        "optional credential dependency should not block source validation",
+    );
 }
 
 #[tokio::test]

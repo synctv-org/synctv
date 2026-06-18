@@ -832,7 +832,7 @@ impl ExternalStreamPuller {
 
         let publisher_info = PublisherInfo {
             id: publisher_id,
-            pub_type: PublishType::RtmpRelay,
+            pub_type: PublishType::ExternalPull,
             pub_data_type: synctv_xiu::streamhub::define::PubDataType::Frame,
             notify_info: NotifyInfo {
                 request_url: format!(

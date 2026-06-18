@@ -113,6 +113,7 @@ pub struct ClientApiRuntime {
     pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub request_executor: Arc<RequestExecutor>,
     pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
+    pub playback_duration_probe: Option<Arc<synctv_core::service::PlaybackDurationProbeService>>,
 }
 
 impl ClientApiRuntime {
@@ -136,6 +137,7 @@ impl ClientApiRuntime {
             presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
             request_executor,
             ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
+            playback_duration_probe: None,
         }
     }
 }
@@ -228,6 +230,7 @@ pub struct ClientApiImpl {
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
     /// Shared sqids codec for API-facing resource identifiers.
     pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    pub playback_duration_probe: Option<Arc<synctv_core::service::PlaybackDurationProbeService>>,
     pub request_executor: Arc<RequestExecutor>,
     /// Shared email API for email-token flows that are exposed by multiple transports.
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
@@ -703,6 +706,7 @@ impl ClientApiImpl {
             provider_stores: config.provider_stores,
             jwt_validator,
             public_id_codec: config.public_id_codec,
+            playback_duration_probe: runtime.playback_duration_probe,
             request_executor: runtime.request_executor,
             email_api: config.email_api,
             passkey_service: config.passkey_service,

@@ -16,6 +16,29 @@ SyncTV 不保存媒体文件。它把外部媒体源解析成播放结果，再�
 
 Provider 返回的是播放决策，不只是一个 URL。客户端应使用 Provider 返回的 header 和代理模式，不要自行猜测 `User-Agent`、`Referer`、Cookie 或 Range 规则。
 
+播放结果可以同时返回原始模式和 proxy 模式，例如 `direct`/`proxy_direct`、`dash`/`proxy_dash`、HLS 清晰度模式及其 proxy sibling。每个 Provider 在 `generate_playback` 阶段完成签名和模式选择，因为 Bilibili DASH、Alist HLS、Emby/Jellyfin 转码、RTMP 和 live proxy 的 URL、header、manifest、字幕和资源生命周期都不同。
+
+`generate_playback` 是 Provider 的播放决策边界。Provider 在这里生成 direct/proxy modes、`default_mode`、headers、signed proxy URLs、manifest/subtitle rewriting、danmaku、thumbnail 和生命周期 metadata。共享 helper 只承担标准 `proxy_*` sibling URL 的机械生成；Provider 自己决定使用时机、默认模式和 header 暴露策略。
+
+Provider cache 的 `VersionedPlayback` 保存原始 `PlaybackResult`、proxy lookup `version` 和 expiry。它服务于缓存命中和 provider-proxy URL 回查；签名后的 response shape 仍由 Provider 的 rewrite callback 生成。缓存命中和新鲜响应必须暴露相同可用的 mode、resolver action、manifest/segment 路由和辅助 URL。
+
+新增或重构 Provider 时，把签名时机、URL 过期、默认 mode、proxy sibling、manifest/segment 重写和直播资源生命周期放在该 Provider 的 `generate_playback` 与 proxy resolver 中一起维护。通用代码只表达跨 Provider 真正一致的机械步骤。
+
+HTTP、gRPC 和管理 API 以 `PlaybackResult` 为事实来源，只做传输参数转换和响应编码。Provider 策略保持在 core provider 层，避免不同传输入口产生不同播放行为。
+
+## Playback 内容契约
+
+| Provider | 必须覆盖的内容 |
+| --- | --- |
+| Direct URL | upstream mode、`proxy_*` sibling、带 header 源的 proxy default、HLS manifest segment rewriting、Range。 |
+| Alist | direct/transcode modes、`proxy_*` siblings、thumbnail、subtitle、HLS segment、stream proxy resolver。 |
+| Emby/Jellyfin | upstream/transcode modes、proxy siblings、允许暴露的 upstream token headers、direct stream、HLS/transcode、subtitle proxy。 |
+| Bilibili | 匿名播放、DASH/MPD proxy default、proxy manifest segments、字幕、danmaku、thumbnail、缓存 metadata、CDN headers。 |
+| RTMP | publish key、stream info、HLS playlist/segment、FLV、provider-proxy URL、idle cleanup。 |
+| live proxy | 外部 RTMP/HTTP-FLV 拉流、HLS/FLV provider-proxy URL、publisher 注册、idle cleanup 注销。 |
+
+每个返回给客户端的 URL 都需要真实请求验证。新增 mode 时，同步实现 resolver、缓存命中/失效、URL 过期和手动 E2E 覆盖。
+
 ## 常见来源
 
 | 来源 | 适合场景 | 注意点 |
@@ -30,6 +53,12 @@ Provider 返回的是播放决策，不只是一个 URL。客户端应使用 Pro
 ## 安全边界
 
 Provider 凭据属于敏感信息。生产环境应配置 `security.credential_encryption_key`，并避免把 token、Cookie、API key 写入日志、命令历史或公开配置。删除 Provider instance 前，先确认是否仍被用户默认设置、房间媒体或播放列表引用。
+
+## 端到端验证边界
+
+修改 Provider、proxy、签名、manifest、字幕、RTMP 或 live proxy 行为后，使用构建出的 `synctv` 二进制、`synctv` CLI 和 `curl` 做真实请求验证。覆盖 Direct URL、Alist、Emby、Jellyfin、Bilibili 匿名播放、RTMP、live proxy、HLS、FLV、Range、缓存命中/未命中、URL 过期和资源清理。
+
+验证对象是完整 `PlaybackResult`：每个 mode、每个 URL、每个 manifest、每个 indexed segment、字幕、danmaku、thumbnail 和 proxy sibling 都需要实际请求。CLI 缺少某个工作流时，先补 CLI 入口，再把该工作流纳入手动 E2E。
 
 ## 下一步
 

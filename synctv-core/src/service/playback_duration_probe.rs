@@ -6,9 +6,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use url::Url;
 
-use super::{media::BackendPlaybackRequest, LeaderCheck, PlaybackService};
+use super::{media::BackendPlaybackRequest, ActivePlaybackRoomProvider, PlaybackService};
 use crate::{
-    models::{PlaybackDurationStatus, PlaybackSourceIdentity},
+    models::{PlaybackDurationStatus, PlaybackSourceIdentity, RoomId},
     provider::PlaybackResult,
     Error, Result,
 };
@@ -20,9 +20,9 @@ const MP4_SCAN_BYTES: u64 = 2 * 1024 * 1024;
 #[derive(Clone)]
 pub struct PlaybackDurationProbeService {
     playback_service: PlaybackService,
-    leader_check: Arc<dyn LeaderCheck>,
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
     concurrency: usize,
+    active_room_provider: Option<Arc<dyn ActivePlaybackRoomProvider>>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,20 +41,28 @@ impl PlaybackDurationProbeService {
     #[must_use]
     pub const fn new(
         playback_service: PlaybackService,
-        leader_check: Arc<dyn LeaderCheck>,
         ssrf_guard: synctv_common::ssrf::SsrfGuard,
     ) -> Self {
         Self {
             playback_service,
-            leader_check,
             ssrf_guard,
             concurrency: Self::DEFAULT_CONCURRENCY,
+            active_room_provider: None,
         }
     }
 
     #[must_use]
     pub const fn with_concurrency(mut self, concurrency: usize) -> Self {
         self.concurrency = concurrency;
+        self
+    }
+
+    #[must_use]
+    pub fn with_active_room_provider(
+        mut self,
+        active_room_provider: Arc<dyn ActivePlaybackRoomProvider>,
+    ) -> Self {
+        self.active_room_provider = Some(active_room_provider);
         self
     }
 
@@ -77,10 +85,6 @@ impl PlaybackDurationProbeService {
                         return;
                     }
                     _ = ticker.tick() => {
-                        if !service.leader_check.is_leader() {
-                            continue;
-                        }
-
                         match service.run_once().await {
                             Ok(probed) if probed > 0 => {
                                 info!(probed, "Playback duration probe completed");
@@ -97,10 +101,24 @@ impl PlaybackDurationProbeService {
     }
 
     pub async fn run_once(&self) -> Result<usize> {
+        // Run from rooms with realtime connections in this process. Several
+        // nodes can host the same room, so repository claims use row locks and
+        // SKIP LOCKED to serialize probe attempts. Keep this input tied to the
+        // local realtime runtime: duration probing is a lifecycle optimization
+        // for rooms this node is serving. The repository query also joins the
+        // current playback target hash, which keeps dynamic playlist probing
+        // bound to the item the room is currently watching.
+        let active_room_ids = self.active_room_ids().await?;
+        if active_room_ids.is_empty() {
+            return Ok(0);
+        }
+
+        self.initialize_active_sources(&active_room_ids).await?;
+
         let claims = self
             .playback_service
             .source_metadata_repository()
-            .claim_duration_probe_batch(Self::DEFAULT_SCAN_LIMIT)
+            .claim_duration_probe_batch_for_rooms(&active_room_ids, Self::DEFAULT_SCAN_LIMIT)
             .await?;
         if claims.is_empty() {
             return Ok(0);
@@ -131,6 +149,58 @@ impl PlaybackDurationProbeService {
         }
 
         Ok(completed)
+    }
+
+    async fn active_room_ids(&self) -> Result<Vec<RoomId>> {
+        let Some(active_room_provider) = &self.active_room_provider else {
+            return Ok(Vec::new());
+        };
+        active_room_provider.active_room_ids().await
+    }
+
+    async fn initialize_active_sources(&self, room_ids: &[RoomId]) -> Result<()> {
+        // Seed missing metadata only for local active rooms. Inactive rooms can
+        // have stale playback state in storage; probing local active rooms keeps
+        // this lifecycle optimization bounded to the node's connection set.
+        for room_id in room_ids {
+            let state = self.playback_service.get_state(room_id).await?;
+            if !state.is_playing {
+                continue;
+            }
+            let Some(identity) = PlaybackSourceIdentity::from_state(&state) else {
+                continue;
+            };
+            self.playback_service
+                .source_metadata_repository()
+                .mark_unknown_if_absent(&identity)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn probe_active_source_once(
+        &self,
+        state: &crate::models::RoomPlaybackState,
+    ) -> Result<bool> {
+        if !state.is_playing {
+            return Ok(false);
+        }
+
+        let Some(identity) = PlaybackSourceIdentity::from_state(state) else {
+            return Ok(false);
+        };
+
+        let Some(claim) = self
+            .playback_service
+            .source_metadata_repository()
+            .claim_duration_probe_for_active_source(&identity)
+            .await?
+        else {
+            return Ok(false);
+        };
+
+        self.probe_claim(claim).await?;
+        Ok(true)
     }
 
     async fn probe_claim(&self, claim: crate::models::ClaimedPlaybackDurationProbe) -> Result<()> {

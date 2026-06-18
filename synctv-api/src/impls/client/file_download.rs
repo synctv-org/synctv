@@ -2,6 +2,10 @@ use futures::StreamExt;
 
 use crate::impls::ApiError;
 
+// gRPC download helpers adapt the shared FileObjectDownload stream into
+// protobuf chunks. Core storage owns range resolution and byte streaming; HTTP
+// uses the same FileObjectDownload as a normal binary response body.
+
 pub(crate) fn metadata_content_range(
     metadata: &synctv_core::models::FileObjectMetadata,
 ) -> Option<synctv_proto::client::FileByteRange> {

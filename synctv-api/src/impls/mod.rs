@@ -4,6 +4,9 @@
 //! Both HTTP and gRPC handlers are thin wrappers that call these implementations.
 //!
 //! All methods use grpc-generated types for parameters and return values.
+//! Keep shared behavior here or in `synctv-core`; transport modules own only
+//! parsing, encoding, metadata extraction, status mapping, and stream adapters.
+//! See `docs/src/content/docs/en/develop/implementation-contracts.mdx`.
 use std::sync::Arc;
 use synctv_livestream::StreamError;
 

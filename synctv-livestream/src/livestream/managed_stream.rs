@@ -10,6 +10,13 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, warn, Instrument};
 
+/// Shared lifecycle state for pull streams and external publish streams.
+///
+/// The cleanup contract is: active viewer paths increment or touch this state,
+/// idle cleanup claims only streams with zero subscribers, and the claim marks
+/// the stream unhealthy before teardown. HLS requests usually touch lifecycle
+/// per playlist/segment request; FLV holds a subscriber guard for the streaming
+/// task lifetime.
 pub(crate) struct StreamLifecycle {
     subscriber_count: AtomicUsize,
     last_active_secs: AtomicU64,
@@ -89,6 +96,10 @@ impl StreamLifecycle {
     }
 
     /// Claim the stream for idle cleanup after marking it unhealthy.
+    ///
+    /// This compare/exchange is the race gate between cleanup and a new viewer.
+    /// A concurrent subscriber restores the stream to running and keeps it in
+    /// the pool.
     pub(crate) fn try_claim_for_cleanup(&self) -> bool {
         self.mark_stopping();
 
@@ -597,5 +608,96 @@ mod tests {
         );
         assert!(pool.streams.is_empty());
         assert!(!stream.lifecycle().is_healthy().await);
+    }
+
+    #[tokio::test]
+    async fn test_idle_cleanup_stops_stream_and_removes_pool_entry() {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_millis(10), Duration::from_millis(20));
+
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        stream.lifecycle().set_running();
+
+        let cleanup_count = Arc::new(AtomicUsize::new(0));
+        let cleanup_count_for_task = Arc::clone(&cleanup_count);
+        pool.insert_and_cleanup(
+            "room:media".to_string(),
+            Arc::clone(&stream),
+            move |_stream_key| {
+                let cleanup_count = Arc::clone(&cleanup_count_for_task);
+                Box::pin(async move {
+                    cleanup_count.fetch_add(1, Ordering::AcqRel);
+                })
+            },
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !pool.streams.contains_key("room:media") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("idle cleanup should remove the stream");
+
+        assert_eq!(cleanup_count.load(Ordering::Acquire), 1);
+        assert_eq!(stream.stop_count.load(Ordering::Acquire), 1);
+        assert!(!stream.lifecycle().is_healthy().await);
+    }
+
+    #[tokio::test]
+    async fn test_idle_cleanup_waits_for_subscriber_guard_release() -> TestResult {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_millis(10), Duration::from_millis(20));
+
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            stop_count: AtomicUsize::new(0),
+        });
+        stream.lifecycle().set_running();
+        stream.lifecycle().increment_subscriber_count();
+
+        let cleanup_count = Arc::new(AtomicUsize::new(0));
+        let cleanup_count_for_task = Arc::clone(&cleanup_count);
+        pool.insert_and_cleanup(
+            "room:media".to_string(),
+            Arc::clone(&stream),
+            move |_stream_key| {
+                let cleanup_count = Arc::clone(&cleanup_count_for_task);
+                Box::pin(async move {
+                    cleanup_count.fetch_add(1, Ordering::AcqRel);
+                })
+            },
+        );
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(
+            pool.streams.contains_key("room:media"),
+            "active subscribers should keep the stream in the pool"
+        );
+        assert_eq!(cleanup_count.load(Ordering::Acquire), 0);
+        assert_eq!(stream.stop_count.load(Ordering::Acquire), 0);
+
+        stream.lifecycle().decrement_subscriber_count();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !pool.streams.contains_key("room:media") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .map_err(|_| test_error("idle cleanup should run after subscriber release"))?;
+
+        assert_eq!(cleanup_count.load(Ordering::Acquire), 1);
+        assert_eq!(stream.stop_count.load(Ordering::Acquire), 1);
+        Ok(())
     }
 }

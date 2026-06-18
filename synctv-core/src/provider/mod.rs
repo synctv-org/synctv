@@ -76,12 +76,187 @@ pub use emby::EmbyProvider;
 pub use live_proxy::LiveProxyProvider;
 pub use rtmp::RtmpProvider;
 
-fn playback_info_needs_proxy(info: &PlaybackInfo) -> bool {
-    info.cors_proxy_required || !info.headers.is_empty()
-}
-
 fn playback_info_is_hls(mode_name: &str, info: &PlaybackInfo) -> bool {
     info.format == "m3u8" || info.format == "hls" || mode_name.contains("hls")
+}
+
+fn playback_info_has_transport_headers(info: &PlaybackInfo) -> bool {
+    !info.headers.is_empty()
+        || info
+            .subtitles
+            .iter()
+            .any(|subtitle| !subtitle.headers.is_empty())
+}
+
+pub(crate) struct PlaybackProxySigning<'a> {
+    provider_name: &'a str,
+    version: &'a str,
+    signing_key: &'a ProxySigningKey,
+    room_id: &'a str,
+    user_id: &'a str,
+    expires_at: i64,
+}
+
+impl<'a> PlaybackProxySigning<'a> {
+    #[must_use]
+    pub(crate) const fn new(
+        provider_name: &'a str,
+        version: &'a str,
+        signing_key: &'a ProxySigningKey,
+        room_id: &'a str,
+        user_id: &'a str,
+        expires_at: i64,
+    ) -> Self {
+        Self {
+            provider_name,
+            version,
+            signing_key,
+            room_id,
+            user_id,
+            expires_at,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn signed_url(&self, action: &str) -> String {
+        signed_provider_proxy_url(
+            self.provider_name,
+            self.version,
+            action,
+            self.signing_key,
+            self.room_id,
+            self.user_id,
+            self.expires_at,
+        )
+    }
+}
+
+/// Build standard signed proxy URLs for modes whose proxy route shape is common.
+///
+/// Providers still own the decision to expose these URLs. This helper is a
+/// mechanical formatter used from `generate_playback`; provider implementations
+/// keep policy for signing timing, default-mode selection, header exposure, and
+/// manifest semantics. Every action emitted here must be accepted by the
+/// provider's `resolve_proxy` route and covered by real URL requests in E2E
+/// verification.
+#[must_use]
+pub(crate) fn signed_standard_proxy_urls(
+    mode_name: &str,
+    info: &PlaybackInfo,
+    signing: &PlaybackProxySigning<'_>,
+) -> Vec<String> {
+    let action = if playback_info_is_hls(mode_name, info) {
+        "m3u8"
+    } else {
+        "stream"
+    };
+
+    info.urls
+        .iter()
+        .enumerate()
+        .map(|(index, _)| signing.signed_url(&format!("{action}/{mode_name}/{index}")))
+        .collect()
+}
+
+/// Add signed proxy sibling modes while keeping provider-owned policy explicit.
+///
+/// Providers call this during `generate_playback` after they have decided which
+/// upstream modes are valid, which headers can be exposed, and whether the proxy
+/// sibling should become the default. This helper only performs the mechanical
+/// URL/subtitle rewrite for standard stream and HLS proxy routes.
+///
+/// Keep provider policy at the provider boundary. Bilibili DASH manifests,
+/// Alist file/HLS URLs, Emby/Jellyfin transcode URLs, RTMP streams, and live
+/// proxy sessions have different default-mode, header, signing, and lifecycle
+/// rules. A shared helper may create `proxy_*` sibling URLs; each provider
+/// chooses the modes returned to clients and guarantees its resolver accepts
+/// every signed action it emits. Preserve upstream and proxy modes together when
+/// both are usable for app clients; choose the default mode inside the provider.
+pub(crate) fn append_signed_proxy_playback_modes(
+    result: &mut PlaybackResult,
+    signing: &PlaybackProxySigning<'_>,
+    expose_original_headers: bool,
+    prefer_proxy_default: bool,
+    signed_urls: impl Fn(&str, &PlaybackInfo, &PlaybackProxySigning<'_>) -> Vec<String>,
+) {
+    append_signed_proxy_playback_modes_with_policy(
+        result,
+        signing,
+        expose_original_headers,
+        prefer_proxy_default,
+        false,
+        signed_urls,
+    );
+}
+
+pub(crate) fn append_signed_proxy_playback_modes_with_policy(
+    result: &mut PlaybackResult,
+    signing: &PlaybackProxySigning<'_>,
+    expose_original_headers: bool,
+    prefer_proxy_default: bool,
+    hide_header_backed_originals: bool,
+    signed_urls: impl Fn(&str, &PlaybackInfo, &PlaybackProxySigning<'_>) -> Vec<String>,
+) {
+    let original_default_mode = result.default_mode.clone();
+    let mut signed_default_mode = original_default_mode.clone();
+    let original_modes = result
+        .playback_infos
+        .iter()
+        .map(|(mode_name, info)| (mode_name.clone(), info.clone()))
+        .collect::<Vec<_>>();
+
+    for (mode_name, original_info) in original_modes {
+        if original_info.urls.is_empty() || mode_name.starts_with("proxy_") {
+            continue;
+        }
+
+        let original_has_transport_headers = playback_info_has_transport_headers(&original_info);
+        if let Some(info) = result.playback_infos.get_mut(&mode_name) {
+            info.cors_proxy_required = false;
+            if !expose_original_headers {
+                info.headers.clear();
+                for subtitle in &mut info.subtitles {
+                    subtitle.headers.clear();
+                }
+            }
+        }
+
+        let proxy_mode_name = format!("proxy_{mode_name}");
+        if prefer_proxy_default && mode_name == original_default_mode {
+            signed_default_mode.clone_from(&proxy_mode_name);
+        }
+        if result.playback_infos.contains_key(&proxy_mode_name) {
+            if hide_header_backed_originals && original_has_transport_headers {
+                result.playback_infos.remove(&mode_name);
+            }
+            continue;
+        }
+
+        let mut proxy_info = original_info.clone();
+        proxy_info.urls = signed_urls(&mode_name, &original_info, signing);
+        proxy_info.headers.clear();
+        proxy_info.cors_proxy_required = false;
+
+        for (index, subtitle) in proxy_info.subtitles.iter_mut().enumerate() {
+            subtitle.url = signing.signed_url(&format!("subtitle/{mode_name}/{index}"));
+            subtitle.headers.clear();
+        }
+
+        result.playback_infos.insert(proxy_mode_name, proxy_info);
+
+        if hide_header_backed_originals && original_has_transport_headers {
+            result.playback_infos.remove(&mode_name);
+        }
+    }
+
+    result.default_mode = signed_default_mode;
+}
+
+fn signed_playback_default_needs_proxy(result: &PlaybackResult) -> bool {
+    result
+        .playback_infos
+        .get(&result.default_mode)
+        .is_some_and(playback_info_has_transport_headers)
 }
 
 /// Bundle of all in-process provider adapters.
@@ -292,169 +467,45 @@ pub fn bilibili_headers() -> std::collections::HashMap<String, String> {
     headers
 }
 
-/// Rewrite playback URLs in a `PlaybackResult` to use signed proxy URLs.
-///
-/// Called by providers after `generate_playback` when `signing_key`, `room_id`,
-/// and `user_id` are available in the context. Each playback mode gets a signed
-/// proxy URL based on whether `cors_proxy_required` is set or the mode suggests proxying.
-///
-/// The version and provider name are needed to construct the proxy path.
-pub fn sign_playback_urls(
-    result: &mut PlaybackResult,
+#[must_use]
+pub(crate) fn signed_provider_proxy_url(
     provider_name: &str,
     version: &str,
+    action: &str,
     signing_key: &ProxySigningKey,
     room_id: &str,
     user_id: &str,
     expires_at: i64,
-) {
-    if provider_name == AlistProvider::NAME
-        && result
-            .metadata
-            .get("thumbnail")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|thumbnail| !thumbnail.trim().is_empty())
-    {
-        result.metadata.insert(
-            "thumbnail".to_string(),
-            serde_json::json!(build_signed_proxy_url(SignedProxyUrlRequest {
-                provider: provider_name,
-                version,
-                action: "thumbnail",
-                signing_key,
-                room_id,
-                user_id,
-                expires_at,
-            })),
-        );
-    }
-
-    let default_mode = result.default_mode.clone();
-    let provider_requires_proxy = provider_name != DirectUrlProvider::NAME;
-    for (mode_name, info) in &mut result.playback_infos {
-        if info.urls.is_empty() {
-            continue;
-        }
-
-        let needs_proxy = provider_requires_proxy || playback_info_needs_proxy(info);
-        let is_hls = playback_info_is_hls(mode_name, info);
-        let is_mpd = info.format == "mpd";
-
-        if is_mpd && needs_proxy {
-            info.urls = info
-                .urls
-                .iter()
-                .enumerate()
-                .map(|(index, _)| {
-                    build_signed_proxy_url(SignedProxyUrlRequest {
-                        provider: provider_name,
-                        version,
-                        action: &format!("stream/{mode_name}/{index}"),
-                        signing_key,
-                        room_id,
-                        user_id,
-                        expires_at,
-                    })
-                })
-                .collect();
-            info.headers.clear();
-            info.cors_proxy_required = false;
-        } else if is_hls && needs_proxy {
-            if mode_name == &default_mode && info.urls.len() == 1 {
-                info.urls = vec![build_signed_proxy_url(SignedProxyUrlRequest {
-                    provider: provider_name,
-                    version,
-                    action: "m3u8",
-                    signing_key,
-                    room_id,
-                    user_id,
-                    expires_at,
-                })];
-            } else {
-                info.urls = info
-                    .urls
-                    .iter()
-                    .enumerate()
-                    .map(|(index, _)| {
-                        build_signed_proxy_url(SignedProxyUrlRequest {
-                            provider: provider_name,
-                            version,
-                            action: &format!("m3u8/{mode_name}/{index}"),
-                            signing_key,
-                            room_id,
-                            user_id,
-                            expires_at,
-                        })
-                    })
-                    .collect();
-            }
-            info.headers.clear();
-            info.cors_proxy_required = false;
-        } else if needs_proxy && mode_name == &default_mode && info.urls.len() == 1 {
-            info.urls = vec![build_signed_proxy_url(SignedProxyUrlRequest {
-                provider: provider_name,
-                version,
-                action: "stream",
-                signing_key,
-                room_id,
-                user_id,
-                expires_at,
-            })];
-            info.headers.clear();
-            info.cors_proxy_required = false;
-        } else if needs_proxy {
-            info.urls = info
-                .urls
-                .iter()
-                .enumerate()
-                .map(|(index, _)| {
-                    build_signed_proxy_url(SignedProxyUrlRequest {
-                        provider: provider_name,
-                        version,
-                        action: &format!("stream/{mode_name}/{index}"),
-                        signing_key,
-                        room_id,
-                        user_id,
-                        expires_at,
-                    })
-                })
-                .collect();
-            info.headers.clear();
-            info.cors_proxy_required = false;
-        }
-
-        for (idx, subtitle) in info.subtitles.iter_mut().enumerate() {
-            if !provider_requires_proxy && subtitle.headers.is_empty() {
-                continue;
-            }
-            subtitle.url = build_signed_proxy_url(SignedProxyUrlRequest {
-                provider: provider_name,
-                version,
-                action: &format!("subtitle/{mode_name}/{idx}"),
-                signing_key,
-                room_id,
-                user_id,
-                expires_at,
-            });
-            subtitle.headers.clear();
-        }
-    }
+) -> String {
+    build_signed_proxy_url(SignedProxyUrlRequest {
+        provider: provider_name,
+        version,
+        action,
+        signing_key,
+        room_id,
+        user_id,
+        expires_at,
+    })
 }
 
 #[must_use]
-pub fn maybe_sign_versioned_playback(
+pub(crate) fn build_versioned_playback_response(
     mut result: PlaybackResult,
-    provider_name: &str,
     version: &str,
     expires_at: i64,
     ctx: &ProviderContext<'_>,
+    rewrite_for_proxy: impl FnOnce(&mut PlaybackResult, &str, &ProxySigningKey, &str, &str, i64),
 ) -> PlaybackResult {
+    // Response finalization happens here, but provider policy stays in the
+    // callback supplied by the provider. The helper provides the cached version,
+    // room/user binding, signing key, and expiry; the provider decides which
+    // modes exist, which URLs are direct/proxy, which headers are visible, and
+    // which mode becomes default.
     if let (Some(signing_key), Some(room_id), Some(user_id)) =
         (ctx.signing_key, ctx.proxy_room_id(), ctx.proxy_user_id())
     {
-        sign_playback_urls(
+        rewrite_for_proxy(
             &mut result,
-            provider_name,
             version,
             signing_key,
             &room_id,
@@ -492,11 +543,15 @@ async fn persist_versioned_mapping(
         })
 }
 
-pub async fn maybe_sign_cached_versioned_playback(
+pub(crate) async fn build_cached_versioned_playback_response(
     versioned: VersionedPlayback,
     provider_name: &str,
     ctx: &ProviderContext<'_>,
+    rewrite_for_proxy: impl FnOnce(&mut PlaybackResult, &str, &ProxySigningKey, &str, &str, i64),
 ) -> std::result::Result<PlaybackResult, ProviderError> {
+    // Cache hits must rebuild the same signed proxy surface as fresh provider
+    // responses. Signed responses require the version mapping to be present so
+    // every URL emitted by the provider can resolve back to this playback.
     if signed_proxy_playback_requested(ctx) {
         let store = ctx.store.as_ref().ok_or_else(|| {
             ProviderError::Internal(format!(
@@ -512,22 +567,28 @@ pub async fn maybe_sign_cached_versioned_playback(
         .await?;
     }
 
-    Ok(maybe_sign_versioned_playback(
+    Ok(build_versioned_playback_response(
         versioned.result,
-        provider_name,
         &versioned.version,
         versioned.expires_at,
         ctx,
+        rewrite_for_proxy,
     ))
 }
 
-pub async fn finalize_versioned_playback(
+pub(crate) async fn cache_versioned_playback_and_build_response(
     result: PlaybackResult,
     provider_name: &str,
     cache_key: &str,
     cache_ttl: std::time::Duration,
     ctx: &ProviderContext<'_>,
+    rewrite_for_proxy: impl FnOnce(&mut PlaybackResult, &str, &ProxySigningKey, &str, &str, i64),
 ) -> std::result::Result<PlaybackResult, ProviderError> {
+    // This helper stores the provider result and version index. The provider's
+    // `rewrite_for_proxy` callback performs response finalization for the
+    // current request, so provider-specific signing timing, default-mode choice,
+    // header exposure, manifest metadata, and live lifecycle data remain in the
+    // provider implementation.
     let ttl_secs = i64::try_from(cache_ttl.as_secs()).map_err(|_| {
         ProviderError::Internal(format!(
             "Provider '{provider_name}' playback cache TTL exceeds i64::MAX seconds"
@@ -573,12 +634,12 @@ pub async fn finalize_versioned_playback(
         )));
     }
 
-    Ok(maybe_sign_versioned_playback(
+    Ok(build_versioned_playback_response(
         result,
-        provider_name,
         &versioned.version,
         versioned.expires_at,
         ctx,
+        rewrite_for_proxy,
     ))
 }
 
@@ -657,215 +718,31 @@ mod tests {
         assert!(!provider_requires_credential_repo(DirectUrlProvider::NAME));
     }
 
-    #[test]
-    fn test_sign_playback_urls_signs_mpd_streams_with_indexed_proxy_paths() {
-        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .checked("test proxy signing key should derive");
-        let mut result = PlaybackResult {
-            playback_infos: std::collections::HashMap::from([(
-                "dash".to_string(),
-                PlaybackInfo {
-                    urls: vec![
-                        "https://cdn.example.com/video-1080.m4s".to_string(),
-                        "https://cdn.example.com/video-720.m4s".to_string(),
-                    ],
-                    format: "mpd".to_string(),
-                    headers: std::collections::HashMap::from([(
-                        "Referer".to_string(),
-                        "https://www.bilibili.com".to_string(),
-                    )]),
-                    subtitles: vec![SubtitleTrack {
-                        language: "zh-CN".to_string(),
-                        name: "Chinese".to_string(),
-                        url: "https://cdn.example.com/subtitle.json".to_string(),
-                        headers: std::collections::HashMap::from([(
-                            "Authorization".to_string(),
-                            "Bearer subtitle-token".to_string(),
-                        )]),
-                        format: "json".to_string(),
-                    }],
-                    expires_at: None,
-                    cors_proxy_required: true,
-                },
-            )]),
-            default_mode: "dash".to_string(),
-            duration_seconds: None,
-            metadata: std::collections::HashMap::new(),
-        };
-
-        sign_playback_urls(
-            &mut result,
-            "bilibili",
-            "ver-1",
-            &signing_key,
-            "room-1",
-            "user-1",
-            chrono::Utc::now().timestamp() + 3600,
-        );
-
-        let dash = &result.playback_infos["dash"];
-        assert_eq!(dash.urls.len(), 2);
-        assert!(
-            dash.urls[0].starts_with("/api/providers/proxy/bilibili/ver-1/stream/dash/0?"),
-            "first DASH stream should use an indexed signed proxy URL"
-        );
-        assert!(
-            dash.urls[1].starts_with("/api/providers/proxy/bilibili/ver-1/stream/dash/1?"),
-            "second DASH stream should use an indexed signed proxy URL"
-        );
-        assert!(dash.headers.is_empty(), "proxy should own DASH headers");
-        assert!(
-            !dash.cors_proxy_required,
-            "signed DASH proxy should clear the client-side CORS proxy requirement"
-        );
-        assert!(
-            dash.subtitles[0]
-                .url
-                .starts_with("/api/providers/proxy/bilibili/ver-1/subtitle/dash/0?"),
-            "subtitle URLs may still use the signed proxy contract"
-        );
-        assert!(
-            dash.subtitles[0].headers.is_empty(),
-            "signed subtitle proxy should not expose upstream headers to clients"
-        );
-    }
-
-    #[test]
-    fn test_sign_playback_urls_preserves_multiple_plain_stream_urls() {
-        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .checked("test proxy signing key should derive");
-        let mut result = PlaybackResult {
-            playback_infos: std::collections::HashMap::from([(
-                "direct".to_string(),
-                PlaybackInfo {
-                    urls: vec![
-                        "https://cdn.example.com/video-primary.mp4".to_string(),
-                        "https://cdn.example.com/video-backup.mp4".to_string(),
-                    ],
-                    format: "mp4".to_string(),
-                    headers: std::collections::HashMap::from([(
-                        "Authorization".to_string(),
-                        "Bearer hidden".to_string(),
-                    )]),
-                    subtitles: Vec::new(),
-                    expires_at: None,
-                    cors_proxy_required: true,
-                },
-            )]),
-            default_mode: "direct".to_string(),
-            duration_seconds: None,
-            metadata: std::collections::HashMap::new(),
-        };
-
-        sign_playback_urls(
-            &mut result,
-            "alist",
-            "ver-1",
-            &signing_key,
-            "room-1",
-            "user-1",
-            chrono::Utc::now().timestamp() + 3600,
-        );
-
-        let direct = &result.playback_infos["direct"];
-        assert_eq!(direct.urls.len(), 2);
-        assert!(
-            direct.urls[0].starts_with("/api/providers/proxy/alist/ver-1/stream/direct/0?"),
-            "first direct stream should use an indexed signed proxy URL"
-        );
-        assert!(
-            direct.urls[1].starts_with("/api/providers/proxy/alist/ver-1/stream/direct/1?"),
-            "second direct stream should use an indexed signed proxy URL"
-        );
-        assert!(direct.headers.is_empty(), "proxy should own stream headers");
-        assert!(!direct.cors_proxy_required);
-    }
-
-    #[test]
-    fn test_sign_playback_urls_keeps_plain_direct_hls_urls_unproxied() {
-        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .checked("test proxy signing key should derive");
-        let mut result = PlaybackResult {
-            playback_infos: std::collections::HashMap::from([(
-                "direct".to_string(),
-                PlaybackInfo {
-                    urls: vec!["https://cdn.example.com/playlist.m3u8".to_string()],
-                    format: "m3u8".to_string(),
-                    headers: std::collections::HashMap::new(),
-                    subtitles: Vec::new(),
-                    expires_at: None,
-                    cors_proxy_required: false,
-                },
-            )]),
-            default_mode: "direct".to_string(),
-            duration_seconds: None,
-            metadata: std::collections::HashMap::new(),
-        };
-
-        sign_playback_urls(
-            &mut result,
-            "direct_url",
-            "ver-1",
-            &signing_key,
-            "room-1",
-            "user-1",
-            chrono::Utc::now().timestamp() + 3600,
-        );
-
-        let direct = &result.playback_infos["direct"];
-        assert_eq!(
-            direct.urls,
-            vec!["https://cdn.example.com/playlist.m3u8".to_string()]
-        );
-        assert!(direct.headers.is_empty());
-        assert!(!direct.cors_proxy_required);
-    }
-
-    #[test]
-    fn test_sign_playback_urls_proxies_direct_hls_with_headers() {
-        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .checked("test proxy signing key should derive");
-        let mut result = PlaybackResult {
-            playback_infos: std::collections::HashMap::from([(
-                "direct".to_string(),
-                PlaybackInfo {
-                    urls: vec!["https://cdn.example.com/playlist.m3u8".to_string()],
-                    format: "m3u8".to_string(),
-                    headers: std::collections::HashMap::from([(
-                        "Referer".to_string(),
-                        "https://cdn.example.com".to_string(),
-                    )]),
-                    subtitles: Vec::new(),
-                    expires_at: None,
-                    cors_proxy_required: false,
-                },
-            )]),
-            default_mode: "direct".to_string(),
-            duration_seconds: None,
-            metadata: std::collections::HashMap::new(),
-        };
-
-        sign_playback_urls(
-            &mut result,
-            "direct_url",
-            "ver-1",
-            &signing_key,
-            "room-1",
-            "user-1",
-            chrono::Utc::now().timestamp() + 3600,
-        );
-
-        let direct = &result.playback_infos["direct"];
-        assert!(
-            direct.urls[0].starts_with("/api/providers/proxy/direct_url/ver-1/m3u8?"),
-            "headered direct HLS should use signed proxy URL"
-        );
-        assert!(direct.headers.is_empty());
-        assert!(!direct.cors_proxy_required);
+    fn test_delivery_signer(
+        result: &mut PlaybackResult,
+        version: &str,
+        signing_key: &ProxySigningKey,
+        room_id: &str,
+        user_id: &str,
+        expires_at: i64,
+    ) {
+        if let Some(info) = result.playback_infos.get_mut("direct") {
+            info.urls = vec![signed_provider_proxy_url(
+                "test_provider",
+                version,
+                "stream",
+                signing_key,
+                room_id,
+                user_id,
+                expires_at,
+            )];
+            info.headers.clear();
+            info.cors_proxy_required = false;
+        }
     }
 
     #[tokio::test]
-    async fn test_finalize_versioned_playback_requires_store_for_signed_proxy() {
+    async fn test_cache_versioned_playback_requires_store_for_signed_proxy() {
         let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
             .checked("test proxy signing key should derive");
         let ctx = ProviderContext::new("test")
@@ -873,12 +750,13 @@ mod tests {
             .with_room_id(RoomId::expect_positive(10))
             .with_signing_key(&signing_key);
 
-        let err = finalize_versioned_playback(
+        let err = cache_versioned_playback_and_build_response(
             playback_result(),
-            "direct_url",
+            "test_provider",
             "playback:test",
             std::time::Duration::from_mins(1),
             &ctx,
+            test_delivery_signer,
         )
         .await
         .failed("operation should fail");
@@ -891,7 +769,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_finalize_versioned_playback_fails_closed_when_mapping_persist_fails() {
+    async fn test_cache_versioned_playback_fails_closed_when_mapping_persist_fails() {
         let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
             .checked("test proxy signing key should derive");
         let ctx = ProviderContext::new("test")
@@ -902,12 +780,13 @@ mod tests {
             inner: InMemoryProviderStore::new(16),
         }));
 
-        let err = finalize_versioned_playback(
+        let err = cache_versioned_playback_and_build_response(
             playback_result(),
-            "direct_url",
+            "test_provider",
             "playback:test",
             std::time::Duration::from_mins(1),
             &ctx,
+            test_delivery_signer,
         )
         .await
         .failed("operation should fail");
@@ -943,8 +822,13 @@ mod tests {
             expires_at: chrono::Utc::now().timestamp() + 60,
         };
 
-        let signed =
-            maybe_sign_cached_versioned_playback(versioned.clone(), "direct_url", &ctx).await;
+        let signed = build_cached_versioned_playback_response(
+            versioned.clone(),
+            "test_provider",
+            &ctx,
+            test_delivery_signer,
+        )
+        .await;
 
         assert!(signed.is_ok(), "cached signing should succeed: {signed:?}");
         let stored: Option<VersionedPlayback> = store
@@ -956,11 +840,11 @@ mod tests {
             "signed cache hit must restore version mapping"
         );
         let url = &signed.checked("operation should succeed").playback_infos["direct"].urls[0];
-        assert!(url.contains("/direct_url/cached-version/stream"));
+        assert!(url.contains("/test_provider/cached-version/stream"));
 
         let query = url.split('?').nth(1).checked("signed proxy URL query");
         let claims = signing_key
-            .parse_and_verify_query(query, "direct_url", "cached-version")
+            .parse_and_verify_query(query, "test_provider", "cached-version")
             .checked("valid signed query");
         assert_eq!(claims.user_id, "1");
         assert_eq!(claims.room_id, "10");

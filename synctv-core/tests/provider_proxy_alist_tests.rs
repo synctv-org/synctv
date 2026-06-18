@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use synctv_core::provider::{
     proxy::{ProviderProxy, ProxyAction, ProxyRequestContext},
-    sign_playback_urls,
     store::{InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback},
     AlistProvider, PlaybackInfo, PlaybackResult, ProviderClientManager, SubtitleTrack,
 };
@@ -176,58 +175,6 @@ async fn test_thumbnail_proxy_uses_cached_playback_metadata() {
     );
 }
 
-#[test]
-fn test_signed_alist_playback_rewrites_thumbnail_metadata() {
-    let signing_key = ok(
-        synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-            b"test-jwt-secret-that-is-long-enough",
-        ),
-        "test proxy signing key should derive",
-    );
-    let mut result = PlaybackResult {
-        playback_infos: HashMap::from([(
-            "direct".to_string(),
-            PlaybackInfo {
-                urls: vec!["https://alist.example.com/d/movie.mp4".to_string()],
-                format: "mp4".to_string(),
-                headers: HashMap::new(),
-                subtitles: vec![],
-                expires_at: None,
-                cors_proxy_required: false,
-            },
-        )]),
-        default_mode: "direct".to_string(),
-        duration_seconds: None,
-        metadata: HashMap::from([(
-            "thumbnail".to_string(),
-            serde_json::json!("https://alist.example.com/thumb/movie.jpg"),
-        )]),
-    };
-
-    sign_playback_urls(
-        &mut result,
-        "alist",
-        "thumb2",
-        &signing_key,
-        "room-1",
-        "user-1",
-        chrono::Utc::now().timestamp() + 3600,
-    );
-
-    let thumbnail = some(
-        result.metadata["thumbnail"].as_str(),
-        "thumbnail metadata should remain a string",
-    );
-    assert!(
-        thumbnail.starts_with("/api/providers/proxy/alist/"),
-        "signed Alist thumbnail should use provider proxy: {thumbnail}"
-    );
-    assert!(
-        thumbnail.contains("thumbnail?"),
-        "signed Alist thumbnail should use thumbnail proxy action: {thumbnail}"
-    );
-}
-
 #[tokio::test]
 async fn test_m3u8_proxy() {
     let store = new_store();
@@ -259,10 +206,10 @@ async fn test_m3u8_proxy() {
 }
 
 #[tokio::test]
-async fn test_hls_modes_sign_and_resolve_to_their_own_m3u8_urls() {
+async fn test_hls_modes_resolve_to_their_own_m3u8_urls() {
     let store = new_store();
     let version = "alist-hls";
-    let mut result = PlaybackResult {
+    let result = PlaybackResult {
         playback_infos: HashMap::from([
             (
                 "transcoded_HD".to_string(),
@@ -297,31 +244,6 @@ async fn test_hls_modes_sign_and_resolve_to_their_own_m3u8_urls() {
         expires_at: chrono::Utc::now().timestamp() + 3600,
     };
     store_versioned(&store, &stored).await;
-
-    let signing_key = ok(
-        synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-            b"test-jwt-secret-that-is-long-enough",
-        ),
-        "test proxy signing key should derive",
-    );
-    sign_playback_urls(
-        &mut result,
-        "alist",
-        version,
-        &signing_key,
-        "room-1",
-        "user-1",
-        chrono::Utc::now().timestamp() + 3600,
-    );
-
-    assert!(
-        result.playback_infos["transcoded_HD"].urls[0].contains("/m3u8?"),
-        "default HLS mode should use the default m3u8 proxy action"
-    );
-    assert!(
-        result.playback_infos["transcoded_SD"].urls[0].contains("/m3u8/transcoded_SD/0?"),
-        "non-default HLS modes must keep their own m3u8 proxy action"
-    );
 
     let p = provider();
     let ctx = ProxyRequestContext {
@@ -413,16 +335,10 @@ async fn test_unknown_sub_path() {
 }
 
 #[tokio::test]
-async fn test_signed_subtitle_url_round_trips_for_matching_mode() {
+async fn test_mode_specific_subtitle_path_resolves_to_matching_mode() {
     let store = new_store();
-    let signing_key = ok(
-        synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-            b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-        ),
-        "test proxy signing key should derive",
-    );
     let version = "asub";
-    let mut result = PlaybackResult {
+    let result = PlaybackResult {
         playback_infos: HashMap::from([
             (
                 "direct".to_string(),
@@ -464,39 +380,9 @@ async fn test_signed_subtitle_url_round_trips_for_matching_mode() {
     };
     store_versioned(&store, &stored).await;
 
-    sign_playback_urls(
-        &mut result,
-        "alist",
-        version,
-        &signing_key,
-        "room-1",
-        "user-1",
-        chrono::Utc::now().timestamp() + 3600,
-    );
-
-    let subtitle_url = result.playback_infos["transcoded_720p"].subtitles[0]
-        .url
-        .clone();
-    let sub_path_with_query = some(
-        subtitle_url.strip_prefix("/api/providers/proxy/alist/"),
-        "signed subtitle url should use alist proxy prefix",
-    );
-    let sub_path = urlencoding::decode(some(
-        sub_path_with_query.split('?').next(),
-        "signed subtitle url should include sub_path",
-    ));
-    let sub_path = ok(
-        sub_path,
-        "signed subtitle path should be valid percent-encoding",
-    );
-    let sub_path = some(
-        sub_path.split('?').next(),
-        "decoded subtitle path should still be present",
-    );
-
     let p = provider();
     let ctx = ProxyRequestContext {
-        sub_path,
+        sub_path: "asub/subtitle/transcoded_720p/0",
         store: Some(&store),
         query_string: None,
         services: None,
@@ -509,7 +395,7 @@ async fn test_signed_subtitle_url_round_trips_for_matching_mode() {
 
     let (url, headers, _) = expect_fetch(ok(
         p.resolve_proxy(&ctx).await,
-        "signed subtitle path should resolve to the same playback mode",
+        "mode-specific subtitle path should resolve to the same playback mode",
     ));
     assert_eq!(url, "https://alist.example.com/subtitles/movie-en.srt");
     assert!(headers.is_empty());

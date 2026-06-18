@@ -9,6 +9,7 @@ use super::{
     MediaProvider, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
 };
 use crate::models::{MediaId, RoomId, TypedId};
+use crate::proxy_signature::ProxySigningKey;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::time::Duration;
@@ -170,6 +171,7 @@ impl RtmpProvider {
                 let segment_name = segment.trim_start_matches("segment/");
                 let disguised_as_png = segment_name.ends_with(".png");
                 Ok(ProxyAction::LiveHlsSegment {
+                    provider_name: Self::NAME.to_string(),
                     room_id,
                     media_id,
                     segment_name: segment_name.to_string(),
@@ -178,6 +180,56 @@ impl RtmpProvider {
             }
             _ => Err(ProviderError::NotFound),
         }
+    }
+}
+
+fn sign_rtmp_playback_urls(
+    result: &mut PlaybackResult,
+    version: &str,
+    signing_key: &ProxySigningKey,
+    room_id: &str,
+    user_id: &str,
+    expires_at: i64,
+) {
+    // RTMP playback is a SyncTV-managed live source. HLS and FLV use distinct
+    // signed proxy actions so clients can request either delivery format while
+    // the provider preserves room/media/user binding in the proxy claim. Any
+    // new live mode must be backed by livestream lifecycle tracking and idle
+    // cleanup before it is returned to clients.
+    for (mode_name, info) in &mut result.playback_infos {
+        if info.urls.is_empty() {
+            continue;
+        }
+
+        info.urls = if super::playback_info_is_hls(mode_name, info) {
+            vec![super::signed_provider_proxy_url(
+                RtmpProvider::NAME,
+                version,
+                "m3u8",
+                signing_key,
+                room_id,
+                user_id,
+                expires_at,
+            )]
+        } else {
+            info.urls
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    super::signed_provider_proxy_url(
+                        RtmpProvider::NAME,
+                        version,
+                        &format!("stream/{mode_name}/{index}"),
+                        signing_key,
+                        room_id,
+                        user_id,
+                        expires_at,
+                    )
+                })
+                .collect()
+        };
+        info.headers.clear();
+        info.cors_proxy_required = false;
     }
 }
 
@@ -206,7 +258,15 @@ impl MediaProvider for RtmpProvider {
 
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5); // 5 minutes for live
-        super::finalize_versioned_playback(result, Self::NAME, &cache_key, cache_ttl, ctx).await
+        super::cache_versioned_playback_and_build_response(
+            result,
+            Self::NAME,
+            &cache_key,
+            cache_ttl,
+            ctx,
+            sign_rtmp_playback_urls,
+        )
+        .await
     }
 
     async fn validate_source_config(

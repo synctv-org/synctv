@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "WITH updated AS (\n                UPDATE room_playback_state\n                SET playing_media_id = $2,\n                    playing_playlist_id = $3,\n                    target = $4,\n                    current_progress_id = $5,\n                    speed = $6,\n                    is_playing = $7,\n                    updated_at = NOW(),\n                    version = $9\n                WHERE room_id = $1 AND version = $8\n                RETURNING room_id,\n                          playing_media_id,\n                          playing_playlist_id,\n                          target,\n                          current_progress_id,\n                          speed,\n                          is_playing,\n                          updated_at,\n                          version\n            )\n            SELECT updated.room_id AS \"room_id: RoomId\",\n                   updated.playing_media_id AS \"playing_media_id: MediaId\",\n                   updated.playing_playlist_id AS \"playing_playlist_id: PlaylistId\",\n                   updated.target,\n                   updated.current_progress_id,\n                   COALESCE(progress.\"position\", 0.0) AS \"position!\",\n                   updated.speed AS \"speed!\",\n                   updated.is_playing,\n                   updated.updated_at,\n                   updated.version\n            FROM updated\n            LEFT JOIN room_playback_progress progress ON progress.id = updated.current_progress_id",
+  "query": "SELECT state.room_id AS \"room_id!: RoomId\",\n                state.playing_media_id AS \"playing_media_id?: MediaId\",\n                state.playing_playlist_id AS \"playing_playlist_id?: PlaylistId\",\n                state.target AS \"target!\",\n                state.current_progress_id AS \"current_progress_id?\",\n                COALESCE(progress.\"position\", 0.0) AS \"position!\",\n                state.speed AS \"speed!\",\n                state.is_playing AS \"is_playing!\",\n                state.updated_at AS \"updated_at!\",\n                state.version AS \"version!\"\n         FROM room_playback_state state\n         LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id\n         WHERE state.room_id = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "room_id: RoomId",
+        "name": "room_id!: RoomId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -16,7 +16,7 @@
       },
       {
         "ordinal": 1,
-        "name": "playing_media_id: MediaId",
+        "name": "playing_media_id?: MediaId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -27,7 +27,7 @@
       },
       {
         "ordinal": 2,
-        "name": "playing_playlist_id: PlaylistId",
+        "name": "playing_playlist_id?: PlaylistId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -38,7 +38,7 @@
       },
       {
         "ordinal": 3,
-        "name": "target",
+        "name": "target!",
         "type_info": "Bytea",
         "origin": {
           "Table": {
@@ -49,7 +49,7 @@
       },
       {
         "ordinal": 4,
-        "name": "current_progress_id",
+        "name": "current_progress_id?",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -77,7 +77,7 @@
       },
       {
         "ordinal": 7,
-        "name": "is_playing",
+        "name": "is_playing!",
         "type_info": "Bool",
         "origin": {
           "Table": {
@@ -88,7 +88,7 @@
       },
       {
         "ordinal": 8,
-        "name": "updated_at",
+        "name": "updated_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -99,7 +99,7 @@
       },
       {
         "ordinal": 9,
-        "name": "version",
+        "name": "version!",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -111,29 +111,21 @@
     ],
     "parameters": {
       "Left": [
-        "Int8",
-        "Int8",
-        "Int8",
-        "Bytea",
-        "Int8",
-        "Float8",
-        "Bool",
-        "Int8",
         "Int8"
       ]
     },
     "nullable": [
-      false,
       true,
       true,
-      false,
+      true,
+      true,
       true,
       null,
-      false,
-      false,
-      false,
-      false
+      true,
+      true,
+      true,
+      true
     ]
   },
-  "hash": "6c3b591a9f7d58d48f63d477affabbe3b64d720ce84c0d7203cdf39b8aecc39d"
+  "hash": "94da4d32350adeb9bd155307d5d75b5f063d76745c5925a98d99dcaec4003034"
 }

@@ -84,11 +84,22 @@ pub(crate) async fn execute_live_stream_action(
             .await
         }
         ProxyAction::LiveHlsSegment {
+            provider_name,
             room_id,
             media_id,
             segment_name,
             disguised_as_png,
-        } => execute_hls_segment(state, room_id, media_id, &segment_name, disguised_as_png).await,
+        } => {
+            execute_hls_segment(
+                state,
+                &provider_name,
+                room_id,
+                media_id,
+                &segment_name,
+                disguised_as_png,
+            )
+            .await
+        }
         other => {
             tracing::error!(action = ?other, "execute_live_stream_action received unsupported action");
             Err(AppError::internal_server_error(
@@ -250,11 +261,13 @@ async fn execute_hls_playlist(
         .ok_or_else(AppError::service_unavailable)?;
 
     let segment_disguised_as_png = live_segments_disguised_as_png(state)?;
+    let source_url = live_proxy_source_url(state, provider_name, &room_id, &media_id).await;
 
-    let playlist = HlsStreamingApi::generate_playlist(
+    let playlist = HlsStreamingApi::generate_playlist_with_pull(
         infrastructure,
         &room_id_key,
         &media_id_key,
+        source_url.as_deref(),
         |ts_name| {
             build_hls_segment_path(
                 provider_name,
@@ -333,6 +346,7 @@ fn normalize_hls_segment_name(
 
 async fn execute_hls_segment(
     state: &AppState,
+    provider_name: &str,
     room_id: RoomId,
     media_id: MediaId,
     segment_name: &str,
@@ -347,8 +361,15 @@ async fn execute_hls_segment(
         .client_api
         .live_infrastructure()
         .ok_or_else(AppError::service_unavailable)?;
+    let source_url = live_proxy_source_url(state, provider_name, &room_id, &media_id).await;
 
-    let ts_data = HlsStreamingApi::get_segment(infrastructure, &room_id_key, &media_id_key, validated_name)
+    let ts_data = HlsStreamingApi::get_segment_with_pull(
+        infrastructure,
+        &room_id_key,
+        &media_id_key,
+        validated_name,
+        source_url.as_deref(),
+    )
         .await
         .map_err(|e| {
             warn!(room_id = %room_id, media_id = %media_id, segment = %validated_name, error = %e, "HLS segment fetch failed");
@@ -356,6 +377,22 @@ async fn execute_hls_segment(
         })?;
 
     build_hls_segment_response(ts_data, disguised_as_png)
+}
+
+async fn live_proxy_source_url(
+    state: &AppState,
+    provider_name: &str,
+    room_id: &RoomId,
+    media_id: &MediaId,
+) -> Option<String> {
+    if provider_name != "live_proxy" {
+        return None;
+    }
+    state
+        .shared_api_runtime
+        .client_api
+        .get_live_proxy_source_url(room_id, media_id)
+        .await
 }
 
 fn build_hls_segment_response(ts_data: Bytes, disguised_as_png: bool) -> AppResult<Response> {

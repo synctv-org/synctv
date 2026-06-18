@@ -3926,9 +3926,9 @@ impl ChatRepository {
         tx: &mut Transaction<'_, Postgres>,
         room_id: &RoomId,
     ) -> Result<i64> {
-        let count = sqlx::query_scalar::<_, i64>(
-            r"
-            SELECT COUNT(*)
+        let count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) AS "count!"
             FROM chat_message_pins p
             JOIN chat_messages m
               ON m.room_id = p.room_id
@@ -3936,10 +3936,10 @@ impl ChatRepository {
              AND m.created_at = p.message_created_at
             WHERE p.room_id = $1
               AND m.status <> $2
-            ",
+            "#,
+            room_id.as_i64(),
+            i16::from(ChatMessageStatus::Deleted)
         )
-        .bind(room_id.as_i64())
-        .bind(i16::from(ChatMessageStatus::Deleted))
         .fetch_one(&mut **tx)
         .await?;
         Ok(count)

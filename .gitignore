@@ -12,6 +12,9 @@ logs/
 .data-dev/
 .dev-data/
 .local-data/
+.e2e-data/
+.e2e-logs/
+.e2e-media/
 
 # Secrets and configuration
 *.pem

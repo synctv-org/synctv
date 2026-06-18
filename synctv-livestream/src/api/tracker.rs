@@ -51,6 +51,8 @@ impl StreamKey {
 ///
 /// The cleanup task in both managers checks `subscriber_count == 0 && idle > 5 min`
 /// before tearing down the stream, so this guard is essential for correct lifecycle.
+/// Provider playback that returns HLS or FLV URLs must route viewers through
+/// code paths that create this guard or touch the matching lifecycle state.
 ///
 /// The callback should use [`StreamLifecycle::decrement_subscriber_count`] which
 /// has built-in underflow protection (saturates at zero instead of wrapping).

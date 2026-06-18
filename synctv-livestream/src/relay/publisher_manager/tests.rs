@@ -713,6 +713,29 @@ async fn test_broadcast_event_propagates_redis_failure() -> TestResult {
 }
 
 #[tokio::test]
+async fn test_broadcast_event_ignores_external_pull_for_heartbeat_tracking() -> TestResult {
+    let registry = Arc::new(TestStreamRegistry::new());
+    registry.set_fail_get_publisher(true);
+
+    let (manager, _rx) = test_manager(registry, "test-node");
+
+    let event = synctv_xiu::streamhub::define::BroadcastEvent::Publish {
+        identifier: StreamIdentifier::Rtmp {
+            app_name: "room1".to_string(),
+            stream_name: "media1".to_string(),
+        },
+        pub_type: synctv_xiu::streamhub::define::PublishType::ExternalPull,
+    };
+
+    manager.handle_broadcast_event(event).await?;
+    assert!(
+        manager.active_publishers.is_empty(),
+        "External pull lifecycle is owned by ExternalPublishManager"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_record_activity_nonexistent_publisher() {
     let registry = Arc::new(TestStreamRegistry::new());
     let (manager, _rx) = test_manager(registry, "test-node");

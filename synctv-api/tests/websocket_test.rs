@@ -1034,6 +1034,7 @@ mod websocket_e2e {
                 std::time::Duration::from_millis(100),
             ),
             providers_manager,
+            playback_duration_probe: None,
         };
 
         let state = synctv_api::http::create_app_state_from_config(router_config)

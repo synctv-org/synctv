@@ -24,7 +24,7 @@ use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutServ
 use crate::impls::client::media::prepare_delete_entries_outbox_fanout;
 
 use crate::impls::client::playback_lifecycle::ProviderPlaybackLifecycleApi;
-use crate::impls::playback::playback_expires_at;
+use crate::impls::playback::{playback_expires_at, playback_generation_error_allows_state_only};
 use crate::impls::RequestExecutor;
 use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
 use crate::membership_event_fanout::{

@@ -25,6 +25,9 @@ pub struct ProviderContext<'a> {
     /// require creator-owned shared credentials.
     pub credential_owner_id: Option<UserId>,
 
+    /// Externally visible credential owner ID for URLs returned to clients.
+    pub public_credential_owner_id: Option<String>,
+
     /// Room ID (optional)
     pub room_id: Option<RoomId>,
 
@@ -76,6 +79,7 @@ impl<'a> ProviderContext<'a> {
             user_id: None,
             public_user_id: None,
             credential_owner_id: None,
+            public_credential_owner_id: None,
             room_id: None,
             public_room_id: None,
             media_id: None,
@@ -111,6 +115,16 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn with_credential_owner_id(mut self, credential_owner_id: UserId) -> Self {
         self.credential_owner_id = Some(credential_owner_id);
+        self
+    }
+
+    /// Set externally visible credential owner ID for client-facing URLs.
+    #[must_use]
+    pub fn with_public_credential_owner_id(
+        mut self,
+        credential_owner_id: impl Into<String>,
+    ) -> Self {
+        self.public_credential_owner_id = Some(credential_owner_id.into());
         self
     }
 
@@ -257,6 +271,11 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn credential_owner_id(&self) -> Option<&UserId> {
         self.credential_owner_id.as_ref()
+    }
+
+    #[must_use]
+    pub fn public_credential_owner_id(&self) -> Option<&str> {
+        self.public_credential_owner_id.as_deref()
     }
 
     #[must_use]

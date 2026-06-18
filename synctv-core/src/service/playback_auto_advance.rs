@@ -1,16 +1,41 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use super::{LeaderCheck, PlaybackService};
+use super::PlaybackService;
+use crate::models::RoomId;
 use crate::repository::RoomSettingsRepository;
+
+#[async_trait]
+pub trait ActivePlaybackRoomProvider: Send + Sync {
+    /// Return rooms with realtime connections on this process.
+    ///
+    /// Playback lifecycle workers use local active rooms as their scheduling
+    /// boundary. Every node that owns room connections runs these workers, and
+    /// duplicate attempts are expected when a room has connections on several
+    /// nodes. Cross-node correctness belongs to the storage/write path:
+    /// duration probing claims rows, and auto-advance uses playback state
+    /// transactions with optimistic versions.
+    ///
+    /// This provider must reflect the current process's realtime runtime.
+    /// Presence, hot-room indexes, and shared room statistics are for lists,
+    /// admin views, analytics, and metrics.
+    ///
+    /// Maintenance rule: keep this wired to `ConnectionRuntime::active_room_ids()`.
+    /// Playback workers are per-process lifecycle workers; they are expected to
+    /// run on every node and converge through database locks or playback-state
+    /// optimistic writes. Global room popularity and presence aggregates are
+    /// separate read models.
+    async fn active_room_ids(&self) -> crate::Result<Vec<RoomId>>;
+}
 
 #[derive(Clone)]
 pub struct PlaybackAutoAdvanceService {
     playback_service: PlaybackService,
     settings_repo: RoomSettingsRepository,
-    leader_check: Arc<dyn LeaderCheck>,
+    active_room_provider: Option<Arc<dyn ActivePlaybackRoomProvider>>,
 }
 
 impl PlaybackAutoAdvanceService {
@@ -20,13 +45,21 @@ impl PlaybackAutoAdvanceService {
     pub const fn new(
         playback_service: PlaybackService,
         settings_repo: RoomSettingsRepository,
-        leader_check: Arc<dyn LeaderCheck>,
     ) -> Self {
         Self {
             playback_service,
             settings_repo,
-            leader_check,
+            active_room_provider: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_active_room_provider(
+        mut self,
+        active_room_provider: Arc<dyn ActivePlaybackRoomProvider>,
+    ) -> Self {
+        self.active_room_provider = Some(active_room_provider);
+        self
     }
 
     #[must_use]
@@ -48,13 +81,27 @@ impl PlaybackAutoAdvanceService {
                         return;
                     }
                     _ = ticker.tick() => {
-                        if !service.leader_check.is_leader() {
-                            continue;
-                        }
+                        // Scope each tick to rooms with realtime connections in
+                        // this process. Local room connections are the lifecycle
+                        // ownership signal for duration, auto-advance, and live
+                        // playback resource work. Cross-node duplicate attempts
+                        // are resolved by the transactional state update below.
+                        let active_room_ids = match service.active_room_ids().await {
+                            Ok(active_room_ids) if active_room_ids.is_empty() => continue,
+                            Ok(active_room_ids) => active_room_ids,
+                            Err(error) => {
+                                error!(error = %error, "Playback auto-advance active room lookup failed");
+                                continue;
+                            }
+                        };
 
                         match service
                             .playback_service
-                            .auto_advance_due_sources(&service.settings_repo, Self::DEFAULT_SCAN_LIMIT)
+                            .auto_advance_due_sources_for_rooms(
+                                &service.settings_repo,
+                                &active_room_ids,
+                                Self::DEFAULT_SCAN_LIMIT,
+                            )
                             .await
                         {
                             Ok(advanced) if advanced > 0 => {
@@ -69,5 +116,12 @@ impl PlaybackAutoAdvanceService {
                 }
             }
         })
+    }
+
+    async fn active_room_ids(&self) -> crate::Result<Vec<RoomId>> {
+        let Some(active_room_provider) = &self.active_room_provider else {
+            return Ok(Vec::new());
+        };
+        active_room_provider.active_room_ids().await
     }
 }

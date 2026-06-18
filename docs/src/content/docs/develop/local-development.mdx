@@ -229,7 +229,22 @@ cargo check -p synctv --no-default-features --features "tls-ring,tls-native-root
 cargo check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
 ```
 
-如果修改了特定功能，优先跑对应的聚焦测试，再跑更大的测试集。不要只依赖编译通过。
+如果修改了特定功能，优先跑对应的聚焦测试，再跑更大的测试集。编译通过只是最低检查。
+
+## Provider 与播放端到端验证
+
+修改 Provider、播放 URL 签名、proxy、manifest、字幕、danmaku、thumbnail、RTMP、live proxy、播放后台任务或资源生命周期时，需要在单元测试之外做真实服务验证：
+
+- 使用构建出的 `synctv` 二进制启动服务，覆盖真实启动、配置、migration 和路由；
+- 使用 `synctv` CLI 创建用户、房间、Provider、媒体、动态播放列表、RTMP publish key 和播放状态；
+- 使用真实 WebSocket 让房间进入 active 状态；
+- 使用 `curl` 请求每个返回的 direct/proxy URL、manifest、indexed segment、字幕、danmaku、thumbnail 和 Range URL；
+- 覆盖 Direct URL、Alist、Emby、Jellyfin、Bilibili 匿名播放、RTMP、live proxy、HLS、FLV、cache MISS/HIT、URL 过期和资源清理；
+- 覆盖动态 playlist 的路径返回、媒体解析、播放、切换、封面/thumbnail 路由和自动切换后的 target 变化；
+- RTMP/live proxy 使用真实上游推流，验证 stream info、HLS playlist/segment、FLV、断开后的 idle cleanup；
+- CLI 缺少某个工作流时，先补 `synctv` CLI，再把该工作流纳入手动 E2E。
+
+Provider 返回的 `PlaybackResult` 是验证清单。每个 mode 和辅助 URL 都要实际请求，包含动态 playlist 解析出的媒体项。播放后台任务使用当前进程 `ConnectionRuntime::active_room_ids()`，验证时通过真实 WebSocket 驱动 active room，避免用数据库写入替代连接生命周期。
 
 ## SQLx offline metadata
 
@@ -238,6 +253,10 @@ cargo check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,
 <Aside type="tip">
 CI 可以使用 `SQLX_OFFLINE=true` 编译，不需要连接真实数据库；前提是 `.sqlx/` metadata 已经和代码同步。
 </Aside>
+
+需要编译期校验的 repository 查询应继续使用 SQLx checked macros。更新 `.sqlx` 是正常开发流程，metadata 变更属于 SQL 改动的一部分。
+
+播放后台任务相关查询还需要保留 room-scoped 过滤和当前 `room_playback_progress.target_hash` 绑定。修改这些 SQL 时，代码、`.sqlx` metadata 和 active-room E2E 证据一起更新。
 
 刷新流程：
 

@@ -1,3 +1,10 @@
+// gRPC transport adapter.
+//
+// Keep business behavior in synctv-api/src/impls and synctv-core. gRPC code
+// owns protobuf transport, metadata extraction, status mapping, and streaming
+// adapters. Shared contracts are documented in
+// docs/src/content/docs/en/develop/implementation-contracts.mdx.
+
 // Re-export cluster proto from synctv-cluster (internal)
 pub use synctv_cluster::grpc::synctv::cluster;
 use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
@@ -521,7 +528,9 @@ pub struct GrpcServerConfig<'a> {
     /// Shared HTTP app state from the unified API server.
     ///
     /// When present, gRPC reuses the HTTP proxy/signing infrastructure instead
-    /// of constructing a transport-local copy.
+    /// of constructing a transport-local copy. gRPC handlers should translate
+    /// protobuf requests into impl calls and share business behavior with HTTP;
+    /// transport-local code owns framing, metadata, and status conversion.
     pub shared_http_app_state: Option<Arc<crate::http::AppState>>,
     pub shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
@@ -641,6 +650,7 @@ async fn build_fallback_http_app_state(
             messaging_rate_limit_config: deps.messaging_rate_limit_config,
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: deps.providers_manager,
+            playback_duration_probe: None,
         },
     )?))
 }

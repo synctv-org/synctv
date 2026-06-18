@@ -39,6 +39,7 @@ pub(crate) async fn resolve_credential_provider_instance_binding(
     for dependency in dependencies
         .into_iter()
         .filter(|dependency| dependency.provider == provider.name())
+        .filter(|dependency| dependency.required)
     {
         let credential_user_id = dependency.user_id.parse::<UserId>().map_err(|error| {
             Error::InvalidInput(format!(

@@ -323,14 +323,15 @@ impl PublisherManager {
                 identifier,
                 pub_type,
             } => {
-                // Only track local RTMP push publishers for heartbeat management.
-                // Remote relay streams (RtmpRelay) are managed by their origin node;
-                // tracking them here would create duplicate heartbeats and incorrect
-                // cleanup on unpublish.
-                if pub_type == synctv_xiu::streamhub::define::PublishType::RtmpRelay {
+                // User RTMP pushes are tracked here because RTMP auth registered
+                // them in Redis before StreamHub publish. ExternalPull streams are
+                // registered and cleaned up by ExternalPublishManager, while
+                // RtmpRelay streams are owned by their origin node.
+                if pub_type != synctv_xiu::streamhub::define::PublishType::RtmpPush {
                     debug!(
+                        pub_type = ?pub_type,
                         identifier = ?identifier,
-                        "Ignoring relay publish event for heartbeat tracking"
+                        "Ignoring non-user publish event for heartbeat tracking"
                     );
                     return Ok(());
                 }

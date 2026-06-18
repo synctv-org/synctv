@@ -1476,7 +1476,9 @@ impl crate::impls::playback::PlaybackService for StaticPlaybackService {
 struct MutablePlaybackService {
     playback: Arc<parking_lot::Mutex<synctv_proto::client::Playback>>,
     dependencies: Arc<parking_lot::Mutex<Vec<synctv_core::provider::ProviderCredentialDependency>>>,
+    state: Arc<parking_lot::Mutex<Option<RoomPlaybackState>>>,
     probe: SnapshotCallProbe,
+    observed_lifecycle_probe: SnapshotCallProbe,
 }
 
 impl MutablePlaybackService {
@@ -1484,7 +1486,9 @@ impl MutablePlaybackService {
         Arc::new(Self {
             playback: Arc::new(parking_lot::Mutex::new(playback)),
             dependencies: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            state: Arc::new(parking_lot::Mutex::new(None)),
             probe: SnapshotCallProbe::default(),
+            observed_lifecycle_probe: SnapshotCallProbe::default(),
         })
     }
 
@@ -1499,8 +1503,20 @@ impl MutablePlaybackService {
         *self.dependencies.lock() = dependencies;
     }
 
+    fn replace_state(&self, state: RoomPlaybackState) {
+        *self.state.lock() = Some(state);
+    }
+
     async fn wait_for_calls(&self, expected: usize) {
         self.probe.wait_for_calls(expected).await;
+    }
+
+    async fn wait_for_observed_lifecycle_calls(&self, expected: usize) {
+        self.observed_lifecycle_probe.wait_for_calls(expected).await;
+    }
+
+    fn observed_lifecycle_call_count(&self) -> usize {
+        self.observed_lifecycle_probe.call_count()
     }
 }
 
@@ -1510,7 +1526,11 @@ impl crate::impls::playback::PlaybackService for MutablePlaybackService {
         &self,
         room_id: &RoomId,
     ) -> Result<RoomPlaybackState, crate::impls::ApiError> {
-        Ok(RoomPlaybackState::new(*room_id))
+        Ok(self
+            .state
+            .lock()
+            .clone()
+            .unwrap_or_else(|| RoomPlaybackState::new(*room_id)))
     }
 
     async fn get_playback(
@@ -1532,6 +1552,14 @@ impl crate::impls::playback::PlaybackService for MutablePlaybackService {
     ) -> Result<Vec<synctv_core::provider::ProviderCredentialDependency>, crate::impls::ApiError>
     {
         Ok(self.dependencies.lock().clone())
+    }
+
+    async fn refresh_observed_playback_metadata_and_auto_advance(
+        &self,
+        _room_id: &RoomId,
+        _state: &RoomPlaybackState,
+    ) {
+        self.observed_lifecycle_probe.mark_called();
     }
 }
 
@@ -3928,6 +3956,160 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
         "unrelated credential changes must not reload observed playbacks"
     );
 
+    connection_service.disconnect_connection(handler.connection_id());
+    wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_playback_auto_advance_subscriber_runs_for_playing_observed_state() {
+    let playback_service = MutablePlaybackService::new(synctv_proto::client::Playback {
+        media_id: public_media_id(),
+        playlist_id: String::new(),
+        room_id: public_id_codec()
+            .encode_room_id(room_id())
+            .checked("test value"),
+        name: "test media".to_string(),
+        playlist_position: 0.0,
+        playback_infos: std::collections::HashMap::new(),
+        default_mode: String::new(),
+        metadata: std::collections::HashMap::new(),
+        expires_at: None,
+        duration_seconds: None,
+    });
+    let subscriber = PlaybackAutoAdvanceSubscriber::new(playback_service.clone());
+
+    subscriber
+        .handle_observed_playback_lifecycle_event(ObservedPlaybackLifecycleEvent {
+            room_id: room_id(),
+            state: RoomPlaybackState {
+                room_id: room_id(),
+                playing_media_id: Some(MediaId::expect_positive(10)),
+                playing_playlist_id: None,
+                target: Vec::new(),
+                current_progress_id: None,
+                position: 11.0,
+                speed: 1.0,
+                is_playing: true,
+                updated_at: now(),
+                version: 1,
+            },
+        })
+        .await
+        .checked("observed playback subscriber should succeed");
+
+    playback_service.wait_for_observed_lifecycle_calls(1).await;
+}
+
+#[tokio::test]
+async fn test_playback_auto_advance_subscriber_skips_paused_state() {
+    let playback_service = MutablePlaybackService::new(synctv_proto::client::Playback {
+        media_id: public_media_id(),
+        playlist_id: String::new(),
+        room_id: public_id_codec()
+            .encode_room_id(room_id())
+            .checked("test value"),
+        name: "test media".to_string(),
+        playlist_position: 0.0,
+        playback_infos: std::collections::HashMap::new(),
+        default_mode: String::new(),
+        metadata: std::collections::HashMap::new(),
+        expires_at: None,
+        duration_seconds: None,
+    });
+    let subscriber = PlaybackAutoAdvanceSubscriber::new(playback_service.clone());
+
+    subscriber
+        .handle_observed_playback_lifecycle_event(ObservedPlaybackLifecycleEvent {
+            room_id: room_id(),
+            state: RoomPlaybackState {
+                room_id: room_id(),
+                playing_media_id: Some(MediaId::expect_positive(10)),
+                playing_playlist_id: None,
+                target: Vec::new(),
+                current_progress_id: None,
+                position: 11.0,
+                speed: 1.0,
+                is_playing: false,
+                updated_at: now(),
+                version: 1,
+            },
+        })
+        .await
+        .checked("observed playback subscriber should succeed");
+
+    assert_eq!(playback_service.observed_lifecycle_call_count(), 0);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers) and waits for observed playback lifecycle tick"]
+async fn test_observed_playback_lifecycle_source_triggers_auto_advance_subscriber_for_observed_room(
+) {
+    let message_sender = RecordingMessageSender::new();
+    let fixture = create_start_handler_fixture(
+        "observe_playback_lifecycle_auto_advance",
+        message_sender.clone(),
+    )
+    .await;
+    let StartTestFixture {
+        handler,
+        connection_service,
+        event_service,
+        ..
+    } = &fixture;
+
+    let playback_service = MutablePlaybackService::new(synctv_proto::client::Playback {
+        media_id: public_media_id(),
+        playlist_id: String::new(),
+        room_id: public_id_codec()
+            .encode_room_id(handler.room_id)
+            .checked("test value"),
+        name: "test media".to_string(),
+        playlist_position: 0.0,
+        playback_infos: std::collections::HashMap::new(),
+        default_mode: String::new(),
+        metadata: std::collections::HashMap::new(),
+        expires_at: None,
+        duration_seconds: None,
+    });
+    let mut observed_state = RoomPlaybackState::new(handler.room_id);
+    observed_state.is_playing = true;
+    playback_service.replace_state(observed_state);
+    let handler = handler
+        .clone()
+        .with_playback_service(playback_service.clone());
+
+    prepare_handler_for_run_after_join(&handler, connection_service).await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let lifecycle_handle = spawn_observed_playback_lifecycle_event_source(
+        playback_service.clone(),
+        vec![Arc::new(PlaybackAutoAdvanceSubscriber::new(
+            playback_service.clone(),
+        ))],
+        shutdown_rx,
+    );
+
+    let (mut stream, _stream_state) = RecordingStream::with_incoming(vec![ClientMessage {
+        message: Some(observe_playback_message("playback", None)),
+    }]);
+
+    let task_handler = handler.clone();
+    let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
+
+    playback_service.wait_for_calls(1).await;
+    tokio::time::timeout(Duration::from_secs(12), async {
+        playback_service.wait_for_observed_lifecycle_calls(1).await;
+    })
+    .await
+    .checked("observed playback lifecycle should trigger auto-advance subscriber");
+
+    shutdown_tx
+        .send(true)
+        .checked("lifecycle shutdown signal should send");
+    lifecycle_handle
+        .await
+        .checked("lifecycle task should not panic");
     connection_service.disconnect_connection(handler.connection_id());
     wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;
     fixture.shutdown().await;

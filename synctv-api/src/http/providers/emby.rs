@@ -188,14 +188,15 @@ fn verify_signed_thumbnail_access(
 
 fn authorize_thumbnail_request(
     signing_key: &ProxySigningKey,
-    auth_user_id: &str,
+    public_credential_owner_id: &str,
     public_auth_user_id: &str,
     raw_query: &str,
     credential_owner_id: Option<&str>,
     scope: ThumbnailSignatureScope<'_>,
 ) -> Result<Option<String>, AppError> {
-    let credential_owner_id = credential_owner_id.unwrap_or(auth_user_id);
-    if !thumbnail_signature_present(raw_query) && credential_owner_id == auth_user_id {
+    let credential_owner_id = credential_owner_id.unwrap_or(public_credential_owner_id);
+    if !thumbnail_signature_present(raw_query) && credential_owner_id == public_credential_owner_id
+    {
         return Ok(None);
     }
 
@@ -614,7 +615,6 @@ pub(crate) async fn thumbnail(
             EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 let state = operation_state;
-                let auth_user_id_key = authenticated.user_id.to_string();
                 let public_auth_user_id = state
                     .shared_api_runtime
                     .public_id_codec
@@ -623,13 +623,13 @@ pub(crate) async fn thumbnail(
                 let scope = ThumbnailSignatureScope {
                     item_id: &item_id,
                     server_id,
-                    credential_owner_id: credential_owner_id.unwrap_or(auth_user_id_key.as_str()),
+                    credential_owner_id: credential_owner_id.unwrap_or(&public_auth_user_id),
                     max_height,
                     max_width,
                 };
                 if let Some(room_id) = authorize_thumbnail_request(
                     &state.shared_api_runtime.proxy_signing_key,
-                    &auth_user_id_key,
+                    &public_auth_user_id,
                     &public_auth_user_id,
                     raw_query,
                     credential_owner_id,
@@ -845,6 +845,39 @@ mod tests {
         assert_eq!(claims.room_id, "room-7");
         assert_eq!(claims.user_id, "viewer-1");
         assert!(signed.contains("credential_owner_id=owner-1"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_signed_emby_thumbnail_url_authorizes_roundtrip() -> TestResult {
+        let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")?;
+        let signed = string_ok(sign_emby_thumbnail_url(
+            "/api/providers/emby/thumbnail/item1?server_id=emby-main&credential_owner_id=usr_2&max_height=300",
+            "room_1",
+            "usr_2",
+            &signing_key,
+        ))?;
+        let raw_query = signed
+            .split_once('?')
+            .map(|(_, query)| query)
+            .ok_or_else(|| test_error("signed thumbnail query should exist"))?;
+
+        let room_id = route_ok(authorize_thumbnail_request(
+            &signing_key,
+            "usr_2",
+            "usr_2",
+            raw_query,
+            Some("usr_2"),
+            ThumbnailSignatureScope {
+                item_id: "item1",
+                server_id: "emby-main",
+                credential_owner_id: "usr_2",
+                max_height: 300,
+                max_width: 0,
+            },
+        ))?;
+
+        assert_eq!(room_id.as_deref(), Some("room_1"));
         Ok(())
     }
 

@@ -10,7 +10,7 @@ use crate::{
     error::StreamResult,
     livestream::external_puller::ExternalStreamPuller,
     livestream::managed_stream::{ManagedStream, StreamLifecycle, StreamPool},
-    relay::registry_trait::StreamRegistryTrait,
+    relay::{registry::HEARTBEAT_INTERVAL_SECS, registry_trait::StreamRegistryTrait},
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -22,6 +22,7 @@ use tracing::{debug, error, info, warn};
 
 const DEFAULT_MAX_CONCURRENT_STREAMS: usize = 100;
 const START_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
+const EXTERNAL_PUBLISHER_USER_ID: &str = "";
 
 async fn await_start_confirmation(
     confirm_rx: tokio::sync::oneshot::Receiver<Result<(), String>>,
@@ -75,6 +76,17 @@ pub(crate) struct ExternalPublishManager {
     max_concurrent_streams: usize,
     creation_capacity_lock: tokio::sync::Mutex<()>,
     max_flv_tag_size_bytes: usize,
+}
+
+struct ExternalRegistration {
+    registered: bool,
+    epoch: Option<u64>,
+}
+
+impl ExternalRegistration {
+    const fn new(registered: bool, epoch: Option<u64>) -> Self {
+        Self { registered, epoch }
+    }
 }
 
 impl ExternalPublishManager {
@@ -192,6 +204,13 @@ impl ExternalPublishManager {
 
         // Fast path: reuse healthy stream. get_existing() increments subscriber count.
         if let Some(stream) = self.pool.get_existing(&stream_key).await {
+            if let Err(error) = self
+                .ensure_external_registration(room_id, media_id, &stream)
+                .await
+            {
+                stream.decrement_subscriber_count();
+                return Err(error);
+            }
             return Ok(stream);
         }
 
@@ -200,6 +219,13 @@ impl ExternalPublishManager {
 
         // Re-check after lock. get_existing() increments subscriber count.
         if let Some(stream) = self.pool.get_existing(&stream_key).await {
+            if let Err(error) = self
+                .ensure_external_registration(room_id, media_id, &stream)
+                .await
+            {
+                stream.decrement_subscriber_count();
+                return Err(error);
+            }
             debug!(
                 "Reusing external publish stream created by concurrent request for {}/{}",
                 room_id, media_id,
@@ -279,14 +305,7 @@ impl ExternalPublishManager {
         let registry_timeout = std::time::Duration::from_secs(5);
         let register_result = tokio::time::timeout(
             registry_timeout,
-            self.registry.try_register_publisher(
-                room_id,
-                media_id,
-                &self.local_node_id,
-                // System-owned external pullers must not populate the user reverse index.
-                "",
-                &self.local_api_address,
-            ),
+            self.register_external_publisher(room_id, media_id),
         )
         .await
         .map_err(|_| {
@@ -295,42 +314,43 @@ impl ExternalPublishManager {
                 registry_timeout.as_secs()
             ))
         })
-        .and_then(|r| {
-            r.map_err(|e| {
-                crate::error::StreamError::RegistryError(format!(
-                    "Failed to register publisher in Redis: {e}"
-                ))
-            })
-        });
+        .and_then(std::convert::identity);
 
         match register_result {
-            Ok(true) => { /* success, continue */ }
-            Ok(false) => {
-                // Another publisher already registered for this stream.
-                // Stop the local stream to avoid a duplicate publisher.
-                if let Err(stop_error) = stream.stop().await {
-                    warn!(
-                        room_id,
-                        media_id,
-                        error = %stop_error,
-                        "Failed to stop duplicate external publish stream after registry conflict"
-                    );
+            Ok(registration) if registration.registered => {
+                stream.set_registration_epoch(registration.epoch);
+            }
+            Ok(_) => {
+                if self
+                    .clear_stale_local_external_registration(room_id, media_id)
+                    .await?
+                {
+                    let retry_result = self.register_external_publisher(room_id, media_id).await;
+                    match retry_result {
+                        Ok(registration) if registration.registered => {
+                            stream.set_registration_epoch(registration.epoch);
+                        }
+                        Ok(_) => {
+                            Self::stop_unregistered_stream(&stream, room_id, media_id).await;
+                            return Err(crate::error::StreamError::InvalidState(
+                                "Another publisher already registered".into(),
+                            ));
+                        }
+                        Err(error) => {
+                            Self::stop_unregistered_stream(&stream, room_id, media_id).await;
+                            return Err(error);
+                        }
+                    }
+                } else {
+                    Self::stop_unregistered_stream(&stream, room_id, media_id).await;
+                    return Err(crate::error::StreamError::InvalidState(
+                        "Another publisher already registered".into(),
+                    ));
                 }
-                return Err(crate::error::StreamError::InvalidState(
-                    "Another publisher already registered".into(),
-                ));
             }
             Err(e) => {
                 error!("Failed to register external publisher in Redis after stream start, stopping stream: {e}");
-                // Roll back: stop the stream since we can't register it
-                if let Err(stop_error) = stream.stop().await {
-                    warn!(
-                        room_id,
-                        media_id,
-                        error = %stop_error,
-                        "Failed to stop external publish stream after registry registration error"
-                    );
-                }
+                Self::stop_unregistered_stream(&stream, room_id, media_id).await;
                 return Err(e);
             }
         }
@@ -338,6 +358,13 @@ impl ExternalPublishManager {
         // Creation path: increment subscriber count exactly once for the viewer
         // that triggered creation. (Reuse paths increment inside get_existing().)
         stream.lifecycle().increment_subscriber_count();
+
+        // External pullers are long-lived publishers owned by this manager, not
+        // user RTMP publishers tracked by PublisherManager. Keep their Redis
+        // ownership entry alive for as long as the local puller is healthy so
+        // FLV/HLS requests can discover the stream after the original viewer
+        // request has completed.
+        self.start_registration_heartbeat(&stream);
 
         // Spawn idle-cleanup task with Redis unregistration hook
         let registry = Arc::clone(&self.registry);
@@ -386,6 +413,237 @@ impl ExternalPublishManager {
 
         Ok(stream)
     }
+
+    async fn register_external_publisher(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> StreamResult<ExternalRegistration> {
+        let registered = self
+            .registry
+            .try_register_publisher(
+                room_id,
+                media_id,
+                &self.local_node_id,
+                EXTERNAL_PUBLISHER_USER_ID,
+                &self.local_api_address,
+            )
+            .await
+            .map_err(|e| {
+                crate::error::StreamError::RegistryError(format!(
+                    "Failed to register publisher in Redis: {e}"
+                ))
+            })?;
+
+        if !registered {
+            return Ok(ExternalRegistration::new(false, None));
+        }
+
+        let Some(publisher) = self
+            .load_local_external_publisher(room_id, media_id)
+            .await?
+        else {
+            return Err(crate::error::StreamError::RegistryError(format!(
+                "Publisher registration for {room_id}/{media_id} could not be read back"
+            )));
+        };
+
+        Ok(ExternalRegistration::new(true, Some(publisher.epoch)))
+    }
+
+    async fn load_local_external_publisher(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> StreamResult<Option<crate::relay::PublisherInfo>> {
+        let publisher = self
+            .registry
+            .get_publisher(room_id, media_id)
+            .await
+            .map_err(|e| {
+                crate::error::StreamError::RegistryError(format!(
+                    "Failed to load publisher registration: {e}"
+                ))
+            })?;
+
+        Ok(publisher.filter(|info| {
+            info.node_id == self.local_node_id && info.user_id == EXTERNAL_PUBLISHER_USER_ID
+        }))
+    }
+
+    async fn ensure_external_registration(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        stream: &Arc<ExternalPublishStream>,
+    ) -> StreamResult<()> {
+        let current_epoch = stream.registration_epoch();
+        if let Some(epoch) = current_epoch {
+            match self
+                .registry
+                .refresh_publisher_ttl(
+                    room_id,
+                    media_id,
+                    EXTERNAL_PUBLISHER_USER_ID,
+                    &self.local_node_id,
+                    epoch,
+                )
+                .await
+            {
+                Ok(crate::relay::PublisherRefreshOutcome::Refreshed) => return Ok(()),
+                Ok(crate::relay::PublisherRefreshOutcome::Missing) => {
+                    warn!(
+                        room_id,
+                        media_id, epoch, "External publisher registration is missing; restoring it"
+                    );
+                }
+                Ok(crate::relay::PublisherRefreshOutcome::OwnershipChanged) => {
+                    warn!(
+                        room_id,
+                        media_id,
+                        epoch,
+                        "External publisher registration ownership changed; revalidating before reuse"
+                    );
+                }
+                Err(error) => {
+                    return Err(crate::error::StreamError::RegistryError(format!(
+                        "Failed to refresh external publisher registration: {error}"
+                    )));
+                }
+            }
+        }
+
+        if let Some(existing) = self
+            .load_local_external_publisher(room_id, media_id)
+            .await?
+        {
+            stream.set_registration_epoch(Some(existing.epoch));
+            return Ok(());
+        }
+
+        let registration = self.register_external_publisher(room_id, media_id).await?;
+        if registration.registered {
+            stream.set_registration_epoch(registration.epoch);
+            return Ok(());
+        }
+
+        Err(crate::error::StreamError::InvalidState(
+            "Another publisher already registered".to_string(),
+        ))
+    }
+
+    fn start_registration_heartbeat(&self, stream: &Arc<ExternalPublishStream>) {
+        let registry = Arc::clone(&self.registry);
+        let local_node_id = self.local_node_id.clone();
+        let stream = Arc::downgrade(stream);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                interval.tick().await;
+
+                let Some(stream) = stream.upgrade() else {
+                    break;
+                };
+
+                if !stream.lifecycle().is_healthy().await {
+                    break;
+                }
+
+                let Some(epoch) = stream.registration_epoch() else {
+                    continue;
+                };
+
+                match registry
+                    .refresh_publisher_ttl(
+                        &stream.room_id,
+                        &stream.media_id,
+                        EXTERNAL_PUBLISHER_USER_ID,
+                        &local_node_id,
+                        epoch,
+                    )
+                    .await
+                {
+                    Ok(crate::relay::PublisherRefreshOutcome::Refreshed) => {}
+                    Ok(crate::relay::PublisherRefreshOutcome::Missing) => {
+                        warn!(
+                            room_id = %stream.room_id,
+                            media_id = %stream.media_id,
+                            epoch,
+                            "External publisher registration disappeared during heartbeat"
+                        );
+                        stream.set_registration_epoch(None);
+                    }
+                    Ok(crate::relay::PublisherRefreshOutcome::OwnershipChanged) => {
+                        warn!(
+                            room_id = %stream.room_id,
+                            media_id = %stream.media_id,
+                            epoch,
+                            "External publisher registration ownership changed during heartbeat"
+                        );
+                        stream.set_registration_epoch(None);
+                    }
+                    Err(error) => {
+                        warn!(
+                            room_id = %stream.room_id,
+                            media_id = %stream.media_id,
+                            epoch,
+                            %error,
+                            "Failed to refresh external publisher registration"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    async fn stop_unregistered_stream(
+        stream: &Arc<ExternalPublishStream>,
+        room_id: &str,
+        media_id: &str,
+    ) {
+        if let Err(stop_error) = stream.stop().await {
+            warn!(
+                room_id,
+                media_id,
+                error = %stop_error,
+                "Failed to stop unregistered external publish stream"
+            );
+        }
+    }
+
+    async fn clear_stale_local_external_registration(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> StreamResult<bool> {
+        let existing = self
+            .registry
+            .get_publisher(room_id, media_id)
+            .await
+            .map_err(|e| {
+                crate::error::StreamError::RegistryError(format!(
+                    "Failed to inspect publisher registration: {e}"
+                ))
+            })?;
+        let Some(existing) = existing else {
+            return Ok(false);
+        };
+        if existing.node_id != self.local_node_id || !existing.user_id.is_empty() {
+            return Ok(false);
+        }
+
+        self.registry
+            .unregister_publisher_if_epoch_matches(room_id, media_id, existing.epoch)
+            .await
+            .map_err(|e| {
+                crate::error::StreamError::RegistryError(format!(
+                    "Failed to clear stale local external publisher registration: {e}"
+                ))
+            })?;
+        Ok(true)
+    }
 }
 
 /// A single external publish stream instance.
@@ -400,6 +658,8 @@ pub(crate) struct ExternalPublishStream {
     lifecycle: StreamLifecycle,
     /// Guard against sending duplicate `UnPublish` events (`stop()` + Drop)
     unpublish_sent: AtomicBool,
+    /// Redis publisher epoch for the system-owned external puller.
+    registration_epoch: std::sync::atomic::AtomicU64,
     /// Shared HTTP client for FLV connections (supports TLS via rustls).
     http_client: reqwest::Client,
     ssrf_guard: SsrfGuard,
@@ -442,6 +702,7 @@ impl ExternalPublishStream {
             stream_hub_event_sender,
             lifecycle: StreamLifecycle::new(),
             unpublish_sent: AtomicBool::new(false),
+            registration_epoch: std::sync::atomic::AtomicU64::new(0),
             http_client,
             ssrf_guard,
             max_flv_tag_size_bytes,
@@ -568,6 +829,18 @@ impl ExternalPublishStream {
 
     pub(crate) fn decrement_subscriber_count(&self) {
         self.lifecycle.decrement_subscriber_count();
+    }
+
+    fn set_registration_epoch(&self, epoch: Option<u64>) {
+        self.registration_epoch
+            .store(epoch.unwrap_or(0), Ordering::Release);
+    }
+
+    fn registration_epoch(&self) -> Option<u64> {
+        match self.registration_epoch.load(Ordering::Acquire) {
+            0 => None,
+            epoch => Some(epoch),
+        }
     }
 }
 
@@ -698,6 +971,116 @@ mod tests {
         assert!(
             !debug_repr.contains("read_timeout: Some(30s)"),
             "shared HTTP-FLV client must not inherit the proxy preset read timeout: {debug_repr}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_clear_stale_local_external_registration_only_clears_system_owned_local_entry(
+    ) -> TestResult {
+        let registry = Arc::new(TestStreamRegistry::new());
+        registry
+            .try_register_publisher("room1", "media1", "node-1", "", "127.0.0.1:50051")
+            .await?;
+        registry
+            .try_register_publisher("room1", "media2", "node-1", "user-1", "127.0.0.1:50051")
+            .await?;
+        registry
+            .try_register_publisher("room1", "media3", "node-2", "", "127.0.0.2:50051")
+            .await?;
+
+        let (sender, _) = tokio::sync::mpsc::channel(64);
+        let manager = ExternalPublishManager::new(
+            registry.clone(),
+            "node-1".to_string(),
+            sender,
+            SsrfGuard::disabled(),
+        )?;
+
+        assert!(
+            manager
+                .clear_stale_local_external_registration("room1", "media1")
+                .await?
+        );
+        assert!(
+            registry.get_publisher("room1", "media1").await?.is_none(),
+            "same-node system-owned external publisher registration should be cleared"
+        );
+        assert!(
+            !manager
+                .clear_stale_local_external_registration("room1", "media2")
+                .await?
+        );
+        assert!(
+            registry.get_publisher("room1", "media2").await?.is_some(),
+            "same-node user-owned RTMP publisher registration should be preserved"
+        );
+        assert!(
+            !manager
+                .clear_stale_local_external_registration("room1", "media3")
+                .await?
+        );
+        assert!(
+            registry.get_publisher("room1", "media3").await?.is_some(),
+            "remote publisher registration should be preserved"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reused_external_stream_restores_missing_registry_registration() -> TestResult {
+        let registry = Arc::new(TestStreamRegistry::new());
+        let (sender, _) = tokio::sync::mpsc::channel(64);
+        let manager = ExternalPublishManager::with_timeouts(
+            registry.clone(),
+            "node-1".to_string(),
+            "127.0.0.1:50051".to_string(),
+            sender.clone(),
+            SsrfGuard::disabled(),
+            60,
+            300,
+        )?;
+
+        let stream = Arc::new(ExternalPublishStream::new(
+            "room1".to_string(),
+            "media1".to_string(),
+            "rtmp://example.com/live/stream".to_string(),
+            sender,
+            reqwest::Client::new(),
+            SsrfGuard::disabled(),
+            ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
+        ));
+        stream.lifecycle().set_running();
+
+        let registered = manager
+            .register_external_publisher("room1", "media1")
+            .await?;
+        assert!(registered.registered);
+        stream.set_registration_epoch(registered.epoch);
+        registry.unregister_publisher("room1", "media1").await?;
+
+        manager.pool.insert_and_cleanup(
+            "room1:media1".to_string(),
+            stream.clone(),
+            |_stream_key| Box::pin(async {}),
+        );
+
+        let reused = manager
+            .get_or_create("room1", "media1", "rtmp://example.com/live/stream")
+            .await?;
+
+        assert!(Arc::ptr_eq(&reused, &stream));
+        let restored = registry
+            .get_publisher("room1", "media1")
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("publisher registration should be restored"))?;
+        assert_eq!(restored.node_id, "node-1");
+        assert_eq!(restored.user_id, "");
+        assert_eq!(stream.registration_epoch(), Some(restored.epoch));
+        assert_eq!(
+            stream.lifecycle().subscriber_count(),
+            1,
+            "reuse path must keep exactly one subscriber for the caller"
         );
         Ok(())
     }

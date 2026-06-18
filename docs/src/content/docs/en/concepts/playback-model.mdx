@@ -33,9 +33,23 @@ Room WebSocket connections carry playback controls, chat, WebRTC signaling, and 
 
 Providers explicitly return the headers to use. The proxy does not forward arbitrary client headers to upstream services.
 
+One playback result can contain direct modes and `proxy_*` modes at the same time. Each Provider decides these modes, the default mode, header exposure, and signed proxy URLs while generating playback info. Shared helpers only generate standard proxy sibling URLs; they do not replace provider-owned playback decisions.
+
+HTTP and gRPC are transport entry points. They parse paths, query parameters, JSON/protobuf, headers, and streaming bodies, then call `synctv-api/src/impls`. Permissions, playback state, Provider calls, caching, fanout, duration merging, and resource lifecycle handling live in `impls` and core services so both transports share one behavior path.
+
 ## Range and Cache
 
 Seeking usually depends on HTTP Range. When upstream supports Range, proxy slice cache can cache fixed byte slices. If upstream does not support Range, SyncTV bypasses slice cache and does not write full-file cache entries.
+
+## Playback Background Workers
+
+Duration probing and playback auto-advance are driven by local active rooms. A room enters a node's playback background scan set only while the current process has a Realtime connection for that room.
+
+These workers run on every node so background work follows the real connection lifecycle. When several cluster nodes host the same room, the database provides concurrency safety: duration probes claim work, and auto-advance uses playback state transactions with optimistic versions.
+
+The worker input set comes from `ConnectionRuntime::active_room_ids()`. Presence hot-room statistics serve room lists, admin views, and metrics. Playback lifecycle workers use the node-local realtime connection set, while database locks, `SKIP LOCKED`, and playback-state version writes converge duplicate cross-node attempts.
+
+Dynamic playlist background work also stays bound to the current target. Repository queries keep both `room_id = ANY(active_room_ids)` and the current `room_playback_progress.target_hash` join so probing, caching, and auto-advance operate on the item the room is currently playing.
 
 ## Next Steps
 

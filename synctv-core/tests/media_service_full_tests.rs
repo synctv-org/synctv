@@ -12,12 +12,13 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{Playlist, RoomMemberPermissionBits, User, UserId, UserRole, UserStatus},
     provider::DynamicListQuery,
-    repository::UserRepository,
+    repository::{ProviderInstanceRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
-        media::{AddMediaRequest, EditMediaRequest},
+        media::{AddMediaRequest, BackendPlaybackRequest, EditMediaRequest},
         playlist::CreatePlaylistRequest,
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        InMemoryTokenBlacklistStore, ProvidersManager, RemoteProviderManager, RoomService,
+        UserService,
     },
     Error,
 };
@@ -46,6 +47,23 @@ fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
     RoomService::new_for_tests(pool, user_service).checked("room service should build")
+}
+
+fn make_room_service_with_disabled_provider_ssrf(pool: PgPool) -> RoomService {
+    let user_service = make_user_service(&pool);
+    let provider_instance_repo = ProviderInstanceRepository::new(pool.clone());
+    let provider_instance_manager =
+        Arc::new(RemoteProviderManager::new(Arc::new(provider_instance_repo)));
+    let providers_manager = Arc::new(
+        ProvidersManager::new_with_ssrf_guard(
+            provider_instance_manager,
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )
+        .checked("providers manager should build"),
+    );
+
+    RoomService::new_with_providers_for_tests(pool, user_service, providers_manager)
+        .checked("room service should build")
 }
 
 fn make_user(username: &str) -> User {
@@ -128,6 +146,19 @@ async fn register_alist_provider(room_service: &RoomService) {
         .await
     {
         std::panic::panic_any(format!("alist provider should be registered: {error:?}"));
+    }
+}
+
+async fn register_live_proxy_provider(room_service: &RoomService) {
+    if let Err(error) = room_service
+        .media_service()
+        .providers_manager()
+        .create_provider("live_proxy", "live_proxy", &serde_json::json!({}))
+        .await
+    {
+        std::panic::panic_any(format!(
+            "live_proxy provider should be registered: {error:?}"
+        ));
     }
 }
 
@@ -347,6 +378,79 @@ async fn test_add_media_with_bilibili_without_repo_allows_anonymous_playback() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_backend_playback_for_static_live_proxy_binds_media_id() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service_with_disabled_provider_ssrf(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("live_proxy_backend_creator"))
+        .await
+        .checked("test operation should succeed");
+
+    let (room, _) = room_service
+        .create_room(
+            "Live Proxy Backend Playback Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    register_live_proxy_provider(&room_service).await;
+
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
+    let media = room_service
+        .media_service()
+        .add_media(
+            room.id,
+            creator.id,
+            AddMediaRequest {
+                playlist_id: Some(playlist.id),
+                name: "Live Proxy Source".to_string(),
+                description: String::new(),
+                source_provider: "live_proxy".to_string(),
+                provider_instance_name: None,
+                source_config: serde_json::json!({
+                    "url": "http://127.0.0.1/live/source.flv"
+                }),
+            },
+        )
+        .await
+        .checked("live proxy media should be added with disabled SSRF in test provider");
+
+    let playback = room_service
+        .media_service()
+        .generate_backend_playback_for_source(BackendPlaybackRequest {
+            room_id: room.id,
+            media_id: Some(media.id),
+            playlist_id: None,
+            target: &[],
+        })
+        .await
+        .checked("backend playback should be generated")
+        .checked("static media should resolve to playback");
+
+    assert_eq!(playback.default_mode, "hls");
+    assert!(playback.playback_infos.contains_key("flv"));
+    assert_eq!(
+        playback.metadata.get("media_id"),
+        Some(&serde_json::json!(media.id))
+    );
+    assert_eq!(
+        playback.metadata.get("room_id"),
+        Some(&serde_json::json!(room.id))
+    );
+    assert_eq!(
+        playback.metadata.get("provider"),
+        Some(&serde_json::json!("live_proxy"))
+    );
+    assert!(!playback.metadata.contains_key("url"));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_dynamic_playlist_with_credential_backed_provider_without_repo_fails_closed() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -458,6 +562,7 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
                 page_size: 20,
                 ..DynamicListQuery::default()
             },
+            None,
         )
         .await
         .failed("credential-backed dynamic listing should fail closed without repo wiring");

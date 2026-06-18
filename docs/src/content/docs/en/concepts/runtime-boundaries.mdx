@@ -20,6 +20,12 @@ PostgreSQL stores users, rooms, permissions, Provider instances, preferences, no
 
 management gRPC, metrics, and internal debugging endpoints are for administrators and operators, not normal users or third-party clients. Use Unix sockets, private networks, VPNs, bastions, Kubernetes exec, or controlled scraping paths. If TCP management is enabled, set `management.auth_token`.
 
+## HTTP/gRPC Transport Boundary
+
+HTTP and gRPC are two transport entry points for the same business capabilities. Transport code owns path, query, JSON/protobuf, headers, stream body, and status conversion. Business implementation belongs in `synctv-api/src/impls` and `synctv-core` services, repositories, and providers.
+
+When adding a capability, protobuf definitions describe the shared parameters, and HTTP/gRPC handlers translate into the same impl parameters. Keep Provider, playback, chat, file, and livestream logic in impls/core so transports expose consistent behavior.
+
 ## SyncTV Does Not Provide
 
 | Non-goal | Meaning |
@@ -29,6 +35,16 @@ management gRPC, metrics, and internal debugging endpoints are for administrator
 | Public management plane | Management endpoints must not be exposed to the public internet |
 | CDN | Proxy and slice cache do not replace bandwidth planning and edge distribution |
 | Strongly consistent collaboration database | Realtime is for room events and resource observation, not a database transaction boundary |
+
+## Local Active Room Boundary
+
+Playback background workers use the current process's active room set as their scheduling boundary. An active room here means a room with at least one realtime connection in the local `ConnectionRuntime`.
+
+This boundary applies to duration probing, playback auto-advance, and playback resource lifecycle work. These workers run on every node because a follower can be the only process with connections for a room. Multiple nodes can host connections for the same room; duplicate attempts are handled by the database layer. Duration probing claims rows with locks and `SKIP LOCKED`, while auto-advance uses playback state transactions and optimistic versions.
+
+Global hot-room statistics are presence and analytics data for room lists, admin views, and metrics. Playback background workers should read `ConnectionRuntime::active_room_ids()` so each node handles the rooms it is actively serving.
+
+Leader election fits partition maintenance, cleanup, and other global singleton tasks. Playback lifecycle worker ownership comes from the node-local realtime connection set.
 
 ## Next Steps
 

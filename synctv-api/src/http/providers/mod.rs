@@ -1399,6 +1399,7 @@ mod tests {
                 messaging_rate_limit_config: RateLimitConfig::default(),
                 heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
                 providers_manager,
+                playback_duration_probe: None,
             })
             .map_err(|error| test_error(format!("{error:?}")))?
             .1;

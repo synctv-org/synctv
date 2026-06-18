@@ -20,6 +20,11 @@ use crate::service::RoomService;
 use crate::PublicIdCodec;
 
 /// What action the HTTP layer should perform after the provider resolves the request.
+///
+/// Providers produce these actions from signed URLs that were created during
+/// their own `generate_playback` path. The HTTP layer executes the action and
+/// stays generic; provider-specific URL, header, manifest, and live lifecycle
+/// rules stay in the provider and its proxy resolver.
 #[derive(Debug, Clone)]
 pub enum ProxyAction {
     /// Fetch the URL and forward the response body (video stream, subtitle, etc.)
@@ -66,6 +71,7 @@ pub enum ProxyAction {
     },
     /// Serve a live HLS segment from the API layer.
     LiveHlsSegment {
+        provider_name: String,
         room_id: RoomId,
         media_id: MediaId,
         segment_name: String,

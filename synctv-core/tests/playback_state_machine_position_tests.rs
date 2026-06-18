@@ -122,7 +122,7 @@ async fn test_position_reset_on_media_switch() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_reset_preserves_progress_for_current_media() {
+async fn test_reset_snapshots_progress_and_switch_restarts_media() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -163,15 +163,15 @@ async fn test_reset_preserves_progress_for_current_media() {
     assert!(reset_state.playing_media_id.is_none());
     assert!((reset_state.position - 0.0).abs() < f64::EPSILON);
 
-    let resumed_state = playback_service
+    let restarted_state = playback_service
         .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .checked("operation should succeed");
-    assert_eq!(resumed_state.playing_media_id, Some(media.id));
+    assert_eq!(restarted_state.playing_media_id, Some(media.id));
     assert!(
-        resumed_state.position >= 90.0,
-        "switching back should resume from the calibrated stop position, got {}",
-        resumed_state.position
+        (restarted_state.position - 0.0).abs() < f64::EPSILON,
+        "switching back should restart the media, got {}",
+        restarted_state.position
     );
 
     room_service.playback_service().shutdown().await;

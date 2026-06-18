@@ -3,7 +3,8 @@
 //! Note: Real-time playback control (play/pause/seek/speed) is handled via WebSocket messages
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use synctv_core::models::PlaybackSourceIdentity;
+use chrono::Utc;
+use synctv_core::models::{PlaybackDurationStatus, PlaybackSourceIdentity};
 use synctv_core::models::{PlaylistId, RoomPlaybackState, UserId};
 use synctv_core::provider::{ExecutionControl, ProviderContext};
 use synctv_core::service::playback::{
@@ -17,7 +18,7 @@ use super::convert::{
 };
 use super::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
-use crate::impls::playback::playback_expires_at;
+use crate::impls::playback::{playback_expires_at, playback_generation_error_allows_state_only};
 use crate::impls::ApiError;
 use crate::playback_fanout::{PlaybackFanoutActor, PreparedPlaybackStateFanout};
 use synctv_core::models::MediaId;
@@ -36,24 +37,33 @@ pub(super) fn static_media_source_provider(
     Ok(source_provider)
 }
 
-async fn persist_playback_duration(
+async fn resolve_playback_duration(
     room_service: &synctv_core::service::RoomService,
     identity: PlaybackSourceIdentity,
-    duration_seconds: Option<f64>,
-) -> Result<(), ApiError> {
+    provider_duration_seconds: Option<f64>,
+) -> Result<Option<f64>, ApiError> {
     let repo = room_service.playback_service().source_metadata_repository();
     if let Some(duration_seconds) =
-        duration_seconds.filter(|duration| duration.is_finite() && *duration > 0.0)
+        provider_duration_seconds.filter(|duration| duration.is_finite() && *duration > 0.0)
     {
         repo.upsert_provider_duration(&identity, duration_seconds)
             .await
             .map_err(ApiError::from)?;
-    } else {
-        repo.mark_unknown_if_absent(&identity)
-            .await
-            .map_err(ApiError::from)?;
+        return Ok(Some(duration_seconds));
     }
-    Ok(())
+
+    let metadata = repo.get(&identity).await.map_err(ApiError::from)?;
+    if let Some(duration_seconds) = metadata
+        .and_then(|metadata| metadata.duration_seconds)
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+    {
+        return Ok(Some(duration_seconds));
+    }
+
+    repo.mark_unknown_if_absent(&identity)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(None)
 }
 
 fn stale_cached_playback_reference<T>(
@@ -255,6 +265,40 @@ pub(crate) fn build_playback_source_expectation(
 }
 
 impl ClientApiImpl {
+    async fn observed_playback_source_needs_provider_refresh(
+        &self,
+        state: &RoomPlaybackState,
+    ) -> Result<bool, ApiError> {
+        let Some(identity) = PlaybackSourceIdentity::from_state(state) else {
+            return Ok(false);
+        };
+        let metadata = self
+            .room_service
+            .playback_service()
+            .source_metadata_repository()
+            .get(&identity)
+            .await
+            .map_err(ApiError::from)?;
+
+        let Some(metadata) = metadata else {
+            return Ok(true);
+        };
+        if metadata.duration_seconds.is_some() {
+            return Ok(false);
+        }
+        match metadata.duration_status {
+            PlaybackDurationStatus::Available => Ok(false),
+            PlaybackDurationStatus::Pending => Ok(metadata
+                .next_retry_at
+                .is_some_and(|retry| retry <= Utc::now())),
+            PlaybackDurationStatus::Unknown
+            | PlaybackDurationStatus::Failed
+            | PlaybackDurationStatus::Unavailable => Ok(metadata
+                .next_retry_at
+                .is_none_or(|retry_at| retry_at <= Utc::now())),
+        }
+    }
+
     pub(super) fn build_provider_context<'a>(
         &'a self,
         user_id: &UserId,
@@ -284,7 +328,17 @@ impl ClientApiImpl {
             .with_playback_client_profile(playback_client_profile.cloned())
             .with_request_context(request_control.map(ExecutionControl::child));
         if let Some(credential_owner_id) = credential_owner_id {
-            ctx = ctx.with_credential_owner_id(*credential_owner_id);
+            let public_credential_owner_id = self
+                .public_id_codec
+                .encode_user_id(*credential_owner_id)
+                .map_err(|error| {
+                    ApiError::Internal(format!(
+                        "Failed to encode credential owner public id: {error}"
+                    ))
+                })?;
+            ctx = ctx
+                .with_credential_owner_id(*credential_owner_id)
+                .with_public_credential_owner_id(public_credential_owner_id);
         }
         if let Some(provider_instance_name) = provider_instance_name
             .map(str::trim)
@@ -379,6 +433,13 @@ impl ClientApiImpl {
             default_mode_expires_at,
         )?;
 
+        let duration_seconds = resolve_playback_duration(
+            &self.room_service,
+            PlaybackSourceIdentity::static_media(media.room_id, media.id),
+            provider_result.duration_seconds,
+        )
+        .await?;
+
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
             media.playlist_id,
             media.room_id,
@@ -387,13 +448,7 @@ impl ClientApiImpl {
         )
         .id(media.id)
         .default_mode(provider_result.default_mode.clone())
-        .duration_seconds(provider_result.duration_seconds);
-        persist_playback_duration(
-            &self.room_service,
-            PlaybackSourceIdentity::static_media(media.room_id, media.id),
-            provider_result.duration_seconds,
-        )
-        .await?;
+        .duration_seconds(duration_seconds);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
             let mut info = provider_playback_info_to_model(&provider_info);
@@ -403,7 +458,9 @@ impl ClientApiImpl {
             builder = builder.add_mode(mode_name, info);
         }
         for (key, value) in provider_result.metadata {
-            builder = builder.add_metadata(key, value);
+            if key != synctv_core::provider::bilibili::DASH_MANIFEST_METADATA_KEY {
+                builder = builder.add_metadata(key, value);
+            }
         }
 
         let mut full_result = builder
@@ -494,6 +551,13 @@ impl ClientApiImpl {
             .await?;
         }
 
+        let duration_seconds = resolve_playback_duration(
+            &self.room_service,
+            PlaybackSourceIdentity::dynamic_playlist(*room_id, *playlist_id, target),
+            provider_result.duration_seconds,
+        )
+        .await?;
+
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
             Some(*playlist_id),
             *room_id,
@@ -501,20 +565,16 @@ impl ClientApiImpl {
             0.0,
         )
         .default_mode(provider_result.default_mode.clone())
-        .duration_seconds(provider_result.duration_seconds);
-        persist_playback_duration(
-            &self.room_service,
-            PlaybackSourceIdentity::dynamic_playlist(*room_id, *playlist_id, target),
-            provider_result.duration_seconds,
-        )
-        .await?;
+        .duration_seconds(duration_seconds);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
             let info = provider_playback_info_to_model(&provider_info);
             builder = builder.add_mode(mode_name, info);
         }
         for (key, value) in provider_result.metadata {
-            builder = builder.add_metadata(key, value);
+            if key != synctv_core::provider::bilibili::DASH_MANIFEST_METADATA_KEY {
+                builder = builder.add_metadata(key, value);
+            }
         }
 
         let full_result = builder
@@ -853,11 +913,14 @@ impl ClientApiImpl {
         let playback = match playback_result {
             Ok(snapshot) => Some(snapshot),
             Err(error) => {
+                if !playback_generation_error_allows_state_only(&error) {
+                    return Err(error);
+                }
                 tracing::warn!(
                     room_id = %rid,
                     user_id = %uid,
                     error = %error,
-                    "Playback generation failed; returning playback state only"
+                    "Transient playback generation failed; returning playback state only"
                 );
                 None
             }
@@ -1007,6 +1070,133 @@ impl crate::impls::playback::PlaybackService for ClientApiImpl {
                 room_id = %state.room_id,
                 error = %error,
                 "Provider playback progress report failed"
+            );
+        }
+    }
+
+    async fn refresh_observed_playback_metadata_and_auto_advance(
+        &self,
+        room_id: &synctv_core::models::RoomId,
+        state: &synctv_core::models::RoomPlaybackState,
+    ) {
+        let settings = match self.room_service.get_room_settings(room_id).await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::warn!(
+                    room_id = %room_id,
+                    error = %error,
+                    "Observed playback lifecycle failed to load room settings"
+                );
+                return;
+            }
+        };
+
+        let observer_user_id = if let Some(media_id) = state.playing_media_id.as_ref() {
+            match self
+                .room_service
+                .media_service()
+                .get_room_media(room_id, media_id)
+                .await
+            {
+                Ok(Some(media)) => media.creator_id,
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        media_id = %media_id,
+                        error = %error,
+                        "Observed playback lifecycle failed to load current media"
+                    );
+                    None
+                }
+            }
+        } else if let Some(playlist_id) = state.playing_playlist_id.as_ref() {
+            match self
+                .room_service
+                .media_service()
+                .get_room_playlist(room_id, playlist_id)
+                .await
+            {
+                Ok(Some(playlist)) => playlist.creator_id,
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        playlist_id = %playlist_id,
+                        error = %error,
+                        "Observed playback lifecycle failed to load current playlist"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let needs_provider_refresh = match self
+            .observed_playback_source_needs_provider_refresh(state)
+            .await
+        {
+            Ok(needs_refresh) => needs_refresh,
+            Err(error) => {
+                tracing::warn!(
+                    room_id = %room_id,
+                    error = %error,
+                    "Observed playback lifecycle failed to inspect playback metadata"
+                );
+                false
+            }
+        };
+
+        if needs_provider_refresh {
+            if let Some(user_id) = observer_user_id {
+                if let Err(error) = self
+                    .build_playback_from_state(&user_id, room_id, state, None, None)
+                    .await
+                {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        error = %error,
+                        "Observed playback lifecycle failed to refresh playback metadata"
+                    );
+                }
+            } else if let Some(identity) = PlaybackSourceIdentity::from_state(state) {
+                if let Err(error) = self
+                    .room_service
+                    .playback_service()
+                    .source_metadata_repository()
+                    .mark_unknown_if_absent(&identity)
+                    .await
+                {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        error = %error,
+                        "Observed playback lifecycle failed to initialize playback metadata"
+                    );
+                }
+            }
+        }
+
+        if let Some(probe) = self.playback_duration_probe.as_ref() {
+            if let Err(error) = probe.probe_active_source_once(state).await {
+                tracing::warn!(
+                    room_id = %room_id,
+                    error = %error,
+                    "Observed playback lifecycle duration probe failed"
+                );
+            }
+        }
+
+        if let Err(error) = self
+            .room_service
+            .playback_service()
+            .check_and_auto_play(room_id, &settings, state.computed_position())
+            .await
+        {
+            tracing::warn!(
+                room_id = %room_id,
+                error = %error,
+                "Observed playback lifecycle auto-advance failed"
             );
         }
     }

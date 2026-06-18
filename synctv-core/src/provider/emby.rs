@@ -9,6 +9,7 @@ use super::{
     MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
     ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SubtitleTrack,
 };
+use crate::proxy_signature::ProxySigningKey;
 use crate::service::RemoteProviderManager;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -56,6 +57,36 @@ fn dynamic_list_start_index(page: usize, page_size: usize) -> Result<u64, Provid
 
 fn optional_i64_to_proto_absent_zero(value: Option<i64>) -> i64 {
     value.unwrap_or(0)
+}
+
+fn sign_emby_playback_urls(
+    result: &mut PlaybackResult,
+    version: &str,
+    signing_key: &ProxySigningKey,
+    room_id: &str,
+    user_id: &str,
+    expires_at: i64,
+) {
+    // Emby/Jellyfin exposes upstream modes and signed proxy siblings together.
+    // Upstream token headers remain visible by product policy; administrators
+    // are warned that direct playback can disclose those credentials. Keep
+    // transcode, direct stream, HLS, and subtitle proxy actions in sync with
+    // `resolve_proxy` whenever playback modes change.
+    let signing = super::PlaybackProxySigning::new(
+        EmbyProvider::NAME,
+        version,
+        signing_key,
+        room_id,
+        user_id,
+        expires_at,
+    );
+    super::append_signed_proxy_playback_modes(
+        result,
+        &signing,
+        true,
+        false,
+        super::signed_standard_proxy_urls,
+    );
 }
 
 /// Build an absolute Emby/Jellyfin URL from a configured server URL and an API path.
@@ -871,8 +902,13 @@ impl MediaProvider for EmbyProvider {
         if let Some(store) = store {
             if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
                 if !cached.is_expired() {
-                    return super::maybe_sign_cached_versioned_playback(cached, Self::NAME, _ctx)
-                        .await;
+                    return super::build_cached_versioned_playback_response(
+                        cached,
+                        Self::NAME,
+                        _ctx,
+                        sign_emby_playback_urls,
+                    )
+                    .await;
                 }
             }
         }
@@ -891,8 +927,13 @@ impl MediaProvider for EmbyProvider {
         if let Some(store) = store {
             if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
                 if !cached.is_expired() {
-                    return super::maybe_sign_cached_versioned_playback(cached, Self::NAME, _ctx)
-                        .await;
+                    return super::build_cached_versioned_playback_response(
+                        cached,
+                        Self::NAME,
+                        _ctx,
+                        sign_emby_playback_urls,
+                    )
+                    .await;
                 }
             }
         }
@@ -903,7 +944,15 @@ impl MediaProvider for EmbyProvider {
             .await?;
 
         // Generate version and store result
-        super::finalize_versioned_playback(result, Self::NAME, &cache_key, cache_ttl, _ctx).await
+        super::cache_versioned_playback_and_build_response(
+            result,
+            Self::NAME,
+            &cache_key,
+            cache_ttl,
+            _ctx,
+            sign_emby_playback_urls,
+        )
+        .await
     }
 
     fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
@@ -1178,6 +1227,28 @@ impl super::proxy::ProviderProxy for EmbyProvider {
                 });
             }
 
+            if let Some(m3u8_path) = rest.strip_prefix("m3u8/") {
+                let (mode_name, index_str) =
+                    m3u8_path.split_once('/').ok_or(ProviderError::NotFound)?;
+                let playback_info = versioned
+                    .result
+                    .playback_infos
+                    .get(mode_name)
+                    .ok_or(ProviderError::NotFound)?;
+                let index = super::proxy::parse_proxy_index(index_str)?;
+                let url = playback_info
+                    .urls
+                    .get(index)
+                    .ok_or(ProviderError::NotFound)?;
+
+                return Ok(super::proxy::ProxyAction::M3u8Rewrite {
+                    url: url.clone(),
+                    headers: playback_info.headers.clone(),
+                    proxy_base: super::proxy::m3u8_segment_proxy_base(ctx, version),
+                    proxy_url_claims: ctx.verified_claims.cloned(),
+                });
+            }
+
             let default_info = versioned
                 .result
                 .playback_infos
@@ -1256,9 +1327,12 @@ impl DynamicFolder for EmbyProvider {
                 let credential_owner_id = ctx
                     .credential_owner_id()
                     .ok_or(ProviderError::CredentialRequired)?;
+                let public_credential_owner_id = ctx
+                    .public_credential_owner_id()
+                    .map_or_else(|| credential_owner_id.to_string(), str::to_owned);
                 let thumbnail_url = Self::build_thumbnail_url(
                     &base_config.server_id,
-                    &credential_owner_id.to_string(),
+                    &public_credential_owner_id,
                     &item.id,
                 );
 
@@ -1598,6 +1672,106 @@ mod tests {
 
     fn unconfigured_test_response() -> EmbyError {
         EmbyError::InvalidConfig("test emby method is not configured".to_string())
+    }
+
+    fn test_proxy_signing_key() -> ProxySigningKey {
+        ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .checked("test proxy signing key should derive")
+    }
+
+    #[test]
+    fn test_signed_emby_subtitle_urls_include_mode_and_index() {
+        let mut result = PlaybackResult {
+            playback_infos: HashMap::from([
+                (
+                    "source_a".to_string(),
+                    PlaybackInfo {
+                        urls: vec!["https://emby.example.com/Videos/123/a.mp4".to_string()],
+                        format: "mp4".to_string(),
+                        headers: HashMap::from([(
+                            "X-Emby-Token".to_string(),
+                            "api-key-123".to_string(),
+                        )]),
+                        subtitles: vec![SubtitleTrack {
+                            language: "zh-CN".to_string(),
+                            name: "Chinese".to_string(),
+                            url: "https://emby.example.com/subtitles/a-zh.srt".to_string(),
+                            headers: HashMap::new(),
+                            format: "srt".to_string(),
+                        }],
+                        expires_at: None,
+                        cors_proxy_required: true,
+                    },
+                ),
+                (
+                    "source_b".to_string(),
+                    PlaybackInfo {
+                        urls: vec!["https://emby.example.com/Videos/123/b.mp4".to_string()],
+                        format: "mp4".to_string(),
+                        headers: HashMap::new(),
+                        subtitles: vec![SubtitleTrack {
+                            language: "en-US".to_string(),
+                            name: "English".to_string(),
+                            url: "https://emby.example.com/subtitles/b-en.srt".to_string(),
+                            headers: HashMap::new(),
+                            format: "srt".to_string(),
+                        }],
+                        expires_at: None,
+                        cors_proxy_required: true,
+                    },
+                ),
+            ]),
+            default_mode: "source_a".to_string(),
+            duration_seconds: None,
+            metadata: HashMap::new(),
+        };
+        let signing_key = test_proxy_signing_key();
+
+        sign_emby_playback_urls(
+            &mut result,
+            "emode",
+            &signing_key,
+            "room-1",
+            "user-1",
+            chrono::Utc::now().timestamp() + 3600,
+        );
+
+        assert_eq!(
+            result.playback_infos["source_a"].urls[0],
+            "https://emby.example.com/Videos/123/a.mp4"
+        );
+        assert_eq!(
+            result.playback_infos["source_a"]
+                .headers
+                .get("X-Emby-Token")
+                .map(String::as_str),
+            Some("api-key-123")
+        );
+        assert!(!result.playback_infos["source_a"].cors_proxy_required);
+        assert_eq!(
+            result.playback_infos["source_b"].subtitles[0].url,
+            "https://emby.example.com/subtitles/b-en.srt"
+        );
+        assert!(result.playback_infos["source_b"].subtitles[0]
+            .headers
+            .is_empty());
+
+        let proxy_source_a = &result.playback_infos["proxy_source_a"];
+        assert!(proxy_source_a.headers.is_empty());
+        assert!(!proxy_source_a.cors_proxy_required);
+        assert!(
+            proxy_source_a.urls[0].contains("/api/providers/proxy/emby/emode/stream/source_a/0?"),
+            "signed Emby proxy URL should include source mode and index: {}",
+            proxy_source_a.urls[0]
+        );
+
+        let subtitle_url = &result.playback_infos["proxy_source_b"].subtitles[0].url;
+        assert!(
+            subtitle_url.contains("/api/providers/proxy/emby/emode/subtitle/source_b/0?"),
+            "signed Emby subtitle URL should include source mode and index: {subtitle_url}"
+        );
+        assert!(result.playback_infos["proxy_source_b"].headers.is_empty());
+        assert_eq!(result.default_mode, "source_a");
     }
 
     #[async_trait]
@@ -1965,6 +2139,29 @@ mod tests {
         assert!(
             thumbnail_url.contains("credential_owner_id=owner-456"),
             "Thumbnail URL must include the credential owner for shared Emby media"
+        );
+    }
+
+    #[test]
+    fn test_thumbnail_url_uses_public_credential_owner_id() {
+        let ctx = ProviderContext::new("test")
+            .with_credential_owner_id(UserId::expect_positive(2))
+            .with_public_credential_owner_id("usr_2");
+        let credential_owner_id = ctx.public_credential_owner_id().map_or_else(
+            || {
+                ctx.credential_owner_id()
+                    .expect("credential owner should be present")
+                    .to_string()
+            },
+            str::to_owned,
+        );
+
+        let thumbnail_url =
+            EmbyProvider::build_thumbnail_url("srv-123", &credential_owner_id, "item-789");
+
+        assert!(
+            thumbnail_url.contains("credential_owner_id=usr_2"),
+            "client-facing Emby thumbnail URLs must carry public user IDs: {thumbnail_url}"
         );
     }
 

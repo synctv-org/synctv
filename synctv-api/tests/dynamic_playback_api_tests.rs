@@ -134,6 +134,26 @@ struct StubDynamicProvider {
     instance_id: String,
 }
 
+#[derive(Debug)]
+struct TransientPlaybackFailureProvider;
+
+#[async_trait]
+impl MediaProvider for TransientPlaybackFailureProvider {
+    fn name(&self) -> &'static str {
+        "direct_url"
+    }
+
+    async fn generate_playback(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        _source_config: &serde_json::Value,
+    ) -> Result<PlaybackResult, ProviderError> {
+        Err(ProviderError::NetworkError(
+            "test provider temporarily unavailable".to_string(),
+        ))
+    }
+}
+
 impl StubDynamicProvider {
     fn new(instance_id: impl Into<String>) -> Self {
         Self {
@@ -201,11 +221,23 @@ impl MediaProvider for StubDynamicProvider {
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| ProviderError::InvalidConfig("Missing path".to_string()))?;
 
+        let direct_url = format!("https://{}.example.com{path}", self.instance_id);
         let mut infos = std::collections::HashMap::new();
         infos.insert(
             "direct".to_string(),
             PlaybackInfo {
-                urls: vec![format!("https://{}.example.com{path}", self.instance_id)],
+                urls: vec![direct_url.clone()],
+                format: "mp4".to_string(),
+                headers: std::collections::HashMap::new(),
+                subtitles: Vec::new(),
+                expires_at: None,
+                cors_proxy_required: false,
+            },
+        );
+        infos.insert(
+            "proxy_direct".to_string(),
+            PlaybackInfo {
+                urls: vec![direct_url],
                 format: "mp4".to_string(),
                 headers: std::collections::HashMap::new(),
                 subtitles: Vec::new(),
@@ -504,12 +536,9 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
     assert_eq!(playback.playlist_id, playlist_public_id);
     assert_eq!(playback.name, "episode-1.mp4");
     let playback_target_meta = playback.metadata.get("target").unwrap();
-    let playback_target_value: String = serde_json::from_str(playback_target_meta).unwrap();
-    assert_eq!(
-        playback_target_value,
-        BASE64_STANDARD.encode(br#"{"relative_path":"/episode-1.mp4"}"#)
-    );
-    let direct = playback.playback_infos.get("direct").unwrap();
+    let expected_target_meta = BASE64_STANDARD.encode(br#"{"relative_path":"/episode-1.mp4"}"#);
+    assert_eq!(playback_target_meta, &expected_target_meta);
+    let direct = playback.playback_infos.get("proxy_direct").unwrap();
     assert_eq!(direct.urls.len(), 1);
     assert_eq!(
         direct.urls[0].url,
@@ -865,7 +894,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         .unwrap();
 
     let playback = response.playback.unwrap();
-    let direct = playback.playback_infos.get("direct").unwrap();
+    let direct = playback.playback_infos.get("proxy_direct").unwrap();
     assert_eq!(direct.urls.len(), 1);
     assert!(
         direct.urls[0]
@@ -875,7 +904,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         direct.urls[0].url
     );
     assert!(
-        direct.urls[0].url.contains("/stream?"),
+        direct.urls[0].url.contains("/stream/direct/0?"),
         "signed direct-url playback should use stream proxy contract, got {}",
         direct.urls[0].url
     );
@@ -964,9 +993,28 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
     let user_repo = UserRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
     let user_service = Arc::new(make_user_service(&pool));
+    let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+        ProviderInstanceRepository::new(pool.clone()),
+    )));
+    let mut providers_manager =
+        ProvidersManager::new(provider_instance_manager).expect("providers manager should build");
+    providers_manager.register_factory(
+        "direct_url",
+        Box::new(|_instance_id, _config, _instance_manager| {
+            Ok(Arc::new(TransientPlaybackFailureProvider))
+        }),
+    );
+    providers_manager
+        .create_provider("direct_url", "direct_url", &serde_json::Value::Null)
+        .await
+        .unwrap();
 
-    let room_service = RoomService::new_for_tests(pool.clone(), (*user_service).clone())
-        .expect("room service should build");
+    let room_service = RoomService::new_with_providers_for_tests(
+        pool.clone(),
+        (*user_service).clone(),
+        Arc::new(providers_manager),
+    )
+    .expect("room service should build");
     let room_service = Arc::new(room_service);
 
     let owner = user_repo
@@ -988,10 +1036,10 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
         playlist_id: None,
         room_id: room.id,
         creator_id: Some(owner.id),
-        name: "Broken Playback Provider".to_string(),
+        name: "Transient Playback Provider".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({ "opaque": true }),
-        provider_name: "live_proxy".to_string(),
+        source_config: serde_json::json!({ "url": "https://example.com/video.mp4" }),
+        provider_name: "direct_url".to_string(),
         provider_instance_name: None,
         position: 0.0,
     });
@@ -1055,6 +1103,107 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
         response.playback.is_none(),
         "playback info failures should degrade to state-only responses"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_playback_returns_error_for_invalid_live_proxy_source_config() {
+    let (_postgres, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let user_service = Arc::new(make_user_service(&pool));
+
+    let room_service = RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+        .expect("room service should build");
+    let room_service = Arc::new(room_service);
+    room_service
+        .media_service()
+        .providers_manager()
+        .create_builtin_defaults()
+        .await
+        .expect("built-in providers should initialize");
+
+    let owner = user_repo
+        .create(&make_user("api_playback_invalid_live_proxy"))
+        .await
+        .unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "API Invalid Live Proxy Playback".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let media = Media::from_provider_with_params(FromProviderParams {
+        playlist_id: None,
+        room_id: room.id,
+        creator_id: Some(owner.id),
+        name: "Invalid Live Proxy Playback Provider".to_string(),
+        description: String::new(),
+        source_config: serde_json::json!({ "opaque": true }),
+        provider_name: "live_proxy".to_string(),
+        provider_instance_name: None,
+        position: 0.0,
+    });
+    let media = media_repo.create(&media).await.unwrap();
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let media_public_id = codec.encode_media_id(media.id).unwrap();
+
+    let client_api = ClientApiImpl::new_with_runtime(
+        synctv_api::impls::ClientApiConfig {
+            read_pool: None,
+            user_service,
+            room_service: room_service.clone(),
+            connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
+            config: Arc::new(Config::default()),
+            publish_key_service: None,
+            jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
+            live_streaming_infrastructure: None,
+            settings_registry: None,
+            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            chat_service: None,
+            provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
+                "test:provider:",
+            )),
+            email_api: None,
+            passkey_service: None,
+        },
+        support::client_api_runtime(),
+    );
+
+    client_api
+        .start_playback(
+            &owner.id,
+            &room_public_id,
+            synctv_proto::client::StartPlaybackRequest {
+                media_id: media_public_id,
+                playlist_id: String::new(),
+                target: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let error = client_api
+        .get_playback(
+            &owner.id,
+            &room_public_id,
+            synctv_proto::client::GetPlaybackRequest {
+                playback_client_profile: None,
+            },
+        )
+        .await
+        .expect_err("invalid provider config should be returned as an API error");
+
+    assert!(matches!(
+        error,
+        synctv_api::impls::ApiError::InvalidInput(message) if message == "Missing url"
+    ));
 }
 
 #[tokio::test]

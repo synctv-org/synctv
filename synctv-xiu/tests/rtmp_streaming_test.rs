@@ -462,7 +462,11 @@ fn test_subscribe_type_serialization() {
 #[test]
 fn test_publish_type_serialization() {
     use synctv_xiu::streamhub::define::PublishType;
-    let types = vec![PublishType::RtmpPush, PublishType::RtmpRelay];
+    let types = vec![
+        PublishType::RtmpPush,
+        PublishType::RtmpRelay,
+        PublishType::ExternalPull,
+    ];
     for t in types {
         let json = serde_json::to_string(&t).unwrap();
         assert!(!json.is_empty());

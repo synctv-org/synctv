@@ -14,6 +14,7 @@ use super::{
     PlaybackResult, PlaybackSubtitlePreference, ProviderContext, ProviderCredentialDependency,
     ProviderError, SourceConfig, SubtitleTrack,
 };
+use crate::proxy_signature::ProxySigningKey;
 use crate::service::RemoteProviderManager;
 use crate::validation::validate_path_for_traversal;
 use async_trait::async_trait;
@@ -207,6 +208,52 @@ fn merge_subtitles(
         }
     }
     primary
+}
+
+fn sign_alist_playback_urls(
+    result: &mut PlaybackResult,
+    version: &str,
+    signing_key: &ProxySigningKey,
+    room_id: &str,
+    user_id: &str,
+    expires_at: i64,
+) {
+    // Alist returns upstream playback modes and signed SyncTV proxy siblings in
+    // the same result. The proxy default keeps clients independent from upstream
+    // auth headers and HLS segment rewriting details. Keep thumbnail, subtitle,
+    // file stream, and HLS proxy actions aligned with `resolve_proxy`.
+    let signing = super::PlaybackProxySigning::new(
+        AlistProvider::NAME,
+        version,
+        signing_key,
+        room_id,
+        user_id,
+        expires_at,
+    );
+
+    if let Some(thumbnail) = result
+        .metadata
+        .get("thumbnail")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .filter(|thumbnail| !thumbnail.trim().is_empty())
+    {
+        result.metadata.insert(
+            "proxy_thumbnail".to_string(),
+            serde_json::json!(signing.signed_url("thumbnail")),
+        );
+        result
+            .metadata
+            .insert("thumbnail".to_string(), serde_json::json!(thumbnail));
+    }
+
+    super::append_signed_proxy_playback_modes(
+        result,
+        &signing,
+        false,
+        true,
+        super::signed_standard_proxy_urls,
+    );
 }
 
 fn related_file_path(parent_path: &str, name: &str) -> Option<String> {
@@ -1052,8 +1099,13 @@ impl MediaProvider for AlistProvider {
         if let Some(store) = store {
             if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
                 if !cached.is_expired() {
-                    return super::maybe_sign_cached_versioned_playback(cached, Self::NAME, _ctx)
-                        .await;
+                    return super::build_cached_versioned_playback_response(
+                        cached,
+                        Self::NAME,
+                        _ctx,
+                        sign_alist_playback_urls,
+                    )
+                    .await;
                 }
             }
         }
@@ -1072,8 +1124,13 @@ impl MediaProvider for AlistProvider {
         if let Some(store) = store {
             if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
                 if !cached.is_expired() {
-                    return super::maybe_sign_cached_versioned_playback(cached, Self::NAME, _ctx)
-                        .await;
+                    return super::build_cached_versioned_playback_response(
+                        cached,
+                        Self::NAME,
+                        _ctx,
+                        sign_alist_playback_urls,
+                    )
+                    .await;
                 }
             }
         }
@@ -1085,7 +1142,15 @@ impl MediaProvider for AlistProvider {
             .await?;
 
         // Generate version and store result
-        super::finalize_versioned_playback(result, Self::NAME, &cache_key, cache_ttl, _ctx).await
+        super::cache_versioned_playback_and_build_response(
+            result,
+            Self::NAME,
+            &cache_key,
+            cache_ttl,
+            _ctx,
+            sign_alist_playback_urls,
+        )
+        .await
     }
 
     fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
@@ -1774,6 +1839,131 @@ mod tests {
             code: 501,
             message: "test alist method is not configured".to_string(),
         }
+    }
+
+    fn test_proxy_signing_key() -> ProxySigningKey {
+        ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .checked("test proxy signing key should derive")
+    }
+
+    #[test]
+    fn test_signed_alist_playback_adds_proxy_thumbnail_metadata() {
+        let mut result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "direct".to_string(),
+                PlaybackInfo {
+                    urls: vec!["https://alist.example.com/d/movie.mp4".to_string()],
+                    format: "mp4".to_string(),
+                    headers: HashMap::new(),
+                    subtitles: vec![],
+                    expires_at: None,
+                    cors_proxy_required: false,
+                },
+            )]),
+            default_mode: "direct".to_string(),
+            duration_seconds: None,
+            metadata: HashMap::from([(
+                "thumbnail".to_string(),
+                serde_json::json!("https://alist.example.com/thumb/movie.jpg"),
+            )]),
+        };
+        let signing_key = test_proxy_signing_key();
+
+        sign_alist_playback_urls(
+            &mut result,
+            "thumb2",
+            &signing_key,
+            "room-1",
+            "user-1",
+            chrono::Utc::now().timestamp() + 3600,
+        );
+
+        let thumbnail = result.metadata["thumbnail"]
+            .as_str()
+            .checked("thumbnail metadata should remain a string");
+        assert_eq!(thumbnail, "https://alist.example.com/thumb/movie.jpg");
+
+        let proxy_thumbnail = result.metadata["proxy_thumbnail"]
+            .as_str()
+            .checked("proxy thumbnail metadata should be a string");
+        assert!(
+            proxy_thumbnail.starts_with("/api/providers/proxy/alist/"),
+            "signed Alist thumbnail should use provider proxy: {proxy_thumbnail}"
+        );
+        assert!(
+            proxy_thumbnail.contains("/thumbnail?"),
+            "signed Alist thumbnail should use thumbnail proxy action: {proxy_thumbnail}"
+        );
+    }
+
+    #[test]
+    fn test_signed_alist_hls_modes_use_mode_specific_actions() {
+        let mut result = PlaybackResult {
+            playback_infos: HashMap::from([
+                (
+                    "transcoded_HD".to_string(),
+                    PlaybackInfo {
+                        urls: vec!["https://aliyun.example.com/hd/master.m3u8".to_string()],
+                        format: "hls".to_string(),
+                        headers: HashMap::from([(
+                            "Authorization".to_string(),
+                            "Bearer secret".to_string(),
+                        )]),
+                        subtitles: vec![],
+                        expires_at: None,
+                        cors_proxy_required: true,
+                    },
+                ),
+                (
+                    "transcoded_SD".to_string(),
+                    PlaybackInfo {
+                        urls: vec!["https://aliyun.example.com/sd/master.m3u8".to_string()],
+                        format: "hls".to_string(),
+                        headers: HashMap::new(),
+                        subtitles: vec![],
+                        expires_at: None,
+                        cors_proxy_required: true,
+                    },
+                ),
+            ]),
+            default_mode: "transcoded_HD".to_string(),
+            duration_seconds: None,
+            metadata: HashMap::new(),
+        };
+        let signing_key = test_proxy_signing_key();
+
+        sign_alist_playback_urls(
+            &mut result,
+            "alist-hls",
+            &signing_key,
+            "room-1",
+            "user-1",
+            chrono::Utc::now().timestamp() + 3600,
+        );
+
+        assert_eq!(
+            result.playback_infos["transcoded_HD"].urls[0],
+            "https://aliyun.example.com/hd/master.m3u8"
+        );
+        assert!(result.playback_infos["transcoded_HD"].headers.is_empty());
+        assert!(!result.playback_infos["transcoded_HD"].cors_proxy_required);
+
+        let proxy_hd = &result.playback_infos["proxy_transcoded_HD"];
+        assert!(
+            proxy_hd.urls[0].contains("/m3u8/transcoded_HD/0?"),
+            "default HLS proxy mode should keep the source mode and index"
+        );
+        assert!(proxy_hd.headers.is_empty());
+        assert!(!proxy_hd.cors_proxy_required);
+
+        let proxy_sd = &result.playback_infos["proxy_transcoded_SD"];
+        assert!(
+            proxy_sd.urls[0].contains("/m3u8/transcoded_SD/0?"),
+            "additional HLS proxy modes should keep their mode and index"
+        );
+        assert!(proxy_sd.headers.is_empty());
+        assert!(!proxy_sd.cors_proxy_required);
+        assert_eq!(result.default_mode, "proxy_transcoded_HD");
     }
 
     #[async_trait]

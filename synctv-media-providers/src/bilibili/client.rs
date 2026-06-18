@@ -72,6 +72,20 @@ fn quality_to_u32(quality: u64, endpoint: &'static str) -> Result<u32, BilibiliE
         .map_err(|_| BilibiliError::Parse(format!("{endpoint} quality {quality} exceeds u32")))
 }
 
+fn bilibili_api_error(code: i64, context: &'static str) -> BilibiliError {
+    let message = match code {
+        -101 => "Bilibili authentication is required".to_string(),
+        -352 => "Bilibili rejected the request signature".to_string(),
+        -401 => "Bilibili request is unauthorized".to_string(),
+        87007 => "Bilibili SMS login requires captcha verification".to_string(),
+        86038 => "Bilibili QR code has expired".to_string(),
+        86090 => "Bilibili QR code has been scanned".to_string(),
+        86101 => "Bilibili QR code is waiting to be scanned".to_string(),
+        _ => format!("Bilibili {context} API returned code {code}"),
+    };
+    BilibiliError::Api { code, message }
+}
+
 fn unix_timestamp_secs() -> u64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_secs(),
@@ -623,17 +637,28 @@ impl BilibiliClient {
         let resp = check_response(req.send().await?).await?;
         let json: types::NavResp = json_with_limit(resp).await?;
 
+        let wbi_img = match json.data.wbi_img {
+            Some(wbi_img) => wbi_img,
+            None if json.code != 0 => {
+                return Err(bilibili_api_error(i64::from(json.code), "nav"));
+            }
+            None => {
+                return Err(BilibiliError::Parse(
+                    "Missing wbi_img in nav response".to_string(),
+                ));
+            }
+        };
+
         if json.code != 0 {
-            return Err(BilibiliError::Api {
-                code: i64::from(json.code),
-                message: json.message,
-            });
+            tracing::debug!(
+                code = json.code,
+                "Using WBI keys from anonymous Bilibili nav response"
+            );
         }
 
-        let wbi_img = json
-            .data
-            .wbi_img
-            .ok_or_else(|| BilibiliError::Parse("Missing wbi_img in nav response".to_string()))?;
+        if json.code != 0 && wbi_img.img_url.is_empty() && wbi_img.sub_url.is_empty() {
+            return Err(bilibili_api_error(i64::from(json.code), "nav"));
+        }
 
         let img_key = extract_key_from_url(&wbi_img.img_url).ok_or_else(|| {
             BilibiliError::Parse(format!(
@@ -711,7 +736,6 @@ impl BilibiliClient {
         #[derive(Deserialize)]
         struct QrCodeResp {
             code: i32,
-            message: String,
             data: Option<QrCodeData>,
         }
 
@@ -725,10 +749,7 @@ impl BilibiliClient {
         let json: QrCodeResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api {
-                code: i64::from(json.code),
-                message: json.message,
-            });
+            return Err(bilibili_api_error(i64::from(json.code), "QR code"));
         }
 
         let data = json
@@ -750,7 +771,6 @@ impl BilibiliClient {
         #[derive(Deserialize)]
         struct LoginResp {
             code: i32,
-            message: String,
             data: Option<LoginData>,
         }
 
@@ -784,10 +804,7 @@ impl BilibiliClient {
         let json: LoginResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api {
-                code: i64::from(json.code),
-                message: json.message,
-            });
+            return Err(bilibili_api_error(i64::from(json.code), "QR login"));
         }
 
         let data = json
@@ -819,7 +836,6 @@ impl BilibiliClient {
         #[derive(Deserialize)]
         struct CaptchaResp {
             code: i32,
-            message: String,
             data: Option<CaptchaData>,
         }
 
@@ -833,10 +849,7 @@ impl BilibiliClient {
         let json: CaptchaResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api {
-                code: i64::from(json.code),
-                message: json.message,
-            });
+            return Err(bilibili_api_error(i64::from(json.code), "captcha"));
         }
 
         let data = json
@@ -858,7 +871,6 @@ impl BilibiliClient {
         #[derive(Deserialize)]
         struct SpiResp {
             code: i32,
-            message: String,
             data: Option<SpiData>,
         }
 
@@ -873,10 +885,7 @@ impl BilibiliClient {
         let json: SpiResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api {
-                code: i64::from(json.code),
-                message: json.message,
-            });
+            return Err(bilibili_api_error(i64::from(json.code), "BUVID"));
         }
 
         let data = json
@@ -904,7 +913,6 @@ impl BilibiliClient {
         #[derive(Deserialize)]
         struct SmsResp {
             code: i32,
-            message: String,
             data: Option<SmsData>,
         }
 
@@ -945,10 +953,7 @@ impl BilibiliClient {
         let json: SmsResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api {
-                code: i64::from(json.code),
-                message: json.message,
-            });
+            return Err(bilibili_api_error(i64::from(json.code), "SMS"));
         }
 
         let data = json
@@ -972,7 +977,6 @@ impl BilibiliClient {
         #[derive(Deserialize)]
         struct LoginSmsResp {
             code: i32,
-            message: String,
             data: Option<LoginSmsData>,
         }
 
@@ -1011,10 +1015,7 @@ impl BilibiliClient {
 
         // Check API-level status before trusting the cookies
         if json.code != 0 {
-            return Err(BilibiliError::Api {
-                code: i64::from(json.code),
-                message: json.message,
-            });
+            return Err(bilibili_api_error(i64::from(json.code), "SMS login"));
         }
 
         // Check data.status field -- non-zero indicates SMS login failure
@@ -1200,10 +1201,7 @@ impl BilibiliClient {
                 let json: VideoInfoResp = json_with_limit(response).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: json.code,
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(json.code, "video info"));
                 }
 
                 let data = required_payload(json.data, "video info")?;
@@ -1256,10 +1254,7 @@ impl BilibiliClient {
                 let json: PlayUrlResp = json_with_limit(response).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: json.code,
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(json.code, "play URL"));
                 }
 
                 let data = required_payload(json.data, "play URL")?;
@@ -1299,10 +1294,7 @@ impl BilibiliClient {
                 let json: AnimeInfoResp = json_with_limit(response).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: json.code,
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(json.code, "anime info"));
                 }
 
                 let result = required_payload(json.result, "anime info")?;
@@ -1361,10 +1353,7 @@ impl BilibiliClient {
                 let json: types::VideoPageInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: i64::from(json.code),
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(i64::from(json.code), "video page"));
                 }
 
                 let data = json
@@ -1435,10 +1424,7 @@ impl BilibiliClient {
                 let json: types::VideoUrlResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: i64::from(json.code),
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(i64::from(json.code), "video URL"));
                 }
 
                 let data = json.data;
@@ -1540,16 +1526,18 @@ impl BilibiliClient {
                 let json: types::DashVideoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: i64::from(json.code),
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(i64::from(json.code), "DASH video URL"));
                 }
 
                 // Parse DASH data into structured format
-                let dash_info = json.data.dash;
-                let (regular_dash, hevc_dash) =
-                    parse_dash_info(&dash_info, &json.data.support_formats);
+                let data = json.data.ok_or_else(|| {
+                    BilibiliError::Parse("DASH video URL response missing payload".to_string())
+                })?;
+                let dash_info = data.dash.ok_or_else(|| BilibiliError::Api {
+                    code: i64::from(json.code),
+                    message: "DASH video URL response did not include DASH streams".to_string(),
+                })?;
+                let (regular_dash, hevc_dash) = parse_dash_info(&dash_info, &data.support_formats);
 
                 Ok((regular_dash, hevc_dash))
             }
@@ -1589,10 +1577,7 @@ impl BilibiliClient {
                 let json: types::PlayerV2InfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: i64::from(json.code),
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(i64::from(json.code), "subtitles"));
                 }
 
                 let mut subtitles = HashMap::new();
@@ -1634,10 +1619,7 @@ impl BilibiliClient {
                 let json: types::NavResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: i64::from(json.code),
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(i64::from(json.code), "user info"));
                 }
 
                 let data = json.data;
@@ -1679,10 +1661,7 @@ impl BilibiliClient {
                 let json: types::SeasonInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: i64::from(json.code),
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(i64::from(json.code), "PGC page"));
                 }
 
                 let result = json.result;
@@ -1746,10 +1725,7 @@ impl BilibiliClient {
                 let json: types::PgcUrlResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: i64::from(json.code),
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(i64::from(json.code), "PGC URL"));
                 }
 
                 let result = json.result;
@@ -1806,10 +1782,7 @@ impl BilibiliClient {
                 let json: types::DashPgcResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: i64::from(json.code),
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(i64::from(json.code), "DASH PGC URL"));
                 }
 
                 let dash_info = json.result.dash.ok_or_else(|| BilibiliError::Api {
@@ -1893,10 +1866,7 @@ impl BilibiliClient {
                 let json: types::ParseLivePageResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: i64::from(json.code),
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(i64::from(json.code), "live page"));
                 }
 
                 let data = json.data;
@@ -1982,10 +1952,7 @@ impl BilibiliClient {
                 let json: types::RoomPlayInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: i64::from(json.code),
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(i64::from(json.code), "live streams"));
                 }
 
                 let mut streams = Vec::new();
@@ -2061,10 +2028,7 @@ impl BilibiliClient {
                 let json: types::GetLiveDanmuInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api {
-                        code: i64::from(json.code),
-                        message: json.message,
-                    });
+                    return Err(bilibili_api_error(i64::from(json.code), "live danmaku"));
                 }
 
                 let data = json.data;

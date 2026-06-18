@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use synctv_core::provider::{
     proxy::{ProviderProxy, ProxyAction, ProxyRequestContext},
-    sign_playback_urls,
     store::{InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback},
     BilibiliProvider, PlaybackInfo, PlaybackResult, ProviderClientManager, SubtitleTrack,
 };
@@ -90,28 +89,52 @@ fn expect_m3u8(action: ProxyAction) -> (String, HashMap<String, String>, String)
     }
 }
 
-fn signing_key() -> synctv_core::proxy_signature::ProxySigningKey {
-    ok(
-        synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-            b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-        ),
-        "test proxy signing key should derive",
-    )
+fn expect_direct_body(action: ProxyAction) -> (Vec<u8>, String, u16) {
+    match action {
+        ProxyAction::DirectBody {
+            body,
+            content_type,
+            status,
+        } => (body, content_type, status),
+        other => std::panic::panic_any(format!("expected DirectBody, got {other:?}")),
+    }
 }
 
-fn signed_sub_path<'a>(url: &'a str, prefix: &str, context: &str) -> std::borrow::Cow<'a, str> {
-    let sub_path_with_query = some(
-        url.strip_prefix(prefix),
-        "signed proxy URL should use provider proxy prefix",
-    );
-    let encoded = some(
-        sub_path_with_query.split('?').next(),
-        "signed proxy URL should include sub_path",
-    );
-    ok(
-        urlencoding::decode(encoded),
-        &format!("{context} should be valid percent-encoding"),
-    )
+fn dash_metadata() -> serde_json::Value {
+    serde_json::json!({
+        "dash": {
+            "duration": 120.0,
+            "min_buffer_time": 1.5,
+            "video_streams": [{
+                "id": 80,
+                "base_url": "https://cdn.bilibili.com/video-1080.m4s",
+                "mime_type": "video/mp4",
+                "codecs": "avc1.640028",
+                "width": 1920,
+                "height": 1080,
+                "frame_rate": "60",
+                "bandwidth": 1_000_000,
+                "start_with_sap": 1,
+                "segment_base": {
+                    "index_range": "0-99",
+                    "initialization_range": "0-10"
+                }
+            }],
+            "audio_streams": [{
+                "id": 30280,
+                "base_url": "https://cdn.bilibili.com/audio.m4s",
+                "mime_type": "audio/mp4",
+                "codecs": "mp4a.40.2",
+                "bandwidth": 128_000,
+                "start_with_sap": 1,
+                "segment_base": {
+                    "index_range": "0-49",
+                    "initialization_range": "0-8"
+                },
+                "audio_sampling_rate": 48000
+            }]
+        }
+    })
 }
 
 #[tokio::test]
@@ -234,11 +257,10 @@ async fn test_subtitle_not_found() {
 }
 
 #[tokio::test]
-async fn test_signed_subtitle_url_round_trips_with_generic_index_contract() {
+async fn test_mode_specific_subtitle_path_resolves_by_index() {
     let store = new_store();
-    let signing_key = signing_key();
-    let version = "vsigned";
-    let mut result = PlaybackResult {
+    let version = "vsubtitle";
+    let result = PlaybackResult {
         playback_infos: HashMap::from([(
             "dash".to_string(),
             PlaybackInfo {
@@ -276,30 +298,9 @@ async fn test_signed_subtitle_url_round_trips_with_generic_index_contract() {
     };
     store_versioned(&store, &stored).await;
 
-    sign_playback_urls(
-        &mut result,
-        "bilibili",
-        version,
-        &signing_key,
-        "room-1",
-        "user-1",
-        chrono::Utc::now().timestamp() + 3600,
-    );
-
-    let subtitle_url = result.playback_infos["dash"].subtitles[0].url.clone();
-    let sub_path = signed_sub_path(
-        &subtitle_url,
-        "/api/providers/proxy/bilibili/",
-        "signed subtitle path",
-    );
-    let sub_path = some(
-        sub_path.split('?').next(),
-        "decoded subtitle path should still be present",
-    );
-
     let p = provider();
     let ctx = ProxyRequestContext {
-        sub_path,
+        sub_path: "vsubtitle/subtitle/dash/0",
         store: Some(&store),
         query_string: None,
         services: None,
@@ -312,7 +313,7 @@ async fn test_signed_subtitle_url_round_trips_with_generic_index_contract() {
 
     let (url, headers, _) = expect_fetch(ok(
         p.resolve_proxy(&ctx).await,
-        "signed subtitle path should round-trip through resolve_proxy",
+        "mode-specific subtitle path should round-trip through resolve_proxy",
     ));
     assert_eq!(url, "https://cdn.bilibili.com/subtitle_zh.json");
     assert!(headers.contains_key("Referer"));
@@ -320,11 +321,10 @@ async fn test_signed_subtitle_url_round_trips_with_generic_index_contract() {
 }
 
 #[tokio::test]
-async fn test_signed_mpd_stream_url_round_trips_with_indexed_proxy_contract() {
+async fn test_mpd_manifest_paths_resolve_direct_and_proxy_delivery() {
     let store = new_store();
-    let signing_key = signing_key();
     let version = "vmpd";
-    let mut result = PlaybackResult {
+    let result = PlaybackResult {
         playback_infos: HashMap::from([(
             "dash".to_string(),
             PlaybackInfo {
@@ -344,7 +344,10 @@ async fn test_signed_mpd_stream_url_round_trips_with_indexed_proxy_contract() {
         )]),
         default_mode: "dash".to_string(),
         duration_seconds: None,
-        metadata: HashMap::new(),
+        metadata: HashMap::from([(
+            synctv_core::provider::bilibili::DASH_MANIFEST_METADATA_KEY.to_string(),
+            dash_metadata(),
+        )]),
     };
     let stored = VersionedPlayback {
         version: version.to_string(),
@@ -353,61 +356,135 @@ async fn test_signed_mpd_stream_url_round_trips_with_indexed_proxy_contract() {
     };
     store_versioned(&store, &stored).await;
 
-    sign_playback_urls(
-        &mut result,
-        "bilibili",
-        version,
-        &signing_key,
-        "room-1",
-        "user-1",
-        chrono::Utc::now().timestamp() + 3600,
-    );
-
-    let stream_url = result.playback_infos["dash"].urls[1].clone();
-    let sub_path = signed_sub_path(
-        &stream_url,
-        "/api/providers/proxy/bilibili/",
-        "signed stream path",
-    );
-
     let p = provider();
-    let claims = ProxyUrlClaims {
-        provider: "bilibili".to_string(),
-        version: version.to_string(),
-        room_id: "room-1".to_string(),
-        user_id: "user-1".to_string(),
-        expires_at: chrono::Utc::now().timestamp() + 3600,
-        target_url: None,
-    };
-    let ctx = ProxyRequestContext {
-        sub_path: sub_path.as_ref(),
+    let direct_ctx = ProxyRequestContext {
+        sub_path: "vmpd/mpd/dash/direct",
         store: Some(&store),
-        query_string: None,
+        query_string: Some("sig=s&uid=user-1&rid=room-1&exp=9999999999"),
         services: None,
         public_id_codec: None,
         proxy_base: "/api/providers/proxy/bilibili",
-        verified_claims: Some(&claims),
+        verified_claims: None,
         request_context: None,
         request_headers: &http::HeaderMap::new(),
     };
-
-    let (url, headers, _) = expect_fetch(ok(
-        p.resolve_proxy(&ctx).await,
-        "signed DASH stream path should resolve",
+    let (body, content_type, status) = expect_direct_body(ok(
+        p.resolve_proxy(&direct_ctx).await,
+        "direct MPD manifest path should resolve",
     ));
-    assert_eq!(url, "https://cdn.bilibili.com/video-720.m4s");
-    assert_eq!(
-        headers.get("Referer").map(String::as_str),
-        Some("https://www.bilibili.com")
-    );
+    assert_eq!(status, 200);
+    assert_eq!(content_type, "application/dash+xml");
+    let manifest = String::from_utf8(body).expect("manifest should be utf8");
+    assert!(manifest.contains("https://cdn.bilibili.com/video-1080.m4s"));
+
+    let proxy_ctx = ProxyRequestContext {
+        sub_path: "vmpd/mpd/dash/proxy",
+        store: Some(&store),
+        query_string: Some("sig=s&uid=user-1&rid=room-1&exp=9999999999"),
+        services: None,
+        public_id_codec: None,
+        proxy_base: "/api/providers/proxy/bilibili",
+        verified_claims: None,
+        request_context: None,
+        request_headers: &http::HeaderMap::new(),
+    };
+    let (body, content_type, status) = expect_direct_body(ok(
+        p.resolve_proxy(&proxy_ctx).await,
+        "proxied MPD manifest path should resolve",
+    ));
+    assert_eq!(status, 200);
+    assert_eq!(content_type, "application/dash+xml");
+    let manifest = String::from_utf8(body).expect("manifest should be utf8");
+    assert!(manifest.contains("/api/providers/proxy/bilibili/vmpd/stream/dash/0?"));
 }
 
 #[tokio::test]
-async fn test_signed_hls_url_round_trips_with_indexed_proxy_contract() {
+async fn test_mpd_manifest_proxy_builds_direct_and_proxied_dash_manifests() {
     let store = new_store();
-    let signing_key = signing_key();
+    let version = "vmpdmanifest";
+    let result = PlaybackResult {
+        playback_infos: HashMap::from([(
+            "dash".to_string(),
+            PlaybackInfo {
+                urls: vec![
+                    "https://cdn.bilibili.com/video-1080.m4s".to_string(),
+                    "https://cdn.bilibili.com/audio.m4s".to_string(),
+                ],
+                format: "mpd".to_string(),
+                headers: HashMap::from([(
+                    "Referer".to_string(),
+                    "https://www.bilibili.com".to_string(),
+                )]),
+                subtitles: vec![],
+                expires_at: None,
+                cors_proxy_required: false,
+            },
+        )]),
+        default_mode: "dash".to_string(),
+        duration_seconds: Some(120.0),
+        metadata: HashMap::from([(
+            synctv_core::provider::bilibili::DASH_MANIFEST_METADATA_KEY.to_string(),
+            dash_metadata(),
+        )]),
+    };
+    let stored = VersionedPlayback {
+        version: version.to_string(),
+        result,
+        expires_at: chrono::Utc::now().timestamp() + 3600,
+    };
+    store_versioned(&store, &stored).await;
+
+    let p = provider();
+    let direct_ctx = ProxyRequestContext {
+        sub_path: "vmpdmanifest/mpd/dash/direct",
+        store: Some(&store),
+        query_string: Some("sig=s&uid=user-1&rid=room-1&exp=9999999999"),
+        services: None,
+        public_id_codec: None,
+        proxy_base: "/api/providers/proxy/bilibili",
+        verified_claims: None,
+        request_context: None,
+        request_headers: &http::HeaderMap::new(),
+    };
+    let (body, content_type, status) = expect_direct_body(ok(
+        p.resolve_proxy(&direct_ctx).await,
+        "direct MPD manifest should resolve",
+    ));
+    assert_eq!(status, 200);
+    assert_eq!(content_type, "application/dash+xml");
+    let manifest = String::from_utf8(body).expect("manifest should be utf8");
+    assert!(manifest.contains("https://cdn.bilibili.com/video-1080.m4s"));
+    assert!(manifest.contains("https://cdn.bilibili.com/audio.m4s"));
+    assert!(manifest.contains("<SegmentBase indexRange=\"0-99\">"));
+
+    let proxied_ctx = ProxyRequestContext {
+        sub_path: "vmpdmanifest/mpd/dash/proxy",
+        store: Some(&store),
+        query_string: Some("sig=s&uid=user-1&rid=room-1&exp=9999999999"),
+        services: None,
+        public_id_codec: None,
+        proxy_base: "/api/providers/proxy/bilibili",
+        verified_claims: None,
+        request_context: None,
+        request_headers: &http::HeaderMap::new(),
+    };
+    let (body, content_type, status) = expect_direct_body(ok(
+        p.resolve_proxy(&proxied_ctx).await,
+        "proxied MPD manifest should resolve",
+    ));
+    assert_eq!(status, 200);
+    assert_eq!(content_type, "application/dash+xml");
+    let manifest = String::from_utf8(body).expect("manifest should be utf8");
+    assert!(manifest.contains("/api/providers/proxy/bilibili/vmpdmanifest/stream/dash/0?"));
+    assert!(manifest.contains("/api/providers/proxy/bilibili/vmpdmanifest/stream/dash/1?"));
+    assert!(!manifest.contains("https://cdn.bilibili.com/video-1080.m4s"));
+}
+
+#[tokio::test]
+async fn test_indexed_hls_path_resolves_matching_url() {
+    let store = new_store();
     let version = "vhls";
-    let mut result = PlaybackResult {
+    let result = PlaybackResult {
         playback_infos: HashMap::from([(
             "10000P_250".to_string(),
             PlaybackInfo {
@@ -436,26 +513,9 @@ async fn test_signed_hls_url_round_trips_with_indexed_proxy_contract() {
     };
     store_versioned(&store, &stored).await;
 
-    sign_playback_urls(
-        &mut result,
-        "bilibili",
-        version,
-        &signing_key,
-        "room-1",
-        "user-1",
-        chrono::Utc::now().timestamp() + 3600,
-    );
-
-    let hls_url = result.playback_infos["10000P_250"].urls[1].clone();
-    let sub_path = signed_sub_path(
-        &hls_url,
-        "/api/providers/proxy/bilibili/",
-        "signed HLS path",
-    );
-
     let p = provider();
     let ctx = ProxyRequestContext {
-        sub_path: sub_path.as_ref(),
+        sub_path: "vhls/m3u8/10000P_250/1",
         store: Some(&store),
         query_string: None,
         services: None,
@@ -468,7 +528,7 @@ async fn test_signed_hls_url_round_trips_with_indexed_proxy_contract() {
 
     let (url, headers, proxy_base) = expect_m3u8(ok(
         p.resolve_proxy(&ctx).await,
-        "signed HLS path should resolve",
+        "indexed HLS path should resolve",
     ));
     assert_eq!(url, "https://cdn.bilibili.com/live-backup.m3u8");
     assert_eq!(
@@ -479,7 +539,7 @@ async fn test_signed_hls_url_round_trips_with_indexed_proxy_contract() {
 }
 
 #[tokio::test]
-async fn test_signed_hls_segment_target_url_resolves_for_rewritten_playlist() {
+async fn test_hls_segment_target_url_resolves_for_rewritten_playlist() {
     let store = new_store();
     let version = "vhlsseg";
     let vp = make_versioned(
@@ -527,7 +587,7 @@ async fn test_signed_hls_segment_target_url_resolves_for_rewritten_playlist() {
 }
 
 #[tokio::test]
-async fn test_signed_hls_variant_target_url_is_rewritten_again() {
+async fn test_hls_variant_target_url_is_rewritten_again() {
     let store = new_store();
     let version = "vhlsvariant";
     let vp = make_versioned(

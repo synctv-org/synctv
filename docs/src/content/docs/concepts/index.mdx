@@ -24,6 +24,11 @@ import { LinkCard, CardGrid } from '@astrojs/starlight/components';
     description="当前播放状态、播放信息、Realtime、直连、代理和 Range seek。"
   />
   <LinkCard
+    title="播放后台任务"
+    href="./playback-background-workers/"
+    description="时长探测、自动切换和播放资源生命周期任务的本节点 active room 边界。"
+  />
+  <LinkCard
     title="权限模型"
     href="./permissions/"
     description="全局角色、房间角色、成员覆盖、房间设置和用户偏好的关系。"
@@ -35,4 +40,4 @@ import { LinkCard, CardGrid } from '@astrojs/starlight/components';
   />
 </CardGrid>
 
-读完概念后，按当前目标进入 [使用 SyncTV](../use/)、[管理 SyncTV](../admin/)、[安装与升级](../install/choose-path/) 或 [开发与集成](../develop/client-integration/)。
+读完概念后，按当前目标进入 [使用 SyncTV](../use/)、[管理 SyncTV](../admin/)、[安装与升级](../install/choose-path/) 或 [开发与集成](../develop/client-integration/)。维护共享行为时同时阅读 [实现契约](../develop/implementation-contracts/)。

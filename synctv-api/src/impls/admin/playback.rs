@@ -1,12 +1,13 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 
 use synctv_core::{
-    models::{PlaylistId, RoomId, UserId, UserStatus},
+    models::{PlaybackSourceIdentity, PlaylistId, RoomId, UserId, UserStatus},
     service::{PlaybackStatePatch, PlaybackStateUpdateRequest},
 };
 
 use super::{
-    playback_client_profile_from_proto, playback_expires_at, provider_playback_info_to_model,
+    playback_client_profile_from_proto, playback_expires_at,
+    playback_generation_error_allows_state_only, provider_playback_info_to_model,
     public_id_encode_error, sign_local_bilibili_danmaku_urls,
     try_bilibili_live_danmaku_for_static_media, try_playback_state_to_proto, try_playback_to_proto,
     AdminApiImpl, ApiError, PlaybackFanoutActor, ProviderPlaybackLifecycleApi, RequestContext,
@@ -20,6 +21,35 @@ struct DynamicPlaylistPlaybackRequest<'a> {
     playlist_id: &'a PlaylistId,
     target: &'a [u8],
     playback_client_profile: Option<&'a synctv_core::provider::PlaybackClientProfile>,
+}
+
+async fn resolve_playback_duration(
+    room_service: &synctv_core::service::RoomService,
+    identity: PlaybackSourceIdentity,
+    provider_duration_seconds: Option<f64>,
+) -> Result<Option<f64>, ApiError> {
+    let repo = room_service.playback_service().source_metadata_repository();
+    if let Some(duration_seconds) =
+        provider_duration_seconds.filter(|duration| duration.is_finite() && *duration > 0.0)
+    {
+        repo.upsert_provider_duration(&identity, duration_seconds)
+            .await
+            .map_err(ApiError::from)?;
+        return Ok(Some(duration_seconds));
+    }
+
+    let metadata = repo.get(&identity).await.map_err(ApiError::from)?;
+    if let Some(duration_seconds) = metadata
+        .and_then(|metadata| metadata.duration_seconds)
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+    {
+        return Ok(Some(duration_seconds));
+    }
+
+    repo.mark_unknown_if_absent(&identity)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(None)
 }
 
 impl AdminApiImpl {
@@ -86,7 +116,13 @@ impl AdminApiImpl {
             .with_playback_client_profile(playback_client_profile.cloned())
             .with_signing_key(&self.signing_key);
         if let Some(creator_id) = media.creator_id.as_ref() {
-            ctx = ctx.with_credential_owner_id(*creator_id);
+            let public_creator_id = self
+                .public_id_codec
+                .encode_user_id(*creator_id)
+                .map_err(|error| public_id_encode_error("credential owner", &error))?;
+            ctx = ctx
+                .with_credential_owner_id(*creator_id)
+                .with_public_credential_owner_id(public_creator_id);
         }
         if let Some(provider_instance_name) = media.provider_instance_name.as_deref() {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
@@ -115,6 +151,13 @@ impl AdminApiImpl {
             default_mode_expires_at,
         )?;
 
+        let duration_seconds = resolve_playback_duration(
+            &self.room_service,
+            PlaybackSourceIdentity::static_media(media.room_id, media.id),
+            provider_result.duration_seconds,
+        )
+        .await?;
+
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
             media.playlist_id,
             media.room_id,
@@ -123,7 +166,7 @@ impl AdminApiImpl {
         )
         .id(media.id)
         .default_mode(provider_result.default_mode.clone())
-        .duration_seconds(provider_result.duration_seconds);
+        .duration_seconds(duration_seconds);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
             let mut info = provider_playback_info_to_model(&provider_info);
@@ -133,7 +176,9 @@ impl AdminApiImpl {
             builder = builder.add_mode(mode_name, info);
         }
         for (key, value) in provider_result.metadata {
-            builder = builder.add_metadata(key, value);
+            if key != synctv_core::provider::bilibili::DASH_MANIFEST_METADATA_KEY {
+                builder = builder.add_metadata(key, value);
+            }
         }
 
         let mut full_result = builder
@@ -204,7 +249,13 @@ impl AdminApiImpl {
             .with_playback_client_profile(playback_client_profile.cloned())
             .with_signing_key(&self.signing_key);
         if let Some(creator_id) = playlist.creator_id.as_ref() {
-            ctx = ctx.with_credential_owner_id(*creator_id);
+            let public_creator_id = self
+                .public_id_codec
+                .encode_user_id(*creator_id)
+                .map_err(|error| public_id_encode_error("credential owner", &error))?;
+            ctx = ctx
+                .with_credential_owner_id(*creator_id)
+                .with_public_credential_owner_id(public_creator_id);
         }
         if let Some(provider_instance_name) = source_fields.provider_instance_name {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
@@ -222,6 +273,13 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
+        let duration_seconds = resolve_playback_duration(
+            &self.room_service,
+            PlaybackSourceIdentity::dynamic_playlist(*room_id_model, *playlist_id, target),
+            provider_result.duration_seconds,
+        )
+        .await?;
+
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
             Some(*playlist_id),
             *room_id_model,
@@ -229,14 +287,16 @@ impl AdminApiImpl {
             0.0,
         )
         .default_mode(provider_result.default_mode.clone())
-        .duration_seconds(provider_result.duration_seconds);
+        .duration_seconds(duration_seconds);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
             let info = provider_playback_info_to_model(&provider_info);
             builder = builder.add_mode(mode_name, info);
         }
         for (key, value) in provider_result.metadata {
-            builder = builder.add_metadata(key, value);
+            if key != synctv_core::provider::bilibili::DASH_MANIFEST_METADATA_KEY {
+                builder = builder.add_metadata(key, value);
+            }
         }
 
         let full_result = builder
@@ -535,22 +595,28 @@ impl AdminApiImpl {
             {
                 Ok(snapshot) => Some(snapshot),
                 Err(error) => {
+                    if !playback_generation_error_allows_state_only(&error) {
+                        return Err(error);
+                    }
                     tracing::warn!(
                         room_id = %rid,
                         admin_user_id = %admin_user_id,
                         signing_user_id = %snapshot_user_id,
                         error = %error,
-                        "Admin playback generation failed; returning playback state only"
+                        "Transient admin playback generation failed; returning playback state only"
                     );
                     None
                 }
             },
             Err(error) => {
+                if !playback_generation_error_allows_state_only(&error) {
+                    return Err(error);
+                }
                 tracing::warn!(
                     room_id = %rid,
                     admin_user_id = %admin_user_id,
                     error = %error,
-                    "Admin playback generation failed; returning playback state only"
+                    "Transient admin playback generation failed; returning playback state only"
                 );
                 None
             }

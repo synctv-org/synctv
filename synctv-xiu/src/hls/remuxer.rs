@@ -373,9 +373,9 @@ impl CustomHlsRemuxer {
                     identifier,
                     pub_type,
                 } => {
-                    // Only process locally published RTMP streams (RtmpPush).
-                    // Skip relayed streams (RtmpRelay) — in cluster mode,
-                    // only the publisher node generates HLS segments.
+                    // Process streams owned by this node. Cross-node relay
+                    // streams are mirrored from the publisher node, where HLS
+                    // segment generation already happens.
                     if pub_type == crate::streamhub::define::PublishType::RtmpRelay {
                         tracing::debug!("HLS remuxer: skipping relayed stream (RtmpRelay)");
                         continue;

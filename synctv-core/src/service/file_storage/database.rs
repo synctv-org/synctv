@@ -151,6 +151,8 @@ impl DatabaseFileStorageService {
             metadata: object.metadata,
             created_at: object.created_at,
         };
+        // Stream part-by-part so large database-backed downloads do not require
+        // buffering the whole requested range before HTTP/gRPC starts sending.
         let stream = futures::stream::iter(parts)
             .then(move |part| async move { database_part_chunk(part, read_range).await })
             .boxed();
@@ -208,6 +210,11 @@ impl DatabaseFileStorageService {
             ));
         }
         let return_inline_data = parts.len() == 1;
+        // Promote pending blob rows from the session key to the final object key
+        // in place. The write path already stored per-part SHA-256 values, and
+        // finalization verifies the manifest digest before this UPDATE. This is
+        // the table-state transition for database multipart uploads: pending
+        // and final bytes live in `file_blob_parts` under different object keys.
         self.repository
             .promote_blob_parts(
                 &self.storage_backend,
@@ -876,6 +883,9 @@ impl FileStorageService for DatabaseFileStorageService {
             end_inclusive: payload_len_i64(data.len())? - 1,
             total_size: expected_size,
         });
+        // Validate against the persisted session plan. The global default part
+        // size can change over time, while an open upload session keeps its own
+        // `part_size_bytes` and manifest for resume/idempotency.
         let part_index =
             validate_upload_range(range, data.len(), expected_size, session.part_size_bytes)?;
         let part_number = part_index.checked_add(1).ok_or_else(|| {

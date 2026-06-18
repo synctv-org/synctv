@@ -517,6 +517,15 @@ impl AdminApiImpl {
 
             let page = page_i32_to_usize(req.page)?;
             let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
+            let public_credential_owner_id = playlist
+                .creator_id
+                .map(|creator_id| self.public_id_codec.encode_user_id(creator_id))
+                .transpose()
+                .map_err(|error| {
+                    ApiError::Internal(format!(
+                        "Failed to encode credential owner public id: {error}"
+                    ))
+                })?;
             let items = self
                 .room_service
                 .media_service()
@@ -533,6 +542,7 @@ impl AdminApiImpl {
                         ),
                         refresh: req.refresh,
                     },
+                    public_credential_owner_id.as_deref(),
                 )
                 .await
                 .map_err(ApiError::from)?;
@@ -546,6 +556,35 @@ impl AdminApiImpl {
                         ItemType::Media => synctv_proto::client::ItemType::Media as i32,
                     };
 
+                    let thumbnail = match item.thumbnail {
+                        Some(thumbnail) => {
+                            let public_room_id =
+                                self.public_id_codec.encode_room_id(rid).map_err(|error| {
+                                    ApiError::Internal(format!(
+                                        "Failed to encode room public id: {error}"
+                                    ))
+                                })?;
+                            let public_user_id = self
+                                .public_id_codec
+                                .encode_user_id(*admin_user_id)
+                                .map_err(|error| {
+                                    ApiError::Internal(format!(
+                                        "Failed to encode user public id: {error}"
+                                    ))
+                                })?;
+                            Some(
+                                crate::http::providers::emby::sign_emby_thumbnail_url(
+                                    &thumbnail,
+                                    &public_room_id,
+                                    &public_user_id,
+                                    self.signing_key.as_ref(),
+                                )
+                                .map_err(ApiError::Internal)?,
+                            )
+                        }
+                        None => None,
+                    };
+
                     Ok(synctv_proto::client::PlaylistItem {
                         name: item.name,
                         item_type,
@@ -554,7 +593,7 @@ impl AdminApiImpl {
                             .size
                             .map(|size| u64_to_i64_api(size, "dynamic playlist item size"))
                             .transpose()?,
-                        thumbnail: item.thumbnail,
+                        thumbnail,
                         modified_at: item.modified_at,
                         description: item.description.unwrap_or_default(),
                     })

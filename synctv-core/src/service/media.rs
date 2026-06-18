@@ -180,6 +180,7 @@ impl MediaService {
         user_id: Option<&'a UserId>,
         room_id: &'a RoomId,
         credential_owner_id: Option<&'a UserId>,
+        public_credential_owner_id: Option<&'a str>,
         provider_instance_name: Option<&'a str>,
     ) -> ProviderContext<'a> {
         let mut ctx = ProviderContext::new("synctv").with_room_id(*room_id);
@@ -188,6 +189,9 @@ impl MediaService {
         }
         if let Some(credential_owner_id) = credential_owner_id {
             ctx = ctx.with_credential_owner_id(*credential_owner_id);
+        }
+        if let Some(public_credential_owner_id) = public_credential_owner_id {
+            ctx = ctx.with_public_credential_owner_id(public_credential_owner_id);
         }
         if let Some(provider_instance_name) =
             normalize_provider_instance_name(provider_instance_name)
@@ -266,6 +270,7 @@ impl MediaService {
             Some(user_id),
             room_id,
             Some(user_id),
+            None,
             explicit_provider_instance.as_deref(),
         );
 
@@ -293,6 +298,7 @@ impl MediaService {
             Some(user_id),
             room_id,
             Some(user_id),
+            None,
             bound_provider_instance.as_deref(),
         );
 
@@ -935,6 +941,10 @@ impl MediaService {
         &self,
         request: BackendPlaybackRequest<'_>,
     ) -> Result<Option<PlaybackResult>> {
+        // Shared backend playback entrypoint used by API transports and
+        // background workers. HTTP and gRPC should converge here through impls;
+        // provider adapters own mode selection, signing, headers, manifests,
+        // subtitles, and lifecycle metadata inside `generate_playback`.
         match (request.media_id, request.playlist_id) {
             (Some(media_id), None) => {
                 let Some(media) = self.get_room_media(&request.room_id, &media_id).await? else {
@@ -946,12 +956,15 @@ impl MediaService {
                         media.provider_instance_name.as_deref(),
                     )
                     .await?;
-                let ctx = self.build_provider_context(
-                    None,
-                    &request.room_id,
-                    media.creator_id.as_ref(),
-                    media.provider_instance_name.as_deref(),
-                );
+                let ctx = self
+                    .build_provider_context(
+                        None,
+                        &request.room_id,
+                        media.creator_id.as_ref(),
+                        None,
+                        media.provider_instance_name.as_deref(),
+                    )
+                    .with_media_id(media.id);
                 let result = provider
                     .generate_playback(&ctx, &media.source_config)
                     .await?;
@@ -979,6 +992,7 @@ impl MediaService {
                     None,
                     &request.room_id,
                     playlist.creator_id.as_ref(),
+                    None,
                     playlist.provider_instance_name.as_deref(),
                 );
                 let Some(item) = dynamic_folder

@@ -561,7 +561,77 @@ async fn test_sequential_advance_to_next() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_sequential_end_of_playlist_returns_none() {
+async fn test_sequential_advance_restarts_next_media_with_saved_progress() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(&pool);
+
+    let owner = user_repo
+        .create(&make_user("seq_next_saved_owner"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Seq Next Saved Progress".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
+    let media1 = insert_media(&pool, &playlist.id, &room.id, "video1_saved_next", 0).await;
+    let media2 = insert_media(&pool, &playlist.id, &room.id, "video2_saved_next", 1).await;
+
+    let playback = room_service.playback_service();
+    playback
+        .switch(room.id, owner.id, Some(media2.id), None, Vec::new())
+        .await
+        .checked("test operation should succeed");
+    playback
+        .seek(room.id, owner.id, 125.0)
+        .await
+        .checked("test operation should succeed");
+    playback
+        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
+        .await
+        .checked("test operation should succeed");
+    playback
+        .seek(room.id, owner.id, 12.0)
+        .await
+        .checked("test operation should succeed");
+
+    let settings = make_settings_with_mode(PlayMode::Sequential);
+    let state = playback
+        .play_next(&room.id, &settings)
+        .await
+        .checked("test operation should succeed")
+        .checked("sequential play_next should advance");
+
+    assert_eq!(state.playing_media_id, Some(media2.id));
+    assert!(
+        (state.position - 0.0).abs() < f64::EPSILON,
+        "play_next should anchor the new media at the start, got {}",
+        state.position
+    );
+
+    let stored = playback
+        .get_state(&room.id)
+        .await
+        .checked("playback state should reload");
+    assert_eq!(stored.playing_media_id, Some(media2.id));
+    assert!(
+        stored.position < 1.0,
+        "stored playback state should keep the same restart anchor, got {}",
+        stored.position
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_sequential_end_of_playlist_persists_paused_state() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(&pool);
@@ -583,6 +653,10 @@ async fn test_sequential_end_of_playlist_returns_none() {
         .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
         .checked("test operation should succeed");
+    playback
+        .seek(room.id, owner.id, 4.0)
+        .await
+        .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::Sequential);
     let result = playback
@@ -590,7 +664,27 @@ async fn test_sequential_end_of_playlist_returns_none() {
         .await
         .checked("test operation should succeed");
 
-    assert!(result.is_none(), "Should return None at end of playlist");
+    let state = result.checked("playlist end should persist a stable state");
+    assert_eq!(
+        state.playing_media_id,
+        Some(media1.id),
+        "playlist end should keep the completed media selected"
+    );
+    assert!(
+        !state.is_playing,
+        "playlist end should pause playback so background scans skip it"
+    );
+    assert!(
+        state.position >= 4.0,
+        "playlist end should snapshot the completed playback position"
+    );
+
+    let stored = playback
+        .get_state(&room.id)
+        .await
+        .checked("playback state should reload");
+    assert_eq!(stored.playing_media_id, Some(media1.id));
+    assert!(!stored.is_playing);
 }
 
 #[tokio::test]
@@ -1545,6 +1639,7 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
                 page_size: 20,
                 ..DynamicListQuery::default()
             },
+            None,
         )
         .await
         .checked("dynamic playlist listing should receive credential encryption");

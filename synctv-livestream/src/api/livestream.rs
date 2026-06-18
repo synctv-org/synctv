@@ -9,7 +9,7 @@ use crate::{
     },
     relay::{ActivePublisherEntry, PublisherInfo, StreamRegistryTrait},
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bytes::Bytes;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -376,7 +376,7 @@ impl LiveStreamingInfrastructure {
             .registry
             .get_publisher(room_id, media_id)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
+            .map_err(|e| StreamError::RegistryError(format!("Failed to check publisher: {e}")))?;
 
         if let Some(publisher_info) = publisher {
             let is_local = self.is_local_publisher_node(&publisher_info.node_id);
@@ -425,7 +425,7 @@ impl LiveStreamingInfrastructure {
                 .pull_manager
                 .get_or_create_pull_stream(room_id, media_id)
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to create pull stream: {e}"))?;
+                .context("Failed to create pull stream")?;
             let guard = StreamSubscriberGuard::new(move || {
                 stream.lifecycle().decrement_subscriber_count();
             });
@@ -437,7 +437,7 @@ impl LiveStreamingInfrastructure {
                 .external_publish_manager
                 .get_or_create(room_id, media_id, source_url)
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to create external publish stream: {e}"))?;
+                .context("Failed to create external publish stream")?;
             let guard = StreamSubscriberGuard::new(move || stream.decrement_subscriber_count());
             return Ok(guard);
         }
@@ -633,8 +633,54 @@ impl FlvStreamingApi {
 pub struct HlsStreamingApi;
 
 impl HlsStreamingApi {
+    async fn wait_for_playlist<F>(
+        infrastructure: &LiveStreamingInfrastructure,
+        room_id: &str,
+        media_id: &str,
+        url_generator: &F,
+    ) -> Result<Option<String>>
+    where
+        F: Fn(&str) -> String,
+    {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let playlist =
+                Self::generate_playlist(infrastructure, room_id, media_id, url_generator).await?;
+            if playlist.is_some() || tokio::time::Instant::now() >= deadline {
+                return Ok(playlist);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
     pub fn validate_segment_name(segment_name: &str) -> Result<()> {
         crate::util::validate_hls_segment_name(segment_name)
+    }
+
+    /// Start or touch the live stream needed by an HLS request, then generate the playlist.
+    ///
+    /// For live_proxy media, the external source is lazily pulled even when the
+    /// first viewer is an HLS client. The returned guard is kept only for this
+    /// request; idle cleanup still owns long-term shutdown.
+    pub async fn generate_playlist_with_pull<F>(
+        infrastructure: &LiveStreamingInfrastructure,
+        room_id: &str,
+        media_id: &str,
+        external_source_url: Option<&str>,
+        url_generator: F,
+    ) -> Result<Option<String>>
+    where
+        F: Fn(&str) -> String,
+    {
+        if let Some(source_url) = external_source_url {
+            let _guard = infrastructure
+                .ensure_pull_stream(room_id, media_id, Some(source_url))
+                .await?;
+            return Self::wait_for_playlist(infrastructure, room_id, media_id, &url_generator)
+                .await;
+        }
+
+        Self::generate_playlist(infrastructure, room_id, media_id, url_generator).await
     }
 
     /// Returns `Ok(Some(playlist))` when a stream is found, `Ok(None)` when
@@ -655,7 +701,7 @@ impl HlsStreamingApi {
             .registry
             .get_publisher(room_id, media_id)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
+            .map_err(|e| StreamError::RegistryError(format!("Failed to check publisher: {e}")))?;
 
         let Some(publisher_info) = publisher_info else {
             return Ok(None);
@@ -751,7 +797,7 @@ impl HlsStreamingApi {
             .registry
             .get_publisher(room_id, media_id)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
+            .map_err(|e| StreamError::RegistryError(format!("Failed to check publisher: {e}")))?;
 
         let Some(publisher_info) = publisher_info else {
             return Err(StreamError::NoPublisher(format!("{room_id}/{media_id}")).into());
@@ -785,6 +831,26 @@ impl HlsStreamingApi {
         } else {
             Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
         }
+    }
+
+    /// Start or touch the live stream needed by an HLS segment request, then read the segment.
+    pub async fn get_segment_with_pull(
+        infrastructure: &LiveStreamingInfrastructure,
+        room_id: &str,
+        media_id: &str,
+        segment_name: &str,
+        external_source_url: Option<&str>,
+    ) -> Result<Bytes> {
+        let _guard = if let Some(source_url) = external_source_url {
+            Some(
+                infrastructure
+                    .ensure_pull_stream(room_id, media_id, Some(source_url))
+                    .await?,
+            )
+        } else {
+            None
+        };
+        Self::get_segment(infrastructure, room_id, media_id, segment_name).await
     }
 
     async fn get_segment_local(
@@ -879,6 +945,49 @@ mod tests {
             .await?;
 
         drop(guard);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_live_proxy_prefers_registered_remote_publisher_before_external_pull() -> TestResult
+    {
+        let registry = Arc::new(TestStreamRegistry::with_publishers(
+            std::collections::HashMap::from([(
+                ("room1".to_string(), "media1".to_string()),
+                PublisherInfo {
+                    node_id: "node-remote".to_string(),
+                    api_address: String::new(),
+                    app_name: "live".to_string(),
+                    user_id: String::new(),
+                    started_at: Utc::now(),
+                    epoch: 1,
+                },
+            )]),
+        ));
+        let (event_sender, _event_receiver) = mpsc::channel(64);
+        let infrastructure = LiveStreamingInfrastructure::new(
+            registry.clone(),
+            event_sender,
+            Arc::new(StreamTracker::new()),
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?;
+
+        let error = infrastructure
+            .ensure_pull_stream("room1", "media1", Some("http://127.0.0.1:8080/live.flv"))
+            .await
+            .expect_err("remote publisher relay should fail fast because api_address is empty");
+
+        assert!(
+            error.to_string().contains("Failed to create pull stream")
+                || error.to_string().contains("api_address"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            registry.register_call_count(),
+            0,
+            "live_proxy must relay an existing remote publisher before creating a local external puller"
+        );
         Ok(())
     }
 

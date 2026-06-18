@@ -112,7 +112,7 @@ pub use optimistic_retry::retry_with_optimistic_lock;
 pub use passkey::{local_passkey_session_store, PasskeyService, PasskeySessionStore};
 pub use permission::{EffectivePermissionCalculator, PermissionService, RuntimePermissionDefaults};
 pub use playback::{PlaybackService, PlaybackStatePatch, PlaybackStateUpdateRequest, SeekResponse};
-pub use playback_auto_advance::PlaybackAutoAdvanceService;
+pub use playback_auto_advance::{ActivePlaybackRoomProvider, PlaybackAutoAdvanceService};
 pub use playback_duration_probe::PlaybackDurationProbeService;
 pub use playlist::{PlaylistService, RealtimeOutboxPlaylistEventFactory};
 pub use presence::{

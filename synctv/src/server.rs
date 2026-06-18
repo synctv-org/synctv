@@ -104,6 +104,7 @@ pub struct Services {
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub user_cache: Arc<UserCache>,
     pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
+    pub playback_duration_probe: Arc<synctv_core::service::PlaybackDurationProbeService>,
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     pub stun_server: Option<Arc<synctv_core::service::StunServer>>,
     pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
@@ -1176,11 +1177,18 @@ impl SyncTvServer {
         self.playback_lifecycle_event_source_handle = Some(
             synctv_api::impls::messaging::spawn_observed_playback_lifecycle_event_source(
                 playback_service.clone(),
-                vec![Arc::new(
-                    synctv_api::impls::messaging::ProviderPlaybackProgressSubscriber::new(
-                        playback_service,
+                vec![
+                    Arc::new(
+                        synctv_api::impls::messaging::ProviderPlaybackProgressSubscriber::new(
+                            playback_service.clone(),
+                        ),
                     ),
-                )],
+                    Arc::new(
+                        synctv_api::impls::messaging::PlaybackAutoAdvanceSubscriber::new(
+                            playback_service,
+                        ),
+                    ),
+                ],
                 shutdown_rx.clone(),
             ),
         );
@@ -1652,6 +1660,7 @@ impl SyncTvServer {
                 },
                 heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
                 providers_manager: self.services.providers_manager.clone(),
+                playback_duration_probe: Some(self.services.playback_duration_probe.clone()),
             },
         )?;
 
@@ -2110,6 +2119,7 @@ mod tests {
                 messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
                 heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
                 providers_manager,
+                playback_duration_probe: None,
             })
             .expect("test HTTP app state should build");
         let management_apis =

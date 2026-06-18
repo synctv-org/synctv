@@ -810,11 +810,13 @@ mod bilibili_type_tests {
             "ttl": 1
         }"#;
         let resp: DashVideoResp = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.data.dash.video.len(), 1);
-        assert_eq!(resp.data.dash.audio.len(), 1);
-        assert_eq!(resp.data.dash.video[0].width, 1920);
-        assert_eq!(resp.data.dash.video[0].height, 1080);
-        assert!((resp.data.dash.duration - 120.5).abs() < f64::EPSILON);
+        let data = resp.data.expect("DASH data should deserialize");
+        let dash = data.dash.expect("DASH streams should deserialize");
+        assert_eq!(dash.video.len(), 1);
+        assert_eq!(dash.audio.len(), 1);
+        assert_eq!(dash.video[0].width, 1920);
+        assert_eq!(dash.video[0].height, 1080);
+        assert!((dash.duration - 120.5).abs() < f64::EPSILON);
     }
 
     #[test]

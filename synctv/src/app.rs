@@ -270,6 +270,7 @@ struct ServerComponents {
     stun_server: Option<Arc<synctv_core::service::StunServer>>,
     webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     providers: synctv_core::provider::ProviderSet,
+    playback_duration_probe: Arc<synctv_core::service::PlaybackDurationProbeService>,
 }
 
 type AsyncOnceTaskFactory = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
@@ -511,6 +512,29 @@ fn build_room_message_runtime(
         .map_err(|error| anyhow::anyhow!("Failed to initialize realtime message runtime: {error}"))
 }
 
+struct LocalActivePlaybackRoomProvider {
+    connection_runtime: Arc<dyn ConnectionRuntime>,
+}
+
+#[async_trait::async_trait]
+impl synctv_core::service::ActivePlaybackRoomProvider for LocalActivePlaybackRoomProvider {
+    async fn active_room_ids(&self) -> synctv_core::Result<Vec<synctv_core::models::RoomId>> {
+        // Playback lifecycle ownership is local process state. A room is active
+        // for these workers when this process has at least one realtime
+        // connection for it. Presence, hot-room indexes, and cluster-wide room
+        // stats are list/analytics inputs; this adapter is the scheduler
+        // boundary for duration probing, auto-advance, and live playback
+        // resource lifecycle work. Storage locks and playback-state version
+        // writes converge duplicate attempts when the same room is active on
+        // several nodes.
+        //
+        // Maintenance contract:
+        // docs/src/content/docs/en/develop/implementation-contracts.mdx
+        // docs/src/content/docs/en/concepts/playback-background-workers.mdx
+        Ok(self.connection_runtime.active_room_ids())
+    }
+}
+
 fn start_room_notification_bridge(
     notification_service: Arc<synctv_core::service::NotificationService>,
     realtime_manager: Arc<RealtimeManager>,
@@ -683,6 +707,8 @@ impl Application {
                     return Err(e);
                 }
             };
+
+        Self::start_playback_background_tasks(&infra, &core, &cluster, &mut shutdown);
 
         // Phase 7: Server components (livestream, WebRTC, providers)
         let servers = match Self::init_servers(&infra, &core, &leader, &mut shutdown).await {
@@ -1164,29 +1190,6 @@ impl Application {
         );
         info!("Database maintenance service started (leader-gated cleanup tasks every 1h)");
 
-        let playback_auto_advance = synctv_core::service::PlaybackAutoAdvanceService::new(
-            core.services.room_service.playback_service().clone(),
-            synctv_core::repository::RoomSettingsRepository::new(infra.pool.clone()),
-            leader.leader_runtime.clone(),
-        );
-        shutdown.register_task(
-            "playback_auto_advance",
-            playback_auto_advance
-                .spawn(std::time::Duration::from_secs(1), singleton_cancel.clone()),
-        );
-        info!("Playback auto-advance service started (leader-gated, interval: 1s)");
-
-        let playback_duration_probe = synctv_core::service::PlaybackDurationProbeService::new(
-            core.services.room_service.playback_service().clone(),
-            leader.leader_runtime.clone(),
-            infra.config.security.ssrf_guard(),
-        );
-        shutdown.register_task(
-            "playback_duration_probe",
-            playback_duration_probe.spawn(std::time::Duration::from_secs(15), singleton_cancel),
-        );
-        info!("Playback duration probe service started (leader-gated, interval: 15s)");
-
         if runtime_plan.cluster_runtime() {
             let pool = infra.pool.clone();
             let settings_registry = core.services.settings_registry.clone();
@@ -1253,6 +1256,49 @@ impl Application {
                 ),
             );
         }
+    }
+
+    fn start_playback_background_tasks(
+        infra: &Infrastructure,
+        core: &CoreState,
+        cluster: &ClusterState,
+        shutdown: &mut ShutdownCoordinator,
+    ) {
+        let cancel = shutdown.register_token("playback_background_tasks");
+        // Playback background work starts after cluster realtime is initialized
+        // because active rooms come from local room connections. These workers
+        // run on every node: any replica can be the process currently serving a
+        // room. Database claims, SKIP LOCKED, and playback-state version writes
+        // serialize the actual work when several nodes host the same room.
+        // Leader election remains for global singleton jobs, while presence and
+        // hot-room scans remain read models for lists, admin views, and metrics.
+        let active_room_provider = Arc::new(LocalActivePlaybackRoomProvider {
+            connection_runtime: cluster.realtime_connection_service.clone(),
+        });
+
+        let playback_auto_advance = synctv_core::service::PlaybackAutoAdvanceService::new(
+            core.services.room_service.playback_service().clone(),
+            synctv_core::repository::RoomSettingsRepository::new(infra.pool.clone()),
+        )
+        .with_active_room_provider(active_room_provider.clone());
+        shutdown.register_task(
+            "playback_auto_advance",
+            playback_auto_advance.spawn(Duration::from_secs(1), cancel.clone()),
+        );
+        info!(
+            "Playback auto-advance background scanner started (active-room scoped, interval: 1s)"
+        );
+
+        let playback_duration_probe = synctv_core::service::PlaybackDurationProbeService::new(
+            core.services.room_service.playback_service().clone(),
+            infra.config.security.ssrf_guard(),
+        )
+        .with_active_room_provider(active_room_provider);
+        shutdown.register_task(
+            "playback_duration_probe",
+            playback_duration_probe.spawn(Duration::from_secs(30), cancel),
+        );
+        info!("Playback duration probe background scanner started (active-room scoped, interval: 30s)");
     }
 
     async fn init_cluster(
@@ -1462,6 +1508,11 @@ impl Application {
             core.services.provider_instance_manager.clone(),
             infra.config.security.ssrf_guard(),
         )?;
+        let playback_duration_probe =
+            Arc::new(synctv_core::service::PlaybackDurationProbeService::new(
+                core.services.room_service.playback_service().clone(),
+                infra.config.security.ssrf_guard(),
+            ));
 
         Ok(ServerComponents {
             livestream_state,
@@ -1469,6 +1520,7 @@ impl Application {
             stun_server: webrtc_components.stun_server,
             webrtc_status: webrtc_components.status,
             providers,
+            playback_duration_probe,
         })
     }
 
@@ -1511,6 +1563,7 @@ impl Application {
             audit_service: core.services.audit_service.clone(),
             user_cache: core.services.user_cache.clone(),
             provider_stores: core.services.provider_stores.clone(),
+            playback_duration_probe: servers.playback_duration_probe,
             live_streaming_infrastructure: servers.live_infra,
             stun_server: servers.stun_server,
             webrtc_status: servers.webrtc_status,

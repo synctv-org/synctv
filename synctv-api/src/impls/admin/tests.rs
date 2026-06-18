@@ -4160,8 +4160,8 @@ async fn test_get_playback_bypasses_room_membership_requirement_for_global_admin
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_playback_returns_state_when_playback_info_generation_fails_for_global_admin(
-) -> TestResult {
+async fn test_get_playback_returns_error_for_invalid_provider_config_for_global_admin() -> TestResult
+{
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -4169,18 +4169,23 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails_for
 
     let global_admin = create_db_user(
         &user_repo,
-        "global_admin_playback_state_only",
+        "global_admin_playback_invalid_config",
         UserRole::Root,
     )
     .await;
-    let owner = create_db_user(&user_repo, "room_owner_playback_state_only", UserRole::User).await;
+    let owner = create_db_user(
+        &user_repo,
+        "room_owner_playback_invalid_config",
+        UserRole::User,
+    )
+    .await;
 
     let room = core_ok(
         admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
-                "room playback degrade test".to_string(),
+                "room playback invalid config test".to_string(),
                 owner.id,
                 None,
                 None,
@@ -4193,7 +4198,7 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails_for
         playlist_id: None,
         room_id: room.id,
         creator_id: Some(owner.id),
-        name: "Broken Playback Provider".to_string(),
+        name: "Invalid Playback Provider".to_string(),
         description: String::new(),
         source_config: serde_json::json!({ "opaque": true }),
         provider_name: "live_proxy".to_string(),
@@ -4210,22 +4215,16 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails_for
             .await,
     )?;
 
-    let response = api_ok(
+    let error = api_err(
         admin_api
             .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
             .await,
     )?;
 
-    let state = some_value(response.playback_state, "playback state should be present")?;
-    assert!(state.is_playing);
-    assert_eq!(
-        state.playing_media_id,
-        public_media_id(&admin_api, media.id)
-    );
-    assert!(
-        response.playback.is_none(),
-        "admin playback queries should degrade to state-only responses on playback info failures"
-    );
+    assert!(matches!(
+        error,
+        ApiError::InvalidInput(message) if message == "Missing url"
+    ));
     Ok(())
 }
 
@@ -4294,8 +4293,8 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
     let result = some_value(response.playback, "playback should be present")?;
     let direct = result
         .playback_infos
-        .get("direct")
-        .ok_or_else(|| test_error("direct mode should be present"))?;
+        .get("proxy_direct")
+        .ok_or_else(|| test_error("proxy_direct mode should be present"))?;
     assert_eq!(direct.urls.len(), 1);
     assert!(
         direct.urls[0]
@@ -4305,7 +4304,7 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
         direct.urls[0].url
     );
     assert!(
-        direct.urls[0].url.contains("/stream?"),
+        direct.urls[0].url.contains("/stream/direct/0?"),
         "signed direct-url playback should use stream proxy contract, got {}",
         direct.urls[0].url
     );
@@ -4386,8 +4385,8 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_managem
     let result = some_value(response.playback, "playback should be present")?;
     let direct = result
         .playback_infos
-        .get("direct")
-        .ok_or_else(|| test_error("direct mode should be present"))?;
+        .get("proxy_direct")
+        .ok_or_else(|| test_error("proxy_direct mode should be present"))?;
     assert_eq!(direct.urls.len(), 1);
     assert!(
         direct.urls[0]

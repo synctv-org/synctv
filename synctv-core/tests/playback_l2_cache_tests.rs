@@ -285,13 +285,13 @@ async fn test_playback_state_l2_miss_reads_from_db() {
         r#"SELECT state.room_id AS "room_id!: RoomId",
                 state.playing_media_id AS "playing_media_id?: MediaId",
                 state.playing_playlist_id AS "playing_playlist_id?: PlaylistId",
-                state.target,
-                state.current_progress_id,
+                state.target AS "target!",
+                state.current_progress_id AS "current_progress_id?",
                 COALESCE(progress."position", 0.0) AS "position!",
-                state.speed,
-                state.is_playing,
-                state.updated_at,
-                state.version
+                state.speed AS "speed!",
+                state.is_playing AS "is_playing!",
+                state.updated_at AS "updated_at!",
+                state.version AS "version!"
          FROM room_playback_state state
          LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id
          WHERE state.room_id = $1"#,

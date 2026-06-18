@@ -396,6 +396,11 @@ export default defineConfig({
               slug: 'develop/cache-consistency',
             },
             {
+              label: '实现契约',
+              translations: { en: 'Implementation Contracts' },
+              slug: 'develop/implementation-contracts',
+            },
+            {
               label: 'OpenAPI 文档入口',
               translations: { en: 'OpenAPI Access' },
               slug: 'reference/openapi',

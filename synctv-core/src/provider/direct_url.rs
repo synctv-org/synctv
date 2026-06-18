@@ -7,6 +7,7 @@ use super::{
     store::{ProviderStoreExt, VersionedPlayback},
     MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
 };
+use crate::proxy_signature::ProxySigningKey;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -211,6 +212,37 @@ impl TryFrom<&Value> for DirectUrlSourceConfig {
     }
 }
 
+fn sign_direct_url_playback_urls(
+    result: &mut PlaybackResult,
+    version: &str,
+    signing_key: &ProxySigningKey,
+    room_id: &str,
+    user_id: &str,
+    expires_at: i64,
+) {
+    // Direct URL usually keeps the upstream mode as default. When headers are
+    // required, the proxy sibling becomes default because the server must own
+    // those transport headers for browser and app clients alike. Keep stream,
+    // indexed HLS, and subtitle proxy actions in sync with `resolve_proxy`.
+    let signing = super::PlaybackProxySigning::new(
+        DirectUrlProvider::NAME,
+        version,
+        signing_key,
+        room_id,
+        user_id,
+        expires_at,
+    );
+    let prefer_proxy_default = super::signed_playback_default_needs_proxy(result);
+    super::append_signed_proxy_playback_modes_with_policy(
+        result,
+        &signing,
+        false,
+        prefer_proxy_default,
+        true,
+        super::signed_standard_proxy_urls,
+    );
+}
+
 // ProviderProxy implementation for DirectUrl
 // Supported sub_paths (same pattern as other providers):
 // - `{version}/stream` — proxy the video stream
@@ -308,6 +340,28 @@ impl ProviderProxy for DirectUrlProvider {
                 });
             }
 
+            if let Some(m3u8_path) = rest.strip_prefix("m3u8/") {
+                let (mode_name, index_str) =
+                    m3u8_path.split_once('/').ok_or(ProviderError::NotFound)?;
+                let playback_info = versioned
+                    .result
+                    .playback_infos
+                    .get(mode_name)
+                    .ok_or(ProviderError::NotFound)?;
+                let index = super::proxy::parse_proxy_index(index_str)?;
+                let url = playback_info
+                    .urls
+                    .get(index)
+                    .ok_or(ProviderError::NotFound)?;
+
+                return Ok(ProxyAction::M3u8Rewrite {
+                    url: url.clone(),
+                    headers: playback_info.headers.clone(),
+                    proxy_base: super::proxy::m3u8_segment_proxy_base(ctx, version),
+                    proxy_url_claims: ctx.verified_claims.cloned(),
+                });
+            }
+
             let default_info = versioned
                 .result
                 .playback_infos
@@ -385,8 +439,13 @@ impl MediaProvider for DirectUrlProvider {
         if let Some(store) = store {
             if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
                 if !cached.is_expired() {
-                    return super::maybe_sign_cached_versioned_playback(cached, Self::NAME, _ctx)
-                        .await;
+                    return super::build_cached_versioned_playback_response(
+                        cached,
+                        Self::NAME,
+                        _ctx,
+                        sign_direct_url_playback_urls,
+                    )
+                    .await;
                 }
             }
         }
@@ -421,7 +480,15 @@ impl MediaProvider for DirectUrlProvider {
             metadata,
         };
 
-        super::finalize_versioned_playback(result, Self::NAME, &cache_key, cache_ttl, _ctx).await
+        super::cache_versioned_playback_and_build_response(
+            result,
+            Self::NAME,
+            &cache_key,
+            cache_ttl,
+            _ctx,
+            sign_direct_url_playback_urls,
+        )
+        .await
     }
 }
 
@@ -645,6 +712,94 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_signed_direct_url_playback_hides_header_backed_direct_mode() {
+        let mut result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "direct".to_string(),
+                PlaybackInfo {
+                    urls: vec!["https://cdn.example.com/movie.mp4".to_string()],
+                    format: "mp4".to_string(),
+                    headers: HashMap::from([(
+                        "Referer".to_string(),
+                        "https://cdn.example.com".to_string(),
+                    )]),
+                    subtitles: Vec::new(),
+                    expires_at: None,
+                    cors_proxy_required: false,
+                },
+            )]),
+            default_mode: "direct".to_string(),
+            duration_seconds: None,
+            metadata: HashMap::new(),
+        };
+        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .checked("test proxy signing key should derive");
+
+        sign_direct_url_playback_urls(
+            &mut result,
+            "direct-v",
+            &signing_key,
+            "room-1",
+            "user-1",
+            chrono::Utc::now().timestamp() + 3600,
+        );
+
+        assert!(
+            !result.playback_infos.contains_key("direct"),
+            "header-backed upstream mode is unusable after server-owned headers are removed"
+        );
+
+        let proxy_direct = &result.playback_infos["proxy_direct"];
+        assert!(
+            proxy_direct.urls[0]
+                .contains("/api/providers/proxy/direct_url/direct-v/stream/direct/0?"),
+            "signed DirectUrl proxy URL should include mode and index: {}",
+            proxy_direct.urls[0]
+        );
+        assert!(proxy_direct.headers.is_empty());
+        assert!(!proxy_direct.cors_proxy_required);
+        assert_eq!(result.default_mode, "proxy_direct");
+    }
+
+    #[test]
+    fn test_signed_direct_url_without_headers_keeps_direct_default() {
+        let mut result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "direct".to_string(),
+                PlaybackInfo {
+                    urls: vec!["https://cdn.example.com/movie.mp4".to_string()],
+                    format: "mp4".to_string(),
+                    headers: HashMap::new(),
+                    subtitles: Vec::new(),
+                    expires_at: None,
+                    cors_proxy_required: false,
+                },
+            )]),
+            default_mode: "direct".to_string(),
+            duration_seconds: None,
+            metadata: HashMap::new(),
+        };
+        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
+            .checked("test proxy signing key should derive");
+
+        sign_direct_url_playback_urls(
+            &mut result,
+            "direct-v",
+            &signing_key,
+            "room-1",
+            "user-1",
+            chrono::Utc::now().timestamp() + 3600,
+        );
+
+        assert_eq!(
+            result.playback_infos["direct"].urls[0],
+            "https://cdn.example.com/movie.mp4"
+        );
+        assert!(result.playback_infos.contains_key("proxy_direct"));
+        assert_eq!(result.default_mode, "direct");
+    }
+
     #[tokio::test]
     async fn test_signed_hls_variant_target_is_rewritten_again() {
         let store: Arc<dyn crate::provider::store::ProviderStore> =
@@ -718,6 +873,79 @@ mod tests {
                     Some("https://cdn.example.com")
                 );
                 assert_eq!(proxy_base, "/api/providers/proxy/direct_url/direct-hls");
+            }
+            other => std::panic::panic_any(format!("Expected M3u8Rewrite, got {other:?}")),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_indexed_hls_proxy_path_resolves_mode_url() {
+        let store: Arc<dyn crate::provider::store::ProviderStore> =
+            Arc::new(InMemoryProviderStore::new(100));
+        let version = "direct-indexed-hls";
+        let result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "direct".to_string(),
+                PlaybackInfo {
+                    urls: vec!["https://cdn.example.com/master.m3u8".to_string()],
+                    format: "m3u8".to_string(),
+                    headers: HashMap::from([(
+                        "Referer".to_string(),
+                        "https://cdn.example.com".to_string(),
+                    )]),
+                    subtitles: vec![],
+                    expires_at: None,
+                    cors_proxy_required: false,
+                },
+            )]),
+            default_mode: "direct".to_string(),
+            duration_seconds: None,
+            metadata: HashMap::new(),
+        };
+        store
+            .set(
+                &format!("v:{version}"),
+                &VersionedPlayback {
+                    version: version.to_string(),
+                    result,
+                    expires_at: chrono::Utc::now().timestamp() + 3600,
+                },
+                Duration::from_mins(5),
+            )
+            .await
+            .checked("operation should succeed");
+        let ctx = ProxyRequestContext {
+            sub_path: "direct-indexed-hls/m3u8/direct/0",
+            query_string: None,
+            store: Some(&store),
+            proxy_base: "/api/providers/proxy/direct_url",
+            services: None,
+            public_id_codec: None,
+            verified_claims: None,
+            request_context: None,
+            request_headers: &http::HeaderMap::new(),
+        };
+
+        let action = DirectUrlProvider::new()
+            .resolve_proxy(&ctx)
+            .await
+            .checked("operation should succeed");
+        match action {
+            ProxyAction::M3u8Rewrite {
+                url,
+                headers,
+                proxy_base,
+                ..
+            } => {
+                assert_eq!(url, "https://cdn.example.com/master.m3u8");
+                assert_eq!(
+                    headers.get("Referer").map(String::as_str),
+                    Some("https://cdn.example.com")
+                );
+                assert_eq!(
+                    proxy_base,
+                    "/api/providers/proxy/direct_url/direct-indexed-hls"
+                );
             }
             other => std::panic::panic_any(format!("Expected M3u8Rewrite, got {other:?}")),
         }

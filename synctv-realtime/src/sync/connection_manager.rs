@@ -1587,6 +1587,22 @@ impl ConnectionManager {
             .map_or(0, |conns| conns.len())
     }
 
+    /// List rooms that have at least one connection on this process.
+    ///
+    /// This is local-node lifecycle ownership. Playback background workers use
+    /// this set for duration probing, auto-advance, RTMP, and live-proxy
+    /// resource maintenance. Presence, hot-room indexes, and distributed room
+    /// counters are read models for lists, admin views, analytics, and metrics.
+    /// Cross-node duplicates converge through database row locks, `SKIP
+    /// LOCKED`, and playback-state optimistic writes.
+    #[must_use]
+    pub fn active_room_ids(&self) -> Vec<RoomId> {
+        self.room_connections
+            .iter()
+            .filter_map(|entry| (!entry.value().is_empty()).then_some(*entry.key()))
+            .collect()
+    }
+
     /// Get connection count for a room across all replicas (distributed).
     ///
     /// Reads the Redis atomic counter (`connections:room:{room_id}`) which is

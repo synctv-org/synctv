@@ -40,6 +40,13 @@ pub trait PlaybackService: Send + Sync {
         _force: bool,
     ) {
     }
+
+    async fn refresh_observed_playback_metadata_and_auto_advance(
+        &self,
+        _room_id: &RoomId,
+        _state: &RoomPlaybackState,
+    ) {
+    }
 }
 
 pub(crate) fn playback_expires_at(playback: &synctv_proto::client::Playback) -> Option<i64> {
@@ -48,4 +55,11 @@ pub(crate) fn playback_expires_at(playback: &synctv_proto::client::Playback) -> 
         .values()
         .flat_map(|info| info.urls.iter().filter_map(|url| url.expire_at))
         .min()
+}
+
+pub(crate) const fn playback_generation_error_allows_state_only(error: &ApiError) -> bool {
+    matches!(
+        error,
+        ApiError::ServiceUnavailable(_) | ApiError::Timeout(_)
+    )
 }

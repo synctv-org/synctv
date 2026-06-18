@@ -721,12 +721,33 @@ impl PlaybackService {
                 };
 
                 let Some(next_target) = next_target else {
+                    let observed_version = state.version;
+                    let mut ended_state = state;
+                    let ended_position = ended_state.computed_position();
+                    ended_state.position = ended_position;
+                    ended_state.is_playing = false;
+                    ended_state.updated_at = chrono::Utc::now();
+
+                    let saved_state = self
+                        .persist_playback_state_update_with_previous_progress(
+                            &ended_state,
+                            observed_version,
+                            None,
+                            None,
+                        )
+                        .await?;
+                    self.write_playback_cache(&saved_state).await;
+
+                    self.broadcast_invalidation(room_id, &saved_state, "play_next_ended")
+                        .await;
+
                     tracing::info!(
                         room_id = %room_id,
                         mode = ?mode,
+                        position = ended_position,
                         "Playlist ended"
                     );
-                    return Ok(None);
+                    return Ok(Some(saved_state));
                 };
 
                 // Apply update to the fetched state and try to save with optimistic locking
@@ -852,14 +873,23 @@ impl PlaybackService {
         }
     }
 
-    pub async fn auto_advance_due_sources(
+    pub async fn auto_advance_due_sources_for_rooms(
         &self,
         settings_repo: &crate::repository::RoomSettingsRepository,
+        room_ids: &[RoomId],
         limit: i64,
     ) -> Result<usize> {
+        // The caller passes rooms active on this process. In a cluster the same
+        // room can be active on several nodes, so duplicate scans are expected.
+        // Playback state updates below still go through transactional optimistic
+        // locking, which is the cross-node guard against advancing twice.
+        if room_ids.is_empty() {
+            return Ok(0);
+        }
+
         let candidates = self
             .source_metadata_repo
-            .list_active_finite_sources(limit)
+            .list_active_finite_sources_for_rooms(room_ids, limit)
             .await?;
         let mut advanced = 0_usize;
 

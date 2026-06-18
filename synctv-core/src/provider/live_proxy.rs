@@ -13,7 +13,9 @@ use super::{
     MediaProvider, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
 };
 use crate::models::{MediaId, RoomId, TypedId};
+use crate::proxy_signature::ProxySigningKey;
 use async_trait::async_trait;
+use base64::Engine as _;
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -63,6 +65,7 @@ impl LiveProxyProvider {
                 "Unsupported source URL format: {url}. Expected rtmp:// or *.flv"
             )));
         }
+        Self::reject_synctv_publish_url(&parsed_url)?;
 
         let host = parsed_url.host_str().ok_or_else(|| {
             ProviderError::InvalidConfig("LiveProxy source URL is missing a host".to_string())
@@ -105,6 +108,50 @@ impl LiveProxyProvider {
         }
 
         Ok(())
+    }
+
+    fn reject_synctv_publish_url(parsed_url: &url::Url) -> Result<(), ProviderError> {
+        if !parsed_url.scheme().eq_ignore_ascii_case("rtmp") {
+            return Ok(());
+        }
+
+        let Some(token) = parsed_url
+            .query_pairs()
+            .find_map(|(key, value)| (key == "token").then_some(value.into_owned()))
+        else {
+            return Ok(());
+        };
+
+        if !Self::looks_like_synctv_publish_key(&token) {
+            return Ok(());
+        }
+
+        Err(ProviderError::InvalidConfig(
+            "LiveProxy source URL points at a SyncTV RTMP publish endpoint. Use the original upstream RTMP/HTTP-FLV source URL, or use the RTMP provider for SyncTV-managed live media.".to_string(),
+        ))
+    }
+
+    fn looks_like_synctv_publish_key(token: &str) -> bool {
+        let mut parts = token.split('.');
+        let (Some(_header), Some(payload), Some(_signature), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return false;
+        };
+
+        let Ok(payload) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
+            return false;
+        };
+        let Ok(payload) = serde_json::from_slice::<Value>(&payload) else {
+            return false;
+        };
+
+        payload
+            .get("perm_live_control")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            && payload.get("room_id").is_some()
+            && payload.get("media_id").is_some()
     }
 
     fn resolve_live_binding<'a>(
@@ -193,6 +240,7 @@ impl LiveProxyProvider {
                 let segment_name = segment.trim_start_matches("segment/");
                 let disguised_as_png = segment_name.ends_with(".png");
                 Ok(ProxyAction::LiveHlsSegment {
+                    provider_name: Self::NAME.to_string(),
                     room_id,
                     media_id,
                     segment_name: segment_name.to_string(),
@@ -248,6 +296,68 @@ impl LiveProxyProvider {
     }
 }
 
+fn sign_live_proxy_playback_urls(
+    result: &mut PlaybackResult,
+    version: &str,
+    signing_key: &ProxySigningKey,
+    room_id: &str,
+    user_id: &str,
+    expires_at: i64,
+) {
+    // Live proxy delivery is owned by SyncTV, so generated modes point at
+    // signed provider-proxy actions directly. HLS and FLV actions stay
+    // provider-specific because they start and track different live resources.
+    // New live modes must attach to the external publish lifecycle and idle
+    // cleanup path before they are exposed in playback results.
+    let default_mode = result.default_mode.clone();
+    for (mode_name, info) in &mut result.playback_infos {
+        if info.urls.is_empty() {
+            continue;
+        }
+
+        if super::playback_info_is_hls(mode_name, info) {
+            info.urls = vec![super::signed_provider_proxy_url(
+                LiveProxyProvider::NAME,
+                version,
+                "m3u8",
+                signing_key,
+                room_id,
+                user_id,
+                expires_at,
+            )];
+        } else if mode_name == &default_mode && info.urls.len() == 1 {
+            info.urls = vec![super::signed_provider_proxy_url(
+                LiveProxyProvider::NAME,
+                version,
+                "stream",
+                signing_key,
+                room_id,
+                user_id,
+                expires_at,
+            )];
+        } else {
+            info.urls = info
+                .urls
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    super::signed_provider_proxy_url(
+                        LiveProxyProvider::NAME,
+                        version,
+                        &format!("stream/{mode_name}/{index}"),
+                        signing_key,
+                        room_id,
+                        user_id,
+                        expires_at,
+                    )
+                })
+                .collect();
+        }
+        info.headers.clear();
+        info.cors_proxy_required = false;
+    }
+}
+
 #[async_trait]
 impl MediaProvider for LiveProxyProvider {
     fn name(&self) -> &'static str {
@@ -269,10 +379,6 @@ impl MediaProvider for LiveProxyProvider {
         Self::validate_live_source_url(source_url, &self.ssrf_guard).await?;
 
         let mut result = super::build_live_playback(*media_id, *room_id);
-        // External live_proxy sources are lazy-started by the FLV path today.
-        // Do not advertise HLS until that path can start/remux external pullers.
-        result.playback_infos.remove("hls");
-        result.default_mode = "flv".to_string();
         let parsed_source_url = url::Url::parse(source_url).map_err(|error| {
             ProviderError::InvalidConfig(format!(
                 "Invalid LiveProxy source URL '{source_url}': {error}"
@@ -293,7 +399,15 @@ impl MediaProvider for LiveProxyProvider {
 
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5);
-        super::finalize_versioned_playback(result, Self::NAME, &cache_key, cache_ttl, ctx).await
+        super::cache_versioned_playback_and_build_response(
+            result,
+            Self::NAME,
+            &cache_key,
+            cache_ttl,
+            ctx,
+            sign_live_proxy_playback_urls,
+        )
+        .await
     }
 
     async fn validate_source_config(
@@ -452,12 +566,17 @@ mod tests {
             .urls
             .first()
             .checked("operation should succeed");
-        assert!(
-            !result.playback_infos.contains_key("hls"),
-            "live_proxy must not advertise HLS until external pullers can lazy-start that path"
-        );
+        let hls = result
+            .playback_infos
+            .get("hls")
+            .checked("operation should succeed")
+            .urls
+            .first()
+            .checked("operation should succeed");
+        assert!(hls.starts_with("/api/providers/proxy/live_proxy/"));
+        assert!(hls.contains("/m3u8?"));
         assert!(flv.starts_with("/api/providers/proxy/live_proxy/"));
-        assert_eq!(result.default_mode, "flv");
+        assert_eq!(result.default_mode, "hls");
         let flv_url = url::Url::parse(&format!("http://synctv.local{flv}"))
             .checked("operation should succeed");
         assert!(flv_url
@@ -534,6 +653,52 @@ mod tests {
             err,
             ProviderError::InvalidConfig(ref msg) if msg.contains("runtime context")
         ));
+    }
+
+    #[tokio::test]
+    async fn test_live_proxy_validate_source_config_rejects_synctv_publish_url() {
+        let provider =
+            LiveProxyProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
+        let ctx = ProviderContext::new("test");
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&json!({
+                "room_id": "1",
+                "media_id": "10",
+                "perm_live_control": true
+            }))
+            .checked("payload should serialize"),
+        );
+        let token = format!("header.{payload}.signature");
+        let source_config = json!({
+            "url": format!("rtmp://127.0.0.1:53008/room_1/med_10?token={token}")
+        });
+
+        let err = provider
+            .validate_source_config(&ctx, SourceConfig::media(&source_config))
+            .await
+            .failed("SyncTV publish endpoints are not valid live_proxy pull sources");
+
+        assert!(matches!(
+            err,
+            ProviderError::InvalidConfig(ref msg) if msg.contains("RTMP publish endpoint")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_live_proxy_validate_source_config_allows_external_rtmp_with_unrelated_token() {
+        let provider =
+            LiveProxyProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
+        let ctx = ProviderContext::new("test");
+
+        provider
+            .validate_source_config(
+                &ctx,
+                SourceConfig::media(&json!({
+                    "url": "rtmp://127.0.0.1:19350/live/source?token=external"
+                })),
+            )
+            .await
+            .checked("external RTMP sources with unrelated query tokens should remain valid");
     }
 
     #[tokio::test]

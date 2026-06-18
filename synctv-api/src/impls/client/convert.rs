@@ -63,6 +63,16 @@ pub(crate) fn json_to_string<T: serde::Serialize + ?Sized>(
     })
 }
 
+fn json_value_to_metadata_string(
+    value: &serde_json::Value,
+    context: &'static str,
+) -> Result<String, crate::impls::ApiError> {
+    match value {
+        serde_json::Value::String(value) => Ok(value.clone()),
+        _ => json_to_string(value, context),
+    }
+}
+
 fn usize_to_i32(value: usize, field: &'static str) -> Result<i32, crate::impls::ApiError> {
     i32::try_from(value)
         .map_err(|_| crate::impls::ApiError::Internal(format!("{field} exceeds i32::MAX")))
@@ -1061,7 +1071,12 @@ pub(crate) fn try_playback_to_proto(
     let metadata = result
         .metadata
         .iter()
-        .map(|(key, value)| Ok((key.clone(), json_to_string(value, "playback metadata")?)))
+        .map(|(key, value)| {
+            Ok((
+                key.clone(),
+                json_value_to_metadata_string(value, "playback metadata")?,
+            ))
+        })
         .collect::<Result<_, crate::impls::ApiError>>()?;
 
     Ok(synctv_proto::client::Playback {
@@ -1181,7 +1196,12 @@ fn playback_url_metadata_to_proto(
     let extra = metadata
         .extra
         .iter()
-        .map(|(key, value)| Ok((key.clone(), json_to_string(value, "playback URL metadata")?)))
+        .map(|(key, value)| {
+            Ok((
+                key.clone(),
+                json_value_to_metadata_string(value, "playback URL metadata")?,
+            ))
+        })
         .collect::<Result<_, crate::impls::ApiError>>()?;
 
     Ok(synctv_proto::client::PlaybackUrlMetadata {
@@ -1246,7 +1266,9 @@ fn client_visible_headers(
     url: &str,
     headers: &std::collections::HashMap<String, String>,
 ) -> std::collections::HashMap<String, String> {
-    if is_provider_proxy_url(url) {
+    if is_bilibili_direct_mpd_manifest_url(url) {
+        headers.clone()
+    } else if is_provider_proxy_url(url) {
         std::collections::HashMap::new()
     } else {
         headers.clone()
@@ -1255,6 +1277,18 @@ fn client_visible_headers(
 
 fn is_provider_proxy_url(url: &str) -> bool {
     url.starts_with("/api/providers/proxy/")
+}
+
+fn is_bilibili_direct_mpd_manifest_url(url: &str) -> bool {
+    let Some(path) = url
+        .strip_prefix("/api/providers/proxy/bilibili/")
+        .and_then(|rest| rest.split('?').next())
+    else {
+        return false;
+    };
+    path.split_once("/mpd/")
+        .and_then(|(_, rest)| rest.split_once('/'))
+        .is_some_and(|(_, delivery)| delivery == "direct")
 }
 
 #[cfg(test)]
@@ -1449,6 +1483,15 @@ mod tests {
                     )]),
                     expire_at: None,
                     metadata: None,
+                }, PlaybackUrl {
+                    name: "bilibili-direct-mpd".to_string(),
+                    url: "/api/providers/proxy/bilibili/ver-1/mpd/dash/direct?sig=s&uid=u&rid=r&exp=1".to_string(),
+                    headers: HashMap::from([(
+                        "Referer".to_string(),
+                        "https://www.bilibili.com".to_string(),
+                    )]),
+                    expire_at: None,
+                    metadata: None,
                 }],
                 default_url_index: 0,
                 subtitles: vec![Subtitle {
@@ -1509,6 +1552,10 @@ mod tests {
             Some("Bearer stream-token")
         );
         assert!(direct.urls[1].headers.is_empty());
+        assert_eq!(
+            direct.urls[2].headers.get("Referer").map(String::as_str),
+            Some("https://www.bilibili.com")
+        );
         assert_eq!(
             direct.subtitles[0].urls[0]
                 .headers
@@ -1781,6 +1828,84 @@ mod tests {
             crate::impls::ApiError::Internal(message)
                 if message.contains("subtitle default URL index")
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn playback_to_proto_writes_string_metadata_without_json_quotes() -> TestResult {
+        use synctv_core::models::media::{
+            PlaybackInfo, PlaybackResult, PlaybackUrl, PlaybackUrlMetadata,
+        };
+
+        let result = PlaybackResult::builder(
+            None,
+            RoomId::expect_positive(1),
+            "Metadata media".to_string(),
+            0.0,
+        )
+        .default_mode("direct".to_string())
+        .add_metadata(
+            "thumbnail".to_string(),
+            serde_json::json!("https://cdn.example.com/thumb.jpg"),
+        )
+        .add_metadata("size".to_string(), serde_json::json!(42))
+        .add_metadata("nested".to_string(), serde_json::json!({"codec": "h264"}))
+        .add_mode(
+            "direct".to_string(),
+            PlaybackInfo {
+                urls: vec![PlaybackUrl {
+                    name: "main".to_string(),
+                    url: "https://cdn.example.com/video.mp4".to_string(),
+                    headers: HashMap::new(),
+                    expire_at: None,
+                    metadata: Some(PlaybackUrlMetadata {
+                        resolution: Some("1080p".to_string()),
+                        bitrate: Some(4_000_000),
+                        codec: Some("h264".to_string()),
+                        fps: Some(30),
+                        extra: HashMap::from([
+                            ("label".to_string(), serde_json::json!("Main Stream")),
+                            ("raw".to_string(), serde_json::json!({"kind": "primary"})),
+                        ]),
+                    }),
+                }],
+                default_url_index: 0,
+                subtitles: Vec::new(),
+                default_subtitle_index: None,
+                danmakus: Vec::new(),
+                format: "mp4".to_string(),
+            },
+        )
+        .build()
+        .ok_or_else(|| test_error("playback result should build"))?;
+
+        let proto = api_ok(try_playback_to_proto(
+            &result,
+            &synctv_core::PublicIdCodec::plain(),
+        ))?;
+
+        assert_eq!(
+            proto.metadata.get("thumbnail").map(String::as_str),
+            Some("https://cdn.example.com/thumb.jpg")
+        );
+        assert_eq!(proto.metadata.get("size").map(String::as_str), Some("42"));
+        assert_eq!(
+            proto.metadata.get("nested").map(String::as_str),
+            Some(r#"{"codec":"h264"}"#)
+        );
+
+        let url_metadata = proto.playback_infos["direct"].urls[0]
+            .metadata
+            .as_ref()
+            .ok_or_else(|| test_error("playback URL metadata should exist"))?;
+        assert_eq!(
+            url_metadata.extra.get("label").map(String::as_str),
+            Some("Main Stream")
+        );
+        assert_eq!(
+            url_metadata.extra.get("raw").map(String::as_str),
+            Some(r#"{"kind":"primary"}"#)
+        );
         Ok(())
     }
 

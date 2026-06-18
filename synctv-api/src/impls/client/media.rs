@@ -1965,6 +1965,15 @@ impl ClientApiImpl {
 
             let page = page_i32_to_usize(req.page)?;
             let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
+            let public_credential_owner_id = playlist
+                .creator_id
+                .map(|creator_id| self.public_id_codec.encode_user_id(creator_id))
+                .transpose()
+                .map_err(|error| {
+                    ApiError::Internal(format!(
+                        "Failed to encode credential owner public id: {error}"
+                    ))
+                })?;
             let items = self
                 .room_service
                 .media_service()
@@ -1979,6 +1988,7 @@ impl ClientApiImpl {
                         search: normalize_non_empty_filter(&req.search),
                         refresh: req.refresh,
                     },
+                    public_credential_owner_id.as_deref(),
                 )
                 .await
                 .map_err(ApiError::from)?;

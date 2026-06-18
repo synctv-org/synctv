@@ -474,14 +474,16 @@ fn test_dash_video_resp_deserialize() {
     });
     let resp: DashVideoResp = serde_json::from_value(json).unwrap();
     assert_eq!(resp.code, 0);
-    assert!((resp.data.dash.duration - 300.0).abs() < f64::EPSILON);
-    assert_eq!(resp.data.dash.video.len(), 1);
-    assert_eq!(resp.data.dash.video[0].width, 1920);
-    assert_eq!(resp.data.dash.video[0].height, 1080);
-    assert_eq!(resp.data.dash.audio.len(), 1);
-    assert_eq!(resp.data.dash.audio[0].codecs, "mp4a.40.2");
-    assert_eq!(resp.data.support_formats.len(), 1);
-    assert_eq!(resp.data.support_formats[0].quality, 80);
+    let data = resp.data.expect("DASH data should deserialize");
+    let dash = data.dash.expect("DASH streams should deserialize");
+    assert!((dash.duration - 300.0).abs() < f64::EPSILON);
+    assert_eq!(dash.video.len(), 1);
+    assert_eq!(dash.video[0].width, 1920);
+    assert_eq!(dash.video[0].height, 1080);
+    assert_eq!(dash.audio.len(), 1);
+    assert_eq!(dash.audio[0].codecs, "mp4a.40.2");
+    assert_eq!(data.support_formats.len(), 1);
+    assert_eq!(data.support_formats[0].quality, 80);
 }
 
 #[test]
@@ -617,20 +619,20 @@ fn test_nav_resp_deserialize() {
 fn test_nav_resp_deserialize_without_wbi_img() {
     use synctv_media_providers::bilibili::NavResp;
     let json = serde_json::json!({
-        "code": 0,
-        "message": "0",
+        "code": -101,
+        "message": "not logged in",
         "ttl": 1,
         "data": {
-            "isLogin": false,
-            "uname": "",
-            "face": "",
-            "vipStatus": 0,
-            "mid": 0
+            "isLogin": false
         }
     });
     let resp: NavResp = serde_json::from_value(json).unwrap();
-    assert_eq!(resp.code, 0);
+    assert_eq!(resp.code, -101);
     assert!(!resp.data.is_login);
+    assert_eq!(resp.data.uname, "");
+    assert_eq!(resp.data.face, "");
+    assert_eq!(resp.data.vip_status, 0);
+    assert_eq!(resp.data.mid, 0);
     assert!(resp.data.wbi_img.is_none());
 }
 

@@ -508,7 +508,15 @@ impl ProviderStoreResolver for ProviderStoreRegistry {
 
 // VersionedPlayback
 
-/// Cached playback result with a version tag and expiry timestamp.
+/// Provider-owned playback result with a stable proxy lookup version.
+///
+/// Providers cache their raw `PlaybackResult` here, then apply provider-owned
+/// signing/finalization when a response is built. The `version` is the lookup
+/// key used by provider proxy URLs (`v:{version}`); it lets `/stream`, `/m3u8`,
+/// `/mpd`, subtitle, danmaku, thumbnail, FLV, and HLS segment resolvers find
+/// the exact playback result that generated those URLs. Keep playback policy in
+/// each provider's `generate_playback` and proxy resolver; this struct is only
+/// cache payload plus expiry.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VersionedPlayback {
     pub version: String,

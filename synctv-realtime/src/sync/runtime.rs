@@ -111,6 +111,10 @@ pub trait RoomMessageRuntime: Send + Sync {
 
     fn room_count(&self) -> usize;
 
+    /// Rooms with at least one realtime connection on this process.
+    ///
+    /// This is local-node state for lifecycle work such as playback background
+    /// workers. Distributed room statistics live in presence/Redis APIs.
     fn active_room_ids(&self) -> Vec<RoomId>;
 
     fn connection_count(&self) -> usize;
@@ -188,6 +192,16 @@ pub trait ConnectionRuntime: Send + Sync {
     fn connection_count(&self) -> usize;
 
     fn room_connection_count(&self, room_id: &RoomId) -> usize;
+
+    /// Rooms with at least one connection owned by this process.
+    ///
+    /// This is the scheduling boundary for per-node playback lifecycle
+    /// workers: duration probing, auto-advance, RTMP, and live-proxy resource
+    /// maintenance. Presence, hot-room indexes, and distributed room counters
+    /// are read models for lists, admin views, analytics, and metrics. Workers
+    /// run on every node and converge duplicate room attempts through database
+    /// locks, `SKIP LOCKED`, and playback-state optimistic versions.
+    fn active_room_ids(&self) -> Vec<RoomId>;
 
     fn user_connection_count(&self, user_id: &UserId) -> usize;
 
@@ -301,6 +315,10 @@ impl ConnectionRuntime for ConnectionManager {
 
     fn room_connection_count(&self, room_id: &RoomId) -> usize {
         ConnectionManager::room_connection_count(self, room_id)
+    }
+
+    fn active_room_ids(&self) -> Vec<RoomId> {
+        ConnectionManager::active_room_ids(self)
     }
 
     fn user_connection_count(&self, user_id: &UserId) -> usize {

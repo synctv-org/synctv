@@ -1080,7 +1080,11 @@ impl RoomMessageHub {
         self.rooms.len()
     }
 
-    /// Get all active room IDs (rooms with at least one subscriber)
+    /// Get all active room IDs (rooms with at least one local subscriber).
+    ///
+    /// This is local runtime state. Playback lifecycle schedulers use it as a
+    /// process-scoped input and rely on durable storage for duplicate-work
+    /// convergence when several nodes host subscribers for the same room.
     #[must_use]
     pub fn active_room_ids(&self) -> Vec<RoomId> {
         self.rooms.iter().map(|entry| *entry.key()).collect()

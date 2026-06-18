@@ -224,6 +224,21 @@ cargo check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,
 
 Run focused tests first for the area you changed, then broader checks.
 
+## Provider and Playback End-to-End Verification
+
+After changing Providers, playback URL signing, proxying, manifests, subtitles, danmaku, thumbnails, RTMP, live proxy, playback background workers, or resource lifecycle behavior, run real service checks in addition to unit tests:
+
+- start a built `synctv` binary so startup, config, migrations, and routes are covered;
+- use the `synctv` CLI to create users, rooms, Providers, media, dynamic playlists, RTMP publish keys, and playback state;
+- keep a room active with a real WebSocket connection;
+- use `curl` to request every returned direct/proxy URL, manifest, indexed segment, subtitle, danmaku, thumbnail, and Range URL;
+- cover Direct URL, Alist, Emby, Jellyfin, Bilibili anonymous playback, RTMP, live proxy, HLS, FLV, cache MISS/HIT, URL expiry, and resource cleanup;
+- cover dynamic playlist returned paths, media resolution, playback, switching, cover/thumbnail routes, and target changes after auto-advance;
+- test RTMP/live proxy with a real upstream publisher, then verify stream info, HLS playlists and segments, FLV, and idle cleanup after disconnect;
+- add `synctv` CLI coverage before accepting a workflow missing CLI support.
+
+Use the returned `PlaybackResult` as the verification checklist. Request every mode and auxiliary URL, including media resolved from dynamic playlists. Playback background workers use the current process's `ConnectionRuntime::active_room_ids()`, so active-room verification should be driven by a real WebSocket.
+
 ## SQLx Offline Metadata
 
 SQLx macros validate SQL at compile time and use `.sqlx/` metadata for offline builds. Refresh metadata after changing SQL, migrations, or query return types.
@@ -231,6 +246,10 @@ SQLx macros validate SQL at compile time and use `.sqlx/` metadata for offline b
 <Aside type="tip">
 CI can build with `SQLX_OFFLINE=true` without connecting to a database if `.sqlx/` metadata is current.
 </Aside>
+
+Repository queries that need compile-time validation should stay on SQLx checked macros. Updating `.sqlx` is part of the normal development flow, and metadata changes are part of SQL changes.
+
+Playback background queries must also keep room-scoped filtering and the join to the current `room_playback_progress.target_hash`. When those SQL statements change, update code, `.sqlx` metadata, and the active-room E2E evidence together.
 
 Refresh flow:
 

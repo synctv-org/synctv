@@ -527,17 +527,18 @@ fn test_nav_resp_with_wbi_img_deserialize() -> TestResult {
 fn test_nav_resp_without_wbi_img_deserialize() -> TestResult {
     let json = r#"{
             "data": {
-                "isLogin": false,
-                "uname": "",
-                "face": "",
-                "vipStatus": 0,
-                "mid": 0
+                "isLogin": false
             },
-            "message": "0",
-            "code": 0,
+            "message": "not logged in",
+            "code": -101,
             "ttl": 1
         }"#;
     let resp: types::NavResp = serde_json::from_str(json)?;
+    assert_eq!(resp.code, -101);
+    assert_eq!(resp.data.uname, "");
+    assert_eq!(resp.data.face, "");
+    assert_eq!(resp.data.vip_status, 0);
+    assert_eq!(resp.data.mid, 0);
     assert!(resp.data.wbi_img.is_none());
     Ok(())
 }
@@ -579,6 +580,27 @@ fn test_is_wbi_stale_error_other_codes() {
 
     let err = BilibiliError::Parse("bad json".to_string());
     assert!(!BilibiliClient::is_wbi_stale_error(&err));
+}
+
+#[test]
+fn test_bilibili_api_error_uses_local_english_message() {
+    let err = bilibili_api_error(-101, "nav");
+    match err {
+        BilibiliError::Api { code, message } => {
+            assert_eq!(code, -101);
+            assert_eq!(message, "Bilibili authentication is required");
+        }
+        other => panic!("unexpected error variant: {other}"),
+    }
+
+    let err = bilibili_api_error(12345, "video URL");
+    match err {
+        BilibiliError::Api { code, message } => {
+            assert_eq!(code, 12345);
+            assert_eq!(message, "Bilibili video URL API returned code 12345");
+        }
+        other => panic!("unexpected error variant: {other}"),
+    }
 }
 
 #[test]

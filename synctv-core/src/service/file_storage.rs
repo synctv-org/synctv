@@ -60,6 +60,23 @@ pub(super) const MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES: usize = 64 * 1024 * 1
 pub(super) const DEFAULT_RESUMABLE_UPLOAD_PART_SIZE_BYTES: i64 = 8 * 1024 * 1024;
 pub(super) const FILE_UPLOAD_CHECKSUM_ALGORITHM_SHA256: &str = "sha256";
 
+// File storage contract:
+// - file_objects is the registry; validated_at marks the final usable object.
+// - file_blob_parts stores database-backend bytes for final objects and
+//   pending database multipart sessions.
+// - file_upload_sessions and file_upload_session_parts track resumable state.
+// - upload parts are hashed while they are written; finalize recomputes the
+//   manifest digest from stored part checksums.
+// - database multipart finalization promotes blob-part rows with UPDATE, so
+//   the same table stores pending and final parts through different object keys.
+// - part_size_bytes is planned per session and persisted; validators must read
+//   the session plan so changing the default only affects new sessions.
+// - S3 upload sessions default to direct client-to-S3 presigned URLs; SyncTV
+//   proxy upload/download paths remain available as a deployment fallback.
+// - downloads return FileObjectDownload streams; HTTP wraps that as a normal
+//   binary body and gRPC wraps it as protobuf chunks.
+// See docs/src/content/docs/en/develop/implementation-contracts.mdx.
+
 pub(super) fn payload_len_i64(len: usize) -> Result<i64> {
     i64::try_from(len)
         .map_err(|_| Error::InvalidInput("file payload size exceeds i64::MAX".to_string()))
@@ -104,6 +121,9 @@ pub(super) async fn collect_file_object_download(
 }
 
 pub(super) fn upload_session_part_size(_max_size_bytes: i64) -> i64 {
+    // This is the server plan for new sessions. Existing sessions validate
+    // against their stored part_size_bytes and manifest, so changing the
+    // default must remain compatible with open sessions.
     DEFAULT_RESUMABLE_UPLOAD_PART_SIZE_BYTES
 }
 

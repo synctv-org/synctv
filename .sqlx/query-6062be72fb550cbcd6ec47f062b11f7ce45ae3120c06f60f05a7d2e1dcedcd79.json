@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT state.room_id as \"room_id: RoomId\",\n                      state.playing_media_id as \"playing_media_id: MediaId\",\n                      state.playing_playlist_id as \"playing_playlist_id: PlaylistId\",\n                      state.target,\n                      state.current_progress_id,\n                      COALESCE(progress.\"position\", 0.0) AS \"position!\",\n                      state.speed AS \"speed!\",\n                      state.is_playing,\n                      state.updated_at,\n                      state.version\n             FROM room_playback_state state\n             LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id\n             WHERE state.room_id = $1",
+  "query": "SELECT state.room_id as \"room_id!: RoomId\",\n                      state.playing_media_id as \"playing_media_id?: MediaId\",\n                      state.playing_playlist_id as \"playing_playlist_id?: PlaylistId\",\n                      state.target AS \"target!\",\n                      state.current_progress_id AS \"current_progress_id?\",\n                      COALESCE(progress.\"position\", 0.0) AS \"position!\",\n                      state.speed AS \"speed!\",\n                      state.is_playing AS \"is_playing!\",\n                      state.updated_at AS \"updated_at!\",\n                      state.version AS \"version!\"\n             FROM room_playback_state state\n             LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id\n             WHERE state.room_id = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "room_id: RoomId",
+        "name": "room_id!: RoomId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -16,7 +16,7 @@
       },
       {
         "ordinal": 1,
-        "name": "playing_media_id: MediaId",
+        "name": "playing_media_id?: MediaId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -27,7 +27,7 @@
       },
       {
         "ordinal": 2,
-        "name": "playing_playlist_id: PlaylistId",
+        "name": "playing_playlist_id?: PlaylistId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -38,7 +38,7 @@
       },
       {
         "ordinal": 3,
-        "name": "target",
+        "name": "target!",
         "type_info": "Bytea",
         "origin": {
           "Table": {
@@ -49,7 +49,7 @@
       },
       {
         "ordinal": 4,
-        "name": "current_progress_id",
+        "name": "current_progress_id?",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -77,7 +77,7 @@
       },
       {
         "ordinal": 7,
-        "name": "is_playing",
+        "name": "is_playing!",
         "type_info": "Bool",
         "origin": {
           "Table": {
@@ -88,7 +88,7 @@
       },
       {
         "ordinal": 8,
-        "name": "updated_at",
+        "name": "updated_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -99,7 +99,7 @@
       },
       {
         "ordinal": 9,
-        "name": "version",
+        "name": "version!",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -115,17 +115,17 @@
       ]
     },
     "nullable": [
-      false,
       true,
       true,
-      false,
+      true,
+      true,
       true,
       null,
-      false,
-      false,
-      false,
-      false
+      true,
+      true,
+      true,
+      true
     ]
   },
-  "hash": "cc16ba11e62a58b0ad93db9246624bbdeb6225594d52a9f09aa67cfd05ec200d"
+  "hash": "6062be72fb550cbcd6ec47f062b11f7ce45ae3120c06f60f05a7d2e1dcedcd79"
 }

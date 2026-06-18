@@ -220,10 +220,21 @@ impl PlaybackSourceMetadataRepository {
         Ok(metadata)
     }
 
-    pub async fn list_active_finite_sources(
+    pub async fn list_active_finite_sources_for_rooms(
         &self,
+        room_ids: &[RoomId],
         limit: i64,
     ) -> Result<Vec<(PlaybackSourceMetadata, RoomPlaybackState)>> {
+        // Auto-advance starts from rooms active in the current process. Keep
+        // the room filter in SQL so the worker stays node-local. The progress
+        // target_hash join binds metadata to the current target, including
+        // dynamic playlist entries whose playlist id stays the same while the
+        // target changes.
+        if room_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let room_ids = room_ids.iter().map(RoomId::as_i64).collect::<Vec<_>>();
         let rows = sqlx::query_as!(
             PlaybackSourceWithStateRow,
             r#"
@@ -257,26 +268,45 @@ impl PlaybackSourceMetadataRepository {
              AND metadata.playlist_id IS NOT DISTINCT FROM state.playing_playlist_id
              AND metadata.target_hash = progress.target_hash
             WHERE state.is_playing = TRUE
+              AND state.room_id = ANY($2)
               AND metadata.duration_status = $1
               AND metadata.duration_seconds IS NOT NULL
             ORDER BY state.updated_at ASC
-            LIMIT $2
+            LIMIT $3
             "#,
             i16::from(PlaybackDurationStatus::Available),
+            &room_ids,
             limit,
         )
         .fetch_all(&self.pool)
         .await?;
 
-        let sources = rows.into_iter().map(PlaybackSourceWithStateRow::into_parts).collect();
+        let sources = rows
+            .into_iter()
+            .map(PlaybackSourceWithStateRow::into_parts)
+            .collect();
 
         Ok(sources)
     }
 
-    pub async fn claim_duration_probe_batch(
+    pub async fn claim_duration_probe_batch_for_rooms(
         &self,
+        room_ids: &[RoomId],
         limit: i64,
     ) -> Result<Vec<ClaimedPlaybackDurationProbe>> {
+        // Duration probing is scheduled per node from local active rooms, then
+        // claimed in the primary database. FOR UPDATE SKIP LOCKED is the
+        // cross-node concurrency control when several nodes host the same room.
+        // The current room playback progress target_hash is part of the join so
+        // dynamic playlist probes apply only to the item that is currently
+        // playing. Keep this query on checked SQLx macros and update `.sqlx`
+        // with SQL changes; offline query-shape validation is part of the
+        // worker safety net.
+        if room_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let room_ids = room_ids.iter().map(RoomId::as_i64).collect::<Vec<_>>();
         let rows = sqlx::query_as!(
             PlaybackSourceWithStateRow,
             r#"
@@ -293,7 +323,8 @@ impl PlaybackSourceMetadataRepository {
                 JOIN room_playback_progress progress
                   ON progress.id = state.current_progress_id
                  AND progress.target_hash = metadata.target_hash
-                WHERE (
+                WHERE state.room_id = ANY($7)
+                  AND (
                       metadata.duration_status IN ($1, $2, $3)
                       OR (
                           metadata.duration_status = $4
@@ -368,6 +399,7 @@ impl PlaybackSourceMetadataRepository {
             i16::from(PlaybackDurationStatus::Pending),
             limit,
             i16::from(PlaybackDurationStatus::Pending),
+            &room_ids,
         )
         .fetch_all(&self.pool)
         .await?;
@@ -381,6 +413,117 @@ impl PlaybackSourceMetadataRepository {
             .collect();
 
         Ok(probes)
+    }
+
+    pub async fn claim_duration_probe_for_active_source(
+        &self,
+        identity: &PlaybackSourceIdentity,
+    ) -> Result<Option<ClaimedPlaybackDurationProbe>> {
+        let row = sqlx::query_as!(
+            PlaybackSourceWithStateRow,
+            r#"
+            WITH claimed AS (
+                SELECT metadata.room_id,
+                       metadata.media_id,
+                       metadata.playlist_id,
+                       metadata.target_hash
+                FROM playback_source_metadata metadata
+                JOIN room_playback_state state
+                  ON state.room_id = metadata.room_id
+                 AND state.playing_media_id IS NOT DISTINCT FROM metadata.media_id
+                 AND state.playing_playlist_id IS NOT DISTINCT FROM metadata.playlist_id
+                JOIN room_playback_progress progress
+                  ON progress.id = state.current_progress_id
+                 AND progress.target_hash = metadata.target_hash
+                WHERE metadata.room_id = $1
+                  AND metadata.media_id IS NOT DISTINCT FROM $2
+                  AND metadata.playlist_id IS NOT DISTINCT FROM $3
+                  AND metadata.target_hash = $4
+                  AND (
+                      metadata.duration_status IN ($5, $6, $7)
+                      OR (
+                          metadata.duration_status = $8
+                          AND metadata.next_retry_at <= NOW()
+                      )
+                  )
+                  AND state.is_playing = TRUE
+                  AND metadata.duration_seconds IS NULL
+                  AND (metadata.next_retry_at IS NULL OR metadata.next_retry_at <= NOW())
+                LIMIT 1
+                FOR UPDATE OF metadata SKIP LOCKED
+            ),
+            updated AS (
+                UPDATE playback_source_metadata metadata
+                   SET duration_status = $9,
+                       duration_error = NULL,
+                       next_retry_at = NOW() + INTERVAL '5 minutes',
+                       version = metadata.version + 1
+                  FROM claimed
+                 WHERE metadata.room_id = claimed.room_id
+                   AND metadata.media_id IS NOT DISTINCT FROM claimed.media_id
+                   AND metadata.playlist_id IS NOT DISTINCT FROM claimed.playlist_id
+                   AND metadata.target_hash = claimed.target_hash
+                RETURNING metadata.room_id,
+                          metadata.media_id,
+                          metadata.playlist_id,
+                          metadata.target_hash,
+                          metadata.duration_seconds,
+                          metadata.duration_status,
+                          metadata.duration_source,
+                          metadata.duration_error,
+                          metadata.next_retry_at,
+                          metadata.created_at,
+                          metadata.updated_at,
+                          metadata.version
+            )
+            SELECT updated.room_id AS "metadata_room_id!: RoomId",
+                   updated.media_id AS "metadata_media_id?: MediaId",
+                   updated.playlist_id AS "metadata_playlist_id?: PlaylistId",
+                   updated.target_hash AS metadata_target_hash,
+                   updated.duration_seconds,
+                   updated.duration_status AS "metadata_duration_status!: PlaybackDurationStatus",
+                   updated.duration_source AS "metadata_duration_source?: PlaybackDurationSource",
+                   updated.duration_error,
+                   updated.next_retry_at,
+                   updated.created_at AS metadata_created_at,
+                   updated.updated_at AS metadata_updated_at,
+                   updated.version AS metadata_version,
+                   state.room_id AS "state_room_id!: RoomId",
+                   state.playing_media_id AS "state_playing_media_id?: MediaId",
+                   state.playing_playlist_id AS "state_playing_playlist_id?: PlaylistId",
+                   state.target AS state_target,
+                   state.current_progress_id AS state_current_progress_id,
+                   COALESCE(progress."position", 0.0) AS "state_position!",
+                   state.speed AS state_speed,
+                   state.is_playing AS state_is_playing,
+                   state.updated_at AS state_updated_at,
+                   state.version AS state_version
+            FROM updated
+            JOIN room_playback_state state
+              ON state.room_id = updated.room_id
+             AND state.playing_media_id IS NOT DISTINCT FROM updated.media_id
+             AND state.playing_playlist_id IS NOT DISTINCT FROM updated.playlist_id
+            JOIN room_playback_progress progress
+              ON progress.id = state.current_progress_id
+             AND progress.target_hash = updated.target_hash
+            "#,
+            identity.room_id as RoomId,
+            identity.media_id.map(i64::from),
+            identity.playlist_id.map(i64::from),
+            &identity.target_hash,
+            i16::from(PlaybackDurationStatus::Unknown),
+            i16::from(PlaybackDurationStatus::Failed),
+            i16::from(PlaybackDurationStatus::Unavailable),
+            i16::from(PlaybackDurationStatus::Pending),
+            i16::from(PlaybackDurationStatus::Pending),
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| {
+            let (metadata, state) = row.into_parts();
+            ClaimedPlaybackDurationProbe { metadata, state }
+        }))
     }
 
     pub async fn complete_probe_duration(

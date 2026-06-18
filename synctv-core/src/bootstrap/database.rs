@@ -33,6 +33,13 @@ pub struct DatabaseInit {
     pub metrics_task: Option<JoinHandle<()>>,
 }
 
+/// Database pools for primary and allowlisted eventually consistent reads.
+///
+/// Repository methods opt in to `read()` deliberately. Keep writes,
+/// transactions, auth/security checks, cache-building inputs, post-write
+/// fanout, cursor-coupled snapshots, playback worker claims, and file
+/// finalization on `primary()`. The full contract is documented in
+/// `docs/src/content/docs/en/develop/implementation-contracts.mdx`.
 #[derive(Debug, Clone)]
 pub struct DatabasePools {
     primary: PgPool,

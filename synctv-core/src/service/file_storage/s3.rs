@@ -1331,6 +1331,9 @@ impl FileStorageService for S3CompatibleFileStorageService {
             end_inclusive: payload_len_i64(data.len())? - 1,
             total_size: expected_size,
         });
+        // Validate against the persisted session plan. S3 and database
+        // multipart sessions share the same resume/idempotency contract: the
+        // per-session manifest defines accepted offsets, sizes, and checksums.
         let part_index =
             validate_upload_range(range, data.len(), expected_size, session.part_size_bytes)?;
         let part_number = part_index.checked_add(1).ok_or_else(|| {

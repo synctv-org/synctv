@@ -387,15 +387,16 @@ pub struct SupportFormat {
 /// DASH format video response
 #[derive(Debug, Clone, Deserialize)]
 pub struct DashVideoResp {
-    pub data: DashVideoData,
-    pub message: String,
+    #[serde(default)]
+    pub data: Option<DashVideoData>,
     pub code: i32,
     pub ttl: i32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DashVideoData {
-    pub dash: DashInfo,
+    #[serde(default)]
+    pub dash: Option<DashInfo>,
     #[serde(default)]
     pub support_formats: Vec<SupportFormat>,
 }
@@ -580,10 +581,13 @@ pub struct NavResp {
 pub struct NavData {
     #[serde(rename = "isLogin")]
     pub is_login: bool,
+    #[serde(default)]
     pub uname: String,
+    #[serde(default)]
     pub face: String,
-    #[serde(rename = "vipStatus")]
+    #[serde(default, rename = "vipStatus")]
     pub vip_status: u32,
+    #[serde(default)]
     pub mid: u64,
     #[serde(default)]
     pub wbi_img: Option<WbiImg>,
@@ -703,8 +707,31 @@ mod tests {
             }
         }))?;
 
-        assert_eq!(response.data.dash.video[0].start_with_sap, 0);
-        assert_eq!(response.data.dash.audio[0].start_with_sap, 0);
+        let data = response.data.expect("DASH data should deserialize");
+        let dash = data.dash.expect("DASH streams should deserialize");
+        assert_eq!(dash.video[0].start_with_sap, 0);
+        assert_eq!(dash.audio[0].start_with_sap, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn dash_video_response_accepts_error_envelope_without_dash() -> TestResult {
+        let response: DashVideoResp = serde_json::from_value(serde_json::json!({
+            "code": -101,
+            "message": "not logged in",
+            "ttl": 1,
+            "data": {
+                "login_mid": 0
+            }
+        }))?;
+
+        assert_eq!(response.code, -101);
+        assert!(response.data.is_some());
+        assert!(response
+            .data
+            .expect("data should deserialize")
+            .dash
+            .is_none());
         Ok(())
     }
 }

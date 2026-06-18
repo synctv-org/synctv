@@ -1,4 +1,9 @@
-// HTTP/JSON REST API
+// HTTP/JSON REST API.
+//
+// This module is a transport adapter. Business behavior belongs in
+// synctv-api/src/impls and synctv-core so HTTP and gRPC share one execution
+// path. File downloads still look like ordinary binary HTTP responses; the
+// body is backed by FileObjectDownload streams from core storage services.
 
 pub mod admin;
 pub(crate) mod admin_execute;
@@ -303,12 +308,16 @@ pub struct RouterConfig {
     pub heartbeat_schedule: crate::impls::HeartbeatSchedule,
     /// Providers manager for playback generation and provider HTTP APIs.
     pub providers_manager: Arc<synctv_core::service::ProvidersManager>,
+    pub playback_duration_probe: Option<Arc<synctv_core::service::PlaybackDurationProbeService>>,
 }
 
 /// Shared transport-agnostic API runtime derived from `RouterConfig`.
 ///
 /// HTTP, gRPC, and management transports reuse these instances instead of
 /// constructing parallel API impls, validators, caches, or provider stores.
+/// Keep request parsing and response encoding in transport modules; business
+/// behavior belongs in `impls` and core services so HTTP and gRPC expose the
+/// same capabilities through the same execution path.
 #[derive(Clone)]
 pub struct SharedApiRuntime {
     /// Redis runtime abstraction derived from the shared connection when available.
@@ -553,6 +562,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
             presence_service: config.presence_service.clone(),
             request_executor: request_executor.clone(),
             ws_ticket_service: config.ws_ticket_service.clone(),
+            playback_duration_probe: config.playback_duration_probe.clone(),
         },
     ));
 

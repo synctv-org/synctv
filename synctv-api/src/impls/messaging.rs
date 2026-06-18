@@ -74,7 +74,8 @@ pub use heartbeat::HeartbeatSchedule;
 mod observed_playback;
 pub use observed_playback::{
     spawn_observed_playback_lifecycle_event_source, ObservedPlaybackLifecycleEvent,
-    ObservedPlaybackLifecycleSubscriber, ProviderPlaybackProgressSubscriber,
+    ObservedPlaybackLifecycleSubscriber, PlaybackAutoAdvanceSubscriber,
+    ProviderPlaybackProgressSubscriber,
 };
 mod playback;
 #[cfg(test)]

@@ -18,7 +18,7 @@ pub use client::{
     ReconnectConfig, ReconnectResult, ReconnectableLiveDanmakuConnection,
 };
 pub use error::BilibiliError;
-pub use service::{BilibiliInterface, BilibiliService};
+pub use service::{BilibiliInterface, BilibiliLiveDanmakuStream, BilibiliService};
 pub use types::{
     AnimeEpisodeInfo, AnimeInfo, AnimeInfoResp, AnimeInfoResult, CodecEntry, DashAudio, DashInfo,
     DashPgcResp, DashPgcResult, DashVideo, DashVideoData, DashVideoResp, Dimension, DurlInfo,

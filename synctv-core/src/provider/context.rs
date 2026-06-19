@@ -37,6 +37,9 @@ pub struct ProviderContext<'a> {
     /// Media ID currently being resolved (optional)
     pub media_id: Option<MediaId>,
 
+    /// Externally visible media ID for client-facing provider URLs.
+    pub public_media_id: Option<String>,
+
     /// Bound provider instance name selected by the media/playlist owner (optional)
     pub provider_instance_name: Option<&'a str>,
 
@@ -83,6 +86,7 @@ impl<'a> ProviderContext<'a> {
             room_id: None,
             public_room_id: None,
             media_id: None,
+            public_media_id: None,
             provider_instance_name: None,
             base_url: None,
             key_prefix,
@@ -146,6 +150,13 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn with_media_id(mut self, media_id: MediaId) -> Self {
         self.media_id = Some(media_id);
+        self
+    }
+
+    /// Set externally visible media ID for client-facing provider URLs.
+    #[must_use]
+    pub fn with_public_media_id(mut self, media_id: impl Into<String>) -> Self {
+        self.public_media_id = Some(media_id.into());
         self
     }
 
@@ -266,6 +277,11 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn media_id(&self) -> Option<&MediaId> {
         self.media_id.as_ref()
+    }
+
+    #[must_use]
+    pub fn public_media_id(&self) -> Option<&str> {
+        self.public_media_id.as_deref()
     }
 
     #[must_use]

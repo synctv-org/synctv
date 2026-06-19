@@ -9,7 +9,7 @@ use crate::models::RoomId;
 use crate::repository::RoomSettingsRepository;
 
 #[async_trait]
-pub trait ActivePlaybackRoomProvider: Send + Sync {
+pub trait ActivePlaybackRoomSource: Send + Sync {
     /// Return rooms with realtime connections on this process.
     ///
     /// Playback lifecycle workers use local active rooms as their scheduling
@@ -19,7 +19,7 @@ pub trait ActivePlaybackRoomProvider: Send + Sync {
     /// duration probing claims rows, and auto-advance uses playback state
     /// transactions with optimistic versions.
     ///
-    /// This provider must reflect the current process's realtime runtime.
+    /// This source must reflect the current process's realtime runtime.
     /// Presence, hot-room indexes, and shared room statistics are for lists,
     /// admin views, analytics, and metrics.
     ///
@@ -35,7 +35,7 @@ pub trait ActivePlaybackRoomProvider: Send + Sync {
 pub struct PlaybackAutoAdvanceService {
     playback_service: PlaybackService,
     settings_repo: RoomSettingsRepository,
-    active_room_provider: Option<Arc<dyn ActivePlaybackRoomProvider>>,
+    active_room_source: Option<Arc<dyn ActivePlaybackRoomSource>>,
 }
 
 impl PlaybackAutoAdvanceService {
@@ -49,16 +49,16 @@ impl PlaybackAutoAdvanceService {
         Self {
             playback_service,
             settings_repo,
-            active_room_provider: None,
+            active_room_source: None,
         }
     }
 
     #[must_use]
-    pub fn with_active_room_provider(
+    pub fn with_active_room_source(
         mut self,
-        active_room_provider: Arc<dyn ActivePlaybackRoomProvider>,
+        active_room_source: Arc<dyn ActivePlaybackRoomSource>,
     ) -> Self {
-        self.active_room_provider = Some(active_room_provider);
+        self.active_room_source = Some(active_room_source);
         self
     }
 
@@ -119,9 +119,9 @@ impl PlaybackAutoAdvanceService {
     }
 
     async fn active_room_ids(&self) -> crate::Result<Vec<RoomId>> {
-        let Some(active_room_provider) = &self.active_room_provider else {
+        let Some(active_room_source) = &self.active_room_source else {
             return Ok(Vec::new());
         };
-        active_room_provider.active_room_ids().await
+        active_room_source.active_room_ids().await
     }
 }

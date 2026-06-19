@@ -130,6 +130,7 @@ base64.workspace = true
 uuid.workspace = true
 url.workspace = true
 percent-encoding.workspace = true
+urlencoding.workspace = true
 ipnet.workspace = true
 dashmap.workspace = true
 kube = { workspace = true, optional = true }

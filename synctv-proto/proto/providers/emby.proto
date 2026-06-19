@@ -1,7 +1,7 @@
 // Emby-compatible Provider Client API
 //
 // This is the client-facing gRPC API for provider type `emby`, which supports
-// Emby-compatible servers such as Emby and Jellyfin.
+// Emby-compatible server API.
 //
 // SECURITY: Login transmits the Emby API key as plaintext. Deployments MUST use
 // TLS for all connections to this service.
@@ -13,7 +13,7 @@ package synctv.provider.emby;
 // Login request
 message LoginRequest {
   string host = 1;
-  string username = 2; // Target Emby/Jellyfin username to bind and validate
+  string username = 2; // Target Emby username to bind and validate
   oneof credential {
     string password = 3; // SECURITY: Plaintext password - requires TLS in transit.
     string api_key = 4; // SECURITY: Plaintext credential - requires TLS in transit.

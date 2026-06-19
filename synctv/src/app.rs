@@ -512,12 +512,12 @@ fn build_room_message_runtime(
         .map_err(|error| anyhow::anyhow!("Failed to initialize realtime message runtime: {error}"))
 }
 
-struct LocalActivePlaybackRoomProvider {
+struct LocalActivePlaybackRoomSource {
     connection_runtime: Arc<dyn ConnectionRuntime>,
 }
 
 #[async_trait::async_trait]
-impl synctv_core::service::ActivePlaybackRoomProvider for LocalActivePlaybackRoomProvider {
+impl synctv_core::service::ActivePlaybackRoomSource for LocalActivePlaybackRoomSource {
     async fn active_room_ids(&self) -> synctv_core::Result<Vec<synctv_core::models::RoomId>> {
         // Playback lifecycle ownership is local process state. A room is active
         // for these workers when this process has at least one realtime
@@ -1272,7 +1272,7 @@ impl Application {
         // serialize the actual work when several nodes host the same room.
         // Leader election remains for global singleton jobs, while presence and
         // hot-room scans remain read models for lists, admin views, and metrics.
-        let active_room_provider = Arc::new(LocalActivePlaybackRoomProvider {
+        let active_room_source = Arc::new(LocalActivePlaybackRoomSource {
             connection_runtime: cluster.realtime_connection_service.clone(),
         });
 
@@ -1280,7 +1280,7 @@ impl Application {
             core.services.room_service.playback_service().clone(),
             synctv_core::repository::RoomSettingsRepository::new(infra.pool.clone()),
         )
-        .with_active_room_provider(active_room_provider.clone());
+        .with_active_room_source(active_room_source.clone());
         shutdown.register_task(
             "playback_auto_advance",
             playback_auto_advance.spawn(Duration::from_secs(1), cancel.clone()),
@@ -1293,7 +1293,7 @@ impl Application {
             core.services.room_service.playback_service().clone(),
             infra.config.security.ssrf_guard(),
         )
-        .with_active_room_provider(active_room_provider);
+        .with_active_room_source(active_room_source);
         shutdown.register_task(
             "playback_duration_probe",
             playback_duration_probe.spawn(Duration::from_secs(30), cancel),

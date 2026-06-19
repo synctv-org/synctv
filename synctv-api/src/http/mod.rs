@@ -40,11 +40,16 @@ use axum::{
 };
 use futures::StreamExt;
 use std::sync::{Arc, LazyLock};
-use synctv_core::provider::proxy::ProxyServices;
+use synctv_core::provider::playback_transport::PlaybackTransportServices;
 use synctv_core::provider::ProviderSet;
 use synctv_core::proxy_signature::ProxySigningKey;
 use synctv_core::repository::UserProviderCredentialRepository;
-use synctv_core::service::{RemoteProviderManager, RoomService, UserService};
+use synctv_core::service::{
+    AlistPlaybackProviderService, BilibiliPlaybackProviderService,
+    DirectUrlPlaybackProviderService, EmbyPlaybackProviderService,
+    LiveProxyPlaybackProviderService, PlaybackProviderServiceDeps, RemoteProviderManager,
+    RoomService, RtmpPlaybackProviderService, UserService,
+};
 use synctv_livestream::LiveStreamingInfrastructure;
 use synctv_realtime::sync::ConnectionRuntime;
 use tokio::task::JoinHandle;
@@ -354,10 +359,20 @@ pub struct SharedApiRuntime {
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     /// Per-provider stores for caching and distributed locking (lazy creation)
     pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
-    /// Registry of proxy-capable providers (looked up by type name in unified proxy handler)
-    pub proxy_provider_registry: Arc<synctv_core::provider::proxy::ProxyProviderRegistry>,
     /// Services available to providers during proxy resolution (DB access)
-    pub proxy_services: Arc<ProxyServices>,
+    pub playback_transport_services: Arc<PlaybackTransportServices>,
+    /// Core Alist playback-provider service shared by HTTP and gRPC transports.
+    pub alist_playback_provider_service: Arc<AlistPlaybackProviderService>,
+    /// Core Bilibili playback-provider service shared by HTTP and gRPC transports.
+    pub bilibili_playback_provider_service: Arc<BilibiliPlaybackProviderService>,
+    /// Core DirectUrl playback-provider service shared by HTTP and gRPC transports.
+    pub direct_url_playback_provider_service: Arc<DirectUrlPlaybackProviderService>,
+    /// Core Emby playback-provider service shared by HTTP and gRPC transports.
+    pub emby_playback_provider_service: Arc<EmbyPlaybackProviderService>,
+    /// Core RTMP playback-provider service shared by HTTP and gRPC transports.
+    pub rtmp_playback_provider_service: Arc<RtmpPlaybackProviderService>,
+    /// Core LiveProxy playback-provider service shared by HTTP and gRPC transports.
+    pub live_proxy_playback_provider_service: Arc<LiveProxyPlaybackProviderService>,
     /// HMAC signing key for proxy URL authentication
     pub proxy_signing_key: Arc<ProxySigningKey>,
     /// Structured WebRTC/STUN runtime state shared across transports.
@@ -671,20 +686,42 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
     // Create shared messaging rate limit config for WebSocket chat messages.
     let messaging_rate_limit_config = Arc::new(config.messaging_rate_limit_config.clone());
 
-    // Prefer the provider graph built by ProvidersManager so playback and proxy
-    // resolution share the same provider instances. Tests and fallback
-    // transports without a manager still use the explicitly supplied ProviderSet.
-    let proxy_provider_registry = config.providers_manager.proxy_registry();
-
-    // Create ProxyServices for unified proxy handler (gives providers DB access)
-    let proxy_services = Arc::new(ProxyServices {
+    // Create PlaybackTransportServices for playback-provider handlers.
+    let playback_transport_services = Arc::new(PlaybackTransportServices {
         room_service: config.room_service.clone(),
+        permission_service: config.room_service.permission_service().clone(),
         credential_encryption: config.credential_encryption.clone(),
         credential_repo: credential_repo.clone(),
         provider_access_service: provider_access_service.clone(),
         signing_key: proxy_signing_key.clone(),
         public_id_codec: public_id_codec.clone(),
     });
+    let playback_provider_deps = PlaybackProviderServiceDeps {
+        providers: config.providers.clone(),
+        provider_stores: provider_stores.clone(),
+        playback_transport_services: playback_transport_services.clone(),
+        public_id_codec: public_id_codec.clone(),
+        signing_key: proxy_signing_key.clone(),
+        provider_access_service: provider_access_service.clone(),
+    };
+    let alist_playback_provider_service = Arc::new(AlistPlaybackProviderService::new(
+        playback_provider_deps.clone(),
+    ));
+    let bilibili_playback_provider_service = Arc::new(BilibiliPlaybackProviderService::new(
+        playback_provider_deps.clone(),
+    ));
+    let direct_url_playback_provider_service = Arc::new(DirectUrlPlaybackProviderService::new(
+        playback_provider_deps.clone(),
+    ));
+    let emby_playback_provider_service = Arc::new(EmbyPlaybackProviderService::new(
+        playback_provider_deps.clone(),
+    ));
+    let rtmp_playback_provider_service = Arc::new(RtmpPlaybackProviderService::new(
+        playback_provider_deps.clone(),
+    ));
+    let live_proxy_playback_provider_service = Arc::new(LiveProxyPlaybackProviderService::new(
+        playback_provider_deps,
+    ));
 
     Ok(SharedApiRuntime {
         redis_runtime,
@@ -708,8 +745,13 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
         user_provider_credential_repository: credential_repo,
         provider_access_service,
         provider_stores,
-        proxy_provider_registry,
-        proxy_services,
+        playback_transport_services,
+        alist_playback_provider_service,
+        bilibili_playback_provider_service,
+        direct_url_playback_provider_service,
+        emby_playback_provider_service,
+        rtmp_playback_provider_service,
+        live_proxy_playback_provider_service,
         proxy_signing_key,
         webrtc_status: config.webrtc_status.clone(),
     })
@@ -1083,6 +1125,10 @@ fn register_read_routes() -> Router<AppState> {
             get(room::watch_playback),
         )
         .route(
+            "/api/rooms/{room_id}/media/{media_id}/danmaku/bilibili-live",
+            get(room::watch_bilibili_live_danmaku),
+        )
+        .route(
             "/api/rooms/{room_id}/watch/room-settings",
             get(room::watch_room_settings),
         )
@@ -1325,10 +1371,152 @@ fn register_all_routes() -> Router<AppState> {
                 )),
         )
         .route(
-            "/api/providers/proxy/{provider_name}/{*sub_path}",
-            get(providers::unified_proxy_handler)
-                .head(providers::unified_proxy_head_handler)
-                .options(providers::proxy_options_preflight),
+            "/api/playback-providers/bilibili/live-danmaku/{media_id}",
+            get(providers::playback_provider::bilibili::watch_bilibili_live_danmaku)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/bilibili/{version}/media-streams/{mode_name}/{url_index}",
+            get(providers::playback_provider::bilibili::get_bilibili_media_stream)
+                .head(providers::playback_provider::bilibili::head_bilibili_media_stream)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/bilibili/{version}/hls-manifests/{mode_name}/{url_index}",
+            get(providers::playback_provider::bilibili::get_bilibili_hls_manifest)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/bilibili/{version}/hls-segments",
+            get(providers::playback_provider::bilibili::get_bilibili_hls_segment)
+                .head(providers::playback_provider::bilibili::head_bilibili_hls_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/bilibili/{version}/dash-manifests/{mode_name}",
+            get(providers::playback_provider::bilibili::get_bilibili_dash_manifest)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/bilibili/{version}/dash-segments/{mode_name}/{url_index}",
+            get(providers::playback_provider::bilibili::get_bilibili_dash_segment)
+                .head(providers::playback_provider::bilibili::head_bilibili_dash_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/bilibili/{version}/subtitles/{mode_name}/{subtitle_index}",
+            get(providers::playback_provider::bilibili::get_bilibili_subtitle)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/bilibili/{version}/danmaku-files/{danmaku_index}",
+            get(providers::playback_provider::bilibili::get_bilibili_danmaku_file)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/direct-url/{version}/streams/{mode_name}/{url_index}",
+            get(providers::playback_provider::direct_url::get_direct_url_stream)
+                .head(providers::playback_provider::direct_url::head_direct_url_stream)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/direct-url/{version}/hls-manifests/{mode_name}/{url_index}",
+            get(providers::playback_provider::direct_url::get_direct_url_hls_manifest)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/direct-url/{version}/hls-segments",
+            get(providers::playback_provider::direct_url::get_direct_url_hls_segment)
+                .head(providers::playback_provider::direct_url::head_direct_url_hls_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/direct-url/{version}/subtitles/{mode_name}/{subtitle_index}",
+            get(providers::playback_provider::direct_url::get_direct_url_subtitle)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/alist/{version}/files/{mode_name}/{url_index}",
+            get(providers::playback_provider::alist::get_alist_file_stream)
+                .head(providers::playback_provider::alist::head_alist_file_stream)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/alist/{version}/transcoded-hls-manifests/{mode_name}/{url_index}",
+            get(providers::playback_provider::alist::get_alist_transcoded_hls_manifest)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/alist/{version}/transcoded-hls-segments",
+            get(providers::playback_provider::alist::get_alist_transcoded_hls_segment)
+                .head(providers::playback_provider::alist::head_alist_transcoded_hls_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/alist/{version}/subtitles/{mode_name}/{subtitle_index}",
+            get(providers::playback_provider::alist::get_alist_subtitle)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/alist/{version}/thumbnail",
+            get(providers::playback_provider::alist::get_alist_thumbnail)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/emby/{version}/media-streams/{mode_name}/{url_index}",
+            get(providers::playback_provider::emby::get_emby_media_stream)
+                .head(providers::playback_provider::emby::head_emby_media_stream)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/emby/{version}/hls-manifests/{mode_name}/{url_index}",
+            get(providers::playback_provider::emby::get_emby_hls_manifest)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/emby/{version}/hls-segments",
+            get(providers::playback_provider::emby::get_emby_hls_segment)
+                .head(providers::playback_provider::emby::head_emby_hls_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/emby/{version}/subtitles/{mode_name}/{subtitle_index}",
+            get(providers::playback_provider::emby::get_emby_subtitle)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/rtmp/{version}/flv-stream",
+            get(providers::playback_provider::rtmp::get_rtmp_flv_stream)
+                .head(providers::playback_provider::rtmp::head_rtmp_flv_stream)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/rtmp/{version}/hls-playlist",
+            get(providers::playback_provider::rtmp::get_rtmp_hls_playlist)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/rtmp/{version}/hls-segments/{segment_name}",
+            get(providers::playback_provider::rtmp::get_rtmp_hls_segment)
+                .head(providers::playback_provider::rtmp::head_rtmp_hls_segment)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/live-proxy/{version}/flv-stream",
+            get(providers::playback_provider::live_proxy::get_live_proxy_flv_stream)
+                .head(providers::playback_provider::live_proxy::head_live_proxy_flv_stream)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/live-proxy/{version}/hls-playlist",
+            get(providers::playback_provider::live_proxy::get_live_proxy_hls_playlist)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/live-proxy/{version}/hls-segments/{segment_name}",
+            get(providers::playback_provider::live_proxy::get_live_proxy_hls_segment)
+                .head(providers::playback_provider::live_proxy::head_live_proxy_hls_segment)
+                .options(providers::playback_provider_options_preflight),
         )
         .merge(register_websocket_routes());
 

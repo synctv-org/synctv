@@ -15,7 +15,6 @@ use synctv_core::models::SortDirection as CoreSortDirection;
 
 use super::client::convert::{
     json_to_vec, playback_client_profile_from_proto, provider_playback_info_to_model,
-    sign_local_bilibili_danmaku_urls, try_bilibili_live_danmaku_for_static_media,
     try_members_to_proto, try_playback_state_to_proto, try_playback_to_proto, user_status_to_proto,
 };
 use super::client::user_notification_preferences_to_proto;

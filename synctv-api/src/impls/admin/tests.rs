@@ -151,14 +151,7 @@ fn admin_lifecycle_playback_result(session_id: &str) -> synctv_core::provider::P
     let mut playback_infos = std::collections::HashMap::new();
     playback_infos.insert(
         "direct".to_string(),
-        synctv_core::provider::PlaybackInfo {
-            urls: vec!["https://example.com/video.mp4".to_string()],
-            format: "mp4".to_string(),
-            headers: std::collections::HashMap::new(),
-            subtitles: Vec::new(),
-            expires_at: None,
-            cors_proxy_required: false,
-        },
+        test_provider_playback_info("https://example.com/video.mp4"),
     );
 
     let mut metadata = std::collections::HashMap::new();
@@ -170,8 +163,32 @@ fn admin_lifecycle_playback_result(session_id: &str) -> synctv_core::provider::P
     synctv_core::provider::PlaybackResult {
         playback_infos,
         default_mode: "direct".to_string(),
+        provider: "test".to_string(),
+        provider_instance_name: None,
         duration_seconds: None,
         metadata,
+    }
+}
+
+fn test_provider_playback_info(url: &str) -> synctv_core::provider::PlaybackInfo {
+    synctv_core::provider::PlaybackInfo {
+        medias: vec![synctv_core::models::PlaybackMedia {
+            name: String::new(),
+            format: "mp4".to_string(),
+            expire_at: None,
+            metadata: None,
+            provider: synctv_core::models::PlaybackMediaProvider::External(
+                synctv_core::models::PlaybackExternalMedia {
+                    url: url.to_string(),
+                    headers: std::collections::HashMap::new(),
+                },
+            ),
+        }],
+        default_media_index: None,
+        subtitles: Vec::new(),
+        default_subtitle_index: None,
+        danmakus: Vec::new(),
+        default_danmaku_index: None,
     }
 }
 
@@ -4249,7 +4266,7 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
-                "room provider playback get test".to_string(),
+                "playback provider playback get test".to_string(),
                 owner.id,
                 None,
                 None,
@@ -4295,21 +4312,21 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
         .playback_infos
         .get("proxy_direct")
         .ok_or_else(|| test_error("proxy_direct mode should be present"))?;
-    assert_eq!(direct.urls.len(), 1);
+    assert_eq!(direct.medias.len(), 1);
     assert!(
-        direct.urls[0]
+        direct.medias[0]
             .url
-            .starts_with("/api/providers/proxy/direct_url/"),
+            .starts_with("/api/playback-providers/direct-url/"),
         "signed provider playback should expose proxy URL, got {}",
-        direct.urls[0].url
+        direct.medias[0].url
     );
     assert!(
-        direct.urls[0].url.contains("/stream/direct/0?"),
+        direct.medias[0].url.contains("/streams/direct/0?"),
         "signed direct-url playback should use stream proxy contract, got {}",
-        direct.urls[0].url
+        direct.medias[0].url
     );
     assert!(
-        direct.urls[0].headers.is_empty(),
+        direct.medias[0].headers.is_empty(),
         "proxy-backed playback keeps client headers empty"
     );
     Ok(())
@@ -4336,7 +4353,7 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_managem
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
-                "room provider playback get local management test".to_string(),
+                "playback provider playback get local management test".to_string(),
                 owner.id,
                 None,
                 None,
@@ -4387,23 +4404,23 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_managem
         .playback_infos
         .get("proxy_direct")
         .ok_or_else(|| test_error("proxy_direct mode should be present"))?;
-    assert_eq!(direct.urls.len(), 1);
+    assert_eq!(direct.medias.len(), 1);
     assert!(
-        direct.urls[0]
+        direct.medias[0]
             .url
-            .starts_with("/api/providers/proxy/direct_url/"),
+            .starts_with("/api/playback-providers/direct-url/"),
         "signed provider playback should expose proxy URL, got {}",
-        direct.urls[0].url
+        direct.medias[0].url
     );
     assert!(
-        direct.urls[0]
+        direct.medias[0]
             .url
             .contains(&format!("uid={}", public_user_id(&admin_api, owner.id))),
         "local management playback must sign proxy URLs with a real room member, got {}",
-        direct.urls[0].url
+        direct.medias[0].url
     );
     assert!(
-        !direct.urls[0]
+        !direct.medias[0]
             .url
             .contains(&LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string()),
         "local management playback signs proxy URLs with the resolved room member"

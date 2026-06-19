@@ -1768,7 +1768,7 @@ pub struct MediaProvidersConfig {
     pub alist: LocalProviderHttpConfig,
     /// Local Bilibili adapter configuration.
     pub bilibili: LocalProviderHttpConfig,
-    /// Local Emby/Jellyfin adapter configuration.
+    /// Local Emby adapter configuration.
     pub emby: LocalProviderHttpConfig,
 }
 

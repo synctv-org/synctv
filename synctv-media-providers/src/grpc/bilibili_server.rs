@@ -9,11 +9,13 @@ use super::bilibili::{
     LoginWithQrCodeReq, LoginWithQrCodeResp, LoginWithSmsReq, LoginWithSmsResp, MatchReq,
     MatchResp, NewCaptchaResp, NewQrCodeResp, NewSmsReq, NewSmsResp, ParseLivePageReq,
     ParsePgcPageReq, ParseVideoPageReq, UserInfoReq, UserInfoResp, VideoPageInfo, VideoUrl,
+    WatchBilibiliLiveDanmakuReq,
 };
 use super::error_mapper::map_provider_error;
 use crate::bilibili::{BilibiliInterface, BilibiliService as BilibiliServiceImpl};
 use crate::error::ProviderClientError;
 use crate::validation::validate_required;
+use futures_util::{Stream, StreamExt};
 use tonic::{Request, Response, Status};
 
 /// Map Bilibili provider errors to appropriate gRPC status codes using the shared mapper.
@@ -49,6 +51,14 @@ impl BilibiliService {
 
 #[tonic::async_trait]
 impl Bilibili for BilibiliService {
+    type WatchBilibiliLiveDanmakuStream = std::pin::Pin<
+        Box<
+            dyn Stream<Item = Result<super::bilibili::BilibiliLiveDanmakuEvent, Status>>
+                + Send
+                + 'static,
+        >,
+    >;
+
     async fn new_qr_code(
         &self,
         request: Request<Empty>,
@@ -327,5 +337,24 @@ impl Bilibili for BilibiliService {
             .await
             .map_err(|e| map_bilibili_error("get_live_danmu_info", &e))?;
         Ok(Response::new(resp))
+    }
+
+    async fn watch_bilibili_live_danmaku(
+        &self,
+        request: Request<WatchBilibiliLiveDanmakuReq>,
+    ) -> Result<Response<Self::WatchBilibiliLiveDanmakuStream>, Status> {
+        let req = request.into_inner();
+        if req.room_id == 0 {
+            return Err(Status::invalid_argument("room_id must not be zero"));
+        }
+        let stream = self
+            .service
+            .watch_bilibili_live_danmaku(req)
+            .await
+            .map_err(|e| map_bilibili_error("watch_bilibili_live_danmaku", &e))?;
+        let stream = StreamExt::map(stream, |event| {
+            event.map_err(|e| map_bilibili_error("watch_bilibili_live_danmaku", &e))
+        });
+        Ok(Response::new(Box::pin(stream)))
     }
 }

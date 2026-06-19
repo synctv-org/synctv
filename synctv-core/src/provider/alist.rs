@@ -10,11 +10,14 @@ use super::{
     },
     store::{ProviderStoreExt, VersionedPlayback},
     DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
-    MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackDeliveryPreference, PlaybackInfo,
-    PlaybackResult, PlaybackSubtitlePreference, ProviderContext, ProviderCredentialDependency,
-    ProviderError, SourceConfig, SubtitleTrack,
+    MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
+    PlaybackStreamPreference, PlaybackSubtitlePreference, ProviderContext,
+    ProviderCredentialDependency, ProviderError, SourceConfig,
 };
-use crate::proxy_signature::ProxySigningKey;
+use crate::models::media::{
+    PlaybackAlistMedia, PlaybackAlistSubtitle, PlaybackExternalSubtitle, PlaybackMedia,
+    PlaybackMediaProvider, PlaybackSubtitle, PlaybackSubtitleProvider,
+};
 use crate::service::RemoteProviderManager;
 use crate::validation::validate_path_for_traversal;
 use async_trait::async_trait;
@@ -153,7 +156,37 @@ fn subtitle_name_from_task(task: &AlistSubtitleTask, index: usize) -> String {
     }
 }
 
-fn subtitles_from_video_preview(preview: Option<&AlistVideoPreview>) -> Vec<SubtitleTrack> {
+fn playback_media(
+    name: String,
+    format: String,
+    expires_at: Option<i64>,
+    provider: PlaybackMediaProvider,
+) -> PlaybackMedia {
+    PlaybackMedia {
+        name,
+        format,
+        expire_at: expires_at.and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0)),
+        metadata: None,
+        provider,
+    }
+}
+
+fn external_subtitle(
+    name: String,
+    language: String,
+    url: String,
+    headers: HashMap<String, String>,
+    format: String,
+) -> PlaybackSubtitle {
+    PlaybackSubtitle {
+        name,
+        language,
+        format,
+        provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle { url, headers }),
+    }
+}
+
+fn subtitles_from_video_preview(preview: Option<&AlistVideoPreview>) -> Vec<PlaybackSubtitle> {
     let headers = alist_headers();
     preview.map_or_else(Vec::new, |preview| {
         preview
@@ -163,23 +196,23 @@ fn subtitles_from_video_preview(preview: Option<&AlistVideoPreview>) -> Vec<Subt
             .filter(|(_, sub)| !sub.url.trim().is_empty())
             .map(|(idx, sub)| {
                 let name = subtitle_name_from_task(sub, idx);
-                SubtitleTrack {
-                    language: if sub.language.trim().is_empty() {
+                external_subtitle(
+                    name,
+                    if sub.language.trim().is_empty() {
                         "und".to_string()
                     } else {
                         sub.language.clone()
                     },
-                    name,
-                    url: sub.url.clone(),
-                    headers: headers.clone(),
-                    format: "srt".to_string(),
-                }
+                    sub.url.clone(),
+                    headers.clone(),
+                    "srt".to_string(),
+                )
             })
             .collect()
     })
 }
 
-fn subtitles_from_related_files(related: &[AlistRelatedFile]) -> Vec<SubtitleTrack> {
+fn subtitles_from_related_files(related: &[AlistRelatedFile]) -> Vec<PlaybackSubtitle> {
     let headers = alist_headers();
     related
         .iter()
@@ -188,49 +221,37 @@ fn subtitles_from_related_files(related: &[AlistRelatedFile]) -> Vec<SubtitleTra
                 && !related.raw_url.trim().is_empty()
                 && is_subtitle_filename(&related.name)
         })
-        .map(|related| SubtitleTrack {
-            language: external_subtitle_language(&related.name),
-            name: related.name.clone(),
-            url: related.raw_url.clone(),
-            headers: headers.clone(),
-            format: subtitle_format_from_name(&related.name),
+        .map(|related| {
+            external_subtitle(
+                related.name.clone(),
+                external_subtitle_language(&related.name),
+                related.raw_url.clone(),
+                headers.clone(),
+                subtitle_format_from_name(&related.name),
+            )
         })
         .collect()
 }
 
 fn merge_subtitles(
-    mut primary: Vec<SubtitleTrack>,
-    secondary: Vec<SubtitleTrack>,
-) -> Vec<SubtitleTrack> {
+    mut primary: Vec<PlaybackSubtitle>,
+    secondary: Vec<PlaybackSubtitle>,
+) -> Vec<PlaybackSubtitle> {
     for subtitle in secondary {
-        if !primary.iter().any(|existing| existing.url == subtitle.url) {
+        if !primary
+            .iter()
+            .any(|existing| existing.upstream_url() == subtitle.upstream_url())
+        {
             primary.push(subtitle);
         }
     }
     primary
 }
 
-fn sign_alist_playback_urls(
-    result: &mut PlaybackResult,
-    version: &str,
-    signing_key: &ProxySigningKey,
-    room_id: &str,
-    user_id: &str,
-    expires_at: i64,
-) {
-    // Alist returns upstream playback modes and signed SyncTV proxy siblings in
-    // the same result. The proxy default keeps clients independent from upstream
-    // auth headers and HLS segment rewriting details. Keep thumbnail, subtitle,
-    // file stream, and HLS proxy actions aligned with `resolve_proxy`.
-    let signing = super::PlaybackProxySigning::new(
-        AlistProvider::NAME,
-        version,
-        signing_key,
-        room_id,
-        user_id,
-        expires_at,
-    );
-
+fn mark_alist_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+    // Alist returns upstream playback modes and SyncTV proxy siblings in the
+    // same result. The proxy default keeps clients independent from upstream
+    // auth headers and HLS segment rewriting details.
     if let Some(thumbnail) = result
         .metadata
         .get("thumbnail")
@@ -239,21 +260,92 @@ fn sign_alist_playback_urls(
         .filter(|thumbnail| !thumbnail.trim().is_empty())
     {
         result.metadata.insert(
-            "proxy_thumbnail".to_string(),
-            serde_json::json!(signing.signed_url("thumbnail")),
+            "proxy_thumbnail_resource".to_string(),
+            serde_json::json!({
+                "version": version,
+                "expires_at": expires_at,
+                "resource": "thumbnail",
+            }),
         );
         result
             .metadata
             .insert("thumbnail".to_string(), serde_json::json!(thumbnail));
     }
 
-    super::append_signed_proxy_playback_modes(
-        result,
-        &signing,
-        false,
-        true,
-        super::signed_standard_proxy_urls,
-    );
+    let original_default_mode = result.default_mode.clone();
+    let original_modes = result
+        .playback_infos
+        .iter()
+        .map(|(mode_name, info)| (mode_name.clone(), info.clone()))
+        .collect::<Vec<_>>();
+
+    for (mode_name, original_info) in original_modes {
+        if original_info.medias.is_empty() || mode_name.starts_with("proxy_") {
+            continue;
+        }
+
+        let proxy_mode_name = format!("proxy_{mode_name}");
+        if result.playback_infos.contains_key(&proxy_mode_name) {
+            continue;
+        }
+
+        let mut proxy_info = original_info.clone();
+        let proxy_is_hls = super::playback_info_is_hls(&mode_name, &original_info);
+        proxy_info.medias = original_info
+            .medias
+            .iter()
+            .enumerate()
+            .filter_map(|(url_index, media)| {
+                let url = media.upstream_url()?.to_string();
+                Some(playback_media(
+                    media.name.clone(),
+                    media.format.clone(),
+                    media.expire_at.map(|dt| dt.timestamp()),
+                    PlaybackMediaProvider::Alist(if proxy_is_hls {
+                        PlaybackAlistMedia::ProxyTranscodedHlsManifest {
+                            version: version.to_string(),
+                            expires_at,
+                            mode_name: mode_name.clone(),
+                            url_index,
+                            url,
+                            headers: media.upstream_headers(),
+                        }
+                    } else {
+                        PlaybackAlistMedia::ProxyFile {
+                            version: version.to_string(),
+                            expires_at,
+                            mode_name: mode_name.clone(),
+                            url_index,
+                            url,
+                            headers: media.upstream_headers(),
+                        }
+                    }),
+                ))
+            })
+            .collect();
+        proxy_info.subtitles = original_info
+            .subtitles
+            .iter()
+            .enumerate()
+            .map(|(subtitle_index, subtitle)| PlaybackSubtitle {
+                name: subtitle.name().to_string(),
+                language: subtitle.language().to_string(),
+                format: subtitle.format().to_string(),
+                provider: PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle {
+                    version: version.to_string(),
+                    expires_at,
+                    mode_name: mode_name.clone(),
+                    subtitle_index,
+                    url: subtitle.upstream_url().to_string(),
+                    headers: subtitle.upstream_headers(),
+                }),
+            })
+            .collect();
+
+        result.playback_infos.insert(proxy_mode_name, proxy_info);
+    }
+
+    result.default_mode = format!("proxy_{original_default_mode}");
 }
 
 fn related_file_path(parent_path: &str, name: &str) -> Option<String> {
@@ -271,13 +363,6 @@ fn related_file_path(parent_path: &str, name: &str) -> Option<String> {
     } else {
         format!("{parent}/{name}")
     })
-}
-
-fn signed_m3u8_segment_proxy_base(
-    ctx: &super::proxy::ProxyRequestContext<'_>,
-    version: &str,
-) -> String {
-    format!("{}/{version}", ctx.proxy_base)
 }
 
 /// Alist `MediaProvider`
@@ -758,6 +843,7 @@ impl AlistProvider {
             video_preview.as_ref(),
             video_preview_error.as_deref(),
             playback_client_profile,
+            config.provider_instance_name.clone(),
         ))
     }
 
@@ -766,6 +852,7 @@ impl AlistProvider {
         video_preview: Option<&AlistVideoPreview>,
         video_preview_error: Option<&str>,
         playback_client_profile: Option<&PlaybackClientProfile>,
+        provider_instance_name: Option<String>,
     ) -> PlaybackResult {
         let mut playback_infos = HashMap::new();
         let mut metadata = HashMap::new();
@@ -830,12 +917,20 @@ impl AlistProvider {
                     playback_infos.insert(
                         mode_name.clone(),
                         PlaybackInfo {
-                            urls: vec![task.url.clone()],
-                            format: "hls".to_string(),
-                            headers: headers.clone(),
+                            medias: vec![playback_media(
+                                quality_name.clone(),
+                                "hls".to_string(),
+                                task_expires_at,
+                                PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
+                                    url: task.url.clone(),
+                                    headers: headers.clone(),
+                                }),
+                            )],
+                            default_media_index: None,
                             subtitles: combined_subtitles.clone(),
-                            expires_at: task_expires_at,
-                            cors_proxy_required: false,
+                            default_subtitle_index: None,
+                            danmakus: Vec::new(),
+                            default_danmaku_index: None,
                         },
                     );
                     metadata.insert(mode_name, task_metadata);
@@ -890,12 +985,20 @@ impl AlistProvider {
             playback_infos.insert(
                 "direct".to_string(),
                 PlaybackInfo {
-                    urls: vec![file_info.raw_url.clone()],
-                    format: Self::detect_format(&file_info.name),
-                    headers: headers.clone(),
+                    medias: vec![playback_media(
+                        file_info.name.clone(),
+                        Self::detect_format(&file_info.name),
+                        direct_expires_at,
+                        PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct {
+                            url: file_info.raw_url.clone(),
+                            headers: headers.clone(),
+                        }),
+                    )],
+                    default_media_index: None,
                     subtitles: combined_subtitles,
-                    expires_at: direct_expires_at,
-                    cors_proxy_required: false,
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
                 },
             );
         }
@@ -909,6 +1012,8 @@ impl AlistProvider {
         PlaybackResult {
             playback_infos,
             default_mode,
+            provider: Self::NAME.to_string(),
+            provider_instance_name,
             duration_seconds,
             metadata,
         }
@@ -920,7 +1025,7 @@ impl AlistProvider {
         playback_client_profile: Option<&PlaybackClientProfile>,
     ) -> Option<String> {
         let profile = playback_client_profile.cloned().unwrap_or_default();
-        if profile.delivery_preference == PlaybackDeliveryPreference::DirectPlay && has_direct {
+        if profile.stream_preference == PlaybackStreamPreference::DirectPlay && has_direct {
             return Some("direct".to_string());
         }
 
@@ -949,10 +1054,10 @@ impl AlistProvider {
             },
         );
 
-        match profile.delivery_preference {
-            PlaybackDeliveryPreference::DirectPlay if has_direct => Some("direct".to_string()),
-            PlaybackDeliveryPreference::DirectPlay => selected_transcode,
-            PlaybackDeliveryPreference::Transcode | PlaybackDeliveryPreference::Auto => {
+        match profile.stream_preference {
+            PlaybackStreamPreference::DirectPlay if has_direct => Some("direct".to_string()),
+            PlaybackStreamPreference::DirectPlay => selected_transcode,
+            PlaybackStreamPreference::Transcode | PlaybackStreamPreference::Auto => {
                 selected_transcode.or_else(|| has_direct.then(|| "direct".to_string()))
             }
         }
@@ -1103,7 +1208,7 @@ impl MediaProvider for AlistProvider {
                         cached,
                         Self::NAME,
                         _ctx,
-                        sign_alist_playback_urls,
+                        mark_alist_playback_resources,
                     )
                     .await;
                 }
@@ -1128,7 +1233,7 @@ impl MediaProvider for AlistProvider {
                         cached,
                         Self::NAME,
                         _ctx,
-                        sign_alist_playback_urls,
+                        mark_alist_playback_resources,
                     )
                     .await;
                 }
@@ -1148,7 +1253,7 @@ impl MediaProvider for AlistProvider {
             &cache_key,
             cache_ttl,
             _ctx,
-            sign_alist_playback_urls,
+            mark_alist_playback_resources,
         )
         .await
     }
@@ -1156,179 +1261,153 @@ impl MediaProvider for AlistProvider {
     fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
         Some(self)
     }
-
-    fn as_provider_proxy(&self) -> Option<&dyn super::proxy::ProviderProxy> {
-        Some(self)
-    }
 }
 
-// ProviderProxy implementation for Alist
-// Supported sub_paths:
-// - `{version}/stream` — proxy the video stream
-// - `{version}/m3u8` — proxy M3U8 playlist with URL rewriting
-// - `{version}/subtitle/{mode}/{index}` — proxy a subtitle track for a mode
-#[async_trait]
-impl super::proxy::ProviderProxy for AlistProvider {
-    async fn resolve_proxy(
+impl AlistProvider {
+    pub async fn get_file_stream(
         &self,
-        ctx: &super::proxy::ProxyRequestContext<'_>,
-    ) -> Result<super::proxy::ProxyAction, ProviderError> {
-        let sub_path = ctx.sub_path;
-        let version = super::proxy::proxy_version_segment(sub_path)?;
-
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        url_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+        range_header: Option<&str>,
+    ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
         let versioned =
-            super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let playback_info = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .ok_or(ProviderError::NotFound)?;
+        let media = playback_info
+            .medias
+            .get(url_index)
+            .ok_or(ProviderError::NotFound)?;
+        let url = media.upstream_url().ok_or(ProviderError::NotFound)?;
+        Ok(
+            super::playback_transport::PlaybackTransportAction::FetchAndForward {
+                url: url.to_string(),
+                headers: media.upstream_headers(),
+                range_header: range_header.map(ToString::to_string),
+            },
+        )
+    }
 
-        if let Some(url) = super::proxy::signed_target_url(ctx) {
-            let headers = versioned
-                .result
-                .playback_infos
-                .get(&versioned.result.default_mode)
-                .map_or_else(HashMap::new, |info| info.headers.clone());
-            return super::proxy::action_for_signed_target_url(ctx, version, url, headers);
-        }
+    pub async fn get_transcoded_hls_manifest(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        url_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let playback_info = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .ok_or(ProviderError::NotFound)?;
+        let media = playback_info
+            .medias
+            .get(url_index)
+            .ok_or(ProviderError::NotFound)?;
+        let url = media.upstream_url().ok_or(ProviderError::NotFound)?;
+        Ok(
+            super::playback_transport::PlaybackTransportAction::M3u8Rewrite {
+                url: url.to_string(),
+                headers: media.upstream_headers(),
+            },
+        )
+    }
 
-        let (_, rest) = super::proxy::split_versioned_proxy_path(sub_path)?;
+    pub async fn get_transcoded_hls_segment(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        target_url: String,
+        request_context: Option<&super::ExecutionControl>,
+        range_header: Option<&str>,
+    ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let headers = versioned
+            .result
+            .playback_infos
+            .get(&versioned.result.default_mode)
+            .and_then(|info| info.medias.first())
+            .map_or_else(HashMap::new, PlaybackMedia::upstream_headers);
+        super::playback_transport::transport_action_for_target_url(
+            target_url,
+            headers,
+            range_header,
+        )
+    }
 
-        {
-            if rest == "thumbnail" {
-                let url = versioned
-                    .result
-                    .metadata
-                    .get("thumbnail")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|url| !url.trim().is_empty())
-                    .ok_or(ProviderError::NotFound)?
-                    .to_string();
-                let headers = versioned
-                    .result
-                    .playback_infos
-                    .get(&versioned.result.default_mode)
-                    .map_or_else(HashMap::new, |info| info.headers.clone());
-                return Ok(super::proxy::ProxyAction::FetchAndForward {
-                    url,
-                    headers,
-                    range_header: None,
-                });
-            }
+    pub async fn get_subtitle(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        subtitle_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let playback_info = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .ok_or(ProviderError::NotFound)?;
+        let subtitle = playback_info
+            .subtitles
+            .get(subtitle_index)
+            .ok_or(ProviderError::NotFound)?;
+        Ok(
+            super::playback_transport::PlaybackTransportAction::FetchAndForward {
+                url: subtitle.upstream_url().to_string(),
+                headers: super::subtitle_headers_for_proxy(
+                    &playback_info
+                        .medias
+                        .first()
+                        .map_or_else(HashMap::new, PlaybackMedia::upstream_headers),
+                    subtitle,
+                ),
+                range_header: None,
+            },
+        )
+    }
 
-            if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
-                let (playback_info, index_str) =
-                    if let Some((mode_name, index_str)) = subtitle_path.split_once('/') {
-                        (
-                            versioned
-                                .result
-                                .playback_infos
-                                .get(mode_name)
-                                .ok_or(ProviderError::NotFound)?,
-                            index_str,
-                        )
-                    } else {
-                        (
-                            versioned
-                                .result
-                                .playback_infos
-                                .get(&versioned.result.default_mode)
-                                .ok_or(ProviderError::NotFound)?,
-                            subtitle_path,
-                        )
-                    };
-                let index = super::proxy::parse_proxy_index(index_str)?;
-                let subtitle = playback_info
-                    .subtitles
-                    .get(index)
-                    .ok_or(ProviderError::NotFound)?;
-
-                return Ok(super::proxy::ProxyAction::FetchAndForward {
-                    url: subtitle.url.clone(),
-                    headers: super::subtitle_headers_for_proxy(&playback_info.headers, subtitle),
-                    range_header: None,
-                });
-            }
-
-            if let Some(stream_path) = rest.strip_prefix("stream/") {
-                let (playback_info, index_str) =
-                    if let Some((mode_name, index_str)) = stream_path.split_once('/') {
-                        (
-                            versioned
-                                .result
-                                .playback_infos
-                                .get(mode_name)
-                                .ok_or(ProviderError::NotFound)?,
-                            index_str,
-                        )
-                    } else {
-                        (
-                            versioned
-                                .result
-                                .playback_infos
-                                .get(&versioned.result.default_mode)
-                                .ok_or(ProviderError::NotFound)?,
-                            stream_path,
-                        )
-                    };
-                let index = super::proxy::parse_proxy_index(index_str)?;
-                let url = playback_info
-                    .urls
-                    .get(index)
-                    .ok_or(ProviderError::NotFound)?;
-
-                return Ok(super::proxy::ProxyAction::FetchAndForward {
-                    url: url.clone(),
-                    headers: playback_info.headers.clone(),
-                    range_header: super::proxy::selected_range_header(ctx)?,
-                });
-            }
-
-            if let Some(m3u8_path) = rest.strip_prefix("m3u8/") {
-                let (mode_name, index_str) =
-                    m3u8_path.split_once('/').ok_or(ProviderError::NotFound)?;
-                let playback_info = versioned
-                    .result
-                    .playback_infos
-                    .get(mode_name)
-                    .ok_or(ProviderError::NotFound)?;
-                let index = super::proxy::parse_proxy_index(index_str)?;
-                let url = playback_info
-                    .urls
-                    .get(index)
-                    .ok_or(ProviderError::NotFound)?;
-
-                return Ok(super::proxy::ProxyAction::M3u8Rewrite {
-                    url: url.clone(),
-                    headers: playback_info.headers.clone(),
-                    proxy_base: signed_m3u8_segment_proxy_base(ctx, version),
-                    proxy_url_claims: ctx.verified_claims.cloned(),
-                });
-            }
-
-            let default_info = versioned
-                .result
-                .playback_infos
-                .get(&versioned.result.default_mode)
-                .ok_or(ProviderError::NotFound)?;
-            let url = default_info.urls.first().ok_or(ProviderError::NotFound)?;
-
-            match rest {
-                "stream" => {
-                    return Ok(super::proxy::ProxyAction::FetchAndForward {
-                        url: url.clone(),
-                        headers: default_info.headers.clone(),
-                        range_header: super::proxy::selected_range_header(ctx)?,
-                    });
-                }
-                "m3u8" => {
-                    return Ok(super::proxy::ProxyAction::M3u8Rewrite {
-                        url: url.clone(),
-                        headers: default_info.headers.clone(),
-                        proxy_base: signed_m3u8_segment_proxy_base(ctx, version),
-                        proxy_url_claims: ctx.verified_claims.cloned(),
-                    });
-                }
-                _ => {}
-            }
-            Err(ProviderError::NotFound)
-        }
+    pub async fn get_thumbnail(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let url = versioned
+            .result
+            .metadata
+            .get("thumbnail")
+            .and_then(serde_json::Value::as_str)
+            .filter(|url| !url.trim().is_empty())
+            .ok_or(ProviderError::NotFound)?
+            .to_string();
+        let headers = versioned
+            .result
+            .playback_infos
+            .get(&versioned.result.default_mode)
+            .and_then(|info| info.medias.first())
+            .map_or_else(HashMap::new, PlaybackMedia::upstream_headers);
+        Ok(
+            super::playback_transport::PlaybackTransportAction::FetchAndForward {
+                url,
+                headers,
+                range_header: None,
+            },
+        )
     }
 }
 
@@ -1804,1121 +1883,5 @@ impl DynamicFolder for AlistProvider {
         }
 
         Ok(segments)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::models::UserId;
-    use crate::provider::provider_client::AlistTranscodingTask;
-    use crate::test_helpers::{TestOptionExt, TestResultExt};
-    use async_trait::async_trait;
-    use std::sync::Arc;
-    use std::sync::Mutex;
-    use synctv_media_providers::alist::{AlistError, AlistInterface};
-    use synctv_media_providers::grpc::alist::{
-        fs_list_resp, FsGetReq, FsGetResp, FsListReq, FsListResp, FsOtherReq, FsOtherResp,
-        FsSearchReq, FsSearchResp, LoginReq, MeReq, MeResp,
-    };
-
-    struct RecordingAlistSubtitleClient {
-        requested_paths: Mutex<Vec<String>>,
-    }
-
-    impl RecordingAlistSubtitleClient {
-        fn new() -> Self {
-            Self {
-                requested_paths: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    fn unconfigured_test_response() -> AlistError {
-        AlistError::Api {
-            code: 501,
-            message: "test alist method is not configured".to_string(),
-        }
-    }
-
-    fn test_proxy_signing_key() -> ProxySigningKey {
-        ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .checked("test proxy signing key should derive")
-    }
-
-    #[test]
-    fn test_signed_alist_playback_adds_proxy_thumbnail_metadata() {
-        let mut result = PlaybackResult {
-            playback_infos: HashMap::from([(
-                "direct".to_string(),
-                PlaybackInfo {
-                    urls: vec!["https://alist.example.com/d/movie.mp4".to_string()],
-                    format: "mp4".to_string(),
-                    headers: HashMap::new(),
-                    subtitles: vec![],
-                    expires_at: None,
-                    cors_proxy_required: false,
-                },
-            )]),
-            default_mode: "direct".to_string(),
-            duration_seconds: None,
-            metadata: HashMap::from([(
-                "thumbnail".to_string(),
-                serde_json::json!("https://alist.example.com/thumb/movie.jpg"),
-            )]),
-        };
-        let signing_key = test_proxy_signing_key();
-
-        sign_alist_playback_urls(
-            &mut result,
-            "thumb2",
-            &signing_key,
-            "room-1",
-            "user-1",
-            chrono::Utc::now().timestamp() + 3600,
-        );
-
-        let thumbnail = result.metadata["thumbnail"]
-            .as_str()
-            .checked("thumbnail metadata should remain a string");
-        assert_eq!(thumbnail, "https://alist.example.com/thumb/movie.jpg");
-
-        let proxy_thumbnail = result.metadata["proxy_thumbnail"]
-            .as_str()
-            .checked("proxy thumbnail metadata should be a string");
-        assert!(
-            proxy_thumbnail.starts_with("/api/providers/proxy/alist/"),
-            "signed Alist thumbnail should use provider proxy: {proxy_thumbnail}"
-        );
-        assert!(
-            proxy_thumbnail.contains("/thumbnail?"),
-            "signed Alist thumbnail should use thumbnail proxy action: {proxy_thumbnail}"
-        );
-    }
-
-    #[test]
-    fn test_signed_alist_hls_modes_use_mode_specific_actions() {
-        let mut result = PlaybackResult {
-            playback_infos: HashMap::from([
-                (
-                    "transcoded_HD".to_string(),
-                    PlaybackInfo {
-                        urls: vec!["https://aliyun.example.com/hd/master.m3u8".to_string()],
-                        format: "hls".to_string(),
-                        headers: HashMap::from([(
-                            "Authorization".to_string(),
-                            "Bearer secret".to_string(),
-                        )]),
-                        subtitles: vec![],
-                        expires_at: None,
-                        cors_proxy_required: true,
-                    },
-                ),
-                (
-                    "transcoded_SD".to_string(),
-                    PlaybackInfo {
-                        urls: vec!["https://aliyun.example.com/sd/master.m3u8".to_string()],
-                        format: "hls".to_string(),
-                        headers: HashMap::new(),
-                        subtitles: vec![],
-                        expires_at: None,
-                        cors_proxy_required: true,
-                    },
-                ),
-            ]),
-            default_mode: "transcoded_HD".to_string(),
-            duration_seconds: None,
-            metadata: HashMap::new(),
-        };
-        let signing_key = test_proxy_signing_key();
-
-        sign_alist_playback_urls(
-            &mut result,
-            "alist-hls",
-            &signing_key,
-            "room-1",
-            "user-1",
-            chrono::Utc::now().timestamp() + 3600,
-        );
-
-        assert_eq!(
-            result.playback_infos["transcoded_HD"].urls[0],
-            "https://aliyun.example.com/hd/master.m3u8"
-        );
-        assert!(result.playback_infos["transcoded_HD"].headers.is_empty());
-        assert!(!result.playback_infos["transcoded_HD"].cors_proxy_required);
-
-        let proxy_hd = &result.playback_infos["proxy_transcoded_HD"];
-        assert!(
-            proxy_hd.urls[0].contains("/m3u8/transcoded_HD/0?"),
-            "default HLS proxy mode should keep the source mode and index"
-        );
-        assert!(proxy_hd.headers.is_empty());
-        assert!(!proxy_hd.cors_proxy_required);
-
-        let proxy_sd = &result.playback_infos["proxy_transcoded_SD"];
-        assert!(
-            proxy_sd.urls[0].contains("/m3u8/transcoded_SD/0?"),
-            "additional HLS proxy modes should keep their mode and index"
-        );
-        assert!(proxy_sd.headers.is_empty());
-        assert!(!proxy_sd.cors_proxy_required);
-        assert_eq!(result.default_mode, "proxy_transcoded_HD");
-    }
-
-    #[async_trait]
-    impl AlistInterface for RecordingAlistSubtitleClient {
-        async fn fs_get(&self, request: FsGetReq) -> Result<FsGetResp, AlistError> {
-            assert_eq!(
-                request.headers.get("User-Agent").map(String::as_str),
-                Some(synctv_media_providers::PROVIDER_USER_AGENT)
-            );
-            self.requested_paths
-                .lock()
-                .checked("requested_paths mutex should not be poisoned")
-                .push(request.path.clone());
-
-            Ok(FsGetResp {
-                name: request
-                    .path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or_default()
-                    .to_string(),
-                size: 128,
-                is_dir: false,
-                modified: 0,
-                created: 0,
-                sign: String::new(),
-                thumb: String::new(),
-                r#type: 4,
-                hashinfo: String::new(),
-                raw_url: format!("https://alist.example.com/d{}", request.path),
-                readme: String::new(),
-                provider: "AliyundriveOpen".to_string(),
-                related: vec![],
-            })
-        }
-
-        async fn fs_list(&self, _request: FsListReq) -> Result<FsListResp, AlistError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn fs_other(&self, _request: FsOtherReq) -> Result<FsOtherResp, AlistError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn fs_search(&self, _request: FsSearchReq) -> Result<FsSearchResp, AlistError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn me(&self, _request: MeReq) -> Result<MeResp, AlistError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn login(&self, _request: LoginReq) -> Result<String, AlistError> {
-            Err(unconfigured_test_response())
-        }
-    }
-
-    struct SearchUnavailableAlistClient;
-
-    #[async_trait]
-    impl AlistInterface for SearchUnavailableAlistClient {
-        async fn fs_get(&self, _request: FsGetReq) -> Result<FsGetResp, AlistError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn fs_list(&self, request: FsListReq) -> Result<FsListResp, AlistError> {
-            assert_eq!(request.path, "/local");
-            assert_eq!(request.page, 2);
-            assert_eq!(request.per_page, 10);
-            Ok(FsListResp {
-                content: vec![
-                    fs_list_resp::FsListContent {
-                        name: "video.mp4".to_string(),
-                        size: 15,
-                        is_dir: false,
-                        modified: 0,
-                        sign: String::new(),
-                        thumb: String::new(),
-                        r#type: 2,
-                    },
-                    fs_list_resp::FsListContent {
-                        name: "folder".to_string(),
-                        size: 0,
-                        is_dir: true,
-                        modified: 0,
-                        sign: String::new(),
-                        thumb: String::new(),
-                        r#type: 1,
-                    },
-                ],
-                total: 2,
-                readme: String::new(),
-                write: false,
-                provider: "Local".to_string(),
-            })
-        }
-
-        async fn fs_other(&self, _request: FsOtherReq) -> Result<FsOtherResp, AlistError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn fs_search(&self, _request: FsSearchReq) -> Result<FsSearchResp, AlistError> {
-            Err(AlistError::Api {
-                code: 404,
-                message: "search not available".to_string(),
-            })
-        }
-
-        async fn me(&self, _request: MeReq) -> Result<MeResp, AlistError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn login(&self, _request: LoginReq) -> Result<String, AlistError> {
-            Err(unconfigured_test_response())
-        }
-    }
-    #[test]
-    fn test_detect_format() {
-        assert_eq!(AlistProvider::detect_format("video.mp4"), "mp4");
-        assert_eq!(AlistProvider::detect_format("video.mkv"), "mkv");
-        assert_eq!(AlistProvider::detect_format("video.m3u8"), "hls");
-        assert_eq!(AlistProvider::detect_format("video.unknown"), "video");
-    }
-
-    /// Validate Alist source config: checks path and server_id fields.
-    /// Host/token are resolved from the media or playlist creator at runtime.
-    fn validate_alist(config: &Value) -> Result<(), ProviderError> {
-        let config = AlistSourceConfig::try_from(config)?;
-
-        if config.path.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Alist path must not be empty".to_string(),
-            ));
-        }
-        // Use the shared validate_path_for_traversal (matches actual impl)
-        validate_path_for_traversal(&config.path).map_err(|e| {
-            ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
-        })?;
-        if config.server_id.trim().is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Alist server_id must not be empty".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_valid_alist_config() {
-        let config = json!({
-            "path": "/media/movies/test.mp4",
-            "server_id": "test-server"
-        });
-        assert!(validate_alist(&config).is_ok());
-    }
-
-    #[test]
-    fn test_alist_config_with_provider_instance_name() {
-        let config = json!({
-            "path": "/media/movies/test.mp4",
-            "provider_instance_name": "remote-alist-1",
-            "server_id": "test-server"
-        });
-        assert!(validate_alist(&config).is_err());
-    }
-
-    #[tokio::test]
-    async fn test_alist_credential_dependencies_use_creator_credential() {
-        let provider = AlistProvider::new_local_only().checked("provider should build");
-        let ctx = ProviderContext::new("test")
-            .with_user_id(UserId::expect_positive(1))
-            .with_credential_owner_id(UserId::expect_positive(2));
-        let dependencies = provider
-            .credential_dependencies(
-                &ctx,
-                &json!({
-                    "path": "/media/movies/test.mp4",
-                    "server_id": "alist-main"
-                }),
-            )
-            .checked("Alist dependency extraction should succeed");
-
-        assert_eq!(
-            dependencies,
-            vec![ProviderCredentialDependency::new(
-                AlistProvider::NAME,
-                "2",
-                "alist-main"
-            )]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_alist_credential_dependencies_require_explicit_creator_credential_owner() {
-        let provider = AlistProvider::new_local_only().checked("provider should build");
-        let ctx = ProviderContext::new("test").with_user_id(UserId::expect_positive(1));
-        let err = provider
-            .credential_dependencies(
-                &ctx,
-                &json!({
-                    "path": "/media/movies/test.mp4",
-                    "server_id": "alist-main"
-                }),
-            )
-            .failed("Alist must not silently fall back to viewer credentials");
-
-        assert!(
-            err.to_string().contains("credential_owner_id"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_fs_search_falls_back_to_list_when_upstream_search_is_unavailable() {
-        let default_clients = ProviderClientManager::new_for_tests()
-            .checked("default provider HTTP client should build");
-        let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
-            Arc::new(SearchUnavailableAlistClient),
-            default_clients.local_bilibili_client(),
-            default_clients.local_emby_client(),
-        ));
-        let provider = AlistProvider::with_client_manager(
-            crate::service::remote_provider_manager::empty_provider_instance_manager(),
-            client_manager,
-        );
-
-        let response = provider
-            .fs_search(
-                synctv_media_providers::grpc::alist::FsSearchReq {
-                    host: "http://alist.example.test".to_string(),
-                    token: "token".to_string(),
-                    parent: "/local".to_string(),
-                    keywords: "does-not-exist".to_string(),
-                    scope: 0,
-                    page: 2,
-                    per_page: 10,
-                    password: String::new(),
-                },
-                None,
-            )
-            .await
-            .checked("search unavailable should fall back to unfiltered list");
-
-        assert_eq!(response.total, 2);
-        assert_eq!(response.content.len(), 2);
-        assert_eq!(response.content[0].parent, "/local");
-        assert_eq!(response.content[0].name, "video.mp4");
-        assert_eq!(response.content[1].name, "folder");
-    }
-
-    #[tokio::test]
-    async fn test_fs_search_fallback_preserves_scope_filter() {
-        let default_clients = ProviderClientManager::new_for_tests()
-            .checked("default provider HTTP client should build");
-        let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
-            Arc::new(SearchUnavailableAlistClient),
-            default_clients.local_bilibili_client(),
-            default_clients.local_emby_client(),
-        ));
-        let provider = AlistProvider::with_client_manager(
-            crate::service::remote_provider_manager::empty_provider_instance_manager(),
-            client_manager,
-        );
-
-        let files = provider
-            .fs_search(
-                synctv_media_providers::grpc::alist::FsSearchReq {
-                    host: "http://alist.example.test".to_string(),
-                    token: "token".to_string(),
-                    parent: "/local".to_string(),
-                    keywords: "does-not-exist".to_string(),
-                    scope: 2,
-                    page: 2,
-                    per_page: 10,
-                    password: String::new(),
-                },
-                None,
-            )
-            .await
-            .checked("search unavailable should fall back to listing files only");
-        assert_eq!(files.total, 1);
-        assert_eq!(files.content[0].name, "video.mp4");
-
-        let directories = provider
-            .fs_search(
-                synctv_media_providers::grpc::alist::FsSearchReq {
-                    host: "http://alist.example.test".to_string(),
-                    token: "token".to_string(),
-                    parent: "/local".to_string(),
-                    keywords: "does-not-exist".to_string(),
-                    scope: 1,
-                    page: 2,
-                    per_page: 10,
-                    password: String::new(),
-                },
-                None,
-            )
-            .await
-            .checked("search unavailable should fall back to listing directories only");
-        assert_eq!(directories.total, 1);
-        assert_eq!(directories.content[0].name, "folder");
-    }
-
-    #[tokio::test]
-    async fn test_prepare_alist_config_rejects_provider_instance_name() {
-        let provider = AlistProvider::new_local_only().checked("provider should build");
-        let config = json!({
-            "path": "/media/movies/test.mp4",
-            "provider_instance_name": "remote-alist-1",
-            "server_id": "test-server"
-        });
-
-        let result = provider
-            .prepare_source_config(&ProviderContext::new("test"), config)
-            .await;
-
-        assert!(matches!(result, Err(ProviderError::InvalidConfig(_))));
-    }
-
-    #[test]
-    fn test_alist_config_path_traversal() {
-        let config = json!({
-            "path": "/media/../../../etc/passwd",
-            "server_id": "test-server"
-        });
-        assert!(validate_alist(&config).is_err());
-    }
-
-    #[test]
-    fn test_alist_config_empty_path() {
-        let config = json!({
-            "path": "",
-            "server_id": "test-server"
-        });
-        assert!(validate_alist(&config).is_err());
-    }
-
-    #[test]
-    fn test_alist_config_missing_server_id() {
-        let config = json!({
-            "path": "/media/movies/test.mp4"
-        });
-        assert!(validate_alist(&config).is_err());
-    }
-
-    #[test]
-    fn test_alist_server_id_parsing() {
-        let config = json!({
-            "path": "/media/movies",
-            "server_id": "srv-xyz"
-        });
-        let parsed = AlistSourceConfig::try_from(&config).checked("operation should succeed");
-        assert_eq!(parsed.server_id, "srv-xyz");
-        assert_eq!(parsed.path, "/media/movies");
-    }
-
-    #[test]
-    fn test_path_traversal_validation_rejects_literal_double_dot() {
-        // Use the centralized validation function
-        assert!(validate_path_for_traversal("../../../etc/passwd").is_err());
-        assert!(validate_path_for_traversal("../secret").is_err());
-        assert!(validate_path_for_traversal("test/../etc").is_err());
-    }
-
-    #[test]
-    fn test_path_traversal_validation_rejects_url_encoded_dot() {
-        // URL-encoded . (2E in hex)
-        assert!(validate_path_for_traversal("%2e%2e/etc/passwd").is_err());
-        assert!(validate_path_for_traversal("%2E%2E/secret").is_err()); // uppercase
-        assert!(validate_path_for_traversal("test/%2e%2e/config").is_err());
-    }
-
-    #[test]
-    fn test_path_traversal_validation_rejects_mixed_encoding() {
-        // Mixed literal and encoded
-        assert!(validate_path_for_traversal("..%2fetc/passwd").is_err());
-        assert!(validate_path_for_traversal("%2e%2e/secret").is_err());
-    }
-
-    #[test]
-    fn test_path_traversal_validation_rejects_backslash_traversal() {
-        assert!(validate_path_for_traversal("..\\..\\windows").is_err());
-        assert!(validate_path_for_traversal("test\\..\\config").is_err());
-    }
-
-    #[test]
-    fn test_path_traversal_validation_rejects_mixed_dot_sequences() {
-        assert!(validate_path_for_traversal("./../etc").is_err());
-        assert!(validate_path_for_traversal(".././secret").is_err());
-        assert!(validate_path_for_traversal("././../config").is_err());
-    }
-
-    #[test]
-    fn test_path_traversal_validation_rejects_null_bytes() {
-        assert!(validate_path_for_traversal("test\0../etc").is_err());
-        assert!(validate_path_for_traversal("/etc/\0passwd").is_err());
-    }
-
-    #[test]
-    fn test_path_traversal_validation_allows_valid_paths() {
-        assert!(validate_path_for_traversal("media/movies").is_ok());
-        assert!(validate_path_for_traversal("/absolute/path").is_ok());
-        assert!(validate_path_for_traversal("folder with spaces/file.txt").is_ok());
-        assert!(validate_path_for_traversal("file-with-dashes.txt").is_ok());
-        assert!(validate_path_for_traversal("file_with_underscores.txt").is_ok());
-    }
-
-    /// Test helper to verify cursor-based pagination bounds.
-    /// The sequential mode algorithm should:
-    /// 1. Process one page at a time (max `PAGE_SIZE` items in memory)
-    /// 2. Find current item and look for next within same or next page
-    /// 3. Not accumulate items across pages (bounded memory)
-    #[test]
-    fn test_sequential_pagination_memory_bounds() {
-        // Simulate the pagination behavior: max PAGE_SIZE items in memory at once
-        const PAGE_SIZE: usize = 50;
-
-        // Simulate finding item at position 125 (page 2, index 25)
-        let current_item_idx = 125;
-
-        // Old behavior would load: page 0 + page 1 + page 2 = 150 items
-        // New behavior only processes one page at a time
-
-        let page_of_current = current_item_idx / PAGE_SIZE; // page 2
-        let idx_in_page = current_item_idx % PAGE_SIZE; // index 25
-
-        assert_eq!(page_of_current, 2);
-        assert_eq!(idx_in_page, 25);
-
-        // Next item is at position 126 (same page, index 26)
-        // So we only need to keep at most PAGE_SIZE items in memory
-        let next_idx_in_page = idx_in_page + 1;
-        assert!(next_idx_in_page < PAGE_SIZE, "Next item is in same page");
-
-        // If current is at end of page (index 49), next is in next page
-        // We discard current page and fetch next, still only PAGE_SIZE in memory
-    }
-
-    /// Test shuffle mode memory bounds (capped at `MAX_ITEMS`).
-    #[test]
-    fn test_shuffle_pagination_memory_bounds() {
-        const PAGE_SIZE: usize = 50;
-        const MAX_ITEMS: usize = 200;
-
-        // Simulate a folder with 800 items
-        let total_items = 800;
-
-        // Old behavior: would fetch 20 pages = 1000 items (or hit MAX_PAGES limit)
-        // New behavior: stops at MAX_ITEMS = 200 items (4 pages)
-
-        let pages_to_fetch = MAX_ITEMS.div_ceil(PAGE_SIZE); // 4 pages
-        let items_fetched = pages_to_fetch * PAGE_SIZE; // 200 items
-
-        assert_eq!(pages_to_fetch, 4);
-        assert!(items_fetched <= MAX_ITEMS);
-        assert!(items_fetched < total_items, "Should not fetch all items");
-
-        // Memory usage: max 200 items vs 1000 items (80% reduction)
-    }
-
-    #[test]
-    fn test_alist_config_with_password() {
-        // Alist supports optional per-directory password
-        let config = json!({
-            "path": "/media/movies/test.mp4",
-            "password": "dir-password",
-            "server_id": "test-server"
-        });
-        let parsed = AlistSourceConfig::try_from(&config).checked("operation should succeed");
-        assert_eq!(parsed.password, Some("dir-password".to_string()));
-    }
-
-    #[test]
-    fn test_alist_playback_cache_key_includes_directory_password() {
-        let revision = "credential-1:1000";
-        let no_password = AlistProvider::playback_cache_key(
-            "server-1",
-            "owner-1",
-            revision,
-            "/media/movie.mkv",
-            None,
-            "default",
-        );
-        let password_a = AlistProvider::playback_cache_key(
-            "server-1",
-            "owner-1",
-            revision,
-            "/media/movie.mkv",
-            Some("folder-a"),
-            "default",
-        );
-        let password_b = AlistProvider::playback_cache_key(
-            "server-1",
-            "owner-1",
-            revision,
-            "/media/movie.mkv",
-            Some("folder-b"),
-            "default",
-        );
-
-        assert_ne!(
-            no_password, password_a,
-            "Directory password must affect the Alist playback cache key"
-        );
-        assert_ne!(
-            password_a, password_b,
-            "Different directory passwords must not reuse the same playback cache entry"
-        );
-    }
-
-    #[test]
-    fn test_alist_playback_cache_key_includes_credential_owner() {
-        let revision = "credential-1:1000";
-        let owner_a = AlistProvider::playback_cache_key(
-            "server-1",
-            "owner-a",
-            revision,
-            "/media/movie.mkv",
-            None,
-            "default",
-        );
-        let owner_b = AlistProvider::playback_cache_key(
-            "server-1",
-            "owner-b",
-            revision,
-            "/media/movie.mkv",
-            None,
-            "default",
-        );
-
-        assert_ne!(
-            owner_a, owner_b,
-            "Alist playback cache must be isolated by credential owner"
-        );
-    }
-
-    #[test]
-    fn test_alist_playback_cache_key_includes_credential_update_time() {
-        let first = AlistProvider::playback_cache_key(
-            "server-1",
-            "owner-a",
-            "credential-1:1000",
-            "/media/movie.mkv",
-            None,
-            "default",
-        );
-        let second = AlistProvider::playback_cache_key(
-            "server-1",
-            "owner-a",
-            "credential-1:2000",
-            "/media/movie.mkv",
-            None,
-            "default",
-        );
-
-        assert_ne!(
-            first, second,
-            "Credential changes must invalidate Alist playback cache entries"
-        );
-    }
-
-    #[test]
-    fn test_alist_playback_cache_key_includes_playback_profile() {
-        let default_profile = AlistProvider::playback_cache_key(
-            "server-1",
-            "owner-a",
-            "credential-1:1000",
-            "/media/movie.mkv",
-            None,
-            "default",
-        );
-        let constrained_profile = AlistProvider::playback_cache_key(
-            "server-1",
-            "owner-a",
-            "credential-1:1000",
-            "/media/movie.mkv",
-            None,
-            "delivery=auto:bitrate=1500000",
-        );
-
-        assert_ne!(
-            default_profile, constrained_profile,
-            "Playback profile changes must not reuse Alist playback cache entries"
-        );
-    }
-
-    #[test]
-    fn test_alist_playback_result_combines_transcoded_and_external_subtitles() {
-        let file_info = AlistFileInfo {
-            name: "movie.mkv".to_string(),
-            size: 42,
-            is_dir: false,
-            raw_url: "https://alist.example.com/d/movie.mkv".to_string(),
-            provider: "AliyundriveOpen".to_string(),
-            thumb: "https://alist.example.com/thumb.jpg".to_string(),
-            related: vec![
-                AlistRelatedFile {
-                    name: "movie.zh-CN.srt".to_string(),
-                    is_dir: false,
-                    raw_url: "https://alist.example.com/d/movie.zh-CN.srt".to_string(),
-                    provider: "AliyundriveOpen".to_string(),
-                },
-                AlistRelatedFile {
-                    name: "movie.ass".to_string(),
-                    is_dir: false,
-                    raw_url: "https://alist.example.com/d/movie.ass".to_string(),
-                    provider: "AliyundriveOpen".to_string(),
-                },
-                AlistRelatedFile {
-                    name: "movie.jpg".to_string(),
-                    is_dir: false,
-                    raw_url: "https://alist.example.com/d/movie.jpg".to_string(),
-                    provider: "AliyundriveOpen".to_string(),
-                },
-            ],
-        };
-        let video_preview = AlistVideoPreview {
-            transcoding_tasks: vec![
-                AlistTranscodingTask {
-                    template_name: "HD".to_string(),
-                    template_id: "FHD".to_string(),
-                    template_width: 1920,
-                    template_height: 1080,
-                    stage: "finished".to_string(),
-                    status: "finished".to_string(),
-                    url: "https://cdn.example.com/movie-hd.m3u8".to_string(),
-                },
-                AlistTranscodingTask {
-                    template_name: "SD".to_string(),
-                    template_id: "SD".to_string(),
-                    template_width: 640,
-                    template_height: 360,
-                    stage: "finished".to_string(),
-                    status: "finished".to_string(),
-                    url: "https://cdn.example.com/movie-sd.m3u8".to_string(),
-                },
-            ],
-            subtitle_tasks: vec![AlistSubtitleTask {
-                language: "en".to_string(),
-                status: "finished".to_string(),
-                url: "https://cdn.example.com/movie-en.srt".to_string(),
-            }],
-            drive_id: "drive-1".to_string(),
-            file_id: "file-1".to_string(),
-            provider: "AliyundriveOpen".to_string(),
-            category: "live_transcoding".to_string(),
-            duration: 120.5,
-            width: 1920,
-            height: 1080,
-        };
-
-        let result =
-            AlistProvider::build_playback_result(&file_info, Some(&video_preview), None, None);
-
-        assert_eq!(result.default_mode, "transcoded_HD");
-        let transcoded = result
-            .playback_infos
-            .get("transcoded_HD")
-            .checked("transcoded HD mode should exist");
-        assert_eq!(transcoded.format, "hls");
-        assert_eq!(
-            transcoded.headers.get("User-Agent").map(String::as_str),
-            Some(synctv_media_providers::PROVIDER_USER_AGENT)
-        );
-        assert_eq!(transcoded.subtitles.len(), 3);
-        assert!(transcoded.subtitles.iter().all(|sub| {
-            sub.headers.get("User-Agent").map(String::as_str)
-                == Some(synctv_media_providers::PROVIDER_USER_AGENT)
-        }));
-        assert!(transcoded
-            .subtitles
-            .iter()
-            .any(|sub| sub.language == "zh-CN" && sub.format == "srt"));
-        assert!(transcoded
-            .subtitles
-            .iter()
-            .any(|sub| sub.language == "und" && sub.format == "ass"));
-
-        let direct = result
-            .playback_infos
-            .get("direct")
-            .checked("direct fallback should exist");
-        assert_eq!(direct.format, "mkv");
-        assert_eq!(
-            direct.headers.get("User-Agent").map(String::as_str),
-            Some(synctv_media_providers::PROVIDER_USER_AGENT)
-        );
-        assert_eq!(direct.subtitles.len(), 3);
-        assert_eq!(result.metadata["transcoding_count"], json!(2));
-        assert_eq!(result.metadata["video_preview_subtitle_count"], json!(1));
-        assert_eq!(result.metadata["external_subtitle_count"], json!(2));
-        assert_eq!(result.metadata["duration"], json!(120.5));
-        assert_eq!(result.metadata["width"], json!(1920));
-        assert_eq!(result.metadata["height"], json!(1080));
-        assert_eq!(result.metadata["video_preview_drive_id"], json!("drive-1"));
-        assert_eq!(result.metadata["video_preview_file_id"], json!("file-1"));
-        assert_eq!(
-            result.metadata["video_preview_category"],
-            json!("live_transcoding")
-        );
-        assert_eq!(
-            result.metadata["transcoded_HD"]["template_id"],
-            json!("FHD")
-        );
-    }
-
-    #[test]
-    fn test_alist_playback_result_uses_profile_for_default_mode_and_subtitles() {
-        let file_info = AlistFileInfo {
-            name: "movie.mkv".to_string(),
-            size: 42,
-            is_dir: false,
-            raw_url: "https://alist.example.com/d/movie.mkv".to_string(),
-            provider: "AliyundriveOpen".to_string(),
-            thumb: String::new(),
-            related: vec![AlistRelatedFile {
-                name: "movie.en.srt".to_string(),
-                is_dir: false,
-                raw_url: "https://alist.example.com/d/movie.en.srt".to_string(),
-                provider: "AliyundriveOpen".to_string(),
-            }],
-        };
-        let video_preview = AlistVideoPreview {
-            transcoding_tasks: vec![
-                AlistTranscodingTask {
-                    template_name: "FHD".to_string(),
-                    template_id: "FHD".to_string(),
-                    template_width: 1920,
-                    template_height: 1080,
-                    stage: "finished".to_string(),
-                    status: "finished".to_string(),
-                    url: "https://cdn.example.com/movie-fhd.m3u8".to_string(),
-                },
-                AlistTranscodingTask {
-                    template_name: "SD".to_string(),
-                    template_id: "SD".to_string(),
-                    template_width: 640,
-                    template_height: 360,
-                    stage: "finished".to_string(),
-                    status: "finished".to_string(),
-                    url: "https://cdn.example.com/movie-sd.m3u8".to_string(),
-                },
-            ],
-            subtitle_tasks: Vec::new(),
-            drive_id: String::new(),
-            file_id: String::new(),
-            provider: "AliyundriveOpen".to_string(),
-            category: "live_transcoding".to_string(),
-            duration: 0.0,
-            width: 1920,
-            height: 1080,
-        };
-        let profile = PlaybackClientProfile {
-            delivery_preference: PlaybackDeliveryPreference::Transcode,
-            max_streaming_bitrate: Some(1_500_000),
-            subtitle_preference: PlaybackSubtitlePreference::None,
-            ..PlaybackClientProfile::default()
-        };
-
-        let result = AlistProvider::build_playback_result(
-            &file_info,
-            Some(&video_preview),
-            None,
-            Some(&profile),
-        );
-
-        assert_eq!(result.default_mode, "transcoded_SD");
-        assert!(result
-            .playback_infos
-            .values()
-            .all(|info| info.subtitles.is_empty()));
-    }
-
-    #[test]
-    fn test_alist_playback_result_honors_direct_play_preference() {
-        let file_info = AlistFileInfo {
-            name: "movie.mp4".to_string(),
-            size: 42,
-            is_dir: false,
-            raw_url: "https://alist.example.com/d/movie.mp4".to_string(),
-            provider: "AliyundriveOpen".to_string(),
-            thumb: String::new(),
-            related: Vec::new(),
-        };
-        let video_preview = AlistVideoPreview {
-            transcoding_tasks: vec![AlistTranscodingTask {
-                template_name: "FHD".to_string(),
-                template_id: "FHD".to_string(),
-                template_width: 1920,
-                template_height: 1080,
-                stage: "finished".to_string(),
-                status: "finished".to_string(),
-                url: "https://cdn.example.com/movie-fhd.m3u8".to_string(),
-            }],
-            subtitle_tasks: Vec::new(),
-            drive_id: String::new(),
-            file_id: String::new(),
-            provider: "AliyundriveOpen".to_string(),
-            category: "live_transcoding".to_string(),
-            duration: 0.0,
-            width: 1920,
-            height: 1080,
-        };
-        let profile = PlaybackClientProfile {
-            delivery_preference: PlaybackDeliveryPreference::DirectPlay,
-            ..PlaybackClientProfile::default()
-        };
-
-        let result = AlistProvider::build_playback_result(
-            &file_info,
-            Some(&video_preview),
-            None,
-            Some(&profile),
-        );
-
-        assert_eq!(result.default_mode, "direct");
-    }
-
-    #[test]
-    fn test_alist_playback_result_degrades_when_video_preview_fails() {
-        let file_info = AlistFileInfo {
-            name: "movie.mp4".to_string(),
-            size: 42,
-            is_dir: false,
-            raw_url: "https://alist.example.com/d/movie.mp4".to_string(),
-            provider: "Local".to_string(),
-            thumb: String::new(),
-            related: vec![],
-        };
-
-        let result =
-            AlistProvider::build_playback_result(&file_info, None, Some("not support"), None);
-
-        assert_eq!(result.default_mode, "direct");
-        assert!(result.playback_infos.contains_key("direct"));
-        assert_eq!(result.metadata["video_preview_error"], json!("not support"));
-        assert!(!result.metadata.contains_key("transcoding_count"));
-    }
-
-    #[test]
-    fn test_alist_related_file_path_rejects_unsafe_names() {
-        assert_eq!(
-            related_file_path("/movies", "movie.zh-CN.srt"),
-            Some("/movies/movie.zh-CN.srt".to_string())
-        );
-        assert_eq!(
-            related_file_path("/", "movie.zh-CN.srt"),
-            Some("/movie.zh-CN.srt".to_string())
-        );
-        assert!(related_file_path("/movies", "../secret.srt").is_none());
-        assert!(related_file_path("/movies", "nested/subtitle.srt").is_none());
-        assert!(related_file_path("/movies", "nested\\subtitle.srt").is_none());
-    }
-
-    #[tokio::test]
-    async fn test_alist_enrich_related_subtitles_resolves_urls_with_fs_get() {
-        let recording_client = Arc::new(RecordingAlistSubtitleClient::new());
-        let client: AlistClientArc = recording_client.clone();
-        let config = ResolvedAlistConfig {
-            host: "https://alist.example.com".to_string(),
-            token: "token".to_string(),
-            path: "/movies/movie.mkv".to_string(),
-            password: Some("folder-password".to_string()),
-            provider_instance_name: None,
-        };
-        let mut file_info = AlistFileInfo {
-            name: "movie.mkv".to_string(),
-            size: 42,
-            is_dir: false,
-            raw_url: "https://alist.example.com/d/movie.mkv".to_string(),
-            provider: "AliyundriveOpen".to_string(),
-            thumb: String::new(),
-            related: vec![
-                AlistRelatedFile {
-                    name: "movie.zh-CN.srt".to_string(),
-                    is_dir: false,
-                    raw_url: String::new(),
-                    provider: String::new(),
-                },
-                AlistRelatedFile {
-                    name: "movie.jpg".to_string(),
-                    is_dir: false,
-                    raw_url: String::new(),
-                    provider: String::new(),
-                },
-                AlistRelatedFile {
-                    name: "../secret.srt".to_string(),
-                    is_dir: false,
-                    raw_url: String::new(),
-                    provider: String::new(),
-                },
-            ],
-        };
-
-        AlistProvider::enrich_related_subtitles(&client, &config, &mut file_info).await;
-
-        assert_eq!(
-            file_info.related[0].raw_url,
-            "https://alist.example.com/d/movies/movie.zh-CN.srt"
-        );
-        assert_eq!(file_info.related[0].provider, "AliyundriveOpen");
-        assert!(file_info.related[1].raw_url.is_empty());
-        assert!(file_info.related[2].raw_url.is_empty());
-        assert_eq!(
-            recording_client
-                .requested_paths
-                .lock()
-                .checked("requested_paths mutex should not be poisoned")
-                .as_slice(),
-            ["/movies/movie.zh-CN.srt"]
-        );
-    }
-
-    #[test]
-    fn test_alist_url_encoded_path_traversal_rejected() {
-        // The current Alist validation only checks for literal ".."
-        // but URL-encoded traversal like "%2e%2e/" should also be caught.
-        // After the fix, validate_source_config should use the shared
-        // validate_path_for_traversal function.
-
-        // URL-encoded .. (%2e%2e)
-        assert!(
-            validate_path_for_traversal("%2e%2e/etc/passwd").is_err(),
-            "URL-encoded dot-dot must be rejected by validate_path_for_traversal"
-        );
-
-        // Mixed case
-        assert!(
-            validate_path_for_traversal("%2E%2E/secret").is_err(),
-            "Uppercase URL-encoded dot-dot must be rejected"
-        );
-
-        // Double-encoded
-        assert!(
-            validate_path_for_traversal("%252e%252e/etc").is_err(),
-            "Double-encoded traversal must be rejected"
-        );
-    }
-
-    #[test]
-    fn test_alist_validate_config_uses_shared_path_traversal_check() {
-        // After the fix, the Alist validate_source_config should use
-        // validate_path_for_traversal instead of simple contains("..")
-
-        // This config uses URL-encoded traversal: %2e%2e/etc/passwd
-        let config = json!({
-            "path": "/media/%2e%2e/etc/passwd",
-            "server_id": "test-server"
-        });
-
-        // After the fix, the config should be rejected
-        let parsed = AlistSourceConfig::try_from(&config).checked("operation should succeed");
-        let result = validate_path_for_traversal(&parsed.path);
-        assert!(
-            result.is_err(),
-            "Alist path with URL-encoded traversal must be rejected"
-        );
     }
 }

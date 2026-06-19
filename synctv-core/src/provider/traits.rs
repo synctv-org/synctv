@@ -3,54 +3,34 @@
 
 use super::{ProviderContext, ProviderError};
 use async_trait::async_trait;
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-
-/// Subtitle track
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubtitleTrack {
-    /// Language code (e.g., "zh-CN", "en-US")
-    pub language: String,
-    /// Subtitle name
-    pub name: String,
-    /// Subtitle URL
-    pub url: String,
-    /// Request headers required for subtitle fetching
-    #[serde(default)]
-    pub headers: HashMap<String, String>,
-    /// Format (srt, vtt, ass)
-    pub format: String,
-}
+use std::pin::Pin;
 
 /// Playback information for a single mode
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackInfo {
-    /// Video URLs (supports adaptive streaming with multiple URLs)
-    pub urls: Vec<String>,
+    /// Concrete media playback behaviors for this mode.
+    pub medias: Vec<crate::models::media::PlaybackMedia>,
 
-    /// Video format (mp4, m3u8, flv, mpd)
-    pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_media_index: Option<usize>,
 
-    /// HTTP headers required for playback
+    /// Available subtitle playback behaviors.
     #[serde(default)]
-    pub headers: HashMap<String, String>,
+    pub subtitles: Vec<crate::models::media::PlaybackSubtitle>,
 
-    /// Available subtitle tracks
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_subtitle_index: Option<usize>,
+
+    /// Available danmaku playback behaviors.
     #[serde(default)]
-    pub subtitles: Vec<SubtitleTrack>,
+    pub danmakus: Vec<crate::models::media::PlaybackDanmaku>,
 
-    /// URL expiration time (Unix timestamp in seconds, optional)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<i64>,
-
-    /// Whether this playback source requires CORS proxying
-    ///
-    /// When `true`, the client should route requests through the `SyncTV` server's
-    /// CORS proxy endpoint instead of fetching the URLs directly. This is needed
-    /// for providers whose CDNs do not set permissive CORS headers (e.g., Bilibili).
-    #[serde(default)]
-    pub cors_proxy_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_danmaku_index: Option<usize>,
 }
 
 /// Complete playback result with multiple modes
@@ -62,6 +42,13 @@ pub struct PlaybackResult {
     /// Default playback mode to use
     pub default_mode: String,
 
+    /// Provider that generated this playback result.
+    pub provider: String,
+
+    /// Provider instance selected for this playback result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_instance_name: Option<String>,
+
     /// Backend-owned source duration in seconds when the provider knows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_seconds: Option<f64>,
@@ -69,6 +56,39 @@ pub struct PlaybackResult {
     /// Additional provider metadata for display-only fields.
     #[serde(default)]
     pub metadata: HashMap<String, Value>,
+}
+
+/// Bilibili-owned live danmaku event stream.
+///
+/// Bilibili live danmaku connects to Bilibili's upstream WebSocket service, so
+/// the Bilibili adapter owns source-config parsing, credential policy,
+/// remote-provider dispatch, and upstream reconnect behavior. API transports map
+/// this stream to SSE or gRPC server-side streaming.
+pub type BilibiliLiveDanmakuStream =
+    Pin<Box<dyn Stream<Item = Result<BilibiliLiveDanmakuEvent, ProviderError>> + Send + 'static>>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BilibiliLiveDanmakuEvent {
+    pub format: String,
+    pub event_type: String,
+    pub kind: BilibiliLiveDanmakuEventKind,
+    pub user: String,
+    pub message: String,
+    pub timestamp: u64,
+    pub gift_name: String,
+    pub gift_count: u32,
+    pub online_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BilibiliLiveDanmakuEventKind {
+    Unspecified,
+    Chat,
+    UserEnter,
+    Gift,
+    Heartbeat,
+    Unknown,
 }
 
 /// Provider credential binding that a media or dynamic playlist playback depends on.
@@ -254,15 +274,15 @@ pub trait MediaProvider: Send + Sync {
     ///
     /// This is the mandatory playback decision boundary. Called when user plays media.
     ///
-    /// Provider-specific delivery decisions happen here. A provider returns
-    /// every delivery mode that is valid for the source, typically an
+    /// Provider-specific stream decisions happen here. A provider returns
+    /// every playback mode that is valid for the source, typically an
     /// upstream/direct mode plus a `proxy_*` sibling when SyncTV can serve the
-    /// same content through provider proxy routes. Signing, default-mode
+    /// same content through playback provider routes. Signing, default-mode
     /// selection, header exposure, manifest rewriting, subtitle rewriting, and
     /// live resource lifecycle metadata belong in this provider-owned generation
     /// path because those rules differ by provider and by source type.
     ///
-    /// The matching proxy resolver must accept every signed URL produced here,
+    /// The matching playback transport resolver must accept every signed URL produced here,
     /// including HLS/DASH manifests, indexed segments, subtitles, danmaku,
     /// thumbnails, FLV, and live resource cleanup hooks. Provider changes need
     /// CLI plus curl end-to-end evidence for every returned mode and auxiliary
@@ -310,15 +330,8 @@ pub trait MediaProvider: Send + Sync {
         None
     }
 
-    /// Cast to `ProviderProxy` trait if supported
-    ///
-    /// Providers that support HTTP proxy routes should override this
-    /// to return `Some(self)` for proxy resolution capability.
-    ///
-    /// # Returns
-    /// - `Some(&dyn ProviderProxy)` if provider supports proxy routes
-    /// - `None` if provider doesn't support this capability (e.g., DirectUrl)
-    fn as_provider_proxy(&self) -> Option<&dyn super::proxy::ProviderProxy> {
+    /// Cast to `BilibiliLiveDanmakuProvider` for Bilibili live media.
+    fn as_bilibili_live_danmaku_provider(&self) -> Option<&dyn BilibiliLiveDanmakuProvider> {
         None
     }
 
@@ -424,6 +437,15 @@ pub trait MediaProvider: Send + Sync {
     fn playback_lifecycle_session_id(&self, _result: &PlaybackResult) -> Option<String> {
         None
     }
+}
+
+#[async_trait]
+pub trait BilibiliLiveDanmakuProvider: Send + Sync {
+    async fn watch_bilibili_live_danmaku(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &Value,
+    ) -> Result<BilibiliLiveDanmakuStream, ProviderError>;
 }
 
 /// Optional trait for providers that support dynamic folders

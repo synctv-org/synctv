@@ -1,5 +1,10 @@
-use synctv_core::proxy_signature::SignedProxyUrlRequest;
 use synctv_core::service::room::ClientResourceAvailability;
+
+pub(crate) struct PlaybackHttpSigningContext<'a> {
+    pub signing_key: &'a synctv_core::proxy_signature::ProxySigningKey,
+    pub room_id: &'a str,
+    pub user_id: &'a str,
+}
 
 fn proto_encode_error(kind: &str, error: &str) -> crate::impls::ApiError {
     crate::impls::ApiError::Internal(format!("Failed to encode {kind} public id: {error}"))
@@ -319,23 +324,24 @@ pub(crate) fn playback_client_profile_from_proto(
     };
 
     let default_profile = synctv_core::provider::PlaybackClientProfile::default();
-    let delivery_preference = match synctv_proto::client::PlaybackDeliveryPreference::try_from(
-        profile.delivery_preference,
-    )
-    .map_err(|_| {
-        crate::impls::ApiError::InvalidInput("Unsupported playback delivery preference".to_string())
-    })? {
-        synctv_proto::client::PlaybackDeliveryPreference::Unspecified
-        | synctv_proto::client::PlaybackDeliveryPreference::Auto => {
-            synctv_core::provider::PlaybackDeliveryPreference::Auto
-        }
-        synctv_proto::client::PlaybackDeliveryPreference::DirectPlay => {
-            synctv_core::provider::PlaybackDeliveryPreference::DirectPlay
-        }
-        synctv_proto::client::PlaybackDeliveryPreference::Transcode => {
-            synctv_core::provider::PlaybackDeliveryPreference::Transcode
-        }
-    };
+    let stream_preference =
+        match synctv_proto::client::PlaybackStreamPreference::try_from(profile.stream_preference)
+            .map_err(|_| {
+                crate::impls::ApiError::InvalidInput(
+                    "Unsupported playback stream preference".to_string(),
+                )
+            })? {
+            synctv_proto::client::PlaybackStreamPreference::Unspecified
+            | synctv_proto::client::PlaybackStreamPreference::Auto => {
+                synctv_core::provider::PlaybackStreamPreference::Auto
+            }
+            synctv_proto::client::PlaybackStreamPreference::DirectPlay => {
+                synctv_core::provider::PlaybackStreamPreference::DirectPlay
+            }
+            synctv_proto::client::PlaybackStreamPreference::Transcode => {
+                synctv_core::provider::PlaybackStreamPreference::Transcode
+            }
+        };
 
     let supported_video_codecs = if profile.supported_video_codecs.is_empty() {
         default_profile.supported_video_codecs.clone()
@@ -436,7 +442,7 @@ pub(crate) fn playback_client_profile_from_proto(
     };
 
     Ok(Some(synctv_core::provider::PlaybackClientProfile {
-        delivery_preference,
+        stream_preference,
         max_streaming_bitrate: profile.max_streaming_bitrate,
         max_audio_channels: profile
             .max_audio_channels
@@ -927,131 +933,13 @@ pub(crate) fn try_members_to_proto(
 pub(crate) fn provider_playback_info_to_model(
     info: &synctv_core::provider::traits::PlaybackInfo,
 ) -> synctv_core::models::media::PlaybackInfo {
-    use synctv_core::models::media::{PlaybackInfo, PlaybackUrl, Subtitle, SubtitleUrl};
-
-    let urls = info
-        .urls
-        .iter()
-        .map(|url| PlaybackUrl {
-            name: String::new(),
-            url: url.clone(),
-            headers: info.headers.clone(),
-            expire_at: info
-                .expires_at
-                .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0)),
-            metadata: None,
-        })
-        .collect();
-
-    let subtitles = info
-        .subtitles
-        .iter()
-        .map(|sub| {
-            let url = SubtitleUrl {
-                name: String::new(),
-                url: sub.url.clone(),
-                headers: sub.headers.clone(),
-                format: sub.format.clone(),
-            };
-            Subtitle {
-                name: sub.name.clone(),
-                language: sub.language.clone(),
-                urls: vec![url],
-                default_url_index: 0,
-            }
-        })
-        .collect();
-
-    PlaybackInfo {
-        urls,
-        default_url_index: 0,
-        subtitles,
-        default_subtitle_index: None,
-        danmakus: Vec::new(),
-        format: info.format.clone(),
-    }
-}
-
-pub(crate) fn try_bilibili_live_danmaku_for_static_media(
-    media: &synctv_core::models::Media,
-    user_id: &str,
-    public_id_codec: &synctv_core::PublicIdCodec,
-    signing_key: &synctv_core::proxy_signature::ProxySigningKey,
-    expires_at: Option<i64>,
-) -> Result<Option<synctv_core::models::media::Danmaku>, crate::impls::ApiError> {
-    if media.source_provider.trim() != synctv_core::provider::BilibiliProvider::NAME {
-        return Ok(None);
-    }
-    if media
-        .source_config
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        != Some("live")
-    {
-        return Ok(None);
-    }
-
-    let expires_at = expires_at.unwrap_or_else(|| {
-        chrono::Utc::now().timestamp()
-            + synctv_core::proxy_signature::ProxySigningKey::default_expiry_secs()
-    });
-    let room_id = encode_room_id_for_proto(media.room_id, public_id_codec)?;
-    let media_id = encode_media_id_for_proto(media.id, public_id_codec)?;
-    let url = synctv_core::proxy_signature::build_signed_proxy_url(SignedProxyUrlRequest {
-        provider: synctv_core::provider::BilibiliProvider::NAME,
-        version: &room_id,
-        action: &format!("{media_id}/danmu"),
-        signing_key,
-        room_id: &room_id,
-        user_id,
-        expires_at,
-    });
-
-    Ok(Some(synctv_core::models::media::Danmaku {
-        name: "Bilibili Danmaku".to_string(),
-        url,
-        format: Some("bilibili".to_string()),
-        headers: std::collections::HashMap::new(),
-    }))
-}
-
-pub(crate) fn sign_local_bilibili_danmaku_urls(
-    result: &mut synctv_core::models::media::PlaybackResult,
-    user_id: &str,
-    signing_key: &synctv_core::proxy_signature::ProxySigningKey,
-    expires_at: Option<i64>,
-) {
-    let expires_at = expires_at.unwrap_or_else(|| {
-        chrono::Utc::now().timestamp()
-            + synctv_core::proxy_signature::ProxySigningKey::default_expiry_secs()
-    });
-
-    for info in result.playback_infos.values_mut() {
-        for danmaku in &mut info.danmakus {
-            if danmaku.url.contains('?') {
-                continue;
-            }
-            let Some(sub_path) = danmaku.url.strip_prefix("/api/providers/proxy/bilibili/") else {
-                continue;
-            };
-            let Some((room_id, action)) = sub_path.split_once('/') else {
-                continue;
-            };
-            if !action.ends_with("/danmu") {
-                continue;
-            }
-
-            danmaku.url =
-                synctv_core::proxy_signature::build_signed_proxy_url(SignedProxyUrlRequest {
-                    provider: synctv_core::provider::BilibiliProvider::NAME,
-                    version: room_id,
-                    action,
-                    signing_key,
-                    room_id,
-                    user_id,
-                    expires_at,
-                });
-        }
+    synctv_core::models::media::PlaybackInfo {
+        medias: info.medias.clone(),
+        default_media_index: info.default_media_index,
+        subtitles: info.subtitles.clone(),
+        default_subtitle_index: info.default_subtitle_index,
+        danmakus: info.danmakus.clone(),
+        default_danmaku_index: info.default_danmaku_index,
     }
 }
 
@@ -1059,25 +947,22 @@ pub(crate) fn sign_local_bilibili_danmaku_urls(
 pub(crate) fn try_playback_to_proto(
     result: &synctv_core::models::media::PlaybackResult,
     public_id_codec: &synctv_core::PublicIdCodec,
+    signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<synctv_proto::client::Playback, crate::impls::ApiError> {
     validate_playback_result_shape(result)?;
 
     let playback_infos = result
         .playback_infos
         .iter()
-        .map(|(mode, info)| Ok((mode.clone(), playback_info_to_proto(info)?)))
-        .collect::<Result<_, crate::impls::ApiError>>()?;
-
-    let metadata = result
-        .metadata
-        .iter()
-        .map(|(key, value)| {
+        .map(|(mode, info)| {
             Ok((
-                key.clone(),
-                json_value_to_metadata_string(value, "playback metadata")?,
+                mode.clone(),
+                playback_info_to_proto(info, public_id_codec, signing)?,
             ))
         })
         .collect::<Result<_, crate::impls::ApiError>>()?;
+
+    let metadata = playback_metadata_to_proto(result, signing)?;
 
     Ok(synctv_proto::client::Playback {
         media_id: result
@@ -1093,6 +978,8 @@ pub(crate) fn try_playback_to_proto(
         room_id: encode_room_id_for_proto(result.room_id, public_id_codec)?,
         name: result.name.clone(),
         playlist_position: result.position,
+        provider: result.provider.clone(),
+        provider_instance_name: result.provider_instance_name.clone().unwrap_or_default(),
         playback_infos,
         default_mode: result.default_mode.clone(),
         metadata,
@@ -1134,30 +1021,109 @@ fn validate_playback_result_shape(
     Ok(())
 }
 
+fn playback_metadata_to_proto(
+    result: &synctv_core::models::media::PlaybackResult,
+    signing: Option<&PlaybackHttpSigningContext<'_>>,
+) -> Result<std::collections::HashMap<String, String>, crate::impls::ApiError> {
+    let thumbnail_url = result
+        .metadata
+        .get("proxy_thumbnail_resource")
+        .map(|resource| signed_alist_thumbnail_url(resource, signing))
+        .transpose()?;
+
+    result
+        .metadata
+        .iter()
+        .filter(|(key, _)| key.as_str() != "proxy_thumbnail_resource")
+        .map(|(key, value)| {
+            let value = if key == "thumbnail" {
+                match &thumbnail_url {
+                    Some(thumbnail_url) => Ok(thumbnail_url.clone()),
+                    None => json_value_to_metadata_string(value, "playback metadata"),
+                }
+            } else {
+                json_value_to_metadata_string(value, "playback metadata")
+            }?;
+            Ok((key.clone(), value))
+        })
+        .collect()
+}
+
+fn signed_alist_thumbnail_url(
+    resource: &serde_json::Value,
+    signing: Option<&PlaybackHttpSigningContext<'_>>,
+) -> Result<String, crate::impls::ApiError> {
+    let version = resource
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .filter(|version| !version.trim().is_empty())
+        .ok_or_else(|| {
+            crate::impls::ApiError::Internal(
+                "Alist thumbnail proxy metadata is missing version".to_string(),
+            )
+        })?;
+    let expires_at = resource
+        .get("expires_at")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or_else(|| {
+            crate::impls::ApiError::Internal(
+                "Alist thumbnail proxy metadata is missing expires_at".to_string(),
+            )
+        })?;
+    let resource_name = resource
+        .get("resource")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            crate::impls::ApiError::Internal(
+                "Alist thumbnail proxy metadata is missing resource".to_string(),
+            )
+        })?;
+    if resource_name != "thumbnail" {
+        return Err(crate::impls::ApiError::Internal(format!(
+            "Unsupported Alist thumbnail proxy resource '{resource_name}'"
+        )));
+    }
+
+    let signing = require_provider_signing(signing, "Alist thumbnail URL")?;
+    let query = signed_provider_query(
+        "alist",
+        version,
+        expires_at,
+        resource_name.to_string(),
+        signing,
+    );
+    let version = path_segment_encode(version);
+    Ok(format!(
+        "/api/playback-providers/alist/{version}/thumbnail?{query}"
+    ))
+}
+
 /// Convert models `PlaybackInfo` to proto `PlaybackInfo`
 fn playback_info_to_proto(
     info: &synctv_core::models::media::PlaybackInfo,
+    public_id_codec: &synctv_core::PublicIdCodec,
+    signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<synctv_proto::client::PlaybackInfo, crate::impls::ApiError> {
-    if info.urls.is_empty() {
+    if info.medias.is_empty() {
         return Err(crate::impls::ApiError::Internal(
-            "playback mode has no URLs".to_string(),
+            "playback mode has no media resources".to_string(),
         ));
     }
+    let default_media_index = info
+        .default_media_index
+        .map(|index| checked_index_i32(index, info.medias.len(), "default playback media index"))
+        .transpose()?;
     Ok(synctv_proto::client::PlaybackInfo {
-        urls: info
-            .urls
+        medias: info
+            .medias
             .iter()
-            .map(playback_url_to_proto)
+            .map(|media| playback_media_to_proto(media, signing))
             .collect::<Result<_, _>>()?,
-        default_url_index: checked_index_i32(
-            info.default_url_index,
-            info.urls.len(),
-            "default playback URL index",
-        )?,
+        default_media_index,
         subtitles: info
             .subtitles
             .iter()
-            .map(subtitle_to_proto)
+            .map(|subtitle| subtitle_to_proto(subtitle, signing))
             .collect::<Result<_, _>>()?,
         default_subtitle_index: info
             .default_subtitle_index
@@ -1166,45 +1132,72 @@ fn playback_info_to_proto(
         danmakus: info
             .danmakus
             .iter()
-            .map(danmaku_to_proto)
+            .map(|danmaku| danmaku_to_proto(danmaku, public_id_codec, signing))
             .collect::<Result<_, _>>()?,
-        format: info.format.clone(),
-    })
-}
-
-/// Convert models `PlaybackUrl` to proto `PlaybackUrl`
-fn playback_url_to_proto(
-    url: &synctv_core::models::media::PlaybackUrl,
-) -> Result<synctv_proto::client::PlaybackUrl, crate::impls::ApiError> {
-    Ok(synctv_proto::client::PlaybackUrl {
-        name: url.name.clone(),
-        url: require_non_empty_url(&url.url, "playback")?,
-        headers: client_visible_headers(&url.url, &url.headers),
-        expire_at: url.expire_at.map(|dt| dt.timestamp()),
-        metadata: url
-            .metadata
-            .as_ref()
-            .map(playback_url_metadata_to_proto)
+        default_danmaku_index: info
+            .default_danmaku_index
+            .map(|index| checked_index_i32(index, info.danmakus.len(), "default danmaku index"))
             .transpose()?,
     })
 }
 
-/// Convert models `PlaybackUrlMetadata` to proto `PlaybackUrlMetadata`
-fn playback_url_metadata_to_proto(
-    metadata: &synctv_core::models::media::PlaybackUrlMetadata,
-) -> Result<synctv_proto::client::PlaybackUrlMetadata, crate::impls::ApiError> {
+/// Convert models `PlaybackMedia` to proto `PlaybackMedia`.
+fn playback_media_to_proto(
+    media: &synctv_core::models::media::PlaybackMedia,
+    signing: Option<&PlaybackHttpSigningContext<'_>>,
+) -> Result<synctv_proto::client::PlaybackMedia, crate::impls::ApiError> {
+    let url_value = playback_media_url(media, signing)?;
+    Ok(synctv_proto::client::PlaybackMedia {
+        name: media.name.clone(),
+        url: require_non_empty_url(&url_value, "playback")?,
+        headers: playback_media_headers_for_proto(media),
+        format: media.format.clone(),
+        expire_at: media.expire_at.map(|dt| dt.timestamp()),
+        metadata: media
+            .metadata
+            .as_ref()
+            .map(playback_media_metadata_to_proto)
+            .transpose()?,
+    })
+}
+
+fn playback_media_headers_for_proto(
+    media: &synctv_core::models::media::PlaybackMedia,
+) -> std::collections::HashMap<String, String> {
+    use synctv_core::models::media::{
+        PlaybackAlistMedia, PlaybackBilibiliMedia, PlaybackDirectUrlMedia, PlaybackEmbyMedia,
+        PlaybackExternalMedia, PlaybackMediaProvider,
+    };
+
+    match &media.provider {
+        PlaybackMediaProvider::External(PlaybackExternalMedia { headers, .. })
+        | PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { headers, .. })
+        | PlaybackMediaProvider::Bilibili(
+            PlaybackBilibiliMedia::Direct { headers, .. }
+            | PlaybackBilibiliMedia::DirectDashManifest { headers, .. },
+        )
+        | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { headers, .. })
+        | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { headers, .. }) => headers.clone(),
+        _ => std::collections::HashMap::new(),
+    }
+}
+
+/// Convert models `PlaybackMediaMetadata` to proto `PlaybackMediaMetadata`
+fn playback_media_metadata_to_proto(
+    metadata: &synctv_core::models::media::PlaybackMediaMetadata,
+) -> Result<synctv_proto::client::PlaybackMediaMetadata, crate::impls::ApiError> {
     let extra = metadata
         .extra
         .iter()
         .map(|(key, value)| {
             Ok((
                 key.clone(),
-                json_value_to_metadata_string(value, "playback URL metadata")?,
+                json_value_to_metadata_string(value, "playback media metadata")?,
             ))
         })
         .collect::<Result<_, crate::impls::ApiError>>()?;
 
-    Ok(synctv_proto::client::PlaybackUrlMetadata {
+    Ok(synctv_proto::client::PlaybackMediaMetadata {
         resolution: metadata.resolution.clone(),
         bitrate: metadata.bitrate,
         codec: metadata.codec.clone(),
@@ -1213,62 +1206,401 @@ fn playback_url_metadata_to_proto(
     })
 }
 
-/// Convert models Subtitle to proto Subtitle
 fn subtitle_to_proto(
-    subtitle: &synctv_core::models::media::Subtitle,
-) -> Result<synctv_proto::client::Subtitle, crate::impls::ApiError> {
-    if subtitle.urls.is_empty() {
-        return Err(crate::impls::ApiError::Internal(
-            "subtitle has no URLs".to_string(),
-        ));
-    }
-    Ok(synctv_proto::client::Subtitle {
+    subtitle: &synctv_core::models::media::PlaybackSubtitle,
+    signing: Option<&PlaybackHttpSigningContext<'_>>,
+) -> Result<synctv_proto::client::PlaybackSubtitle, crate::impls::ApiError> {
+    let url_value = playback_subtitle_url(subtitle, signing)?;
+    Ok(synctv_proto::client::PlaybackSubtitle {
         name: subtitle.name.clone(),
         language: subtitle.language.clone(),
-        urls: subtitle
-            .urls
-            .iter()
-            .map(subtitle_url_to_proto)
-            .collect::<Result<_, _>>()?,
-        default_url_index: checked_index_i32(
-            subtitle.default_url_index,
-            subtitle.urls.len(),
-            "subtitle default URL index",
-        )?,
+        url: require_non_empty_url(&url_value, "subtitle")?,
+        headers: client_visible_headers(&url_value, &subtitle.upstream_headers()),
+        format: subtitle.format.clone(),
     })
 }
 
-/// Convert models `SubtitleUrl` to proto `SubtitleUrl`
-fn subtitle_url_to_proto(
-    url: &synctv_core::models::media::SubtitleUrl,
-) -> Result<synctv_proto::client::SubtitleUrl, crate::impls::ApiError> {
-    Ok(synctv_proto::client::SubtitleUrl {
-        name: url.name.clone(),
-        url: require_non_empty_url(&url.url, "subtitle")?,
-        headers: client_visible_headers(&url.url, &url.headers),
-        format: url.format.clone(),
-    })
-}
-
-/// Convert models Danmaku to proto Danmaku
 fn danmaku_to_proto(
-    danmaku: &synctv_core::models::media::Danmaku,
-) -> Result<synctv_proto::client::Danmaku, crate::impls::ApiError> {
-    Ok(synctv_proto::client::Danmaku {
+    danmaku: &synctv_core::models::media::PlaybackDanmaku,
+    public_id_codec: &synctv_core::PublicIdCodec,
+    signing: Option<&PlaybackHttpSigningContext<'_>>,
+) -> Result<synctv_proto::client::PlaybackDanmaku, crate::impls::ApiError> {
+    let url_value = playback_danmaku_url(danmaku, public_id_codec, signing)?;
+    Ok(synctv_proto::client::PlaybackDanmaku {
         name: danmaku.name.clone(),
-        url: require_non_empty_url(&danmaku.url, "danmaku")?,
+        url: require_non_empty_url(&url_value, "danmaku")?,
         format: danmaku.format.clone(),
-        headers: client_visible_headers(&danmaku.url, &danmaku.headers),
+        headers: client_visible_headers(&url_value, &danmaku.upstream_headers()),
     })
+}
+
+fn require_provider_signing<'a>(
+    signing: Option<&'a PlaybackHttpSigningContext<'_>>,
+    context: &'static str,
+) -> Result<&'a PlaybackHttpSigningContext<'a>, crate::impls::ApiError> {
+    signing.ok_or_else(|| {
+        crate::impls::ApiError::Internal(format!(
+            "{context} requires playback provider signing context"
+        ))
+    })
+}
+
+fn signed_provider_query(
+    provider: &str,
+    version: &str,
+    expires_at: i64,
+    resource: String,
+    signing: &PlaybackHttpSigningContext<'_>,
+) -> String {
+    signing
+        .signing_key
+        .build_signed_query(&synctv_core::proxy_signature::ProxyUrlClaims {
+            provider: provider.to_string(),
+            version: version.to_string(),
+            resource,
+            room_id: signing.room_id.to_string(),
+            user_id: signing.user_id.to_string(),
+            expires_at,
+            target_url: None,
+        })
+}
+
+fn path_segment_encode(value: &str) -> String {
+    urlencoding::encode(value).into_owned()
+}
+
+fn playback_media_url(
+    media: &synctv_core::models::media::PlaybackMedia,
+    signing: Option<&PlaybackHttpSigningContext<'_>>,
+) -> Result<String, crate::impls::ApiError> {
+    use synctv_core::models::media::{
+        PlaybackAlistMedia, PlaybackBilibiliMedia, PlaybackDirectUrlMedia, PlaybackEmbyMedia,
+        PlaybackExternalMedia, PlaybackLiveProxyMedia, PlaybackMediaProvider, PlaybackRtmpMedia,
+    };
+
+    let direct = |media: &PlaybackExternalMedia| Ok(media.url.clone());
+    let (provider, version, expires_at, path, resource) = match &media.provider {
+        PlaybackMediaProvider::External(media) => return direct(media),
+        PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { url, .. })
+        | PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct { url, .. })
+        | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { url, .. })
+        | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { url, .. }) => {
+            return Ok(url.clone());
+        }
+        PlaybackMediaProvider::Alist(PlaybackAlistMedia::ProxyFile {
+            version,
+            expires_at,
+            mode_name,
+            url_index,
+            ..
+        }) => versioned_indexed_resource(
+            "alist",
+            version,
+            *expires_at,
+            "files",
+            mode_name,
+            *url_index,
+        ),
+        PlaybackMediaProvider::Alist(PlaybackAlistMedia::ProxyTranscodedHlsManifest {
+            version,
+            expires_at,
+            mode_name,
+            url_index,
+            ..
+        }) => versioned_indexed_resource(
+            "alist",
+            version,
+            *expires_at,
+            "transcoded-hls-manifests",
+            mode_name,
+            *url_index,
+        ),
+        PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DirectDashManifest {
+            version,
+            expires_at,
+            mode_name,
+            ..
+        }) => dash_manifest_resource(version, *expires_at, mode_name, "direct"),
+        PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::ProxyDashManifest {
+            version,
+            expires_at,
+            mode_name,
+        }) => dash_manifest_resource(version, *expires_at, mode_name, "proxy"),
+        PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::ProxyMediaStream {
+            version,
+            expires_at,
+            mode_name,
+            url_index,
+            ..
+        }) => versioned_indexed_resource(
+            "bilibili",
+            version,
+            *expires_at,
+            "media-streams",
+            mode_name,
+            *url_index,
+        ),
+        PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::ProxyHlsManifest {
+            version,
+            expires_at,
+            mode_name,
+            url_index,
+            ..
+        }) => versioned_indexed_resource(
+            "bilibili",
+            version,
+            *expires_at,
+            "hls-manifests",
+            mode_name,
+            *url_index,
+        ),
+        PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyStream {
+            version,
+            expires_at,
+            mode_name,
+            url_index,
+            ..
+        }) => versioned_indexed_resource(
+            synctv_core::provider::direct_url::DirectUrlProvider::NAME,
+            version,
+            *expires_at,
+            "streams",
+            mode_name,
+            *url_index,
+        ),
+        PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyHlsManifest {
+            version,
+            expires_at,
+            mode_name,
+            url_index,
+            ..
+        }) => versioned_indexed_resource(
+            synctv_core::provider::direct_url::DirectUrlProvider::NAME,
+            version,
+            *expires_at,
+            "hls-manifests",
+            mode_name,
+            *url_index,
+        ),
+        PlaybackMediaProvider::Emby(PlaybackEmbyMedia::ProxyMediaStream {
+            version,
+            expires_at,
+            mode_name,
+            url_index,
+            ..
+        }) => versioned_indexed_resource(
+            "emby",
+            version,
+            *expires_at,
+            "media-streams",
+            mode_name,
+            *url_index,
+        ),
+        PlaybackMediaProvider::Emby(PlaybackEmbyMedia::ProxyHlsManifest {
+            version,
+            expires_at,
+            mode_name,
+            url_index,
+            ..
+        }) => versioned_indexed_resource(
+            "emby",
+            version,
+            *expires_at,
+            "hls-manifests",
+            mode_name,
+            *url_index,
+        ),
+        PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::FlvStream {
+            version,
+            expires_at,
+            ..
+        }) => (
+            "rtmp",
+            version.clone(),
+            *expires_at,
+            "flv-stream".to_string(),
+            "flv-stream".to_string(),
+        ),
+        PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::HlsPlaylist {
+            version,
+            expires_at,
+            ..
+        }) => (
+            "rtmp",
+            version.clone(),
+            *expires_at,
+            "hls-playlist".to_string(),
+            "hls-playlist".to_string(),
+        ),
+        PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::FlvStream {
+            version,
+            expires_at,
+            ..
+        }) => (
+            synctv_core::provider::live_proxy::LiveProxyProvider::NAME,
+            version.clone(),
+            *expires_at,
+            "flv-stream".to_string(),
+            "flv-stream".to_string(),
+        ),
+        PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::HlsPlaylist {
+            version,
+            expires_at,
+            ..
+        }) => (
+            synctv_core::provider::live_proxy::LiveProxyProvider::NAME,
+            version.clone(),
+            *expires_at,
+            "hls-playlist".to_string(),
+            "hls-playlist".to_string(),
+        ),
+    };
+    let signing = require_provider_signing(signing, "playback provider URL")?;
+    let encoded_version = path_segment_encode(&version);
+    let query = signed_provider_query(provider, &version, expires_at, resource, signing);
+    let route_provider = playback_provider_route_slug(provider);
+    let separator = if path.contains('?') { '&' } else { '?' };
+    Ok(format!(
+        "/api/playback-providers/{route_provider}/{encoded_version}/{path}{separator}{query}"
+    ))
+}
+
+fn playback_provider_route_slug(provider: &str) -> &str {
+    match provider {
+        synctv_core::provider::direct_url::DirectUrlProvider::NAME => "direct-url",
+        synctv_core::provider::live_proxy::LiveProxyProvider::NAME => "live-proxy",
+        _ => provider,
+    }
+}
+
+fn versioned_indexed_resource(
+    provider: &'static str,
+    version: &str,
+    expires_at: i64,
+    resource_prefix: &'static str,
+    mode_name: &str,
+    url_index: usize,
+) -> (&'static str, String, i64, String, String) {
+    let mode = path_segment_encode(mode_name);
+    (
+        provider,
+        version.to_string(),
+        expires_at,
+        format!("{resource_prefix}/{mode}/{url_index}"),
+        format!("{resource_prefix}/{mode_name}/{url_index}"),
+    )
+}
+
+fn dash_manifest_resource(
+    version: &str,
+    expires_at: i64,
+    mode_name: &str,
+    manifest_mode: &'static str,
+) -> (&'static str, String, i64, String, String) {
+    // Use unencoded mode_name in both path and signature resource for consistency
+    // The path will be percent-encoded by the HTTP client/browser automatically
+    (
+        "bilibili",
+        version.to_string(),
+        expires_at,
+        format!("dash-manifests/{mode_name}?mode={manifest_mode}"),
+        format!("dash-manifests/{mode_name}/{manifest_mode}"),
+    )
+}
+
+fn playback_subtitle_url(
+    subtitle: &synctv_core::models::media::PlaybackSubtitle,
+    signing: Option<&PlaybackHttpSigningContext<'_>>,
+) -> Result<String, crate::impls::ApiError> {
+    use synctv_core::models::media::{
+        PlaybackAlistSubtitle, PlaybackBilibiliSubtitle, PlaybackDirectUrlSubtitle,
+        PlaybackEmbySubtitle, PlaybackSubtitleProvider,
+    };
+    let (provider, version, expires_at, mode_name, subtitle_index) = match &subtitle.provider {
+        PlaybackSubtitleProvider::External(subtitle) => return Ok(subtitle.url.clone()),
+        PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle {
+            version,
+            expires_at,
+            mode_name,
+            subtitle_index,
+            ..
+        }) => ("alist", version, *expires_at, mode_name, *subtitle_index),
+        PlaybackSubtitleProvider::Bilibili(PlaybackBilibiliSubtitle {
+            version,
+            expires_at,
+            mode_name,
+            subtitle_index,
+            ..
+        }) => ("bilibili", version, *expires_at, mode_name, *subtitle_index),
+        PlaybackSubtitleProvider::DirectUrl(PlaybackDirectUrlSubtitle {
+            version,
+            expires_at,
+            mode_name,
+            subtitle_index,
+            ..
+        }) => (
+            synctv_core::provider::direct_url::DirectUrlProvider::NAME,
+            version,
+            *expires_at,
+            mode_name,
+            *subtitle_index,
+        ),
+        PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle {
+            version,
+            expires_at,
+            mode_name,
+            subtitle_index,
+            ..
+        }) => ("emby", version, *expires_at, mode_name, *subtitle_index),
+    };
+    let signing = require_provider_signing(signing, "playback provider subtitle URL")?;
+    let mode = path_segment_encode(mode_name);
+    let resource = format!("subtitles/{mode_name}/{subtitle_index}");
+    let query = signed_provider_query(provider, version, expires_at, resource, signing);
+    let version = path_segment_encode(version);
+    let route_provider = playback_provider_route_slug(provider);
+    Ok(format!(
+        "/api/playback-providers/{route_provider}/{version}/subtitles/{mode}/{subtitle_index}?{query}"
+    ))
+}
+
+fn playback_danmaku_url(
+    danmaku: &synctv_core::models::media::PlaybackDanmaku,
+    public_id_codec: &synctv_core::PublicIdCodec,
+    signing: Option<&PlaybackHttpSigningContext<'_>>,
+) -> Result<String, crate::impls::ApiError> {
+    use synctv_core::models::media::{PlaybackBilibiliDanmaku, PlaybackDanmakuProvider};
+    match &danmaku.provider {
+        PlaybackDanmakuProvider::External(danmaku) => Ok(danmaku.url.clone()),
+        PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::File {
+            version,
+            expires_at,
+            danmaku_index,
+            ..
+        }) => {
+            let signing = require_provider_signing(signing, "playback provider danmaku URL")?;
+            let resource_name = format!("danmaku-files/{danmaku_index}");
+            let query =
+                signed_provider_query("bilibili", version, *expires_at, resource_name, signing);
+            let version = path_segment_encode(version);
+            Ok(format!(
+                "/api/playback-providers/bilibili/{version}/danmaku-files/{danmaku_index}?{query}"
+            ))
+        }
+        PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live { media_id, .. }) => {
+            let media_id = encode_media_id_for_proto(*media_id, public_id_codec)?;
+            Ok(format!(
+                "/api/playback-providers/bilibili/live-danmaku/{media_id}"
+            ))
+        }
+    }
 }
 
 fn client_visible_headers(
     url: &str,
     headers: &std::collections::HashMap<String, String>,
 ) -> std::collections::HashMap<String, String> {
-    if is_bilibili_direct_mpd_manifest_url(url) {
-        headers.clone()
-    } else if is_provider_proxy_url(url) {
+    if is_provider_proxy_url(url) {
         std::collections::HashMap::new()
     } else {
         headers.clone()
@@ -1276,1215 +1608,399 @@ fn client_visible_headers(
 }
 
 fn is_provider_proxy_url(url: &str) -> bool {
-    url.starts_with("/api/providers/proxy/")
-}
-
-fn is_bilibili_direct_mpd_manifest_url(url: &str) -> bool {
-    let Some(path) = url
-        .strip_prefix("/api/providers/proxy/bilibili/")
-        .and_then(|rest| rest.split('?').next())
-    else {
-        return false;
-    };
-    path.split_once("/mpd/")
-        .and_then(|(_, rest)| rest.split_once('/'))
-        .is_some_and(|(_, delivery)| delivery == "direct")
+    url.starts_with("/api/playback-providers/")
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        dynamic_playlist_source_fields, normalize_created_room_settings,
-        playback_client_profile_from_proto, proto_role_filter_to_room_role,
-        provider_playback_info_to_model, stored_file_reference_to_media_cover,
-        try_bilibili_live_danmaku_for_static_media, try_media_to_proto,
-        try_media_to_proto_for_viewer, try_playback_to_proto, try_playlist_to_proto,
-        try_playlist_to_proto_for_viewer, try_room_to_proto_basic,
-    };
+mod playback_conversion_tests {
+    use super::*;
     use chrono::Utc;
     use std::collections::HashMap;
-    use synctv_core::models::{
-        Media, MediaId, PlaylistId, Room, RoomId, StoredFileReference, UserId,
+    use synctv_core::models::media::{
+        PlaybackAlistMedia, PlaybackBilibiliDanmaku, PlaybackBilibiliMedia, PlaybackDanmaku,
+        PlaybackDanmakuProvider, PlaybackDirectUrlMedia, PlaybackExternalSubtitle, PlaybackInfo,
+        PlaybackLiveProxyMedia, PlaybackMedia, PlaybackMediaProvider, PlaybackResult,
+        PlaybackSubtitle, PlaybackSubtitleProvider,
     };
 
-    type TestResult<T = ()> = anyhow::Result<T>;
-
-    fn test_error(message: impl Into<String>) -> anyhow::Error {
-        anyhow::anyhow!(message.into())
+    fn signing_key() -> synctv_core::proxy_signature::ProxySigningKey {
+        synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+            b"test-jwt-secret-that-is-long-enough",
+        )
+        .expect("test signing key should derive")
     }
 
-    fn require_some<T>(value: Option<T>, message: &'static str) -> TestResult<T> {
-        value.ok_or_else(|| test_error(message))
-    }
-
-    fn api_ok<T>(result: Result<T, crate::impls::ApiError>) -> TestResult<T> {
-        result.map_err(|error| test_error(format!("{error:?}")))
-    }
-
-    fn stored_file_reference_with_metadata(metadata: serde_json::Value) -> StoredFileReference {
-        StoredFileReference {
-            file_reference_id: 7,
-            storage_backend: "database".to_string(),
-            object_key: "covers/media.png".to_string(),
-            mime_type: "image/png".to_string(),
-            size_bytes: 1234,
-            content_manifest_sha256: "a".repeat(64),
-            metadata,
-            created_at: Utc::now(),
-            validated_at: None,
+    fn signing_context(
+        key: &synctv_core::proxy_signature::ProxySigningKey,
+    ) -> PlaybackHttpSigningContext<'_> {
+        PlaybackHttpSigningContext {
+            signing_key: key,
+            room_id: "room-1",
+            user_id: "user-1",
         }
     }
 
-    #[test]
-    fn media_cover_metadata_dimensions_convert_to_proto() -> TestResult {
-        let file = stored_file_reference_with_metadata(serde_json::json!({
-            "width": 1920,
-            "height": 1080
-        }));
-
-        let cover = api_ok(stored_file_reference_to_media_cover(
-            &file,
-            Some("https://cdn.example.com/covers/media.png"),
-        ))?;
-
-        assert_eq!(cover.width, 1920);
-        assert_eq!(cover.height, 1080);
-        Ok(())
+    fn codec() -> synctv_core::PublicIdCodec {
+        synctv_core::PublicIdCodec::plain()
     }
 
-    #[test]
-    fn media_cover_metadata_rejects_invalid_dimensions() {
-        let file = stored_file_reference_with_metadata(serde_json::json!({
-            "width": "1920",
-            "height": 1080
-        }));
-
-        let error = stored_file_reference_to_media_cover(
-            &file,
-            Some("https://cdn.example.com/covers/media.png"),
-        )
-        .expect_err("invalid media cover dimensions should fail");
-
-        assert!(matches!(
-            error,
-            crate::impls::ApiError::Internal(message)
-                if message.contains("media cover metadata field 'width'")
-        ));
-    }
-
-    #[test]
-    fn media_cover_rejects_missing_url() {
-        let file = stored_file_reference_with_metadata(serde_json::json!({
-            "width": 1920,
-            "height": 1080
-        }));
-
-        let error = stored_file_reference_to_media_cover(&file, None)
-            .expect_err("stored file response needs a cover URL");
-
-        assert!(matches!(
-            error,
-            crate::impls::ApiError::Internal(message)
-                if message.contains("media cover url is missing")
-        ));
-    }
-
-    #[test]
-    fn provider_playback_info_to_model_preserves_transport_fields() {
-        let info = synctv_core::provider::traits::PlaybackInfo {
-            urls: vec!["https://cdn.example.com/video.mpd".to_string()],
-            format: "mpd".to_string(),
-            headers: HashMap::from([
-                ("Authorization".to_string(), "Bearer token".to_string()),
-                ("User-Agent".to_string(), "SyncTVNative/1.0".to_string()),
-            ]),
-            subtitles: vec![synctv_core::provider::traits::SubtitleTrack {
-                language: "zh-CN".to_string(),
-                name: "Chinese".to_string(),
-                url: "https://cdn.example.com/subtitle.ass".to_string(),
-                headers: HashMap::from([(
-                    "X-Subtitle-Token".to_string(),
-                    "subtitle-header".to_string(),
-                )]),
-                format: "ass".to_string(),
-            }],
-            expires_at: Some(1_700_000_000),
-            cors_proxy_required: false,
-        };
-
-        let converted = provider_playback_info_to_model(&info);
-
-        assert_eq!(converted.format, "mpd");
-        assert_eq!(
-            converted.urls[0]
-                .headers
-                .get("Authorization")
-                .map(String::as_str),
-            Some("Bearer token")
-        );
-        assert_eq!(
-            converted.urls[0]
-                .headers
-                .get("User-Agent")
-                .map(String::as_str),
-            Some("SyncTVNative/1.0")
-        );
-        assert_eq!(
-            converted.urls[0].expire_at.map(|dt| dt.timestamp()),
-            Some(1_700_000_000)
-        );
-        assert_eq!(converted.subtitles[0].urls[0].format, "ass");
-        assert_eq!(
-            converted.subtitles[0].urls[0]
-                .headers
-                .get("X-Subtitle-Token")
-                .map(String::as_str),
-            Some("subtitle-header")
-        );
-    }
-
-    #[test]
-    fn playback_client_profile_from_proto_returns_none_when_absent() -> TestResult {
-        assert_eq!(api_ok(playback_client_profile_from_proto(None))?, None);
-        Ok(())
-    }
-
-    #[test]
-    fn playback_to_proto_clears_proxy_headers_but_preserves_raw_headers() -> TestResult {
-        use synctv_core::models::media::{
-            Danmaku, PlaybackInfo, PlaybackResult, PlaybackUrl, Subtitle, SubtitleUrl,
-        };
-
-        let result = PlaybackResult::builder(
-            None,
-            RoomId::expect_positive(1),
-            "Headered media".to_string(),
-            0.0,
-        )
-        .default_mode("direct".to_string())
-        .add_mode(
-            "direct".to_string(),
-            PlaybackInfo {
-                urls: vec![PlaybackUrl {
-                    name: "main".to_string(),
-                    url: "https://cdn.example.com/video.mp4".to_string(),
-                    headers: HashMap::from([(
-                        "Authorization".to_string(),
-                        "Bearer stream-token".to_string(),
-                    )]),
-                    expire_at: None,
-                    metadata: None,
-                }, PlaybackUrl {
-                    name: "proxy".to_string(),
-                    url: "/api/providers/proxy/direct_url/ver-1/stream?sig=s&uid=u&rid=r&exp=1".to_string(),
-                    headers: HashMap::from([(
-                        "Authorization".to_string(),
-                        "Bearer proxy-owned-token".to_string(),
-                    )]),
-                    expire_at: None,
-                    metadata: None,
-                }, PlaybackUrl {
-                    name: "bilibili-direct-mpd".to_string(),
-                    url: "/api/providers/proxy/bilibili/ver-1/mpd/dash/direct?sig=s&uid=u&rid=r&exp=1".to_string(),
-                    headers: HashMap::from([(
-                        "Referer".to_string(),
-                        "https://www.bilibili.com".to_string(),
-                    )]),
-                    expire_at: None,
-                    metadata: None,
-                }],
-                default_url_index: 0,
-                subtitles: vec![Subtitle {
-                    name: "Chinese".to_string(),
-                    language: "zh-CN".to_string(),
-                    urls: vec![SubtitleUrl {
-                        name: "main".to_string(),
-                        url: "https://cdn.example.com/subtitle.ass".to_string(),
-                        headers: HashMap::from([(
-                            "X-Subtitle-Token".to_string(),
-                            "subtitle-token".to_string(),
-                        )]),
-                        format: "ass".to_string(),
-                    }, SubtitleUrl {
-                        name: "proxy".to_string(),
-                        url: "/api/providers/proxy/direct_url/ver-1/subtitle%2Fdirect%2F0?sig=s&uid=u&rid=r&exp=1".to_string(),
-                        headers: HashMap::from([(
-                            "X-Subtitle-Token".to_string(),
-                            "proxy-subtitle-token".to_string(),
-                        )]),
-                        format: "ass".to_string(),
-                    }],
-                    default_url_index: 0,
-                }],
-                default_subtitle_index: Some(0),
-                danmakus: vec![Danmaku {
-                    name: "Danmaku".to_string(),
-                    url: "https://cdn.example.com/danmaku.xml".to_string(),
-                    format: Some("xml".to_string()),
-                    headers: HashMap::from([("Cookie".to_string(), "sid=secret".to_string())]),
-                }, Danmaku {
-                    name: "Proxy Danmaku".to_string(),
-                    url: "/api/providers/proxy/bilibili/room_1/media_1/danmaku?sig=s&uid=u&rid=r&exp=1".to_string(),
-                    format: Some("xml".to_string()),
-                    headers: HashMap::from([("Cookie".to_string(), "proxy-owned".to_string())]),
-                }],
-                format: "mp4".to_string(),
-            },
-        )
-        .build()
-        .ok_or_else(|| test_error("playback result should build"))?;
-
-        let proto = api_ok(try_playback_to_proto(
-            &result,
-            &synctv_core::PublicIdCodec::plain(),
-        ))?;
-
-        let direct = proto
-            .playback_infos
-            .get("direct")
-            .ok_or_else(|| test_error("direct mode should be converted"))?;
-
-        assert_eq!(
-            direct.urls[0]
-                .headers
-                .get("Authorization")
-                .map(String::as_str),
-            Some("Bearer stream-token")
-        );
-        assert!(direct.urls[1].headers.is_empty());
-        assert_eq!(
-            direct.urls[2].headers.get("Referer").map(String::as_str),
-            Some("https://www.bilibili.com")
-        );
-        assert_eq!(
-            direct.subtitles[0].urls[0]
-                .headers
-                .get("X-Subtitle-Token")
-                .map(String::as_str),
-            Some("subtitle-token")
-        );
-        assert!(direct.subtitles[0].urls[1].headers.is_empty());
-        assert_eq!(
-            direct.danmakus[0].headers.get("Cookie").map(String::as_str),
-            Some("sid=secret")
-        );
-        assert!(direct.danmakus[1].headers.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn playback_to_proto_rejects_empty_playback_url() -> TestResult {
-        use synctv_core::models::media::{PlaybackInfo, PlaybackResult, PlaybackUrl};
-
-        let result = PlaybackResult::builder(
-            None,
-            RoomId::expect_positive(1),
-            "Broken media".to_string(),
-            0.0,
-        )
-        .default_mode("direct".to_string())
-        .add_mode(
-            "direct".to_string(),
-            PlaybackInfo {
-                urls: vec![PlaybackUrl::simple("main".to_string(), " ".to_string())],
-                default_url_index: 0,
-                subtitles: Vec::new(),
-                default_subtitle_index: None,
-                danmakus: Vec::new(),
-                format: "mp4".to_string(),
-            },
-        )
-        .build()
-        .ok_or_else(|| test_error("playback result should build"))?;
-
-        let error = try_playback_to_proto(&result, &synctv_core::PublicIdCodec::plain())
-            .expect_err("empty playback URL should fail");
-
-        assert!(matches!(
-            error,
-            crate::impls::ApiError::Internal(message)
-                if message.contains("playback url is empty")
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn playback_to_proto_rejects_missing_default_mode() {
-        use synctv_core::models::media::{PlaybackInfo, PlaybackResult, PlaybackUrl};
-
-        let result = PlaybackResult {
+    fn playback_result(info: PlaybackInfo) -> PlaybackResult {
+        let mut playback_infos = HashMap::new();
+        playback_infos.insert("dash".to_string(), info);
+        PlaybackResult {
             id: None,
             playlist_id: None,
-            room_id: RoomId::expect_positive(1),
-            name: "Broken media".to_string(),
+            room_id: synctv_core::models::RoomId::new(),
+            name: "media".to_string(),
+            provider: "bilibili".to_string(),
+            provider_instance_name: None,
             position: 0.0,
-            playback_infos: HashMap::from([(
-                "direct".to_string(),
-                PlaybackInfo {
-                    urls: vec![PlaybackUrl::simple(
-                        "main".to_string(),
-                        "https://cdn.example.com/video.mp4".to_string(),
-                    )],
-                    default_url_index: 0,
-                    subtitles: Vec::new(),
-                    default_subtitle_index: None,
-                    danmakus: Vec::new(),
-                    format: "mp4".to_string(),
-                },
-            )]),
-            default_mode: "missing".to_string(),
+            playback_infos,
+            default_mode: "dash".to_string(),
             duration_seconds: None,
             metadata: HashMap::new(),
-        };
-
-        let error = try_playback_to_proto(&result, &synctv_core::PublicIdCodec::plain())
-            .expect_err("missing default playback mode should fail");
-
-        assert!(matches!(
-            error,
-            crate::impls::ApiError::Internal(message)
-                if message.contains("default mode 'missing' is missing")
-        ));
+        }
     }
 
-    #[test]
-    fn playback_to_proto_rejects_empty_default_mode() {
-        use synctv_core::models::media::{PlaybackInfo, PlaybackResult, PlaybackUrl};
-
-        let result = PlaybackResult {
+    fn playback_result_with_mode(mode: &str, info: PlaybackInfo) -> PlaybackResult {
+        let mut playback_infos = HashMap::new();
+        playback_infos.insert(mode.to_string(), info);
+        PlaybackResult {
             id: None,
             playlist_id: None,
-            room_id: RoomId::expect_positive(1),
-            name: "Broken media".to_string(),
+            room_id: synctv_core::models::RoomId::new(),
+            name: "media".to_string(),
+            provider: "direct_url".to_string(),
+            provider_instance_name: None,
             position: 0.0,
-            playback_infos: HashMap::from([(
-                String::new(),
-                PlaybackInfo {
-                    urls: vec![PlaybackUrl::simple(
-                        "main".to_string(),
-                        "https://cdn.example.com/video.mp4".to_string(),
-                    )],
-                    default_url_index: 0,
-                    subtitles: Vec::new(),
-                    default_subtitle_index: None,
-                    danmakus: Vec::new(),
-                    format: "mp4".to_string(),
-                },
-            )]),
-            default_mode: String::new(),
+            playback_infos,
+            default_mode: mode.to_string(),
             duration_seconds: None,
             metadata: HashMap::new(),
-        };
+        }
+    }
 
-        let error = try_playback_to_proto(&result, &synctv_core::PublicIdCodec::plain())
-            .expect_err("empty default playback mode should fail");
-
-        assert!(matches!(
-            error,
-            crate::impls::ApiError::Internal(message)
-                if message.contains("default mode is empty")
-        ));
+    fn signed_query(url: &str) -> &str {
+        url.split_once('?')
+            .map(|(_, query)| query)
+            .expect("signed provider URL should include query")
     }
 
     #[test]
-    fn playback_to_proto_rejects_empty_mode_name() {
-        use synctv_core::models::media::{PlaybackInfo, PlaybackResult, PlaybackUrl};
-
-        let result = PlaybackResult {
-            id: None,
-            playlist_id: None,
-            room_id: RoomId::expect_positive(1),
-            name: "Broken media".to_string(),
-            position: 0.0,
-            playback_infos: HashMap::from([
-                (
-                    "direct".to_string(),
-                    PlaybackInfo {
-                        urls: vec![PlaybackUrl::simple(
-                            "main".to_string(),
-                            "https://cdn.example.com/video.mp4".to_string(),
-                        )],
-                        default_url_index: 0,
-                        subtitles: Vec::new(),
-                        default_subtitle_index: None,
-                        danmakus: Vec::new(),
-                        format: "mp4".to_string(),
+    fn direct_dash_manifest_preserves_bilibili_headers_for_clients() {
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Referer".to_string(),
+            "https://www.bilibili.com".to_string(),
+        );
+        headers.insert("User-Agent".to_string(), "SyncTV".to_string());
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "DASH".to_string(),
+                format: "mpd".to_string(),
+                expire_at: Utc::now().checked_add_signed(chrono::Duration::minutes(30)),
+                metadata: None,
+                provider: PlaybackMediaProvider::Bilibili(
+                    PlaybackBilibiliMedia::DirectDashManifest {
+                        version: "v1".to_string(),
+                        expires_at: Utc::now().timestamp() + 1800,
+                        mode_name: "dash".to_string(),
+                        headers: headers.clone(),
                     },
                 ),
-                (
-                    " ".to_string(),
-                    PlaybackInfo {
-                        urls: vec![PlaybackUrl::simple(
-                            "main".to_string(),
-                            "https://cdn.example.com/video-alt.mp4".to_string(),
-                        )],
-                        default_url_index: 0,
-                        subtitles: Vec::new(),
-                        default_subtitle_index: None,
-                        danmakus: Vec::new(),
-                        format: "mp4".to_string(),
-                    },
-                ),
-            ]),
-            default_mode: "direct".to_string(),
-            duration_seconds: None,
-            metadata: HashMap::new(),
-        };
+            })
+            .build();
 
-        let error = try_playback_to_proto(&result, &synctv_core::PublicIdCodec::plain())
-            .expect_err("empty playback mode name should fail");
-
-        assert!(matches!(
-            error,
-            crate::impls::ApiError::Internal(message)
-                if message.contains("empty mode name")
-        ));
+        let proto = try_playback_to_proto(&playback_result(info), &codec(), Some(&signing))
+            .expect("playback should convert");
+        let media = &proto.playback_infos["dash"].medias[0];
+        assert!(
+            media.url.starts_with(
+                "/api/playback-providers/bilibili/v1/dash-manifests/dash?mode=direct&"
+            ),
+            "unexpected direct DASH URL: {}",
+            media.url
+        );
+        assert_eq!(media.headers, headers);
     }
 
     #[test]
-    fn playback_to_proto_rejects_default_url_index_out_of_range() -> TestResult {
-        use synctv_core::models::media::{PlaybackInfo, PlaybackResult, PlaybackUrl};
-
-        let result = PlaybackResult::builder(
-            None,
-            RoomId::expect_positive(1),
-            "Broken media".to_string(),
-            0.0,
-        )
-        .default_mode("direct".to_string())
-        .add_mode(
-            "direct".to_string(),
-            PlaybackInfo {
-                urls: vec![PlaybackUrl::simple(
-                    "main".to_string(),
-                    "https://cdn.example.com/video.mp4".to_string(),
-                )],
-                default_url_index: 1,
-                subtitles: Vec::new(),
-                default_subtitle_index: None,
-                danmakus: Vec::new(),
-                format: "mp4".to_string(),
-            },
-        )
-        .build()
-        .ok_or_else(|| test_error("playback result should build"))?;
-
-        let error = try_playback_to_proto(&result, &synctv_core::PublicIdCodec::plain())
-            .expect_err("out-of-range playback URL index should fail");
-
-        assert!(matches!(
-            error,
-            crate::impls::ApiError::Internal(message)
-                if message.contains("default playback URL index")
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn playback_to_proto_rejects_subtitle_default_url_index_out_of_range() -> TestResult {
-        use synctv_core::models::media::{
-            PlaybackInfo, PlaybackResult, PlaybackUrl, Subtitle, SubtitleUrl,
-        };
-
-        let result = PlaybackResult::builder(
-            None,
-            RoomId::expect_positive(1),
-            "Broken media".to_string(),
-            0.0,
-        )
-        .default_mode("direct".to_string())
-        .add_mode(
-            "direct".to_string(),
-            PlaybackInfo {
-                urls: vec![PlaybackUrl::simple(
-                    "main".to_string(),
-                    "https://cdn.example.com/video.mp4".to_string(),
-                )],
-                default_url_index: 0,
-                subtitles: vec![Subtitle {
-                    name: "Chinese".to_string(),
-                    language: "zh-CN".to_string(),
-                    urls: vec![SubtitleUrl {
-                        name: "main".to_string(),
-                        url: "https://cdn.example.com/subtitle.ass".to_string(),
+    fn live_danmaku_provider_converts_to_live_endpoint() {
+        let room_id = synctv_core::models::RoomId::new();
+        let media_id = synctv_core::models::MediaId::new();
+        let codec = codec();
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "Live HLS".to_string(),
+                format: "hls".to_string(),
+                expire_at: None,
+                metadata: None,
+                provider: PlaybackMediaProvider::External(
+                    synctv_core::models::media::PlaybackExternalMedia {
+                        url: "https://example.com/live.m3u8".to_string(),
                         headers: HashMap::new(),
-                        format: "ass".to_string(),
-                    }],
-                    default_url_index: 1,
-                }],
-                default_subtitle_index: Some(0),
-                danmakus: Vec::new(),
-                format: "mp4".to_string(),
-            },
-        )
-        .build()
-        .ok_or_else(|| test_error("playback result should build"))?;
+                    },
+                ),
+            })
+            .add_danmaku(PlaybackDanmaku {
+                name: "Bilibili Live Danmaku".to_string(),
+                format: Some("synctv-bilibili-live".to_string()),
+                provider: PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live {
+                    room_id,
+                    media_id,
+                }),
+            })
+            .default_danmaku_index(0)
+            .build();
 
-        let error = try_playback_to_proto(&result, &synctv_core::PublicIdCodec::plain())
-            .expect_err("out-of-range subtitle URL index should fail");
-
-        assert!(matches!(
-            error,
-            crate::impls::ApiError::Internal(message)
-                if message.contains("subtitle default URL index")
-        ));
-        Ok(())
+        let proto = try_playback_to_proto(&playback_result(info), &codec, None)
+            .expect("playback should convert");
+        let danmaku = &proto.playback_infos["dash"].danmakus[0];
+        let public_media_id = codec
+            .encode_media_id(media_id)
+            .expect("media id should encode");
+        assert_eq!(
+            danmaku.url,
+            format!("/api/playback-providers/bilibili/live-danmaku/{public_media_id}")
+        );
+        assert!(danmaku.headers.is_empty());
     }
 
     #[test]
-    fn playback_to_proto_writes_string_metadata_without_json_quotes() -> TestResult {
-        use synctv_core::models::media::{
-            PlaybackInfo, PlaybackResult, PlaybackUrl, PlaybackUrlMetadata,
-        };
-
-        let result = PlaybackResult::builder(
-            None,
-            RoomId::expect_positive(1),
-            "Metadata media".to_string(),
-            0.0,
-        )
-        .default_mode("direct".to_string())
-        .add_metadata(
-            "thumbnail".to_string(),
-            serde_json::json!("https://cdn.example.com/thumb.jpg"),
-        )
-        .add_metadata("size".to_string(), serde_json::json!(42))
-        .add_metadata("nested".to_string(), serde_json::json!({"codec": "h264"}))
-        .add_mode(
-            "direct".to_string(),
-            PlaybackInfo {
-                urls: vec![PlaybackUrl {
-                    name: "main".to_string(),
-                    url: "https://cdn.example.com/video.mp4".to_string(),
-                    headers: HashMap::new(),
-                    expire_at: None,
-                    metadata: Some(PlaybackUrlMetadata {
-                        resolution: Some("1080p".to_string()),
-                        bitrate: Some(4_000_000),
-                        codec: Some("h264".to_string()),
-                        fps: Some(30),
-                        extra: HashMap::from([
-                            ("label".to_string(), serde_json::json!("Main Stream")),
-                            ("raw".to_string(), serde_json::json!({"kind": "primary"})),
-                        ]),
+    fn provider_playback_info_to_model_preserves_default_indices() {
+        let provider_info = synctv_core::provider::traits::PlaybackInfo {
+            medias: vec![
+                PlaybackMedia::simple(
+                    "primary".to_string(),
+                    "https://example.com/1.mp4".to_string(),
+                ),
+                PlaybackMedia::simple(
+                    "selected".to_string(),
+                    "https://example.com/2.mp4".to_string(),
+                ),
+            ],
+            default_media_index: Some(1),
+            subtitles: vec![
+                PlaybackSubtitle {
+                    name: "English".to_string(),
+                    language: "en".to_string(),
+                    format: "vtt".to_string(),
+                    provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle {
+                        url: "https://example.com/en.vtt".to_string(),
+                        headers: HashMap::new(),
                     }),
-                }],
-                default_url_index: 0,
-                subtitles: Vec::new(),
-                default_subtitle_index: None,
-                danmakus: Vec::new(),
-                format: "mp4".to_string(),
-            },
-        )
-        .build()
-        .ok_or_else(|| test_error("playback result should build"))?;
-
-        let proto = api_ok(try_playback_to_proto(
-            &result,
-            &synctv_core::PublicIdCodec::plain(),
-        ))?;
-
-        assert_eq!(
-            proto.metadata.get("thumbnail").map(String::as_str),
-            Some("https://cdn.example.com/thumb.jpg")
-        );
-        assert_eq!(proto.metadata.get("size").map(String::as_str), Some("42"));
-        assert_eq!(
-            proto.metadata.get("nested").map(String::as_str),
-            Some(r#"{"codec":"h264"}"#)
-        );
-
-        let url_metadata = proto.playback_infos["direct"].urls[0]
-            .metadata
-            .as_ref()
-            .ok_or_else(|| test_error("playback URL metadata should exist"))?;
-        assert_eq!(
-            url_metadata.extra.get("label").map(String::as_str),
-            Some("Main Stream")
-        );
-        assert_eq!(
-            url_metadata.extra.get("raw").map(String::as_str),
-            Some(r#"{"kind":"primary"}"#)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn playback_client_profile_from_proto_applies_defaults_for_omitted_repeated_capabilities(
-    ) -> TestResult {
-        let proto = synctv_proto::client::PlaybackClientProfile {
-            delivery_preference: synctv_proto::client::PlaybackDeliveryPreference::Unspecified
-                as i32,
-            max_streaming_bitrate: Some(12_000_000),
-            max_audio_channels: Some(2),
-            supported_video_codecs: Vec::new(),
-            supported_containers: Vec::new(),
-            audio_capability: synctv_proto::client::PlaybackAudioCapability::Unspecified as i32,
-            subtitle_preference: synctv_proto::client::PlaybackSubtitlePreference::Unspecified
-                as i32,
-        };
-
-        let converted = require_some(
-            api_ok(playback_client_profile_from_proto(Some(&proto)))?,
-            "present profile should be returned",
-        )?;
-        let default_profile = synctv_core::provider::PlaybackClientProfile::default();
-
-        assert_eq!(
-            converted.delivery_preference,
-            synctv_core::provider::PlaybackDeliveryPreference::Auto
-        );
-        assert_eq!(converted.max_streaming_bitrate, Some(12_000_000));
-        assert_eq!(converted.max_audio_channels, Some(2));
-        assert_eq!(
-            converted.supported_video_codecs,
-            default_profile.supported_video_codecs
-        );
-        assert_eq!(
-            converted.supported_containers,
-            default_profile.supported_containers
-        );
-        assert_eq!(converted.audio_capability, default_profile.audio_capability);
-        assert_eq!(
-            converted.subtitle_preference,
-            synctv_core::provider::PlaybackSubtitlePreference::External
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn playback_client_profile_from_proto_maps_explicit_capabilities() -> TestResult {
-        let proto = synctv_proto::client::PlaybackClientProfile {
-            delivery_preference: synctv_proto::client::PlaybackDeliveryPreference::DirectPlay
-                as i32,
-            max_streaming_bitrate: None,
-            max_audio_channels: Some(6),
-            supported_video_codecs: vec![
-                synctv_proto::client::PlaybackVideoCodec::H264 as i32,
-                synctv_proto::client::PlaybackVideoCodec::Vp9 as i32,
-            ],
-            supported_containers: vec![
-                synctv_proto::client::PlaybackContainer::Mp4 as i32,
-                synctv_proto::client::PlaybackContainer::Webm as i32,
-            ],
-            audio_capability: synctv_proto::client::PlaybackAudioCapability::Surround as i32,
-            subtitle_preference: synctv_proto::client::PlaybackSubtitlePreference::None as i32,
-        };
-
-        let converted = require_some(
-            api_ok(playback_client_profile_from_proto(Some(&proto)))?,
-            "present profile should be returned",
-        )?;
-
-        assert_eq!(
-            converted.delivery_preference,
-            synctv_core::provider::PlaybackDeliveryPreference::DirectPlay
-        );
-        assert_eq!(converted.max_streaming_bitrate, None);
-        assert_eq!(converted.max_audio_channels, Some(6));
-        assert_eq!(
-            converted.supported_video_codecs,
-            vec![
-                synctv_core::provider::PlaybackVideoCodec::H264,
-                synctv_core::provider::PlaybackVideoCodec::Vp9,
-            ]
-        );
-        assert_eq!(
-            converted.supported_containers,
-            vec![
-                synctv_core::provider::PlaybackContainer::Mp4,
-                synctv_core::provider::PlaybackContainer::Webm,
-            ]
-        );
-        assert_eq!(
-            converted.audio_capability,
-            synctv_core::provider::PlaybackAudioCapability::Surround
-        );
-        assert_eq!(
-            converted.subtitle_preference,
-            synctv_core::provider::PlaybackSubtitlePreference::None
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn playback_client_profile_from_proto_rejects_unknown_enums() {
-        let mut proto = synctv_proto::client::PlaybackClientProfile {
-            delivery_preference: synctv_proto::client::PlaybackDeliveryPreference::Auto as i32,
-            max_streaming_bitrate: None,
-            max_audio_channels: None,
-            supported_video_codecs: Vec::new(),
-            supported_containers: Vec::new(),
-            audio_capability: synctv_proto::client::PlaybackAudioCapability::Unspecified as i32,
-            subtitle_preference: synctv_proto::client::PlaybackSubtitlePreference::Unspecified
-                as i32,
-        };
-
-        proto.delivery_preference = 99;
-        assert!(matches!(
-            playback_client_profile_from_proto(Some(&proto)),
-            Err(crate::impls::ApiError::InvalidInput(message))
-                if message.contains("delivery preference")
-        ));
-
-        proto.delivery_preference = synctv_proto::client::PlaybackDeliveryPreference::Auto as i32;
-        proto.supported_video_codecs = vec![99];
-        assert!(matches!(
-            playback_client_profile_from_proto(Some(&proto)),
-            Err(crate::impls::ApiError::InvalidInput(message))
-                if message.contains("video codec")
-        ));
-
-        proto.supported_video_codecs.clear();
-        proto.supported_containers = vec![99];
-        assert!(matches!(
-            playback_client_profile_from_proto(Some(&proto)),
-            Err(crate::impls::ApiError::InvalidInput(message))
-                if message.contains("container")
-        ));
-
-        proto.supported_containers.clear();
-        proto.audio_capability = 99;
-        assert!(matches!(
-            playback_client_profile_from_proto(Some(&proto)),
-            Err(crate::impls::ApiError::InvalidInput(message))
-                if message.contains("audio capability")
-        ));
-
-        proto.audio_capability = synctv_proto::client::PlaybackAudioCapability::Unspecified as i32;
-        proto.subtitle_preference = 99;
-        assert!(matches!(
-            playback_client_profile_from_proto(Some(&proto)),
-            Err(crate::impls::ApiError::InvalidInput(message))
-                if message.contains("subtitle preference")
-        ));
-    }
-
-    #[test]
-    fn normalize_created_room_settings_defaults_when_missing() {
-        let settings = normalize_created_room_settings(None);
-        assert!(!settings.allow_guest_join.0);
-    }
-
-    #[test]
-    fn normalize_created_room_settings_preserves_other_fields() {
-        let source = synctv_core::models::RoomSettings {
-            allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
-            ..synctv_core::models::RoomSettings::default()
-        };
-
-        let settings = normalize_created_room_settings(Some(&source));
-
-        assert!(settings.allow_guest_join.0);
-    }
-
-    #[test]
-    fn bilibili_live_danmaku_for_static_media_builds_signed_proxy_url() -> TestResult {
-        let media = Media {
-            id: MediaId::expect_positive(1201),
-            playlist_id: None,
-            room_id: RoomId::expect_positive(1202),
-            creator_id: None,
-            name: "Bilibili Live".to_string(),
-            description: String::new(),
-            position: 0.0,
-            source_provider: synctv_core::provider::BilibiliProvider::NAME.to_string(),
-            source_config: serde_json::json!({
-                "type": "live",
-                "room_id": 12345_u64
-            }),
-            provider_instance_name: None,
-            cover_file_reference_id: None,
-            added_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            version: 0,
-        };
-        let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-            b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-        )?;
-
-        let expires_at = chrono::Utc::now().timestamp() + 600;
-        let public_id_codec = synctv_core::PublicIdCodec::plain();
-        let public_room_id = public_id_codec
-            .encode_room_id(media.room_id)
-            .map_err(test_error)?;
-        let public_user_id = public_id_codec
-            .encode_user_id(UserId::expect_positive(301))
-            .map_err(test_error)?;
-        let danmaku = api_ok(try_bilibili_live_danmaku_for_static_media(
-            &media,
-            &public_user_id,
-            &public_id_codec,
-            &signing_key,
-            Some(expires_at),
-        ))?;
-        let danmaku = require_some(danmaku, "bilibili live should expose danmaku")?;
-
-        assert_eq!(danmaku.name, "Bilibili Danmaku");
-        assert_eq!(danmaku.format.as_deref(), Some("bilibili"));
-        assert!(danmaku
-            .url
-            .starts_with(&format!("/api/providers/proxy/bilibili/{public_room_id}/")));
-        let query = require_some(
-            danmaku.url.split('?').nth(1),
-            "signed danmaku URL should include query",
-        )?;
-        let claims = signing_key.parse_and_verify_query(query, "bilibili", &public_room_id)?;
-        assert_eq!(claims.room_id, public_room_id);
-        assert_eq!(claims.user_id, public_user_id);
-        assert_eq!(claims.expires_at, expires_at);
-        Ok(())
-    }
-
-    #[test]
-    fn media_to_proto_includes_resource_version() -> TestResult {
-        let public_id_codec = synctv_core::PublicIdCodec::plain();
-        let media = Media {
-            id: MediaId::expect_positive(101),
-            playlist_id: None,
-            room_id: RoomId::expect_positive(102),
-            creator_id: Some(UserId::expect_positive(103)),
-            name: "Proto Media".to_string(),
-            description: String::new(),
-            position: 3.5,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({ "url": "https://example.com/video.mp4" }),
-            provider_instance_name: None,
-            cover_file_reference_id: None,
-            added_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            version: 42,
-        };
-
-        let proto = api_ok(try_media_to_proto(&media, &public_id_codec))?;
-        assert_eq!(proto.version, 42);
-        Ok(())
-    }
-
-    #[test]
-    fn media_to_proto_only_includes_source_config_for_creator_viewer() -> TestResult {
-        let public_id_codec = synctv_core::PublicIdCodec::plain();
-        let creator_id = UserId::expect_positive(103);
-        let media = Media {
-            id: MediaId::expect_positive(104),
-            playlist_id: None,
-            room_id: RoomId::expect_positive(102),
-            creator_id: Some(creator_id),
-            name: "Secret Media".to_string(),
-            description: String::new(),
-            position: 1.0,
-            source_provider: "alist".to_string(),
-            source_config: serde_json::json!({
-                "url": "https://example.com/video.mp4",
-                "token": "top-level-token",
-                "nested": {
-                    "password": "nested-password",
-                    "safe": true
                 },
-                "items": [
-                    {
-                        "api_key": "nested-api-key",
-                        "path": "/tv"
-                    }
-                ],
-                "metadata": {
-                    "title": "Secret Media"
-                }
-            }),
-            provider_instance_name: Some("alist-main".to_string()),
-            cover_file_reference_id: None,
-            added_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            version: 1,
+                PlaybackSubtitle {
+                    name: "Japanese".to_string(),
+                    language: "ja".to_string(),
+                    format: "vtt".to_string(),
+                    provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle {
+                        url: "https://example.com/ja.vtt".to_string(),
+                        headers: HashMap::new(),
+                    }),
+                },
+            ],
+            default_subtitle_index: Some(1),
+            danmakus: Vec::new(),
+            default_danmaku_index: None,
         };
 
-        let proto = api_ok(try_media_to_proto(&media, &public_id_codec))?;
-        assert!(
-            proto.source_config.is_empty(),
-            "default media conversion must not expose source_config"
-        );
-        assert!(
-            proto.metadata.is_empty(),
-            "default media conversion must not expose metadata extracted from source_config"
-        );
+        let model = provider_playback_info_to_model(&provider_info);
 
-        let proto = try_media_to_proto_for_viewer(
-            &media,
-            true,
-            Some(UserId::expect_positive(999)),
-            &public_id_codec,
+        assert_eq!(model.default_media_index, Some(1));
+        assert_eq!(model.default_subtitle_index, Some(1));
+    }
+
+    #[test]
+    fn playback_to_proto_serializes_provider_selected_default_indices() {
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia::simple(
+                "first".to_string(),
+                "https://example.com/1.mp4".to_string(),
+            ))
+            .add_media(PlaybackMedia::simple(
+                "second".to_string(),
+                "https://example.com/2.mp4".to_string(),
+            ))
+            .default_media_index(1)
+            .add_subtitle(PlaybackSubtitle {
+                name: "English".to_string(),
+                language: "en".to_string(),
+                format: "vtt".to_string(),
+                provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle {
+                    url: "https://example.com/en.vtt".to_string(),
+                    headers: HashMap::new(),
+                }),
+            })
+            .add_subtitle(PlaybackSubtitle {
+                name: "Japanese".to_string(),
+                language: "ja".to_string(),
+                format: "vtt".to_string(),
+                provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle {
+                    url: "https://example.com/ja.vtt".to_string(),
+                    headers: HashMap::new(),
+                }),
+            })
+            .default_subtitle_index(1)
+            .build();
+
+        let proto = try_playback_to_proto(&playback_result(info), &codec(), None)
+            .expect("playback should convert");
+        let info = &proto.playback_infos["dash"];
+
+        assert_eq!(info.default_media_index, Some(1));
+        assert_eq!(info.default_subtitle_index, Some(1));
+    }
+
+    #[test]
+    fn provider_proxy_url_uses_path_segment_encoding_for_mode_names() {
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let mode_name = "My Source+Main";
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "proxied".to_string(),
+                format: "mp4".to_string(),
+                expire_at: None,
+                metadata: None,
+                provider: PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyStream {
+                    version: "v 1".to_string(),
+                    expires_at: Utc::now().timestamp() + 1800,
+                    mode_name: mode_name.to_string(),
+                    url_index: 0,
+                    url: "https://example.com/video.mp4".to_string(),
+                    headers: HashMap::new(),
+                }),
+            })
+            .build();
+
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode(mode_name, info),
+            &codec(),
+            Some(&signing),
         )
-        .map_err(|error| test_error(format!("{error:?}")))?;
+        .expect("playback should convert");
+        let media = &proto.playback_infos[mode_name].medias[0];
+
         assert!(
-            proto.source_config.is_empty(),
-            "non-creator viewers must not receive source_config"
+            media.url.starts_with(
+                "/api/playback-providers/direct-url/v%201/streams/My%20Source%2BMain/0?"
+            ),
+            "unexpected proxy URL: {}",
+            media.url
         );
-        assert!(
-            proto.metadata.is_empty(),
-            "non-creator viewers must not receive metadata extracted from source_config"
-        );
-
-        let mut unowned_media = media.clone();
-        unowned_media.creator_id = None;
-        let proto = api_ok(try_media_to_proto_for_viewer(
-            &unowned_media,
-            true,
-            None,
-            &public_id_codec,
-        ))?;
-        assert!(
-            proto.source_config.is_empty(),
-            "media without a creator must not expose source_config"
-        );
-        assert!(
-            proto.metadata.is_empty(),
-            "media without a creator must not expose metadata extracted from source_config"
-        );
-
-        let proto = api_ok(try_media_to_proto_for_viewer(
-            &media,
-            true,
-            Some(creator_id),
-            &public_id_codec,
-        ))?;
-        let source_config: serde_json::Value = serde_json::from_slice(&proto.source_config)?;
-        let metadata: serde_json::Value = serde_json::from_slice(&proto.metadata)?;
-
-        assert_eq!(source_config["token"], serde_json::json!("top-level-token"));
-        assert_eq!(
-            source_config["nested"]["password"],
-            serde_json::json!("nested-password")
-        );
-        assert_eq!(
-            source_config["items"][0]["api_key"],
-            serde_json::json!("nested-api-key")
-        );
-        assert_eq!(source_config["nested"]["safe"], serde_json::json!(true));
-        assert_eq!(
-            source_config["metadata"]["title"],
-            serde_json::json!("Secret Media")
-        );
-        assert_eq!(metadata["title"], serde_json::json!("Secret Media"));
-        Ok(())
-    }
-
-    #[test]
-    fn playlist_to_proto_includes_resource_version() -> TestResult {
-        let public_id_codec = synctv_core::PublicIdCodec::plain();
-        let playlist = synctv_core::models::Playlist {
-            id: PlaylistId::expect_positive(105),
-            room_id: RoomId::expect_positive(102),
-            creator_id: Some(UserId::expect_positive(103)),
-            name: "Proto Playlist".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 1.0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            version: 7,
-        };
-
-        let proto = api_ok(try_playlist_to_proto(&playlist, 3, &public_id_codec))?;
-        assert_eq!(proto.version, 7);
-        Ok(())
-    }
-
-    #[test]
-    fn proto_role_filter_rejects_unknown_values_and_preserves_unspecified_filter() -> TestResult {
-        assert_eq!(
-            proto_role_filter_to_room_role(
-                synctv_proto::common::RoomMemberRole::Unspecified as i32
+        let claims = key
+            .parse_and_verify_query(
+                signed_query(&media.url),
+                synctv_core::provider::direct_url::DirectUrlProvider::NAME,
+                "v 1",
+                "streams/My Source+Main/0",
             )
-            .map_err(|error| test_error(format!("{error:?}")))?,
-            None
+            .expect("signature should bind decoded resource");
+        assert_eq!(claims.resource, "streams/My Source+Main/0");
+    }
+
+    #[test]
+    fn live_proxy_url_uses_route_slug_and_internal_signature_provider() {
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let room_id = synctv_core::models::RoomId::new();
+        let media_id = synctv_core::models::MediaId::new();
+        let expires_at = Utc::now().timestamp() + 1800;
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "live".to_string(),
+                format: "m3u8".to_string(),
+                expire_at: None,
+                metadata: None,
+                provider: PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::HlsPlaylist {
+                    version: "live v1".to_string(),
+                    expires_at,
+                    room_id,
+                    media_id,
+                }),
+            })
+            .build();
+
+        let proto = try_playback_to_proto(&playback_result(info), &codec(), Some(&signing))
+            .expect("playback should convert");
+        let media = &proto.playback_infos["dash"].medias[0];
+
+        assert!(
+            media
+                .url
+                .starts_with("/api/playback-providers/live-proxy/live%20v1/hls-playlist?"),
+            "unexpected live-proxy URL: {}",
+            media.url
         );
+        let claims = key
+            .parse_and_verify_query(
+                signed_query(&media.url),
+                synctv_core::provider::live_proxy::LiveProxyProvider::NAME,
+                "live v1",
+                "hls-playlist",
+            )
+            .expect("signature should use internal provider name");
         assert_eq!(
-            proto_role_filter_to_room_role(synctv_proto::common::RoomMemberRole::Admin as i32)
-                .map_err(|error| test_error(format!("{error:?}")))?,
-            Some(synctv_core::models::RoomRole::Admin)
+            claims.provider,
+            synctv_core::provider::live_proxy::LiveProxyProvider::NAME
         );
-        assert!(matches!(
-            proto_role_filter_to_room_role(99),
-            Err(crate::impls::ApiError::InvalidInput(message)) if message.contains("room member role")
-        ));
-        Ok(())
     }
 
     #[test]
-    fn playlist_to_proto_only_includes_source_config_for_creator_viewer() -> TestResult {
-        let public_id_codec = synctv_core::PublicIdCodec::plain();
-        let creator_id = UserId::expect_positive(103);
-        let playlist = synctv_core::models::Playlist {
-            id: PlaylistId::expect_positive(106),
-            room_id: RoomId::expect_positive(102),
-            creator_id: Some(creator_id),
-            name: "Secret Playlist".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 1.0,
-            source_provider: Some("alist".to_string()),
-            source_config: Some(serde_json::json!({
-                "path": "/secret",
-                "token": "playlist-token",
-                "nested": {
-                    "password": "nested-password"
-                }
-            })),
-            provider_instance_name: Some("alist-main".to_string()),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            version: 1,
-        };
+    fn alist_thumbnail_metadata_exposes_signed_proxy_url() {
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let expires_at = Utc::now().timestamp() + 1800;
+        let mut result = playback_result(
+            PlaybackInfo::builder()
+                .add_media(PlaybackMedia {
+                    name: "proxied".to_string(),
+                    format: "mp4".to_string(),
+                    expire_at: None,
+                    metadata: None,
+                    provider: PlaybackMediaProvider::Alist(PlaybackAlistMedia::ProxyFile {
+                        version: "v 1".to_string(),
+                        expires_at,
+                        mode_name: "default".to_string(),
+                        url_index: 0,
+                        url: "https://example.com/video.mp4".to_string(),
+                        headers: HashMap::new(),
+                    }),
+                })
+                .build(),
+        );
+        result.provider = "alist".to_string();
+        result.metadata.insert(
+            "thumbnail".to_string(),
+            serde_json::json!("https://alist.example.com/thumb.jpg"),
+        );
+        result.metadata.insert(
+            "proxy_thumbnail_resource".to_string(),
+            serde_json::json!({
+                "version": "v 1",
+                "expires_at": expires_at,
+                "resource": "thumbnail",
+            }),
+        );
 
-        let proto = api_ok(try_playlist_to_proto(&playlist, 3, &public_id_codec))?;
+        let proto = try_playback_to_proto(&result, &codec(), Some(&signing))
+            .expect("playback should convert");
+        let thumbnail = proto
+            .metadata
+            .get("thumbnail")
+            .expect("thumbnail metadata should exist");
+
         assert!(
-            proto.source_config.is_empty(),
-            "default playlist conversion must not expose source_config"
+            thumbnail.starts_with("/api/playback-providers/alist/v%201/thumbnail?"),
+            "unexpected thumbnail URL: {thumbnail}"
         );
-        assert_eq!(proto.source_provider, "alist");
-        assert_eq!(proto.provider_instance_name, "alist-main");
-
-        let proto = try_playlist_to_proto_for_viewer(
-            &playlist,
-            3,
-            true,
-            Some(UserId::expect_positive(999)),
-            &public_id_codec,
-        )
-        .map_err(|error| test_error(format!("{error:?}")))?;
-        assert!(
-            proto.source_config.is_empty(),
-            "non-creator viewers must not receive playlist source_config"
-        );
-
-        let mut unowned_playlist = playlist.clone();
-        unowned_playlist.creator_id = None;
-        let proto = api_ok(try_playlist_to_proto_for_viewer(
-            &unowned_playlist,
-            3,
-            true,
-            None,
-            &public_id_codec,
-        ))?;
-        assert!(
-            proto.source_config.is_empty(),
-            "playlist without a creator must not expose source_config"
-        );
-
-        let proto = try_playlist_to_proto_for_viewer(
-            &playlist,
-            3,
-            true,
-            Some(creator_id),
-            &public_id_codec,
-        )
-        .map_err(|error| test_error(format!("{error:?}")))?;
-        let source_config: serde_json::Value = serde_json::from_slice(&proto.source_config)?;
-        assert_eq!(source_config["token"], serde_json::json!("playlist-token"));
-        assert_eq!(
-            source_config["nested"]["password"],
-            serde_json::json!("nested-password")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn dynamic_playlist_source_fields_normalizes_provider_binding() -> TestResult {
-        let playlist = synctv_core::models::Playlist {
-            id: PlaylistId::expect_positive(107),
-            room_id: RoomId::expect_positive(102),
-            creator_id: Some(UserId::expect_positive(103)),
-            name: "Dynamic Playlist".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 1.0,
-            source_provider: Some(" alist ".to_string()),
-            source_config: Some(serde_json::json!({ "path": "/secret" })),
-            provider_instance_name: Some(" alist-main ".to_string()),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            version: 1,
-        };
-
-        let fields = api_ok(dynamic_playlist_source_fields(&playlist))?;
-
-        assert_eq!(fields.provider_name, "alist");
-        assert_eq!(fields.source_config["path"], serde_json::json!("/secret"));
-        assert_eq!(fields.provider_instance_name, Some("alist-main"));
-        Ok(())
-    }
-
-    #[test]
-    fn dynamic_playlist_source_fields_rejects_invalid_dynamic_shape() {
-        let mut playlist = synctv_core::models::Playlist {
-            id: PlaylistId::expect_positive(108),
-            room_id: RoomId::expect_positive(102),
-            creator_id: Some(UserId::expect_positive(103)),
-            name: "Dynamic Playlist".to_string(),
-            description: String::new(),
-            cover_file_reference_id: None,
-            parent_id: None,
-            position: 1.0,
-            source_provider: Some("   ".to_string()),
-            source_config: Some(serde_json::json!({ "path": "/secret" })),
-            provider_instance_name: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            version: 1,
-        };
-
-        assert!(matches!(
-            dynamic_playlist_source_fields(&playlist),
-            Err(crate::impls::ApiError::Internal(message))
-                if message.contains("Dynamic playlist")
-                    && message.contains("provider")
-        ));
-
-        playlist.source_provider = Some("alist".to_string());
-        playlist.source_config = None;
-
-        assert!(matches!(
-            dynamic_playlist_source_fields(&playlist),
-            Err(crate::impls::ApiError::Internal(message))
-                if message.contains("Dynamic playlist")
-                    && message.contains("source_config")
-        ));
-    }
-
-    #[test]
-    fn room_to_proto_includes_resource_version() -> TestResult {
-        let public_id_codec = synctv_core::PublicIdCodec::plain();
-        let now = chrono::Utc::now();
-        let room = Room {
-            id: RoomId::expect_positive(102),
-            name: "Proto Room".to_string(),
-            description: "Room description".to_string(),
-            cover_file_reference_id: None,
-            created_by: UserId::expect_positive(103),
-            status: synctv_core::models::RoomStatus::Active,
-            is_banned: false,
-            closed_at: None,
-            created_at: now,
-            updated_at: now,
-            deleted_at: None,
-            version: 9,
-            last_activity_at: now,
-        };
-
-        let settings = synctv_core::models::RoomSettings::default();
-        let proto = api_ok(try_room_to_proto_basic(
-            &room,
-            Some(&settings),
-            Some(0),
-            &public_id_codec,
-        ))?;
-        assert_eq!(proto.version, 9);
-        Ok(())
+        assert!(!proto.metadata.contains_key("proxy_thumbnail_resource"));
+        let claims = key
+            .parse_and_verify_query(signed_query(thumbnail), "alist", "v 1", "thumbnail")
+            .expect("thumbnail signature should verify");
+        assert_eq!(claims.resource, "thumbnail");
     }
 }

@@ -13,8 +13,8 @@ use synctv_core::service::playback::{
 
 use super::convert::{
     dynamic_playlist_source_fields, playback_client_profile_from_proto,
-    provider_playback_info_to_model, sign_local_bilibili_danmaku_urls,
-    try_bilibili_live_danmaku_for_static_media, try_playback_state_to_proto, try_playback_to_proto,
+    provider_playback_info_to_model, try_playback_state_to_proto, try_playback_to_proto,
+    PlaybackHttpSigningContext,
 };
 use super::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
@@ -299,11 +299,13 @@ impl ClientApiImpl {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn build_provider_context<'a>(
         &'a self,
         user_id: &UserId,
         credential_owner_id: Option<&UserId>,
         room_id: &synctv_core::models::RoomId,
+        media_id: Option<MediaId>,
         provider_instance_name: Option<&'a str>,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
@@ -327,6 +329,17 @@ impl ClientApiImpl {
             .with_public_room_id(public_room_id)
             .with_playback_client_profile(playback_client_profile.cloned())
             .with_request_context(request_control.map(ExecutionControl::child));
+        if let Some(media_id) = media_id {
+            let public_media_id =
+                self.public_id_codec
+                    .encode_media_id(media_id)
+                    .map_err(|error| {
+                        ApiError::Internal(format!("Failed to encode media public id: {error}"))
+                    })?;
+            ctx = ctx
+                .with_media_id(media_id)
+                .with_public_media_id(public_media_id);
+        }
         if let Some(credential_owner_id) = credential_owner_id {
             let public_credential_owner_id = self
                 .public_id_codec
@@ -374,12 +387,6 @@ impl ClientApiImpl {
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::client::Playback, ApiError> {
-        let public_user_id = self
-            .public_id_codec
-            .encode_user_id(*user_id)
-            .map_err(|error| {
-                ApiError::Internal(format!("Failed to encode user public id: {error}"))
-            })?;
         let providers_manager = self.room_service.media_service().providers_manager();
 
         let provider = providers_manager
@@ -395,11 +402,11 @@ impl ClientApiImpl {
                 user_id,
                 media.creator_id.as_ref(),
                 room_id,
+                Some(media.id),
                 media.provider_instance_name.as_deref(),
                 playback_client_profile,
                 request_control,
-            )?
-            .with_media_id(media.id),
+            )?,
             provider.as_ref(),
         );
         let provider_result = provider
@@ -421,18 +428,6 @@ impl ClientApiImpl {
             )
             .await?;
         }
-        let default_mode_expires_at = provider_result
-            .playback_infos
-            .get(&provider_result.default_mode)
-            .and_then(|info| info.expires_at);
-        let live_danmaku = try_bilibili_live_danmaku_for_static_media(
-            &media,
-            &public_user_id,
-            &self.public_id_codec,
-            &self.signing_key,
-            default_mode_expires_at,
-        )?;
-
         let duration_seconds = resolve_playback_duration(
             &self.room_service,
             PlaybackSourceIdentity::static_media(media.room_id, media.id),
@@ -447,14 +442,13 @@ impl ClientApiImpl {
             media.position,
         )
         .id(media.id)
+        .provider(provider_result.provider.clone())
+        .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
         .duration_seconds(duration_seconds);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
-            let mut info = provider_playback_info_to_model(&provider_info);
-            if let Some(ref danmaku) = live_danmaku {
-                info.danmakus.push(danmaku.clone());
-            }
+            let info = provider_playback_info_to_model(&provider_info);
             builder = builder.add_mode(mode_name, info);
         }
         for (key, value) in provider_result.metadata {
@@ -463,16 +457,30 @@ impl ClientApiImpl {
             }
         }
 
-        let mut full_result = builder
+        let full_result = builder
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-        sign_local_bilibili_danmaku_urls(
-            &mut full_result,
-            &public_user_id,
-            &self.signing_key,
-            default_mode_expires_at,
-        );
-        let mut playback = try_playback_to_proto(&full_result, &self.public_id_codec)?;
+
+        // public_room_id and public_user_id must be present for signing
+        // If they're None, it indicates a logic error in context building
+        let room_id = ctx.public_room_id.as_deref().ok_or_else(|| {
+            ApiError::Internal(
+                "Missing public_room_id in provider context for playback signing".to_string(),
+            )
+        })?;
+        let user_id = ctx.public_user_id.as_deref().ok_or_else(|| {
+            ApiError::Internal(
+                "Missing public_user_id in provider context for playback signing".to_string(),
+            )
+        })?;
+
+        let signing = PlaybackHttpSigningContext {
+            signing_key: &self.signing_key,
+            room_id,
+            user_id,
+        };
+        let mut playback =
+            try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;
         playback.expires_at = playback_expires_at(&playback);
         Ok(playback)
     }
@@ -525,6 +533,7 @@ impl ClientApiImpl {
                 user_id,
                 playlist.creator_id.as_ref(),
                 room_id,
+                None,
                 source_fields.provider_instance_name,
                 playback_client_profile,
                 request_control,
@@ -564,6 +573,8 @@ impl ClientApiImpl {
             item.name.clone(),
             0.0,
         )
+        .provider(provider_result.provider.clone())
+        .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
         .duration_seconds(duration_seconds);
 
@@ -584,7 +595,28 @@ impl ClientApiImpl {
             )
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-        let mut playback = try_playback_to_proto(&full_result, &self.public_id_codec)?;
+
+        // public_room_id and public_user_id must be present for signing
+        let room_id = ctx.public_room_id.as_deref().ok_or_else(|| {
+            ApiError::Internal(
+                "Missing public_room_id in provider context for dynamic playlist playback signing"
+                    .to_string(),
+            )
+        })?;
+        let user_id = ctx.public_user_id.as_deref().ok_or_else(|| {
+            ApiError::Internal(
+                "Missing public_user_id in provider context for dynamic playlist playback signing"
+                    .to_string(),
+            )
+        })?;
+
+        let signing = PlaybackHttpSigningContext {
+            signing_key: &self.signing_key,
+            room_id,
+            user_id,
+        };
+        let mut playback =
+            try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;
         playback.expires_at = playback_expires_at(&playback);
         Ok(playback)
     }
@@ -644,6 +676,8 @@ impl ClientApiImpl {
             playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
+            provider: String::new(),
+            provider_instance_name: String::new(),
             metadata: std::collections::HashMap::new(),
             expires_at: None,
             duration_seconds: None,
@@ -676,6 +710,7 @@ impl ClientApiImpl {
                 user_id,
                 media.creator_id.as_ref(),
                 room_id,
+                Some(media.id),
                 media.provider_instance_name.as_deref(),
                 None,
                 None,
@@ -712,6 +747,7 @@ impl ClientApiImpl {
                 user_id,
                 playlist.creator_id.as_ref(),
                 room_id,
+                None,
                 source_fields.provider_instance_name,
                 None,
                 None,

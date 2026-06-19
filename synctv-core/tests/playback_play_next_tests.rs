@@ -15,8 +15,9 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     credential_encryption::CredentialEncryption,
     models::{
-        room::AutoPlaySettings, room_settings::AutoPlay, Media, MediaId, PlayMode, Playlist,
-        PlaylistId, ProviderInstance, RoomId, RoomSettings, User, UserId, UserRole, UserStatus,
+        room::AutoPlaySettings, room_settings::AutoPlay, Media, MediaId, PlayMode,
+        PlaybackExternalMedia, PlaybackMedia, PlaybackMediaProvider, Playlist, PlaylistId,
+        ProviderInstance, RoomId, RoomSettings, User, UserId, UserRole, UserStatus,
     },
     provider::{
         DirectoryItem, DynamicFolder, DynamicListQuery, ItemType, MediaProvider, NextPlayItem,
@@ -259,17 +260,28 @@ impl TestDynamicProvider {
         infos.insert(
             "direct".to_string(),
             PlaybackInfo {
-                urls: vec![format!("https://{}.example.com{path}", self.instance_id)],
-                format: "mp4".to_string(),
-                headers: std::collections::HashMap::new(),
+                medias: vec![PlaybackMedia {
+                    name: String::new(),
+                    format: "mp4".to_string(),
+                    expire_at: None,
+                    metadata: None,
+                    provider: PlaybackMediaProvider::External(PlaybackExternalMedia {
+                        url: format!("https://{}.example.com{path}", self.instance_id),
+                        headers: std::collections::HashMap::new(),
+                    }),
+                }],
+                default_media_index: None,
                 subtitles: Vec::new(),
-                expires_at: None,
-                cors_proxy_required: false,
+                default_subtitle_index: None,
+                danmakus: Vec::new(),
+                default_danmaku_index: None,
             },
         );
         PlaybackResult {
             playback_infos: infos,
             default_mode: "direct".to_string(),
+            provider: self.provider_type.to_string(),
+            provider_instance_name: Some(self.instance_id.clone()),
             duration_seconds: None,
             metadata: std::collections::HashMap::new(),
         }

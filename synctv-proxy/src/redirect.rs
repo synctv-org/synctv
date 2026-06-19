@@ -34,16 +34,16 @@ pub(crate) const REDIRECT_PRESERVE_HEADERS: &[&str] = &[
 const CROSS_ORIGIN_DROP_HEADERS: &[&str] = &["referer"];
 
 /// Result of `send_with_redirect_validation`.
-pub(crate) struct ProxyResponse {
+pub struct ProxyResponse {
     /// The final HTTP response after following any redirects.
-    pub(crate) response: reqwest::Response,
+    pub response: reqwest::Response,
     /// `true` if at least one redirect was followed.
     ///
     /// When redirects occurred the response body has been fully consumed and
     /// re-requested at the final URL, so `Content-Encoding` must be stripped
     /// from the forwarded headers regardless of the encoding value (the body
     /// is already decoded by reqwest).
-    pub(crate) followed_redirects: bool,
+    pub followed_redirects: bool,
 }
 
 pub(crate) async fn send_head_with_redirect_validation_with_control_and_timeout(
@@ -100,7 +100,7 @@ pub(crate) async fn send_with_redirect_validation_with_control(
     .await
 }
 
-pub(crate) async fn send_with_redirect_validation_with_control_and_timeout(
+pub async fn send_with_redirect_validation_with_control_and_timeout(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,

@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use url::Url;
 
-use super::{media::BackendPlaybackRequest, ActivePlaybackRoomProvider, PlaybackService};
+use super::{media::BackendPlaybackRequest, ActivePlaybackRoomSource, PlaybackService};
 use crate::{
     models::{PlaybackDurationStatus, PlaybackSourceIdentity, RoomId},
     provider::PlaybackResult,
@@ -22,7 +22,7 @@ pub struct PlaybackDurationProbeService {
     playback_service: PlaybackService,
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
     concurrency: usize,
-    active_room_provider: Option<Arc<dyn ActivePlaybackRoomProvider>>,
+    active_room_source: Option<Arc<dyn ActivePlaybackRoomSource>>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +47,7 @@ impl PlaybackDurationProbeService {
             playback_service,
             ssrf_guard,
             concurrency: Self::DEFAULT_CONCURRENCY,
-            active_room_provider: None,
+            active_room_source: None,
         }
     }
 
@@ -58,11 +58,11 @@ impl PlaybackDurationProbeService {
     }
 
     #[must_use]
-    pub fn with_active_room_provider(
+    pub fn with_active_room_source(
         mut self,
-        active_room_provider: Arc<dyn ActivePlaybackRoomProvider>,
+        active_room_source: Arc<dyn ActivePlaybackRoomSource>,
     ) -> Self {
-        self.active_room_provider = Some(active_room_provider);
+        self.active_room_source = Some(active_room_source);
         self
     }
 
@@ -152,10 +152,10 @@ impl PlaybackDurationProbeService {
     }
 
     async fn active_room_ids(&self) -> Result<Vec<RoomId>> {
-        let Some(active_room_provider) = &self.active_room_provider else {
+        let Some(active_room_source) = &self.active_room_source else {
             return Ok(Vec::new());
         };
-        active_room_provider.active_room_ids().await
+        active_room_source.active_room_ids().await
     }
 
     async fn initialize_active_sources(&self, room_ids: &[RoomId]) -> Result<()> {
@@ -309,11 +309,15 @@ fn select_probe_target(playback: &PlaybackResult) -> Option<ProbeTarget> {
         .playback_infos
         .get(&playback.default_mode)
         .or_else(|| playback.playback_infos.values().next())?;
-    let url = info.urls.iter().find(|url| is_http_url(url))?.clone();
+    let media = info
+        .medias
+        .iter()
+        .find(|media| media.upstream_url().is_some_and(is_http_url))?;
+    let url = media.upstream_url()?.to_string();
     Some(ProbeTarget {
         url,
-        format: info.format.clone(),
-        headers: info.headers.clone(),
+        format: media.format.clone(),
+        headers: media.upstream_headers(),
     })
 }
 

@@ -223,32 +223,17 @@ impl MediaProvider for StubDynamicProvider {
 
         let direct_url = format!("https://{}.example.com{path}", self.instance_id);
         let mut infos = std::collections::HashMap::new();
-        infos.insert(
-            "direct".to_string(),
-            PlaybackInfo {
-                urls: vec![direct_url.clone()],
-                format: "mp4".to_string(),
-                headers: std::collections::HashMap::new(),
-                subtitles: Vec::new(),
-                expires_at: None,
-                cors_proxy_required: false,
-            },
-        );
+        infos.insert("direct".to_string(), provider_playback_info(&direct_url));
         infos.insert(
             "proxy_direct".to_string(),
-            PlaybackInfo {
-                urls: vec![direct_url],
-                format: "mp4".to_string(),
-                headers: std::collections::HashMap::new(),
-                subtitles: Vec::new(),
-                expires_at: None,
-                cors_proxy_required: false,
-            },
+            provider_playback_info(&direct_url),
         );
 
         Ok(PlaybackResult {
             playback_infos: infos,
             default_mode: "direct".to_string(),
+            provider: self.name().to_string(),
+            provider_instance_name: Some(self.instance_id.clone()),
             duration_seconds: None,
             metadata: std::collections::HashMap::new(),
         })
@@ -256,6 +241,28 @@ impl MediaProvider for StubDynamicProvider {
 
     fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
         Some(self)
+    }
+}
+
+fn provider_playback_info(url: &str) -> PlaybackInfo {
+    PlaybackInfo {
+        medias: vec![synctv_core::models::PlaybackMedia {
+            name: String::new(),
+            format: "mp4".to_string(),
+            expire_at: None,
+            metadata: None,
+            provider: synctv_core::models::PlaybackMediaProvider::External(
+                synctv_core::models::PlaybackExternalMedia {
+                    url: url.to_string(),
+                    headers: std::collections::HashMap::new(),
+                },
+            ),
+        }],
+        default_media_index: None,
+        subtitles: Vec::new(),
+        default_subtitle_index: None,
+        danmakus: Vec::new(),
+        default_danmaku_index: None,
     }
 }
 
@@ -539,9 +546,9 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
     let expected_target_meta = BASE64_STANDARD.encode(br#"{"relative_path":"/episode-1.mp4"}"#);
     assert_eq!(playback_target_meta, &expected_target_meta);
     let direct = playback.playback_infos.get("proxy_direct").unwrap();
-    assert_eq!(direct.urls.len(), 1);
+    assert_eq!(direct.medias.len(), 1);
     assert_eq!(
-        direct.urls[0].url,
+        direct.medias[0].url,
         "https://alist_default.example.com/episode-1.mp4"
     );
 
@@ -772,7 +779,7 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
     let playback = response.playback.unwrap();
     let direct = playback.playback_infos.get("direct").unwrap();
     assert_eq!(
-        direct.urls[0].url,
+        direct.medias[0].url,
         "https://alist_alt.example.com/bound-episode-1.mp4"
     );
 }
@@ -805,7 +812,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
     let room_service = Arc::new(room_service);
 
     let owner = user_repo
-        .create(&make_user("api_signed_provider_owner"))
+        .create(&make_user("api_playback_provider_owner"))
         .await
         .unwrap();
     let (room, _) = room_service
@@ -895,21 +902,21 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
 
     let playback = response.playback.unwrap();
     let direct = playback.playback_infos.get("proxy_direct").unwrap();
-    assert_eq!(direct.urls.len(), 1);
+    assert_eq!(direct.medias.len(), 1);
     assert!(
-        direct.urls[0]
+        direct.medias[0]
             .url
-            .starts_with("/api/providers/proxy/direct_url/"),
+            .starts_with("/api/playback-providers/direct-url/"),
         "signed provider playback should expose proxy URL, got {}",
-        direct.urls[0].url
+        direct.medias[0].url
     );
     assert!(
-        direct.urls[0].url.contains("/stream/direct/0?"),
+        direct.medias[0].url.contains("/streams/direct/0?"),
         "signed direct-url playback should use stream proxy contract, got {}",
-        direct.urls[0].url
+        direct.medias[0].url
     );
     assert!(
-        direct.urls[0].headers.is_empty(),
+        direct.medias[0].headers.is_empty(),
         "proxy-backed playback should not require client-side secret headers"
     );
 }
@@ -1347,15 +1354,23 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
         "Root Media".to_string(),
         "direct",
         synctv_core::models::PlaybackInfo {
-            urls: vec![synctv_core::models::PlaybackUrl::simple(
-                String::new(),
-                "https://example.com/root.mp4".to_string(),
-            )],
-            default_url_index: 0,
+            medias: vec![synctv_core::models::PlaybackMedia {
+                name: String::new(),
+                format: "mp4".to_string(),
+                expire_at: None,
+                metadata: None,
+                provider: synctv_core::models::PlaybackMediaProvider::External(
+                    synctv_core::models::PlaybackExternalMedia {
+                        url: "https://example.com/root.mp4".to_string(),
+                        headers: std::collections::HashMap::new(),
+                    },
+                ),
+            }],
+            default_media_index: None,
             subtitles: Vec::new(),
             default_subtitle_index: None,
             danmakus: Vec::new(),
-            format: "mp4".to_string(),
+            default_danmaku_index: None,
         },
         0.0,
     )

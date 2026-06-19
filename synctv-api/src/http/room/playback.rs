@@ -1,10 +1,11 @@
 use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
-    response::sse::{Event, Sse},
+    response::sse::{Event, KeepAlive, Sse},
     Json,
 };
 use std::convert::Infallible;
+use tokio_stream::StreamExt;
 
 use super::execute::{execute_room_actor_endpoint_with_control, execute_user_endpoint};
 use super::query::{
@@ -22,6 +23,7 @@ use synctv_proto::client::{
     StopPlaybackResponse, UpdatePlaybackStateRequest, UpdatePlaybackStateResponse,
     WatchPlaybackRequest, WatchPlaybackStateRequest,
 };
+use synctv_proto::playback_provider::bilibili::WatchBilibiliLiveDanmakuRequest;
 
 #[cfg_attr(
     feature = "openapi",
@@ -194,6 +196,48 @@ pub async fn watch_playback(
     let observe = crate::impls::messaging::watch_playback_observe(request)
         .map_err(super::super::AppError::bad_request)?;
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
+}
+
+pub async fn watch_bilibili_live_danmaku(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomMediaTargetPathRequest>,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let synctv_proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
+    let stream = super::execute::execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        room_id,
+        EndpointRateLimitCategory::WebSocket,
+        EndpointRateLimitScope::RoomPlayback,
+        move |client_api, actor| async move {
+            client_api
+                .watch_bilibili_live_danmaku_for_actor(
+                    &actor,
+                    WatchBilibiliLiveDanmakuRequest { media_id },
+                )
+                .await
+        },
+    )
+    .await?;
+    let stream = stream.map(|event| {
+        let event = match event {
+            Ok(event) => match serde_json::to_string(&event) {
+                Ok(data) => Event::default().event("danmaku").data(data),
+                Err(error) => {
+                    tracing::warn!(error = %error, "Failed to serialize Bilibili live danmaku SSE event");
+                    Event::default()
+                        .event("error")
+                        .data(r#"{"message":"Failed to serialize danmaku event"}"#)
+                }
+            },
+            Err(error) => Event::default()
+                .event("error")
+                .data(serde_json::json!({ "message": error.to_string() }).to_string()),
+        };
+        Ok(event)
+    });
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 #[cfg_attr(

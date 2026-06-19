@@ -6,9 +6,9 @@ import "proto/providers/emby.proto";
 
 // Emby-compatible Provider Service
 //
-// Client-facing API for Emby/Jellyfin media server access
+// Client-facing API for Emby media server access
 service EmbyProviderService {
-  // Login to Emby/Jellyfin server (validate API key and persist credential)
+  // Login to Emby server (validate API key and persist credential)
   rpc Login(LoginRequest) returns (LoginResponse);
 
   // List library items (uses stored credential via server_id)

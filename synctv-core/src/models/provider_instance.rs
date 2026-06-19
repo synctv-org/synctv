@@ -359,7 +359,7 @@ pub enum ProviderCredential {
         otp_secret: Option<String>,
     },
 
-    /// Emby/Jellyfin credentials (API key)
+    /// Emby credentials (API key)
     Emby {
         host: String,
         api_key: String,

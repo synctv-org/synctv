@@ -557,7 +557,7 @@ fn watch_playback_observe_builds_playback_resource_only() {
         delivery_mode: synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32,
         playback: Some(synctv_proto::client::ObservePlayback {
             playback_client_profile: Some(synctv_proto::client::PlaybackClientProfile {
-                delivery_preference: synctv_proto::client::PlaybackDeliveryPreference::DirectPlay
+                stream_preference: synctv_proto::client::PlaybackStreamPreference::DirectPlay
                     as i32,
                 max_streaming_bitrate: Some(1_500_000),
                 max_audio_channels: None,
@@ -3117,6 +3117,8 @@ async fn test_observe_playback_sends_current_playback_on_subscribe() {
                     metadata: std::collections::HashMap::new(),
                     expires_at: Some(12345),
                     duration_seconds: None,
+                    provider: "test".to_string(),
+                    provider_instance_name: String::new(),
                 },
             }))
         },
@@ -3189,6 +3191,8 @@ async fn test_observe_playback_reports_current_playback_with_event_cursor() {
                     metadata: std::collections::HashMap::new(),
                     expires_at: Some(12345),
                     duration_seconds: None,
+                    provider: "test".to_string(),
+                    provider_instance_name: String::new(),
                 },
             }))
         },
@@ -3397,6 +3401,8 @@ async fn test_observe_playback_with_matching_source_sends_current_playback() {
                 metadata: std::collections::HashMap::new(),
                 expires_at: Some(chrono::Utc::now().timestamp() + 3600),
                 duration_seconds: None,
+                provider: "test".to_string(),
+                provider_instance_name: String::new(),
             });
             *playback_service_out
                 .lock()
@@ -3470,6 +3476,8 @@ async fn test_observe_playback_sends_current_playback_immediately() {
                 metadata: std::collections::HashMap::new(),
                 expires_at: Some(12345),
                 duration_seconds: None,
+                provider: "test".to_string(),
+                provider_instance_name: String::new(),
             },
         }));
 
@@ -3529,6 +3537,8 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
+        provider: "test".to_string(),
+        provider_instance_name: String::new(),
     });
     let handler = handler
         .clone()
@@ -3566,6 +3576,8 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_801),
         duration_seconds: None,
+        provider: "test".to_string(),
+        provider_instance_name: String::new(),
     });
 
     event_service.broadcast(RealtimeEvent::PlaybackStateChanged {
@@ -3635,6 +3647,8 @@ async fn test_observed_playback_ignores_play_pause_state_updates() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
+        provider: "test".to_string(),
+        provider_instance_name: String::new(),
     });
     let handler = handler
         .clone()
@@ -3790,6 +3804,8 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
+        provider: "test".to_string(),
+        provider_instance_name: String::new(),
     });
     playback_service.replace_dependencies(vec![
         synctv_core::provider::ProviderCredentialDependency::new(
@@ -3827,6 +3843,8 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_801),
         duration_seconds: None,
+        provider: "test".to_string(),
+        provider_instance_name: String::new(),
     });
 
     event_service.broadcast(RealtimeEvent::ProviderCredentialChanged {
@@ -3919,6 +3937,8 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
+        provider: "test".to_string(),
+        provider_instance_name: String::new(),
     });
     playback_service.replace_dependencies(vec![
         synctv_core::provider::ProviderCredentialDependency::new(
@@ -3976,6 +3996,8 @@ async fn test_playback_auto_advance_subscriber_runs_for_playing_observed_state()
         metadata: std::collections::HashMap::new(),
         expires_at: None,
         duration_seconds: None,
+        provider: "test".to_string(),
+        provider_instance_name: String::new(),
     });
     let subscriber = PlaybackAutoAdvanceSubscriber::new(playback_service.clone());
 
@@ -4016,6 +4038,8 @@ async fn test_playback_auto_advance_subscriber_skips_paused_state() {
         metadata: std::collections::HashMap::new(),
         expires_at: None,
         duration_seconds: None,
+        provider: "test".to_string(),
+        provider_instance_name: String::new(),
     });
     let subscriber = PlaybackAutoAdvanceSubscriber::new(playback_service.clone());
 
@@ -4071,6 +4095,8 @@ async fn test_observed_playback_lifecycle_source_triggers_auto_advance_subscribe
         metadata: std::collections::HashMap::new(),
         expires_at: None,
         duration_seconds: None,
+        provider: "test".to_string(),
+        provider_instance_name: String::new(),
     });
     let mut observed_state = RoomPlaybackState::new(handler.room_id);
     observed_state.is_playing = true;
@@ -4184,6 +4210,8 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
+        provider: "test".to_string(),
+        provider_instance_name: String::new(),
     });
     let handler = handler
         .clone()
@@ -4237,6 +4265,8 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         )]),
         expires_at: Some(4_102_444_860),
         duration_seconds: None,
+        provider: "test".to_string(),
+        provider_instance_name: String::new(),
     });
 
     event_service.broadcast(RealtimeEvent::MediaUpdated {
@@ -4337,6 +4367,8 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
+        provider: "test".to_string(),
+        provider_instance_name: String::new(),
     });
     let handler = handler
         .clone()
@@ -4394,6 +4426,8 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         )]),
         expires_at: Some(4_102_444_860),
         duration_seconds: None,
+        provider: "test".to_string(),
+        provider_instance_name: String::new(),
     });
 
     event_service.broadcast(RealtimeEvent::PlaylistUpdated {
@@ -4459,6 +4493,8 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
             metadata: std::collections::HashMap::new(),
             expires_at: Some(4_102_444_800),
             duration_seconds: None,
+            provider: "test".to_string(),
+            provider_instance_name: String::new(),
         }),
         Ok(synctv_proto::client::Playback {
             media_id: String::new(),
@@ -4476,6 +4512,8 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
             )]),
             expires_at: Some(4_102_444_860),
             duration_seconds: None,
+            provider: "test".to_string(),
+            provider_instance_name: String::new(),
         }),
     ]);
     let handler = handler
@@ -4575,6 +4613,8 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
             metadata: std::collections::HashMap::new(),
             expires_at: Some(111),
             duration_seconds: None,
+            provider: "test".to_string(),
+            provider_instance_name: String::new(),
         }),
         Err(crate::impls::ApiError::ServiceUnavailable(
             "provider unavailable".to_string(),
@@ -4682,6 +4722,8 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
             metadata: std::collections::HashMap::new(),
             expires_at: Some(refresh_at),
             duration_seconds: None,
+            provider: "test".to_string(),
+            provider_instance_name: String::new(),
         }),
         Ok(synctv_proto::client::Playback {
             media_id: String::new(),
@@ -4699,6 +4741,8 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
             )]),
             expires_at: Some(refresh_at + 60),
             duration_seconds: None,
+            provider: "test".to_string(),
+            provider_instance_name: String::new(),
         }),
     ]);
     let handler = handler.clone().with_playback_service(playback_service);

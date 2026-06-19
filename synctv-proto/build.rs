@@ -24,6 +24,16 @@ const PROVIDER_PROTO_FILES: [&str; 10] = [
     "proto/providers/rtmp_service.proto",
 ];
 const PROVIDER_PROTO_INCLUDES: [&str; 1] = ["."];
+const PLAYBACK_PROVIDER_PROTO_FILES: [&str; 7] = [
+    "proto/playback_provider/common.proto",
+    "proto/playback_provider/direct_url.proto",
+    "proto/playback_provider/alist.proto",
+    "proto/playback_provider/emby.proto",
+    "proto/playback_provider/bilibili.proto",
+    "proto/playback_provider/rtmp.proto",
+    "proto/playback_provider/live_proxy.proto",
+];
+const PLAYBACK_PROVIDER_PROTO_INCLUDES: [&str; 1] = ["."];
 
 fn build_out_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     env::var_os("OUT_DIR").map(PathBuf::from).ok_or_else(|| {
@@ -366,8 +376,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = build_out_dir()?;
     let main_out_dir = out_dir.join("main");
     let provider_out_dir = out_dir.join("providers");
+    let playback_provider_out_dir = out_dir.join("playback_provider");
     fs::create_dir_all(&main_out_dir)?;
     fs::create_dir_all(&provider_out_dir)?;
+    fs::create_dir_all(&playback_provider_out_dir)?;
 
     println!(
         "cargo:rustc-env=SYNCTV_PROTO_MAIN_OUT_DIR={}",
@@ -376,6 +388,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "cargo:rustc-env=SYNCTV_PROTO_PROVIDERS_OUT_DIR={}",
         provider_out_dir.display()
+    );
+    println!(
+        "cargo:rustc-env=SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR={}",
+        playback_provider_out_dir.display()
     );
     emit_proto_rerun_if_changed(Path::new("proto"))?;
 
@@ -1080,6 +1096,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             provider_prost_config,
             &PROVIDER_PROTO_FILES,
             &PROVIDER_PROTO_INCLUDES,
+        )?;
+
+    let protoc = protoc_bin_vendored::protoc_bin_path()?;
+    let mut playback_provider_prost_config = tonic_prost_build::Config::new();
+    playback_provider_prost_config.protoc_executable(protoc);
+    prost_reflect_build::Builder::new()
+        .descriptor_pool("crate::PLAYBACK_PROVIDER_DESCRIPTOR_POOL")
+        .file_descriptor_set_path(playback_provider_out_dir.join("descriptor.bin"))
+        .configure(
+            &mut playback_provider_prost_config,
+            &PLAYBACK_PROVIDER_PROTO_FILES,
+            &PLAYBACK_PROVIDER_PROTO_INCLUDES,
+        )?;
+    let playback_provider_schema_aliases = PLAYBACK_PROVIDER_PROTO_FILES
+        .into_iter()
+        .map(collect_openapi_schema_aliases)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let mut playback_provider_builder = tonic_prost_build::configure();
+    playback_provider_builder = playback_provider_builder
+        .build_server(true)
+        .build_client(true)
+        .file_descriptor_set_path(playback_provider_out_dir.join("descriptor.bin"))
+        .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(
+            ".",
+            "#[cfg_attr(feature = \"openapi\", allow(clippy::large_stack_arrays))]",
+        )
+        .type_attribute(
+            ".",
+            "#[cfg_attr(feature = \"openapi\", derive(utoipa::ToSchema))]",
+        );
+    let mut playback_provider_field_attributes = HashMap::new();
+    add_owned_field_attributes(
+        &mut playback_provider_field_attributes,
+        collect_proto_64bit_integer_field_attributes(&PLAYBACK_PROVIDER_PROTO_FILES)?,
+    );
+    add_field_attributes(
+        &mut playback_provider_field_attributes,
+        &[
+            ".synctv.playback_provider.direct_url.GetDirectUrlStreamRequest.range",
+            ".synctv.playback_provider.direct_url.GetDirectUrlHlsSegmentRequest.range",
+            ".synctv.playback_provider.alist.GetAlistFileStreamRequest.range",
+            ".synctv.playback_provider.alist.GetAlistTranscodedHlsSegmentRequest.range",
+            ".synctv.playback_provider.emby.GetEmbyMediaStreamRequest.range",
+            ".synctv.playback_provider.emby.GetEmbyHlsSegmentRequest.range",
+            ".synctv.playback_provider.bilibili.GetBilibiliMediaStreamRequest.range",
+            ".synctv.playback_provider.bilibili.GetBilibiliHlsSegmentRequest.range",
+            ".synctv.playback_provider.bilibili.GetBilibiliDashSegmentRequest.range",
+            ".synctv.playback_provider.rtmp.GetRtmpHlsSegmentRequest.range",
+            ".synctv.playback_provider.live_proxy.GetLiveProxyHlsSegmentRequest.range",
+        ],
+        "#[serde(default)]",
+    );
+    validate_field_attributes(
+        &PLAYBACK_PROVIDER_PROTO_FILES,
+        &playback_provider_field_attributes,
+    )?;
+    playback_provider_builder = apply_provider_field_attributes(
+        playback_provider_builder,
+        &playback_provider_field_attributes,
+    );
+    for (path, attr) in &playback_provider_schema_aliases {
+        playback_provider_builder = playback_provider_builder.type_attribute(path, attr);
+    }
+    playback_provider_builder
+        .out_dir(&playback_provider_out_dir)
+        .compile_with_config(
+            playback_provider_prost_config,
+            &PLAYBACK_PROVIDER_PROTO_FILES,
+            &PLAYBACK_PROVIDER_PROTO_INCLUDES,
         )?;
 
     Ok(())

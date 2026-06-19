@@ -560,6 +560,7 @@ impl ProviderPlaybackLifecycleApi for ClientApiImpl {
             &session.actor_user_id,
             session.credential_owner_id.as_ref(),
             &room_id,
+            None,
             session.provider_instance_name.as_deref(),
             None,
             None,
@@ -749,14 +750,7 @@ mod tests {
         let mut playback_infos = std::collections::HashMap::new();
         playback_infos.insert(
             "direct".to_string(),
-            PlaybackInfo {
-                urls: vec!["https://example.com/video.mp4".to_string()],
-                format: "mp4".to_string(),
-                headers: std::collections::HashMap::new(),
-                subtitles: Vec::new(),
-                expires_at: None,
-                cors_proxy_required: false,
-            },
+            test_provider_playback_info("https://example.com/video.mp4"),
         );
 
         let mut metadata = std::collections::HashMap::new();
@@ -768,8 +762,32 @@ mod tests {
         PlaybackResult {
             playback_infos,
             default_mode: "direct".to_string(),
+            provider: "test".to_string(),
+            provider_instance_name: None,
             duration_seconds: None,
             metadata,
+        }
+    }
+
+    fn test_provider_playback_info(url: &str) -> PlaybackInfo {
+        PlaybackInfo {
+            medias: vec![synctv_core::models::PlaybackMedia {
+                name: String::new(),
+                format: "mp4".to_string(),
+                expire_at: None,
+                metadata: None,
+                provider: synctv_core::models::PlaybackMediaProvider::External(
+                    synctv_core::models::PlaybackExternalMedia {
+                        url: url.to_string(),
+                        headers: std::collections::HashMap::new(),
+                    },
+                ),
+            }],
+            default_media_index: None,
+            subtitles: Vec::new(),
+            default_subtitle_index: None,
+            danmakus: Vec::new(),
+            default_danmaku_index: None,
         }
     }
 

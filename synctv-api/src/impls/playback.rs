@@ -53,7 +53,7 @@ pub(crate) fn playback_expires_at(playback: &synctv_proto::client::Playback) -> 
     playback
         .playback_infos
         .values()
-        .flat_map(|info| info.urls.iter().filter_map(|url| url.expire_at))
+        .flat_map(|info| info.medias.iter().filter_map(|media| media.expire_at))
         .min()
 }
 

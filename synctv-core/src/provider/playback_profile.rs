@@ -1,14 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum PlaybackDeliveryPreference {
+pub enum PlaybackStreamPreference {
     #[default]
     Auto,
     DirectPlay,
     Transcode,
 }
 
-impl PlaybackDeliveryPreference {
+impl PlaybackStreamPreference {
     #[must_use]
     pub const fn cache_token(self) -> &'static str {
         match self {
@@ -102,7 +102,7 @@ impl PlaybackAudioCapability {
 /// derived from this structure at the edge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlaybackClientProfile {
-    pub delivery_preference: PlaybackDeliveryPreference,
+    pub stream_preference: PlaybackStreamPreference,
     pub max_streaming_bitrate: Option<i64>,
     pub max_audio_channels: Option<i32>,
     pub supported_video_codecs: Vec<PlaybackVideoCodec>,
@@ -114,7 +114,7 @@ pub struct PlaybackClientProfile {
 impl Default for PlaybackClientProfile {
     fn default() -> Self {
         Self {
-            delivery_preference: PlaybackDeliveryPreference::Auto,
+            stream_preference: PlaybackStreamPreference::Auto,
             max_streaming_bitrate: None,
             max_audio_channels: Some(2),
             supported_video_codecs: vec![
@@ -138,8 +138,8 @@ impl PlaybackClientProfile {
     #[must_use]
     pub fn cache_fingerprint(&self) -> String {
         format!(
-            "delivery={}:bitrate={}:channels={}:video_codecs={}:containers={}:audio={}:subtitle={}",
-            self.delivery_preference.cache_token(),
+            "stream={}:bitrate={}:channels={}:video_codecs={}:containers={}:audio={}:subtitle={}",
+            self.stream_preference.cache_token(),
             self.max_streaming_bitrate
                 .map_or_else(|| "none".to_string(), |value| value.to_string()),
             self.max_audio_channels
@@ -168,10 +168,7 @@ mod tests {
     fn default_playback_client_profile_keeps_sync_tv_profile_small_and_useful() {
         let profile = PlaybackClientProfile::default();
 
-        assert_eq!(
-            profile.delivery_preference,
-            PlaybackDeliveryPreference::Auto
-        );
+        assert_eq!(profile.stream_preference, PlaybackStreamPreference::Auto);
         assert_eq!(profile.max_streaming_bitrate, None);
         assert_eq!(profile.max_audio_channels, Some(2));
         assert_eq!(
@@ -204,7 +201,7 @@ mod tests {
     #[test]
     fn cache_fingerprint_includes_every_playback_negotiation_field() {
         let profile = PlaybackClientProfile {
-            delivery_preference: PlaybackDeliveryPreference::Transcode,
+            stream_preference: PlaybackStreamPreference::Transcode,
             max_streaming_bitrate: Some(8_000_000),
             max_audio_channels: Some(2),
             supported_video_codecs: vec![PlaybackVideoCodec::H264, PlaybackVideoCodec::Av1],
@@ -215,7 +212,7 @@ mod tests {
 
         assert_eq!(
             profile.cache_fingerprint(),
-            "delivery=transcode:bitrate=8000000:channels=2:video_codecs=h264,av1:containers=mp4,webm:audio=surround:subtitle=embedded_or_external"
+            "stream=transcode:bitrate=8000000:channels=2:video_codecs=h264,av1:containers=mp4,webm:audio=surround:subtitle=embedded_or_external"
         );
     }
 }

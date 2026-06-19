@@ -5,7 +5,6 @@ pub(crate) mod bilibili;
 pub(crate) mod common;
 pub(crate) mod emby;
 pub(crate) mod playback;
-pub(crate) mod proxy;
 pub(crate) mod rtmp;
 
 use std::sync::Arc;

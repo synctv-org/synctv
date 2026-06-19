@@ -512,10 +512,10 @@ impl ProviderStoreResolver for ProviderStoreRegistry {
 ///
 /// Providers cache their raw `PlaybackResult` here, then apply provider-owned
 /// signing/finalization when a response is built. The `version` is the lookup
-/// key used by provider proxy URLs (`v:{version}`); it lets `/stream`, `/m3u8`,
+/// key used by playback provider URLs (`v:{version}`); it lets `/stream`, `/m3u8`,
 /// `/mpd`, subtitle, danmaku, thumbnail, FLV, and HLS segment resolvers find
 /// the exact playback result that generated those URLs. Keep playback policy in
-/// each provider's `generate_playback` and proxy resolver; this struct is only
+/// each provider's `generate_playback` and playback transport resolver; this struct is only
 /// cache payload plus expiry.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VersionedPlayback {
@@ -702,6 +702,8 @@ mod tests {
             result: super::super::PlaybackResult {
                 playback_infos: std::collections::HashMap::new(),
                 default_mode: "direct".to_string(),
+                provider: "test".to_string(),
+                provider_instance_name: None,
                 duration_seconds: None,
                 metadata: std::collections::HashMap::new(),
             },

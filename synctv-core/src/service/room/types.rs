@@ -150,6 +150,7 @@ pub struct RoomServiceOptions {
     pub credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
     pub credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     pub provider_access_service: Option<Arc<dyn crate::provider::ProviderAccessService>>,
+    pub provider_stores: Option<Arc<dyn crate::provider::ProviderStoreResolver>>,
     pub audit_service: Option<Arc<AuditService>>,
     pub brute_force_service: Option<Arc<dyn crate::service::auth::BruteForceProtectionService>>,
     pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
@@ -200,6 +201,9 @@ impl RoomServiceOptions {
             credential_encryption: None,
             credential_repo: None,
             provider_access_service: None,
+            provider_stores: Some(Arc::new(
+                crate::provider::ProviderStoreRegistry::local_only("test:provider:"),
+            )),
             audit_service: None,
             brute_force_service: None,
             settings_registry: None,

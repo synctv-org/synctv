@@ -1,9 +1,9 @@
 //! Emby Provider HTTP Routes
 //!
 //! Provider API endpoints for Emby login, listing, etc.
-//! Playback proxy routes are handled by the unified proxy handler in
-//! `providers/mod.rs`, while thumbnail fetches use an authenticated route that
-//! resolves Emby credentials server-side.
+//! Playback transport routes live under the Emby playback-provider
+//! modules, while thumbnail fetches use an authenticated route that resolves
+//! Emby credentials server-side.
 
 use axum::{
     extract::{Path, Query, RawQuery, State},
@@ -14,7 +14,7 @@ use futures::FutureExt;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use synctv_core::models::ProviderCredential;
-use synctv_core::provider::proxy::ProxyAction;
+use synctv_core::provider::playback_transport::PlaybackTransportAction;
 use synctv_core::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
 
 use crate::http::{
@@ -83,7 +83,7 @@ fn build_thumbnail_proxy_action(
     api_key: &str,
     max_height: u32,
     max_width: u32,
-) -> Result<ProxyAction, ApiError> {
+) -> Result<PlaybackTransportAction, ApiError> {
     let thumbnail_path = if max_width > 0 {
         format!(
             "/Items/{item_id}/Images/Primary?maxHeight={max_height}&maxWidth={max_width}&quality=90"
@@ -95,7 +95,7 @@ fn build_thumbnail_proxy_action(
     let url = synctv_core::provider::emby::emby_server_url(host, &thumbnail_path)
         .map_err(|error| ApiError::Internal(error.to_string()))?;
 
-    Ok(ProxyAction::FetchAndForward {
+    Ok(PlaybackTransportAction::FetchAndForward {
         url,
         headers: std::collections::HashMap::from([(
             "X-Emby-Token".to_string(),
@@ -110,7 +110,7 @@ fn build_thumbnail_proxy_action_from_credential(
     credential: &ProviderCredential,
     max_height: u32,
     max_width: u32,
-) -> Result<ProxyAction, ApiError> {
+) -> Result<PlaybackTransportAction, ApiError> {
     if item_id.trim().is_empty() {
         return Err(ApiError::InvalidInput(
             "item_id must not be empty".to_string(),
@@ -151,6 +151,7 @@ fn build_signed_thumbnail_query(
     let claims = ProxyUrlClaims {
         provider: THUMBNAIL_SIGNATURE_PROVIDER.to_string(),
         version: thumbnail_signature_version(scope),
+        resource: "thumbnail".to_string(),
         room_id: room_id.to_string(),
         user_id: user_id.to_string(),
         expires_at,
@@ -174,6 +175,7 @@ fn verify_signed_thumbnail_access(
             raw_query,
             THUMBNAIL_SIGNATURE_PROVIDER,
             &thumbnail_signature_version(scope),
+            "thumbnail",
         )
         .map_err(|_| AppError::unauthorized("Invalid thumbnail signature"))?;
 
@@ -305,7 +307,7 @@ pub(crate) fn emby_read_routes() -> Router<AppState> {
 
 // Existing provider API handlers
 
-/// Login to Emby/Jellyfin (validate API key and persist credential)
+/// Login to Emby (validate API key and persist credential)
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -642,9 +644,9 @@ pub(crate) async fn thumbnail(
                         .public_id_codec
                         .decode_room_id(&room_id)
                         .map_err(crate::impls::ApiError::InvalidInput)?;
-                    crate::impls::providers::proxy::validate_fresh_provider_proxy_access(
+                    crate::impls::playback_provider::validate_fresh_playback_provider_access(
                         &state.user_service,
-                        &state.shared_api_runtime.proxy_services,
+                        &state.shared_api_runtime.playback_transport_services,
                         &room_id,
                         &authenticated.user_id,
                     )
@@ -683,13 +685,13 @@ pub(crate) async fn thumbnail(
                     &item_id, &parsed, max_height, max_width,
                 )?;
 
-                Ok::<ProxyAction, ApiError>(action)
+                Ok::<PlaybackTransportAction, ApiError>(action)
             },
         )
         .await
         .map_err(map_api_error)?;
 
-    let response = super::execute_proxy_action_with_state(&state, action, None).await?;
+    let response = super::execute_playback_transport_with_state(&state, action, None).await?;
 
     Ok(response)
 }
@@ -839,6 +841,7 @@ mod tests {
                     max_height: 300,
                     max_width: 0,
                 }),
+                "thumbnail",
             )
             .map_err(|error| test_error(error.to_string()))?;
 
@@ -910,7 +913,7 @@ mod tests {
         ))?;
 
         match action {
-            ProxyAction::FetchAndForward { url, headers, .. } => {
+            PlaybackTransportAction::FetchAndForward { url, headers, .. } => {
                 assert_eq!(
                     url,
                     "https://emby.example.com/base/Items/item-123/Images/Primary?maxHeight=300&maxWidth=640&quality=90"

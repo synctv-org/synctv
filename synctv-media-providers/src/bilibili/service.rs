@@ -4,6 +4,7 @@
 //! Both gRPC server and local usage call this service.
 
 use super::{client::BilibiliClient, BilibiliError};
+use super::{DanmakuMessage, HeartbeatConfig, ReconnectConfig, ReconnectResult};
 use crate::grpc::bilibili::{
     Empty, GetDashPgcurlReq, GetDashPgcurlResp, GetDashVideoUrlReq, GetDashVideoUrlResp,
     GetLiveDanmuInfoReq, GetLiveDanmuInfoResp, GetLiveStreamsReq, GetLiveStreamsResp, GetPgcurlReq,
@@ -11,11 +12,25 @@ use crate::grpc::bilibili::{
     LoginWithSmsReq, LoginWithSmsResp, MatchReq, MatchResp, NewCaptchaResp, NewQrCodeResp,
     NewSmsReq, NewSmsResp, ParseLivePageReq, ParsePgcPageReq, ParseVideoPageReq, UserInfoReq,
     UserInfoResp, VideoInfo, VideoPageInfo, VideoSegment as ProtoVideoSegment, VideoUrl,
+    WatchBilibiliLiveDanmakuReq,
 };
 use async_trait::async_trait;
+use futures_util::{stream, Stream, StreamExt};
 use reqwest::Client;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
+
+pub const BILIBILI_LIVE_DANMAKU_FORMAT: &str = "synctv-bilibili-live";
+
+pub type BilibiliLiveDanmakuStream = Pin<
+    Box<
+        dyn Stream<Item = Result<crate::grpc::bilibili::BilibiliLiveDanmakuEvent, BilibiliError>>
+            + Send
+            + 'static,
+    >,
+>;
 
 /// Unified Bilibili service interface
 ///
@@ -85,6 +100,11 @@ pub trait BilibiliInterface: Send + Sync {
         &self,
         request: GetLiveDanmuInfoReq,
     ) -> Result<GetLiveDanmuInfoResp, BilibiliError>;
+
+    async fn watch_bilibili_live_danmaku(
+        &self,
+        request: WatchBilibiliLiveDanmakuReq,
+    ) -> Result<BilibiliLiveDanmakuStream, BilibiliError>;
 }
 
 /// Bilibili service implementation
@@ -153,6 +173,61 @@ fn client_from_cookies_and_state(
             wbi_state,
             ssrf_guard,
         )
+    }
+}
+
+fn live_danmaku_event_from_message(
+    message: DanmakuMessage,
+) -> crate::grpc::bilibili::BilibiliLiveDanmakuEvent {
+    match message {
+        DanmakuMessage::Chat {
+            user,
+            message,
+            timestamp,
+        } => crate::grpc::bilibili::BilibiliLiveDanmakuEvent {
+            format: BILIBILI_LIVE_DANMAKU_FORMAT.to_string(),
+            event_type: "chat".to_string(),
+            r#type: crate::grpc::bilibili::BilibiliLiveDanmakuEventType::Chat as i32,
+            user,
+            message,
+            timestamp,
+            ..crate::grpc::bilibili::BilibiliLiveDanmakuEvent::default()
+        },
+        DanmakuMessage::UserEnter { user } => crate::grpc::bilibili::BilibiliLiveDanmakuEvent {
+            format: BILIBILI_LIVE_DANMAKU_FORMAT.to_string(),
+            event_type: "user_enter".to_string(),
+            r#type: crate::grpc::bilibili::BilibiliLiveDanmakuEventType::UserEnter as i32,
+            user,
+            ..crate::grpc::bilibili::BilibiliLiveDanmakuEvent::default()
+        },
+        DanmakuMessage::Gift {
+            user,
+            gift_name,
+            count,
+        } => crate::grpc::bilibili::BilibiliLiveDanmakuEvent {
+            format: BILIBILI_LIVE_DANMAKU_FORMAT.to_string(),
+            event_type: "gift".to_string(),
+            r#type: crate::grpc::bilibili::BilibiliLiveDanmakuEventType::Gift as i32,
+            user,
+            gift_name,
+            gift_count: count,
+            ..crate::grpc::bilibili::BilibiliLiveDanmakuEvent::default()
+        },
+        DanmakuMessage::Heartbeat { online_count } => {
+            crate::grpc::bilibili::BilibiliLiveDanmakuEvent {
+                format: BILIBILI_LIVE_DANMAKU_FORMAT.to_string(),
+                event_type: "heartbeat".to_string(),
+                r#type: crate::grpc::bilibili::BilibiliLiveDanmakuEventType::Heartbeat as i32,
+                online_count,
+                ..crate::grpc::bilibili::BilibiliLiveDanmakuEvent::default()
+            }
+        }
+        DanmakuMessage::Unknown => crate::grpc::bilibili::BilibiliLiveDanmakuEvent {
+            format: BILIBILI_LIVE_DANMAKU_FORMAT.to_string(),
+            event_type: "unknown".to_string(),
+            r#type: crate::grpc::bilibili::BilibiliLiveDanmakuEventType::Unknown as i32,
+            ..crate::grpc::bilibili::BilibiliLiveDanmakuEvent::default()
+        },
     }
 }
 
@@ -512,6 +587,64 @@ impl BilibiliInterface for BilibiliService {
                 })
                 .collect(),
         })
+    }
+
+    async fn watch_bilibili_live_danmaku(
+        &self,
+        request: WatchBilibiliLiveDanmakuReq,
+    ) -> Result<BilibiliLiveDanmakuStream, BilibiliError> {
+        let client = Arc::new(client_from_cookies_and_state(
+            self.client.clone(),
+            &request.cookies,
+            self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
+        ));
+        let mut connection = client
+            .connect_live_danmaku_with_reconnect(
+                request.room_id,
+                ReconnectConfig {
+                    max_retries: 8,
+                    initial_delay: Duration::from_millis(500),
+                    max_delay: Duration::from_secs(10),
+                    backoff_multiplier: 2.0,
+                },
+            )
+            .await?;
+        let heartbeat_config = HeartbeatConfig {
+            interval: Duration::from_secs(20),
+        };
+        connection.set_heartbeat_config(heartbeat_config);
+        if let Some(conn) = connection.connection() {
+            conn.start_heartbeat_loop_arc(Arc::clone(conn), heartbeat_config)
+                .await;
+        }
+
+        let stream = stream::unfold(Some(connection), |state| async move {
+            let mut connection = state?;
+            loop {
+                match connection.recv().await {
+                    Ok(ReconnectResult::Messages(messages)) => {
+                        if messages.is_empty() {
+                            continue;
+                        }
+                        let events = messages
+                            .into_iter()
+                            .map(live_danmaku_event_from_message)
+                            .map(Ok)
+                            .collect::<Vec<_>>();
+                        return Some((stream::iter(events), Some(connection)));
+                    }
+                    Ok(ReconnectResult::Reconnected { .. }) => {}
+                    Ok(ReconnectResult::Failed { error, .. }) | Err(error) => {
+                        connection.stop().await;
+                        return Some((stream::iter(vec![Err(error)]), None));
+                    }
+                }
+            }
+        })
+        .flatten();
+
+        Ok(Box::pin(stream))
     }
 }
 

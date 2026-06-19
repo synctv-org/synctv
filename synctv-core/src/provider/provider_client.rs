@@ -21,6 +21,7 @@
 
 use super::{ExecutionControl, ProviderError};
 use async_trait::async_trait;
+use futures::StreamExt;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
@@ -369,6 +370,7 @@ fn map_grpc_status(context: &str, status: &Status) -> synctv_media_providers::Pr
 /// use synctv_core::provider::provider_client::ProviderClientManager;
 /// use std::sync::Arc;
 ///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let manager = ProviderClientManager::new()?;
 ///
 /// // Get local Alist client
@@ -379,6 +381,8 @@ fn map_grpc_status(context: &str, status: &Status) -> synctv_media_providers::Pr
 ///
 /// // Get local Emby client
 /// let emby_client = manager.local_emby_client();
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Clone)]
 pub struct ProviderClientManager {
@@ -964,6 +968,49 @@ impl BilibiliInterface for GrpcBilibiliClient {
         synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoReq,
         synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoResp
     );
+
+    fn watch_bilibili_live_danmaku<'life0, 'async_trait>(
+        &'life0 self,
+        request: synctv_media_providers::grpc::bilibili::WatchBilibiliLiveDanmakuReq,
+    ) -> ::core::pin::Pin<
+        Box<
+            dyn ::core::future::Future<
+                    Output = Result<
+                        synctv_media_providers::bilibili::BilibiliLiveDanmakuStream,
+                        BilibiliError,
+                    >,
+                > + ::core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            use synctv_media_providers::grpc::bilibili::bilibili_client::BilibiliClient;
+            let mut client = apply_provider_client_compression(
+                BilibiliClient::new(self.connection.channel()),
+                self.connection.grpc_compression_enabled(),
+            );
+            let request = build_grpc_request(self.connection.auth_secret(), request)?;
+            let response = execute_grpc_request(
+                &self.connection,
+                "watch_bilibili_live_danmaku",
+                async move {
+                    client
+                        .watch_bilibili_live_danmaku(request)
+                        .await
+                        .map_err(|e| map_grpc_status("watch_bilibili_live_danmaku", &e))
+                },
+            )
+            .await?;
+            let stream = response.into_inner().map(|item| {
+                item.map_err(|status| map_grpc_status("watch_bilibili_live_danmaku", &status))
+            });
+            Ok(Box::pin(stream) as synctv_media_providers::bilibili::BilibiliLiveDanmakuStream)
+        })
+    }
 }
 
 // Emby Client

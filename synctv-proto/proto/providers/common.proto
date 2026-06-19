@@ -213,19 +213,6 @@ message ListProviderBackendsRequest {
   }];
 }
 
-message ProviderProxyPathRequest {
-  string provider_name = 1 [(buf.validate.field).string = {
-    min_len: 1
-    max_len: 64
-    pattern: "^[a-z][a-z0-9_]*$"
-  }];
-  string sub_path = 2 [(buf.validate.field).cel = {
-    id: "provider_proxy_path.sub_path"
-    message: "sub_path must be 1-2048 visible characters without control bytes"
-    expression: "size(this) >= 1 && size(this) <= 2048 && !this.matches('.*[\\\\x00-\\\\x1F\\\\x7F].*')"
-  }];
-}
-
 message ProviderInstancesResponse {
   repeated string instances = 1;
 }

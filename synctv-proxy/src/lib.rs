@@ -33,11 +33,11 @@ pub use error::{
     proxy_error_kind, proxy_error_kind_from_std_error, proxy_range_not_satisfiable_total_size,
     ProxyErrorKind,
 };
-pub use manifest::{percent_encode, rewrite_m3u8, MAX_M3U8_URLS};
+pub use manifest::{percent_encode, rewrite_m3u8, rewrite_m3u8_with_url_mapper, MAX_M3U8_URLS};
 pub(crate) use redirect::{
-    send_head_with_redirect_validation_with_control_and_timeout,
-    send_with_redirect_validation_with_control_and_timeout, validate_target_url_against_ssrf,
+    send_head_with_redirect_validation_with_control_and_timeout, validate_target_url_against_ssrf,
 };
+pub use redirect::{send_with_redirect_validation_with_control_and_timeout, ProxyResponse};
 
 /// Maximum response body size for proxied media (256 MB).
 const MAX_PROXY_BODY_SIZE: usize = 256 * 1024 * 1024;

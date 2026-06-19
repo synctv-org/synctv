@@ -1986,11 +1986,11 @@ message UpdatePlaybackStateResponse {
   PlaybackState playback_state = 1;
 }
 
-enum PlaybackDeliveryPreference {
-  PLAYBACK_DELIVERY_PREFERENCE_UNSPECIFIED = 0;
-  PLAYBACK_DELIVERY_PREFERENCE_AUTO = 1;
-  PLAYBACK_DELIVERY_PREFERENCE_DIRECT_PLAY = 2;
-  PLAYBACK_DELIVERY_PREFERENCE_TRANSCODE = 3;
+enum PlaybackStreamPreference {
+  PLAYBACK_STREAM_PREFERENCE_UNSPECIFIED = 0;
+  PLAYBACK_STREAM_PREFERENCE_AUTO = 1;
+  PLAYBACK_STREAM_PREFERENCE_DIRECT_PLAY = 2;
+  PLAYBACK_STREAM_PREFERENCE_TRANSCODE = 3;
 }
 
 enum PlaybackSubtitlePreference {
@@ -2023,7 +2023,7 @@ enum PlaybackAudioCapability {
 }
 
 message PlaybackClientProfile {
-  PlaybackDeliveryPreference delivery_preference = 1 [(buf.validate.field).enum.defined_only = true];
+  PlaybackStreamPreference stream_preference = 1 [(buf.validate.field).enum.defined_only = true];
   optional int64 max_streaming_bitrate = 2 [(buf.validate.field).int64.gt = 0];
   optional int32 max_audio_channels = 3 [(buf.validate.field).int32.gt = 0];
   repeated PlaybackVideoCodec supported_video_codecs = 4 [(buf.validate.field).repeated.items.enum.defined_only = true];
@@ -2052,6 +2052,8 @@ message Playback {
   string room_id = 3; // Room ID
   string name = 4; // Media name
   double playlist_position = 5; // Order position in playlist
+  string provider = 12; // Provider that generated this playback
+  string provider_instance_name = 13; // Provider instance selected for this playback
 
   // Multiple playback modes (e.g., "direct", "proxied", "cdn1", "cdn2")
   // Provider can define arbitrary mode names
@@ -2062,7 +2064,7 @@ message Playback {
 
   // Media-level metadata (duration, thumbnail, title, author, etc.)
   map<string, string> metadata = 8;
-  // Earliest URL expiration across playback URLs, if any.
+  // Earliest media expiration across playback media resources, if any.
   optional int64 expires_at = 10;
   // Backend-owned source duration in seconds, when available.
   optional double duration_seconds = 11;
@@ -2070,27 +2072,27 @@ message Playback {
 
 // Playback information for a single mode
 message PlaybackInfo {
-  // List of playback URLs (different qualities, codecs)
-  repeated PlaybackUrl urls = 1;
+  // List of playback media resources (different qualities, codecs, or provider-backed resources)
+  repeated PlaybackMedia medias = 1;
 
-  // Default URL index
-  int32 default_url_index = 2;
+  // Default media index
+  optional int32 default_media_index = 2;
 
   // Subtitle list
-  repeated Subtitle subtitles = 3;
+  repeated PlaybackSubtitle subtitles = 3;
 
   // Default subtitle index (optional)
   optional int32 default_subtitle_index = 4;
 
   // Danmaku list
-  repeated Danmaku danmakus = 5;
+  repeated PlaybackDanmaku danmakus = 5;
 
-  // Format type (e.g., "m3u8", "mp4", "flv")
-  string format = 6;
+  // Default danmaku index (optional)
+  optional int32 default_danmaku_index = 6;
 }
 
-// Playback URL (represents a quality/codec option)
-message PlaybackUrl {
+// Playback media resource (represents a quality/codec option)
+message PlaybackMedia {
   // Display name (e.g., "1080P", "HEVC 4K", "720P")
   string name = 1;
 
@@ -2100,15 +2102,18 @@ message PlaybackUrl {
   // Request headers (if needed)
   map<string, string> headers = 3;
 
+  // Media format (e.g., "mp4", "dash", "hls", "flv")
+  string format = 6;
+
   // Expiration time (Unix timestamp, optional)
   optional int64 expire_at = 4;
 
-  // URL-level metadata (resolution, codec, bitrate, fps, etc.)
-  optional PlaybackUrlMetadata metadata = 5;
+  // Media-level metadata (resolution, codec, bitrate, fps, etc.)
+  optional PlaybackMediaMetadata metadata = 5;
 }
 
-// URL-level metadata
-message PlaybackUrlMetadata {
+// Media-level metadata
+message PlaybackMediaMetadata {
   // Resolution (e.g., "1920x1080", "1280x720")
   optional string resolution = 1;
 
@@ -2126,37 +2131,25 @@ message PlaybackUrlMetadata {
 }
 
 // Subtitle information
-message Subtitle {
+message PlaybackSubtitle {
   // Display name (e.g., "Chinese (Simplified)", "English")
   string name = 1;
 
   // Language code (e.g., "zh-CN", "en-US")
   string language = 2;
 
-  // Subtitle URL list (multiple sources/formats)
-  repeated SubtitleUrl urls = 3;
-
-  // Default URL index
-  int32 default_url_index = 4;
-}
-
-// Subtitle URL
-message SubtitleUrl {
-  // Display name (e.g., "Original", "AI Translation")
-  string name = 1;
-
   // Subtitle file URL
-  string url = 2;
+  string url = 3;
 
   // Request headers (if needed)
-  map<string, string> headers = 3;
+  map<string, string> headers = 4;
 
   // Format (e.g., "json", "srt", "vtt")
-  string format = 4;
+  string format = 5;
 }
 
-// Danmaku (bullet comments) information
-message Danmaku {
+// Danmaku (bullet comments) information.
+message PlaybackDanmaku {
   // Display name (e.g., "Bilibili Danmaku", "Local Danmaku")
   string name = 1;
 

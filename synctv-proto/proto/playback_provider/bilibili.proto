@@ -1,0 +1,150 @@
+syntax = "proto3";
+
+package synctv.playback_provider.bilibili;
+
+import "proto/buf/validate/validate.proto";
+import "proto/playback_provider/common.proto";
+
+enum BilibiliDashManifestMode {
+  BILIBILI_DASH_MANIFEST_MODE_UNSPECIFIED = 0;
+  BILIBILI_DASH_MANIFEST_MODE_DIRECT = 1;
+  BILIBILI_DASH_MANIFEST_MODE_PROXY = 2;
+}
+
+enum BilibiliLiveDanmakuEventType {
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_UNSPECIFIED = 0;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_CHAT = 1;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_USER_ENTER = 2;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_GIFT = 3;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_HEARTBEAT = 4;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_UNKNOWN = 5;
+}
+
+message GetBilibiliMediaStreamRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 url_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+  optional string range = 8;
+  bool head = 9;
+}
+
+message BilibiliMediaStreamResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetBilibiliHlsManifestRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 url_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+}
+
+message BilibiliHlsManifestResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetBilibiliHlsSegmentRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string target_url = 2 [(buf.validate.field).string.min_len = 1];
+  string sig = 3 [(buf.validate.field).string.min_len = 1];
+  string uid = 4 [(buf.validate.field).string.min_len = 1];
+  string rid = 5 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 6;
+  optional string range = 7;
+  bool head = 8;
+}
+
+message BilibiliHlsSegmentResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetBilibiliDashManifestRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  BilibiliDashManifestMode mode = 3 [(buf.validate.field).enum.defined_only = true];
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+}
+
+message BilibiliDashManifestResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetBilibiliDashSegmentRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 url_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+  optional string range = 8;
+  bool head = 9;
+}
+
+message BilibiliDashSegmentResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetBilibiliSubtitleRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  string mode_name = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 subtitle_index = 3;
+  string sig = 4 [(buf.validate.field).string.min_len = 1];
+  string uid = 5 [(buf.validate.field).string.min_len = 1];
+  string rid = 6 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 7;
+}
+
+message BilibiliSubtitleResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message GetBilibiliDanmakuFileRequest {
+  string version = 1 [(buf.validate.field).string.min_len = 1];
+  uint32 danmaku_index = 2;
+  string sig = 3 [(buf.validate.field).string.min_len = 1];
+  string uid = 4 [(buf.validate.field).string.min_len = 1];
+  string rid = 5 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 6;
+}
+
+message BilibiliDanmakuFileResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
+message WatchBilibiliLiveDanmakuRequest {
+  string media_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message BilibiliLiveDanmakuEvent {
+  string format = 1;
+  string event_type = 2;
+  string user = 3;
+  string message = 4;
+  uint64 timestamp = 5;
+  string gift_name = 6;
+  uint32 gift_count = 7;
+  uint32 online_count = 8;
+  BilibiliLiveDanmakuEventType type = 9;
+}
+
+service BilibiliPlaybackProviderService {
+  rpc GetMediaStream(GetBilibiliMediaStreamRequest) returns (stream BilibiliMediaStreamResponse);
+  rpc GetHlsManifest(GetBilibiliHlsManifestRequest) returns (stream BilibiliHlsManifestResponse);
+  rpc GetHlsSegment(GetBilibiliHlsSegmentRequest) returns (stream BilibiliHlsSegmentResponse);
+  rpc GetDashManifest(GetBilibiliDashManifestRequest) returns (stream BilibiliDashManifestResponse);
+  rpc GetDashSegment(GetBilibiliDashSegmentRequest) returns (stream BilibiliDashSegmentResponse);
+  rpc GetSubtitle(GetBilibiliSubtitleRequest) returns (stream BilibiliSubtitleResponse);
+  rpc GetDanmakuFile(GetBilibiliDanmakuFileRequest) returns (stream BilibiliDanmakuFileResponse);
+  rpc WatchLiveDanmaku(WatchBilibiliLiveDanmakuRequest) returns (stream BilibiliLiveDanmakuEvent);
+}

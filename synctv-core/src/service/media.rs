@@ -14,8 +14,8 @@ use crate::{
         UserId,
     },
     provider::{
-        provider_requires_credential_repo, PlaybackResult, ProviderAccessService, ProviderContext,
-        SourceConfig,
+        provider_requires_credential_repo, store::ProviderStoreResolver, PlaybackResult,
+        ProviderAccessService, ProviderContext, SourceConfig,
     },
     repository::{realtime_outbox::NewRealtimeOutboxEvent, UserProviderCredentialRepository},
     repository::{MediaRepository, PlaylistRepository, UserRepository},
@@ -51,6 +51,7 @@ pub struct MediaServiceRuntime {
     pub credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
     pub credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     pub provider_access_service: Option<Arc<dyn ProviderAccessService>>,
+    pub provider_stores: Option<Arc<dyn ProviderStoreResolver>>,
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     pub file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
@@ -128,6 +129,8 @@ pub struct MediaService {
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     /// Typed provider credential/session access cache.
     provider_access_service: Option<Arc<dyn ProviderAccessService>>,
+    /// Provider-scoped stores for playback cache and locks.
+    provider_stores: Option<Arc<dyn ProviderStoreResolver>>,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
@@ -177,6 +180,7 @@ impl MediaService {
 
     pub(super) fn build_provider_context<'a>(
         &'a self,
+        provider_name: &str,
         user_id: Option<&'a UserId>,
         room_id: &'a RoomId,
         credential_owner_id: Option<&'a UserId>,
@@ -206,6 +210,9 @@ impl MediaService {
         }
         if let Some(service) = self.provider_access_service.clone() {
             ctx = ctx.with_provider_access_service(service);
+        }
+        if let Some(provider_stores) = &self.provider_stores {
+            ctx = ctx.with_store(provider_stores.load(provider_name));
         }
         ctx
     }
@@ -267,6 +274,7 @@ impl MediaService {
         self.ensure_provider_credential_repo(provider.name())?;
 
         let dependency_ctx = self.build_provider_context(
+            provider.name(),
             Some(user_id),
             room_id,
             Some(user_id),
@@ -295,6 +303,7 @@ impl MediaService {
         };
 
         let ctx = self.build_provider_context(
+            provider.name(),
             Some(user_id),
             room_id,
             Some(user_id),
@@ -360,6 +369,7 @@ impl MediaService {
             credential_encryption: runtime.credential_encryption,
             credential_repo: runtime.credential_repo,
             provider_access_service: runtime.provider_access_service,
+            provider_stores: runtime.provider_stores,
             realtime_outbox: runtime.realtime_outbox,
             file_storage_service: runtime.file_storage_service,
         }
@@ -958,6 +968,7 @@ impl MediaService {
                     .await?;
                 let ctx = self
                     .build_provider_context(
+                        provider.name(),
                         None,
                         &request.room_id,
                         media.creator_id.as_ref(),
@@ -989,6 +1000,7 @@ impl MediaService {
                     ))
                 })?;
                 let ctx = self.build_provider_context(
+                    provider_name.as_str(),
                     None,
                     &request.room_id,
                     playlist.creator_id.as_ref(),

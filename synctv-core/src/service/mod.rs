@@ -27,6 +27,7 @@ pub mod permission;
 pub mod playback;
 pub mod playback_auto_advance;
 pub mod playback_duration_probe;
+pub mod playback_provider;
 pub mod playlist;
 pub mod presence;
 mod provider_binding;
@@ -112,8 +113,13 @@ pub use optimistic_retry::retry_with_optimistic_lock;
 pub use passkey::{local_passkey_session_store, PasskeyService, PasskeySessionStore};
 pub use permission::{EffectivePermissionCalculator, PermissionService, RuntimePermissionDefaults};
 pub use playback::{PlaybackService, PlaybackStatePatch, PlaybackStateUpdateRequest, SeekResponse};
-pub use playback_auto_advance::{ActivePlaybackRoomProvider, PlaybackAutoAdvanceService};
+pub use playback_auto_advance::{ActivePlaybackRoomSource, PlaybackAutoAdvanceService};
 pub use playback_duration_probe::PlaybackDurationProbeService;
+pub use playback_provider::{
+    AlistPlaybackProviderService, BilibiliLiveDanmakuRequest, BilibiliPlaybackProviderService,
+    DirectUrlPlaybackProviderService, EmbyPlaybackProviderService,
+    LiveProxyPlaybackProviderService, PlaybackProviderServiceDeps, RtmpPlaybackProviderService,
+};
 pub use playlist::{PlaylistService, RealtimeOutboxPlaylistEventFactory};
 pub use presence::{
     OnlineNodeStats, OnlinePresenceService, OnlineRoomStats, OnlineUserRoomStats, OnlineUserStats,

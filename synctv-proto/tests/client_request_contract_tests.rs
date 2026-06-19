@@ -15,9 +15,7 @@ use synctv_proto::client::{
     UpdatePlaybackStateRequest, UpdatePlaylistRequest, UploadUserAvatarObjectRequest,
     WebSocketConnectRequest,
 };
-use synctv_proto::providers::common::{
-    ListProviderBackendsRequest, ProviderInstanceQuery, ProviderProxyPathRequest,
-};
+use synctv_proto::providers::common::{ListProviderBackendsRequest, ProviderInstanceQuery};
 use synctv_proto::providers::rtmp::{CreatePublishKeyRequest, GetStreamInfoRequest};
 
 #[test]
@@ -447,30 +445,6 @@ fn test_list_provider_backends_request_rejects_invalid_provider_type_format() {
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
     assert!(message.contains("provider_type"), "{message}");
-}
-
-#[test]
-fn test_provider_proxy_path_request_rejects_invalid_provider_name_format() {
-    let request = ProviderProxyPathRequest {
-        provider_name: "bad-provider".to_string(),
-        sub_path: "v1/media".to_string(),
-    };
-
-    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
-    let message = error.to_string();
-    assert!(message.contains("provider_name"), "{message}");
-}
-
-#[test]
-fn test_provider_proxy_path_request_rejects_empty_sub_path() {
-    let request = ProviderProxyPathRequest {
-        provider_name: "direct_url".to_string(),
-        sub_path: String::new(),
-    };
-
-    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
-    let message = error.to_string();
-    assert!(message.contains("sub_path"), "{message}");
 }
 
 #[test]

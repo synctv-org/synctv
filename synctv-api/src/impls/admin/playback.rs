@@ -8,12 +8,11 @@ use synctv_core::{
 use super::{
     playback_client_profile_from_proto, playback_expires_at,
     playback_generation_error_allows_state_only, provider_playback_info_to_model,
-    public_id_encode_error, sign_local_bilibili_danmaku_urls,
-    try_bilibili_live_danmaku_for_static_media, try_playback_state_to_proto, try_playback_to_proto,
-    AdminApiImpl, ApiError, PlaybackFanoutActor, ProviderPlaybackLifecycleApi, RequestContext,
+    public_id_encode_error, try_playback_state_to_proto, try_playback_to_proto, AdminApiImpl,
+    ApiError, PlaybackFanoutActor, ProviderPlaybackLifecycleApi, RequestContext,
     LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
-use crate::impls::client::convert::dynamic_playlist_source_fields;
+use crate::impls::client::convert::{dynamic_playlist_source_fields, PlaybackHttpSigningContext};
 
 struct DynamicPlaylistPlaybackRequest<'a> {
     room_id_model: &'a RoomId,
@@ -113,6 +112,11 @@ impl AdminApiImpl {
             .with_room_id(*room_id)
             .with_public_room_id(public_room_id)
             .with_media_id(media.id)
+            .with_public_media_id(
+                self.public_id_codec
+                    .encode_media_id(media.id)
+                    .map_err(|error| public_id_encode_error("media", &error))?,
+            )
             .with_playback_client_profile(playback_client_profile.cloned())
             .with_signing_key(&self.signing_key);
         if let Some(creator_id) = media.creator_id.as_ref() {
@@ -139,18 +143,6 @@ impl AdminApiImpl {
             .generate_playback(&ctx, &media.source_config)
             .await
             .map_err(ApiError::from)?;
-        let default_mode_expires_at = provider_result
-            .playback_infos
-            .get(&provider_result.default_mode)
-            .and_then(|info| info.expires_at);
-        let live_danmaku = try_bilibili_live_danmaku_for_static_media(
-            &media,
-            &public_user_id,
-            &self.public_id_codec,
-            &self.signing_key,
-            default_mode_expires_at,
-        )?;
-
         let duration_seconds = resolve_playback_duration(
             &self.room_service,
             PlaybackSourceIdentity::static_media(media.room_id, media.id),
@@ -165,14 +157,13 @@ impl AdminApiImpl {
             media.position,
         )
         .id(media.id)
+        .provider(provider_result.provider.clone())
+        .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
         .duration_seconds(duration_seconds);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
-            let mut info = provider_playback_info_to_model(&provider_info);
-            if let Some(ref danmaku) = live_danmaku {
-                info.danmakus.push(danmaku.clone());
-            }
+            let info = provider_playback_info_to_model(&provider_info);
             builder = builder.add_mode(mode_name, info);
         }
         for (key, value) in provider_result.metadata {
@@ -181,16 +172,26 @@ impl AdminApiImpl {
             }
         }
 
-        let mut full_result = builder
+        let full_result = builder
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-        sign_local_bilibili_danmaku_urls(
-            &mut full_result,
-            &public_user_id,
-            &self.signing_key,
-            default_mode_expires_at,
-        );
-        let mut playback = try_playback_to_proto(&full_result, &self.public_id_codec)?;
+
+        // public_room_id and public_user_id must be present for signing
+        // If they're None, it indicates a logic error in context building
+        let room_id = ctx.public_room_id.as_deref().ok_or(ApiError::Internal(
+            "Missing public_room_id in provider context for playback signing".into(),
+        ))?;
+        let user_id = ctx.public_user_id.as_deref().ok_or(ApiError::Internal(
+            "Missing public_user_id in provider context for playback signing".into(),
+        ))?;
+
+        let signing = PlaybackHttpSigningContext {
+            signing_key: &self.signing_key,
+            room_id,
+            user_id,
+        };
+        let mut playback =
+            try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;
         playback.expires_at = playback_expires_at(&playback);
         Ok(playback)
     }
@@ -286,6 +287,8 @@ impl AdminApiImpl {
             item.name.clone(),
             0.0,
         )
+        .provider(provider_result.provider.clone())
+        .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
         .duration_seconds(duration_seconds);
 
@@ -306,7 +309,13 @@ impl AdminApiImpl {
             )
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-        let mut playback = try_playback_to_proto(&full_result, &self.public_id_codec)?;
+        let signing = PlaybackHttpSigningContext {
+            signing_key: &self.signing_key,
+            room_id: ctx.public_room_id.as_deref().unwrap_or_default(),
+            user_id: ctx.public_user_id.as_deref().unwrap_or_default(),
+        };
+        let mut playback =
+            try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;
         playback.expires_at = playback_expires_at(&playback);
         Ok(playback)
     }
@@ -359,6 +368,8 @@ impl AdminApiImpl {
             playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
+            provider: String::new(),
+            provider_instance_name: String::new(),
             metadata: std::collections::HashMap::new(),
             expires_at: None,
             duration_seconds: None,
@@ -436,7 +447,7 @@ impl AdminApiImpl {
         }
 
         Err(ApiError::NotFound(
-            "No active room member available to sign management playback URLs".to_string(),
+            "No active room member available to sign management playback media".to_string(),
         ))
     }
 

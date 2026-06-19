@@ -1004,18 +1004,18 @@ pub struct RoomScopedRemoteArgs {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
-pub enum CliPlaybackDeliveryPreference {
+pub enum CliPlaybackStreamPreference {
     Auto,
     DirectPlay,
     Transcode,
 }
 
-impl CliPlaybackDeliveryPreference {
+impl CliPlaybackStreamPreference {
     const fn to_proto(self) -> i32 {
         match self {
-            Self::Auto => synctv_proto::client::PlaybackDeliveryPreference::Auto as i32,
-            Self::DirectPlay => synctv_proto::client::PlaybackDeliveryPreference::DirectPlay as i32,
-            Self::Transcode => synctv_proto::client::PlaybackDeliveryPreference::Transcode as i32,
+            Self::Auto => synctv_proto::client::PlaybackStreamPreference::Auto as i32,
+            Self::DirectPlay => synctv_proto::client::PlaybackStreamPreference::DirectPlay as i32,
+            Self::Transcode => synctv_proto::client::PlaybackStreamPreference::Transcode as i32,
         }
     }
 }
@@ -1096,8 +1096,8 @@ impl CliPlaybackSubtitlePreference {
 
 #[derive(Debug, Clone, Args, Default)]
 pub struct PlaybackClientProfileArgs {
-    #[arg(long = "delivery", value_enum)]
-    pub delivery_preference: Option<CliPlaybackDeliveryPreference>,
+    #[arg(long = "stream", value_enum)]
+    pub stream_preference: Option<CliPlaybackStreamPreference>,
 
     #[arg(long)]
     pub max_streaming_bitrate: Option<i64>,
@@ -1120,7 +1120,7 @@ pub struct PlaybackClientProfileArgs {
 
 impl PlaybackClientProfileArgs {
     fn to_proto(&self) -> Option<synctv_proto::client::PlaybackClientProfile> {
-        if self.delivery_preference.is_none()
+        if self.stream_preference.is_none()
             && self.max_streaming_bitrate.is_none()
             && self.max_audio_channels.is_none()
             && self.supported_video_codecs.is_empty()
@@ -1132,9 +1132,9 @@ impl PlaybackClientProfileArgs {
         }
 
         Some(synctv_proto::client::PlaybackClientProfile {
-            delivery_preference: self
-                .delivery_preference
-                .map_or(0, CliPlaybackDeliveryPreference::to_proto),
+            stream_preference: self
+                .stream_preference
+                .map_or(0, CliPlaybackStreamPreference::to_proto),
             max_streaming_bitrate: self.max_streaming_bitrate,
             max_audio_channels: self.max_audio_channels,
             supported_video_codecs: self
@@ -6641,19 +6641,21 @@ fn build_get_playback_cli_output(
         modes.sort_by_key(|(mode, _)| *mode);
 
         for (mode, info) in modes {
-            for (index, playback_url) in info.urls.iter().enumerate() {
+            for (index, playback_media) in info.medias.iter().enumerate() {
                 let is_default = mode == &playback.default_mode
-                    && i32::try_from(index).is_ok_and(|index| info.default_url_index == index);
-                let absolute_url = absolutize_cli_url(&playback_url.url, api_base_url.as_deref());
+                    && i32::try_from(index)
+                        .ok()
+                        .is_some_and(|index| info.default_media_index == Some(index));
+                let absolute_url = absolutize_cli_url(&playback_media.url, api_base_url.as_deref());
                 let output = PlaybackPullUrlCliOutput {
                     mode: mode.clone(),
-                    format: info.format.clone(),
-                    name: playback_url.name.clone(),
-                    url: playback_url.url.clone(),
+                    format: playback_media.format.clone(),
+                    name: playback_media.name.clone(),
+                    url: playback_media.url.clone(),
                     absolute_url: absolute_url.clone(),
                     default: is_default,
-                    headers: playback_url.headers.clone(),
-                    expire_at: playback_url.expire_at,
+                    headers: playback_media.headers.clone(),
+                    expire_at: playback_media.expire_at,
                 };
 
                 if is_default {
@@ -6661,7 +6663,7 @@ fn build_get_playback_cli_output(
                     default_absolute_pull_url.clone_from(&output.absolute_url);
                 }
 
-                match info.format.as_str() {
+                match playback_media.format.as_str() {
                     "m3u8" if hls_pull_url.is_none() => {
                         hls_pull_url = Some(output.url.clone());
                         hls_absolute_pull_url.clone_from(&output.absolute_url);
@@ -12794,7 +12796,7 @@ mod tests {
             "get",
             "--room-id",
             "room-1",
-            "--delivery",
+            "--stream",
             "transcode",
             "--max-streaming-bitrate",
             "8000000",
@@ -12821,8 +12823,8 @@ mod tests {
             }) => {
                 assert_eq!(args.room.room_id, "room-1");
                 assert_eq!(
-                    args.playback_client_profile.delivery_preference,
-                    Some(CliPlaybackDeliveryPreference::Transcode)
+                    args.playback_client_profile.stream_preference,
+                    Some(CliPlaybackStreamPreference::Transcode)
                 );
                 assert_eq!(
                     args.playback_client_profile.max_streaming_bitrate,
@@ -12863,7 +12865,7 @@ mod tests {
     #[test]
     fn playback_client_profile_args_to_proto_builds_profile() {
         let args = PlaybackClientProfileArgs {
-            delivery_preference: Some(CliPlaybackDeliveryPreference::Auto),
+            stream_preference: Some(CliPlaybackStreamPreference::Auto),
             max_streaming_bitrate: Some(10_000_000),
             max_audio_channels: Some(6),
             supported_video_codecs: vec![CliPlaybackVideoCodec::H264, CliPlaybackVideoCodec::Vp9],
@@ -12874,8 +12876,8 @@ mod tests {
 
         let profile = args.to_proto().expect("profile should be created");
         assert_eq!(
-            profile.delivery_preference,
-            synctv_proto::client::PlaybackDeliveryPreference::Auto as i32
+            profile.stream_preference,
+            synctv_proto::client::PlaybackStreamPreference::Auto as i32
         );
         assert_eq!(profile.max_streaming_bitrate, Some(10_000_000));
         assert_eq!(profile.max_audio_channels, Some(6));
@@ -13670,21 +13672,25 @@ mod tests {
                     room_id: "room-1".into(),
                     name: "Example".into(),
                     playlist_position: 1.0,
+                    provider: "direct-url".into(),
+                    provider_instance_name: String::new(),
                     playback_infos: std::collections::HashMap::from([(
                         "direct".to_string(),
                         synctv_proto::client::PlaybackInfo {
-                            urls: vec![synctv_proto::client::PlaybackUrl {
+                            medias: vec![synctv_proto::client::PlaybackMedia {
                                 name: String::new(),
-                                url: "/api/providers/proxy/direct/abc/stream".into(),
+                                url: "/api/playback-providers/direct-url/abc/streams/direct/0"
+                                    .into(),
                                 headers: std::collections::HashMap::new(),
+                                format: "mp4".into(),
                                 expire_at: None,
                                 metadata: None,
                             }],
-                            default_url_index: 0,
+                            default_media_index: Some(0),
                             subtitles: Vec::new(),
                             default_subtitle_index: None,
                             danmakus: Vec::new(),
-                            format: "mp4".into(),
+                            default_danmaku_index: None,
                         },
                     )]),
                     default_mode: "direct".into(),
@@ -13701,7 +13707,7 @@ mod tests {
 
         assert_eq!(
             output.default_pull_url.as_deref(),
-            Some("/api/providers/proxy/direct/abc/stream")
+            Some("/api/playback-providers/direct-url/abc/streams/direct/0")
         );
         assert_eq!(output.default_absolute_pull_url, None);
         assert_eq!(output.pull_urls.len(), 1);

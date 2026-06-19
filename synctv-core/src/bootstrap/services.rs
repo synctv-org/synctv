@@ -864,6 +864,7 @@ pub async fn init_services_with_options(
         media_file_storage_service: Some(media_cover_file_storage),
         room_file_storage_service: Some(room_cover_file_storage),
         playlist_file_storage_service: Some(playlist_cover_file_storage),
+        provider_stores: provider_stores.clone(),
         runtime: room_runtime,
         version_fence: version_fence.clone(),
     })?;
@@ -1051,6 +1052,7 @@ struct RoomServiceBuildArgs {
     media_file_storage_service: Option<Arc<dyn FileStorageService>>,
     room_file_storage_service: Option<Arc<dyn FileStorageService>>,
     playlist_file_storage_service: Option<Arc<dyn FileStorageService>>,
+    provider_stores: Arc<dyn ProviderStoreResolver>,
     runtime: RoomServiceRuntime,
     version_fence: Arc<dyn VersionFenceStore>,
 }
@@ -1155,6 +1157,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
         media_file_storage_service,
         room_file_storage_service,
         playlist_file_storage_service,
+        provider_stores,
         runtime,
         version_fence,
     } = args;
@@ -1191,6 +1194,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
                 credential_encryption,
                 credential_repo,
                 provider_access_service: Some(provider_access_service),
+                provider_stores: Some(provider_stores),
                 audit_service,
                 brute_force_service: Some(brute_force),
                 settings_registry: Some(settings_registry),
@@ -1213,6 +1217,11 @@ fn test_providers_manager() -> anyhow::Result<Arc<ProvidersManager>> {
     let provider_instance_manager =
         crate::service::remote_provider_manager::empty_provider_instance_manager();
     Ok(Arc::new(ProvidersManager::new(provider_instance_manager)?))
+}
+
+#[cfg(test)]
+fn test_provider_stores() -> Arc<dyn ProviderStoreResolver> {
+    Arc::new(ProviderStoreRegistry::local_only("test:provider:"))
 }
 
 fn build_publish_key_service(
@@ -1589,6 +1598,7 @@ mod tests {
             media_file_storage_service: None,
             room_file_storage_service: None,
             playlist_file_storage_service: None,
+            provider_stores: test_provider_stores(),
             runtime: build_room_service_runtime(
                 &SharedStateProfile::for_cluster_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1654,6 +1664,7 @@ mod tests {
             media_file_storage_service: None,
             room_file_storage_service: None,
             playlist_file_storage_service: None,
+            provider_stores: test_provider_stores(),
             runtime: build_room_service_runtime(
                 &SharedStateProfile::for_cluster_runtime(
                     Some(redis_runtime.clone()),
@@ -1698,6 +1709,7 @@ mod tests {
             media_file_storage_service: None,
             room_file_storage_service: None,
             playlist_file_storage_service: None,
+            provider_stores: test_provider_stores(),
             runtime: build_room_service_runtime(
                 &SharedStateProfile::for_cluster_runtime(Some(redis_runtime), "test:", true),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1757,6 +1769,7 @@ mod tests {
             media_file_storage_service: None,
             room_file_storage_service: None,
             playlist_file_storage_service: None,
+            provider_stores: test_provider_stores(),
             runtime: build_room_service_runtime(
                 &SharedStateProfile::for_cluster_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1804,6 +1817,7 @@ mod tests {
             media_file_storage_service: None,
             room_file_storage_service: None,
             playlist_file_storage_service: None,
+            provider_stores: test_provider_stores(),
             runtime: build_room_service_runtime(
                 &SharedStateProfile::for_cluster_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1859,6 +1873,7 @@ mod tests {
             media_file_storage_service: None,
             room_file_storage_service: None,
             playlist_file_storage_service: None,
+            provider_stores: test_provider_stores(),
             runtime: build_room_service_runtime(
                 &SharedStateProfile::for_cluster_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,

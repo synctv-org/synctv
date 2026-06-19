@@ -24,7 +24,7 @@ pub fn rewrite_m3u8(
     rewrite_m3u8_with_limit_and_mapper(m3u8, source_url, proxy_base, None, default_proxy_url)
 }
 
-pub(crate) fn rewrite_m3u8_with_url_mapper<F>(
+pub fn rewrite_m3u8_with_url_mapper<F>(
     m3u8: &str,
     source_url: &str,
     proxy_base: &str,

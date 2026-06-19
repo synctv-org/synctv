@@ -1762,7 +1762,7 @@ async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() -> TestResul
     let first_request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/providers/proxy/bilibili/v1/test.m3u8")
+            .uri("/api/playback-providers/bilibili/v1/hls-segments?target_url=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&rid=r&exp=1")
             .body(Body::empty()),
     )?;
     let first = test_response(app.clone().oneshot(first_request).await)?;
@@ -1771,14 +1771,14 @@ async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() -> TestResul
     let second_request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/providers/proxy/bilibili/v1/test.m3u8")
+            .uri("/api/playback-providers/bilibili/v1/hls-segments?target_url=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&rid=r&exp=1")
             .body(Body::empty()),
     )?;
     let second = test_response(app.oneshot(second_request).await)?;
     assert_eq!(
         second.status(),
         StatusCode::TOO_MANY_REQUESTS,
-        "provider proxy endpoints must use the streaming rate-limit bucket"
+        "playback provider endpoints must use the streaming rate-limit bucket"
     );
     Ok(())
 }
@@ -1839,7 +1839,7 @@ async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult 
     let rtmp_request = test_request(
         Request::builder()
             .method("OPTIONS")
-            .uri("/api/providers/proxy/rtmp/ver1/playlist.m3u8")
+            .uri("/api/playback-providers/rtmp/ver1/hls-playlist")
             .header(axum::http::header::ORIGIN, "https://example.com")
             .body(Body::empty()),
     )?;
@@ -1847,13 +1847,13 @@ async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult 
     assert_ne!(
         rtmp_preflight.status(),
         StatusCode::METHOD_NOT_ALLOWED,
-        "RTMP proxy routes must continue handling browser preflight through the generic proxy route"
+        "RTMP playback-provider route must handle browser preflight"
     );
 
     let live_proxy_request = test_request(
         Request::builder()
             .method("OPTIONS")
-            .uri("/api/providers/proxy/live_proxy/ver1/playlist.m3u8")
+            .uri("/api/playback-providers/live-proxy/ver1/hls-playlist")
             .header(axum::http::header::ORIGIN, "https://example.com")
             .body(Body::empty()),
     )?;
@@ -1861,7 +1861,7 @@ async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult 
     assert_ne!(
         live_proxy_preflight.status(),
         StatusCode::METHOD_NOT_ALLOWED,
-        "live_proxy proxy routes must continue handling browser preflight through the generic proxy route"
+        "live_proxy playback-provider route must handle browser preflight"
     );
     Ok(())
 }

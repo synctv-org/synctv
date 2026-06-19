@@ -170,9 +170,13 @@ pub use id::{
 };
 pub use media::{
     provider_type_code_from_name, provider_type_codes_from_names, provider_type_name_from_code,
-    Danmaku, DirectMultimodeParams, FromProviderParams, Media, MediaListQuery, MediaListSortBy,
-    PlaybackInfo, PlaybackResult, PlaybackUrl, PlaybackUrlMetadata, ProviderType, ProviderTypeName,
-    ProviderTypeNames, Subtitle, SubtitleUrl,
+    DirectMultimodeParams, FromProviderParams, Media, MediaListQuery, MediaListSortBy,
+    PlaybackAlistMedia, PlaybackAlistSubtitle, PlaybackBilibiliDanmaku, PlaybackBilibiliMedia,
+    PlaybackBilibiliSubtitle, PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackDirectUrlMedia,
+    PlaybackDirectUrlSubtitle, PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackExternalDanmaku,
+    PlaybackExternalMedia, PlaybackExternalSubtitle, PlaybackInfo, PlaybackLiveProxyMedia,
+    PlaybackMedia, PlaybackMediaMetadata, PlaybackMediaProvider, PlaybackResult, PlaybackRtmpMedia,
+    PlaybackSubtitle, PlaybackSubtitleProvider, ProviderType, ProviderTypeName, ProviderTypeNames,
 };
 pub use notification::{
     CreateNotificationRequest, MarkAllAsReadRequest, MarkAsReadRequest, Notification,

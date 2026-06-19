@@ -1,8 +1,8 @@
 //! Bilibili Provider HTTP Routes
 //!
 //! Provider API endpoints for Bilibili login, parse, etc.
-//! Proxy routes (including danmu) are handled by the unified proxy handler
-//! in `providers/mod.rs` via `BilibiliProvider::resolve_proxy`.
+//! Video, subtitle, manifest, and danmaku playback routes live under the
+//! Bilibili playback-provider transport.
 
 use axum::{
     extract::State,

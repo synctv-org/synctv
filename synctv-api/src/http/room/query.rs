@@ -42,7 +42,7 @@ pub(in crate::http::room) fn parse_optional_query_bool(
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct GetPlaybackQuery {
-    pub delivery_preference: Option<String>,
+    pub stream_preference: Option<String>,
     pub max_streaming_bitrate: Option<i64>,
     pub max_audio_channels: Option<i32>,
     pub video_codecs: Option<String>,
@@ -64,7 +64,7 @@ pub struct WatchQuery {
 pub struct WatchPlaybackQuery {
     pub delivery_mode: Option<String>,
     pub format: Option<String>,
-    pub delivery_preference: Option<String>,
+    pub stream_preference: Option<String>,
     pub max_streaming_bitrate: Option<i64>,
     pub max_audio_channels: Option<i32>,
     pub video_codecs: Option<String>,
@@ -116,16 +116,16 @@ pub(crate) fn watch_after_event_sequence(
     }
 }
 
-fn parse_delivery_preference(
+fn parse_stream_preference(
     value: Option<&str>,
-) -> Result<synctv_proto::client::PlaybackDeliveryPreference, super::super::AppError> {
+) -> Result<synctv_proto::client::PlaybackStreamPreference, super::super::AppError> {
     match value.map(str::trim).filter(|value| !value.is_empty()) {
-        None => Ok(synctv_proto::client::PlaybackDeliveryPreference::Unspecified),
-        Some("auto") => Ok(synctv_proto::client::PlaybackDeliveryPreference::Auto),
-        Some("direct_play") => Ok(synctv_proto::client::PlaybackDeliveryPreference::DirectPlay),
-        Some("transcode") => Ok(synctv_proto::client::PlaybackDeliveryPreference::Transcode),
+        None => Ok(synctv_proto::client::PlaybackStreamPreference::Unspecified),
+        Some("auto") => Ok(synctv_proto::client::PlaybackStreamPreference::Auto),
+        Some("direct_play") => Ok(synctv_proto::client::PlaybackStreamPreference::DirectPlay),
+        Some("transcode") => Ok(synctv_proto::client::PlaybackStreamPreference::Transcode),
         Some(other) => Err(super::super::AppError::bad_request(format!(
-            "Invalid delivery_preference '{other}'. Expected auto, direct_play, or transcode"
+            "Invalid stream_preference '{other}'. Expected auto, direct_play, or transcode"
         ))),
     }
 }
@@ -206,7 +206,7 @@ fn parse_audio_capability(
 pub(crate) fn build_get_playback_request(
     query: &GetPlaybackQuery,
 ) -> AppResult<GetPlaybackRequest> {
-    let has_profile = query.delivery_preference.is_some()
+    let has_profile = query.stream_preference.is_some()
         || query.max_streaming_bitrate.is_some()
         || query.max_audio_channels.is_some()
         || query.video_codecs.is_some()
@@ -216,8 +216,7 @@ pub(crate) fn build_get_playback_request(
 
     let playback_client_profile = if has_profile {
         Some(synctv_proto::client::PlaybackClientProfile {
-            delivery_preference: parse_delivery_preference(query.delivery_preference.as_deref())?
-                as i32,
+            stream_preference: parse_stream_preference(query.stream_preference.as_deref())? as i32,
             max_streaming_bitrate: query.max_streaming_bitrate,
             max_audio_channels: query.max_audio_channels,
             supported_video_codecs: parse_video_codecs(query.video_codecs.as_deref())?,
@@ -240,7 +239,7 @@ pub(crate) fn build_playback_client_profile_from_watch_query(
     query: &WatchPlaybackQuery,
 ) -> AppResult<Option<synctv_proto::client::PlaybackClientProfile>> {
     build_get_playback_request(&GetPlaybackQuery {
-        delivery_preference: query.delivery_preference.clone(),
+        stream_preference: query.stream_preference.clone(),
         max_streaming_bitrate: query.max_streaming_bitrate,
         max_audio_channels: query.max_audio_channels,
         video_codecs: query.video_codecs.clone(),

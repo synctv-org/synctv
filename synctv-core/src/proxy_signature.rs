@@ -1,12 +1,12 @@
-// HMAC-signed proxy URL generation and verification.
-// Proxy URLs embed room_id, user_id, version, expiry, and optionally a target URL
-// directly in the query string, authenticated by an HMAC-SHA256 signature. This
-// replaces JWT auth on proxy routes, allowing URLs to be shared (e.g., in M3U8
-// playlists) without leaking JWT tokens.
+// HMAC-signed playback provider URL generation and verification.
+// Playback provider URLs embed room_id, user_id, expiry, and optionally a target
+// URL directly in the query string. Provider, version, and semantic resource
+// come from the fixed route/request and are also bound by HMAC-SHA256.
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::fmt;
+use url::form_urlencoded;
 use urlencoding::encode as url_encode;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -27,27 +27,19 @@ pub struct ProxySigningKey {
 
 /// Claims embedded in a signed proxy URL.
 ///
+/// `resource` is the provider-specific semantic resource derived from the
+/// route/request, such as `streams/direct/0` or `dash-manifests/720p/proxy`.
 /// `target_url` is bound into the signature when present so rewritten M3U8
 /// segment URLs cannot be retargeted by editing the `url` query parameter.
 #[derive(Debug, Clone)]
 pub struct ProxyUrlClaims {
     pub provider: String,
     pub version: String,
+    pub resource: String,
     pub room_id: String,
     pub user_id: String,
     pub expires_at: i64,
     pub target_url: Option<String>,
-}
-
-#[derive(Clone, Copy)]
-pub struct SignedProxyUrlRequest<'a> {
-    pub provider: &'a str,
-    pub version: &'a str,
-    pub action: &'a str,
-    pub signing_key: &'a ProxySigningKey,
-    pub room_id: &'a str,
-    pub user_id: &'a str,
-    pub expires_at: i64,
 }
 
 /// Errors from proxy signature operations.
@@ -125,8 +117,8 @@ impl ProxySigningKey {
 
     /// Build a query string with all claims and signature.
     ///
-    /// Returns: `"sig={hex}&uid={uid}&rid={rid}&exp={exp}"`, plus `url=...`
-    /// when `claims.target_url` is set.
+    /// Returns: `"sig={hex}&uid={uid}&rid={rid}&exp={exp}"`, plus
+    /// `target_url=...` when `claims.target_url` is set.
     #[must_use]
     pub fn build_signed_query(&self, claims: &ProxyUrlClaims) -> String {
         let sig = self.sign(claims);
@@ -138,7 +130,7 @@ impl ProxySigningKey {
             claims.expires_at
         );
         if let Some(target_url) = &claims.target_url {
-            query.push_str("&url=");
+            query.push_str("&target_url=");
             query.push_str(&url_encode(target_url));
         }
         query
@@ -148,58 +140,58 @@ impl ProxySigningKey {
     pub fn build_signed_query_with_target_url(
         &self,
         claims: &ProxyUrlClaims,
+        resource: &str,
         target_url: &str,
     ) -> String {
         let mut claims = claims.clone();
+        claims.resource = resource.to_string();
         claims.target_url = Some(target_url.to_string());
         self.build_signed_query(&claims)
     }
 
     /// Parse query parameters and verify the HMAC signature.
     ///
-    /// The `provider` and `version` are passed from the URL path (not query params).
+    /// The `provider`, `version`, and semantic `resource` are passed from the
+    /// URL path/request instead of query params.
     pub fn parse_and_verify_query(
         &self,
         query: &str,
         provider: &str,
         version: &str,
+        resource: &str,
     ) -> Result<ProxyUrlClaims, ProxySignatureError> {
-        let mut sig = None;
-        let mut uid = None;
-        let mut rid = None;
-        let mut exp = None;
-        let mut target_url = None;
+        // Manual parsing to avoid HashMap allocation on hot path
+        // We need exactly 4-5 params, so iterate once and extract directly
+        let mut sig: Option<String> = None;
+        let mut uid: Option<String> = None;
+        let mut rid: Option<String> = None;
+        let mut exp_str: Option<String> = None;
+        let mut target_url: Option<String> = None;
 
-        for pair in query.split('&') {
-            if let Some((key, value)) = pair.split_once('=') {
-                match key {
-                    "sig" => sig = Some(value),
-                    "uid" => uid = Some(value),
-                    "rid" => rid = Some(value),
-                    "exp" => exp = Some(value),
-                    "url" => target_url = Some(value),
-                    _ => {}
-                }
+        // Parse using form_urlencoded iterator without collecting into HashMap
+        for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+            match key.as_ref() {
+                "sig" => sig = Some(value.into_owned()),
+                "uid" => uid = Some(value.into_owned()),
+                "rid" => rid = Some(value.into_owned()),
+                "exp" => exp_str = Some(value.into_owned()),
+                "target_url" => target_url = Some(value.into_owned()),
+                _ => {} // Ignore unknown params
             }
         }
 
         let sig = sig.ok_or(ProxySignatureError::MissingParam("sig"))?;
         let uid = uid.ok_or(ProxySignatureError::MissingParam("uid"))?;
         let rid = rid.ok_or(ProxySignatureError::MissingParam("rid"))?;
-        let exp_str = exp.ok_or(ProxySignatureError::MissingParam("exp"))?;
+        let exp_str = exp_str.ok_or(ProxySignatureError::MissingParam("exp"))?;
 
-        // URL-decode values since build_signed_query encodes them.
-        let uid_decoded =
-            urlencoding::decode(uid).map_err(|_| ProxySignatureError::InvalidParam("uid"))?;
-        let rid_decoded =
-            urlencoding::decode(rid).map_err(|_| ProxySignatureError::InvalidParam("rid"))?;
-        let target_url = target_url
-            .map(|url| {
-                urlencoding::decode(url)
-                    .map(std::borrow::Cow::into_owned)
-                    .map_err(|_| ProxySignatureError::InvalidParam("url"))
-            })
-            .transpose()?;
+        // Reject empty room_id and user_id to prevent authorization bypass
+        if uid.is_empty() {
+            return Err(ProxySignatureError::InvalidParam("uid cannot be empty"));
+        }
+        if rid.is_empty() {
+            return Err(ProxySignatureError::InvalidParam("rid cannot be empty"));
+        }
 
         let expires_at: i64 = exp_str
             .parse()
@@ -208,13 +200,14 @@ impl ProxySigningKey {
         let claims = ProxyUrlClaims {
             provider: provider.to_string(),
             version: version.to_string(),
-            room_id: rid_decoded.into_owned(),
-            user_id: uid_decoded.into_owned(),
+            resource: resource.to_string(),
+            room_id: rid,
+            user_id: uid,
             expires_at,
             target_url,
         };
 
-        self.verify(&claims, sig)?;
+        self.verify(&claims, &sig)?;
 
         Ok(claims)
     }
@@ -222,8 +215,13 @@ impl ProxySigningKey {
     /// Build the canonical message string for HMAC signing.
     fn canonical_message(claims: &ProxyUrlClaims) -> String {
         let mut message = format!(
-            "{}:{}:{}:{}:{}",
-            claims.provider, claims.version, claims.room_id, claims.user_id, claims.expires_at
+            "{}:{}:{}:{}:{}:{}",
+            claims.provider,
+            claims.version,
+            claims.resource,
+            claims.room_id,
+            claims.user_id,
+            claims.expires_at
         );
         if let Some(target_url) = &claims.target_url {
             message.push_str(":url:");
@@ -237,32 +235,6 @@ impl ProxySigningKey {
     pub const fn default_expiry_secs() -> i64 {
         DEFAULT_EXPIRY_SECS
     }
-}
-
-#[must_use]
-pub fn build_signed_proxy_url(request: SignedProxyUrlRequest<'_>) -> String {
-    let claims = ProxyUrlClaims {
-        provider: request.provider.to_string(),
-        version: request.version.to_string(),
-        room_id: request.room_id.to_string(),
-        user_id: request.user_id.to_string(),
-        expires_at: request.expires_at,
-        target_url: None,
-    };
-    let query = request.signing_key.build_signed_query(&claims);
-    let encoded_action = request
-        .action
-        .split('/')
-        .map(url_encode)
-        .collect::<Vec<_>>()
-        .join("/");
-    format!(
-        "/api/providers/proxy/{}/{}/{}?{}",
-        url_encode(request.provider),
-        url_encode(request.version),
-        encoded_action,
-        query
-    )
 }
 
 #[cfg(test)]
@@ -294,6 +266,7 @@ mod tests {
         ProxyUrlClaims {
             provider: "emby".to_string(),
             version: "abc123".to_string(),
+            resource: "media-streams/main/0".to_string(),
             room_id: "room-1".to_string(),
             user_id: "user-1".to_string(),
             expires_at: chrono::Utc::now().timestamp() + 3600,
@@ -355,7 +328,7 @@ mod tests {
         let claims = test_claims();
         let query = key.build_signed_query(&claims);
         let parsed = ok(
-            key.parse_and_verify_query(&query, &claims.provider, &claims.version),
+            key.parse_and_verify_query(&query, &claims.provider, &claims.version, &claims.resource),
             "signed query should parse",
         );
         assert_eq!(parsed.room_id, claims.room_id);
@@ -370,7 +343,7 @@ mod tests {
         claims.target_url = Some("http://example.com/seg.ts".to_string());
         let query = key.build_signed_query(&claims);
         let parsed = ok(
-            key.parse_and_verify_query(&query, &claims.provider, &claims.version),
+            key.parse_and_verify_query(&query, &claims.provider, &claims.version, &claims.resource),
             "signed query with target URL should parse",
         );
         assert_eq!(parsed.room_id, claims.room_id);
@@ -378,22 +351,27 @@ mod tests {
     }
 
     #[test]
-    fn parse_query_rejects_tampered_url_param() {
+    fn parse_query_rejects_tampered_target_url_param() {
         let key = test_key();
         let mut claims = test_claims();
         claims.target_url = Some("http://example.com/seg.ts".to_string());
         let query = key.build_signed_query(&claims);
         let (prefix, _) = some(
-            query.split_once("&url="),
-            "signed target query should include url",
+            query.split_once("&target_url="),
+            "signed target query should include target_url",
         );
         let tampered = format!(
-            "{prefix}&url={}",
+            "{prefix}&target_url={}",
             urlencoding::encode("http://evil.example/seg.ts")
         );
 
         assert!(matches!(
-            key.parse_and_verify_query(&tampered, &claims.provider, &claims.version),
+            key.parse_and_verify_query(
+                &tampered,
+                &claims.provider,
+                &claims.version,
+                &claims.resource,
+            ),
             Err(ProxySignatureError::InvalidSignature)
         ));
     }
@@ -402,26 +380,14 @@ mod tests {
     fn parse_query_missing_sig() {
         let key = test_key();
         assert!(matches!(
-            key.parse_and_verify_query("uid=u1&rid=r1&exp=999999999999", "emby", "v1"),
+            key.parse_and_verify_query(
+                "uid=u1&rid=r1&exp=999999999999",
+                "emby",
+                "v1",
+                "media-streams/main/0",
+            ),
             Err(ProxySignatureError::MissingParam("sig"))
         ));
-    }
-
-    #[test]
-    fn build_signed_proxy_url_format() {
-        let key = test_key();
-        let url = build_signed_proxy_url(SignedProxyUrlRequest {
-            provider: "emby",
-            version: "v1",
-            action: "stream",
-            signing_key: &key,
-            room_id: "room-1",
-            user_id: "user-1",
-            expires_at: chrono::Utc::now().timestamp() + 3600,
-        });
-        assert!(url.starts_with("/api/providers/proxy/emby/v1/stream?sig="));
-        assert!(url.contains("&uid=user-1"));
-        assert!(url.contains("&rid=room-1"));
     }
 
     #[test]
@@ -446,6 +412,7 @@ mod tests {
         let claims = ProxyUrlClaims {
             provider: "emby".to_string(),
             version: "abc123".to_string(),
+            resource: "media-streams/main/0".to_string(),
             room_id: "room&id=tricky".to_string(),
             user_id: "user with spaces&more=yes".to_string(),
             expires_at: chrono::Utc::now().timestamp() + 3600,
@@ -454,7 +421,7 @@ mod tests {
         let query = key.build_signed_query(&claims);
 
         let parsed = ok(
-            key.parse_and_verify_query(&query, &claims.provider, &claims.version),
+            key.parse_and_verify_query(&query, &claims.provider, &claims.version, &claims.resource),
             "encoded signed query should parse",
         );
         assert_eq!(parsed.room_id, claims.room_id);
@@ -464,20 +431,34 @@ mod tests {
     }
 
     #[test]
-    fn build_signed_proxy_url_encodes_path_segments() {
+    fn dash_segment_query_derived_from_manifest_claims_verifies_as_segment_resource() {
         let key = test_key();
-        let url = build_signed_proxy_url(SignedProxyUrlRequest {
-            provider: "provider/name",
-            version: "v1&bad",
-            action: "action=evil",
-            signing_key: &key,
-            room_id: "room-1",
-            user_id: "user-1",
+        let manifest_claims = ProxyUrlClaims {
+            provider: "bilibili".to_string(),
+            version: "v1".to_string(),
+            resource: "dash-manifests/dash/proxy".to_string(),
+            room_id: "room-1".to_string(),
+            user_id: "user-1".to_string(),
             expires_at: chrono::Utc::now().timestamp() + 3600,
-        });
-        // Path segments with special chars should be percent-encoded
-        assert!(url.contains("provider%2Fname"));
-        assert!(url.contains("v1%26bad"));
-        assert!(url.contains("action%3Devil"));
+            target_url: None,
+        };
+        let mut segment_claims = manifest_claims.clone();
+        segment_claims.resource = "dash-segments/dash/0".to_string();
+        segment_claims.target_url = None;
+
+        let query = key.build_signed_query(&segment_claims);
+        let parsed = ok(
+            key.parse_and_verify_query(&query, "bilibili", "v1", "dash-segments/dash/0"),
+            "DASH segment query should verify against segment resource",
+        );
+
+        assert_eq!(parsed.room_id, manifest_claims.room_id);
+        assert_eq!(parsed.user_id, manifest_claims.user_id);
+        assert_eq!(parsed.expires_at, manifest_claims.expires_at);
+        assert_eq!(parsed.target_url, None);
+        assert!(matches!(
+            key.parse_and_verify_query(&query, "bilibili", "v1", "dash-segments/dash/1"),
+            Err(ProxySignatureError::InvalidSignature)
+        ));
     }
 }

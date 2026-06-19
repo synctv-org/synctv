@@ -59,6 +59,7 @@ impl MediaService {
         })?;
 
         let ctx = self.build_provider_context(
+            provider_name.as_str(),
             Some(&admin_user_id),
             &room_id,
             playlist.creator_id.as_ref().or(Some(&admin_user_id)),
@@ -98,6 +99,7 @@ impl MediaService {
         })?;
 
         let ctx = self.build_provider_context(
+            provider_name.as_str(),
             Some(&admin_user_id),
             &room_id,
             playlist.creator_id.as_ref().or(Some(&admin_user_id)),
@@ -148,6 +150,7 @@ impl MediaService {
         })?;
 
         let ctx = self.build_provider_context(
+            provider_name.as_str(),
             Some(&user_id),
             &room_id,
             playlist.creator_id.as_ref().or(Some(&user_id)),
@@ -188,6 +191,7 @@ impl MediaService {
         })?;
 
         let ctx = self.build_provider_context(
+            provider_name.as_str(),
             Some(&user_id),
             &room_id,
             playlist.creator_id.as_ref().or(Some(&user_id)),
@@ -228,6 +232,7 @@ impl MediaService {
         })?;
 
         let ctx = self.build_provider_context(
+            provider_name.as_str(),
             Some(&user_id),
             &room_id,
             playlist.creator_id.as_ref().or(Some(&user_id)),
@@ -284,6 +289,7 @@ impl MediaService {
         };
 
         let ctx = self.build_provider_context(
+            provider_name.as_str(),
             None,
             room_id,
             playlist.creator_id.as_ref(),

@@ -72,8 +72,8 @@ pub(crate) use playback::{
     __path_get_playback, __path_start_playback, __path_stop_playback, __path_update_playback_state,
 };
 pub use playback::{
-    get_playback, start_playback, stop_playback, update_playback_state, watch_playback,
-    watch_playback_state,
+    get_playback, start_playback, stop_playback, update_playback_state,
+    watch_bilibili_live_danmaku, watch_playback, watch_playback_state,
 };
 #[cfg(feature = "openapi")]
 pub(crate) use playlists::{

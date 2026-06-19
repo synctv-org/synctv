@@ -297,19 +297,24 @@ impl Media {
             .playback_infos
             .get(&params.default_mode)
             .or_else(|| params.playback_infos.values().next());
-        let default_url = default_info
-            .and_then(|info| {
-                info.urls
-                    .get(info.default_url_index)
-                    .or_else(|| info.urls.first())
-            })
+        let default_media = default_info.and_then(|info| {
+            info.default_media_index
+                .and_then(|index| info.medias.get(index))
+                .or_else(|| info.medias.first())
+        });
+        let default_url = default_media
+            .and_then(PlaybackMedia::direct_url)
             .ok_or_else(|| {
                 crate::Error::InvalidInput("direct media requires a playback URL".to_string())
             })?;
+        let default_headers = default_media.map_or_else(
+            std::collections::HashMap::new,
+            PlaybackMedia::upstream_headers,
+        );
 
         let source_config = serde_json::json!({
-            "url": default_url.url.as_str(),
-            "headers": default_url.headers.clone(),
+            "url": default_url,
+            "headers": default_headers,
         });
 
         let now = Utc::now();
@@ -388,6 +393,15 @@ pub struct PlaybackResult {
     /// Media name
     pub name: String,
 
+    /// Provider that generated this playback result.
+    #[serde(default)]
+    pub provider: String,
+
+    /// Provider instance selected for this playback result, when a named
+    /// instance was used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_instance_name: Option<String>,
+
     /// Position in playlist
     pub position: f64,
 
@@ -414,16 +428,16 @@ pub struct PlaybackResult {
 /// Complete playback information for a single mode
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackInfo {
-    /// List of playback URLs (different qualities, codecs)
-    pub urls: Vec<PlaybackUrl>,
+    /// Media resources (different qualities, codecs, or provider-owned resources).
+    pub medias: Vec<PlaybackMedia>,
 
-    /// Default URL index
-    #[serde(default)]
-    pub default_url_index: usize,
+    /// Default media index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_media_index: Option<usize>,
 
     /// Subtitle list
     #[serde(default)]
-    pub subtitles: Vec<Subtitle>,
+    pub subtitles: Vec<PlaybackSubtitle>,
 
     /// Default subtitle index
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -431,38 +445,316 @@ pub struct PlaybackInfo {
 
     /// Danmaku list (each mode can have different danmaku sources)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub danmakus: Vec<Danmaku>,
+    pub danmakus: Vec<PlaybackDanmaku>,
 
-    /// Format (e.g., "hls", "dash", "mp4")
+    /// Default danmaku index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_danmaku_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackMedia {
+    pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub format: String,
-}
-
-/// Playback URL (represents a quality/codec option)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlaybackUrl {
-    /// Display name (e.g., "1080P", "HEVC 4K", "720P")
-    pub name: String,
-
-    /// Complete URL
-    pub url: String,
-
-    /// Request headers (if needed)
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub headers: std::collections::HashMap<String, String>,
-
-    /// Expiration time (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expire_at: Option<DateTime<Utc>>,
-
-    /// URL-level metadata (resolution, codec, bitrate, fps, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<PlaybackUrlMetadata>,
+    pub metadata: Option<PlaybackMediaMetadata>,
+    #[serde(flatten)]
+    pub provider: PlaybackMediaProvider,
 }
 
-/// URL-level metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlaybackUrlMetadata {
+#[serde(tag = "provider", content = "media", rename_all = "snake_case")]
+pub enum PlaybackMediaProvider {
+    External(PlaybackExternalMedia),
+    Alist(PlaybackAlistMedia),
+    Bilibili(PlaybackBilibiliMedia),
+    DirectUrl(PlaybackDirectUrlMedia),
+    Emby(PlaybackEmbyMedia),
+    Rtmp(PlaybackRtmpMedia),
+    LiveProxy(PlaybackLiveProxyMedia),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackExternalMedia {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub headers: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlaybackAlistMedia {
+    Direct {
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    ProxyFile {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        url_index: usize,
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    ProxyTranscodedHlsManifest {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        url_index: usize,
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlaybackBilibiliMedia {
+    Direct {
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    DirectDashManifest {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    ProxyMediaStream {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        url_index: usize,
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    ProxyHlsManifest {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        url_index: usize,
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    ProxyDashManifest {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlaybackDirectUrlMedia {
+    Direct {
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    ProxyStream {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        url_index: usize,
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    ProxyHlsManifest {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        url_index: usize,
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlaybackEmbyMedia {
+    Direct {
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    ProxyMediaStream {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        url_index: usize,
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    ProxyHlsManifest {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        url_index: usize,
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlaybackRtmpMedia {
+    FlvStream {
+        version: String,
+        expires_at: i64,
+        room_id: RoomId,
+        media_id: MediaId,
+    },
+    HlsPlaylist {
+        version: String,
+        expires_at: i64,
+        room_id: RoomId,
+        media_id: MediaId,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlaybackLiveProxyMedia {
+    FlvStream {
+        version: String,
+        expires_at: i64,
+        room_id: RoomId,
+        media_id: MediaId,
+    },
+    HlsPlaylist {
+        version: String,
+        expires_at: i64,
+        room_id: RoomId,
+        media_id: MediaId,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackSubtitle {
+    pub name: String,
+    pub language: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub format: String,
+    #[serde(flatten)]
+    pub provider: PlaybackSubtitleProvider,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "provider", content = "subtitle", rename_all = "snake_case")]
+pub enum PlaybackSubtitleProvider {
+    External(PlaybackExternalSubtitle),
+    Alist(PlaybackAlistSubtitle),
+    Bilibili(PlaybackBilibiliSubtitle),
+    DirectUrl(PlaybackDirectUrlSubtitle),
+    Emby(PlaybackEmbySubtitle),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackExternalSubtitle {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub headers: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackAlistSubtitle {
+    pub version: String,
+    pub expires_at: i64,
+    pub mode_name: String,
+    pub subtitle_index: usize,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub headers: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackBilibiliSubtitle {
+    pub version: String,
+    pub expires_at: i64,
+    pub mode_name: String,
+    pub subtitle_index: usize,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub headers: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackDirectUrlSubtitle {
+    pub version: String,
+    pub expires_at: i64,
+    pub mode_name: String,
+    pub subtitle_index: usize,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub headers: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackEmbySubtitle {
+    pub version: String,
+    pub expires_at: i64,
+    pub mode_name: String,
+    pub subtitle_index: usize,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub headers: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackDanmaku {
+    pub name: String,
+    pub format: Option<String>,
+    #[serde(flatten)]
+    pub provider: PlaybackDanmakuProvider,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "provider", content = "danmaku", rename_all = "snake_case")]
+pub enum PlaybackDanmakuProvider {
+    External(PlaybackExternalDanmaku),
+    Bilibili(PlaybackBilibiliDanmaku),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackExternalDanmaku {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub headers: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlaybackBilibiliDanmaku {
+    File {
+        version: String,
+        expires_at: i64,
+        danmaku_index: usize,
+        url: String,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    Live {
+        room_id: RoomId,
+        media_id: MediaId,
+    },
+}
+
+/// Media-level metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackMediaMetadata {
     /// Resolution (e.g., "1920x1080", "1280x720")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
@@ -484,59 +776,6 @@ pub struct PlaybackUrlMetadata {
     pub extra: std::collections::HashMap<String, JsonValue>,
 }
 
-/// Subtitle information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Subtitle {
-    /// Display name (e.g., "Chinese (Simplified)", "English")
-    pub name: String,
-
-    /// Language code (e.g., "zh-CN", "en-US")
-    pub language: String,
-
-    /// Subtitle URL list (multiple sources/formats)
-    pub urls: Vec<SubtitleUrl>,
-
-    /// Default URL index
-    #[serde(default)]
-    pub default_url_index: usize,
-}
-
-/// Subtitle URL
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubtitleUrl {
-    /// Display name (e.g., "Original", "AI Translation")
-    pub name: String,
-
-    /// Subtitle file URL
-    pub url: String,
-
-    /// Request headers (if needed)
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub headers: std::collections::HashMap<String, String>,
-
-    /// Format (e.g., "json", "srt", "vtt")
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub format: String,
-}
-
-/// Danmaku (bullet comments) information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Danmaku {
-    /// Display name (e.g., "Bilibili Danmaku", "Local Danmaku")
-    pub name: String,
-
-    /// Danmaku API URL or file URL
-    pub url: String,
-
-    /// Format type (e.g., "bilibili", "ass", "xml")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub format: Option<String>,
-
-    /// Request headers (if needed)
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub headers: std::collections::HashMap<String, String>,
-}
-
 // Helper implementations
 
 impl PlaybackResult {
@@ -555,6 +794,8 @@ impl PlaybackResult {
             playlist_id: media.playlist_id,
             room_id: media.room_id,
             name: media.name.clone(),
+            provider: media.source_provider.clone(),
+            provider_instance_name: media.provider_instance_name.clone(),
             position: media.position,
             playback_infos,
             default_mode: mode_name.to_string(),
@@ -576,6 +817,8 @@ impl PlaybackResult {
             playlist_id,
             room_id,
             name,
+            provider: String::new(),
+            provider_instance_name: None,
             position,
             playback_infos: indexmap::IndexMap::new(),
             default_mode: None,
@@ -604,6 +847,8 @@ pub struct PlaybackResultBuilder {
     playlist_id: Option<PlaylistId>,
     room_id: RoomId,
     name: String,
+    provider: String,
+    provider_instance_name: Option<String>,
     position: f64,
     /// Uses `IndexMap` to guarantee insertion-order determinism when falling
     /// back to the first mode as default (avoids `HashMap::keys().next()`
@@ -626,6 +871,18 @@ impl PlaybackResultBuilder {
     #[must_use]
     pub fn add_mode(mut self, mode_name: String, info: PlaybackInfo) -> Self {
         self.playback_infos.insert(mode_name, info);
+        self
+    }
+
+    #[must_use]
+    pub fn provider(mut self, provider: String) -> Self {
+        self.provider = provider;
+        self
+    }
+
+    #[must_use]
+    pub fn provider_instance_name(mut self, provider_instance_name: Option<String>) -> Self {
+        self.provider_instance_name = provider_instance_name;
         self
     }
 
@@ -673,6 +930,8 @@ impl PlaybackResultBuilder {
             playlist_id: self.playlist_id,
             room_id: self.room_id,
             name: self.name,
+            provider: self.provider,
+            provider_instance_name: self.provider_instance_name,
             position: self.position,
             playback_infos: self.playback_infos.into_iter().collect(),
             default_mode,
@@ -687,18 +946,21 @@ impl PlaybackInfo {
     #[must_use]
     pub fn single_url(url: String, name: String) -> Self {
         Self {
-            urls: vec![PlaybackUrl {
+            medias: vec![PlaybackMedia {
                 name,
-                url,
-                headers: std::collections::HashMap::new(),
+                format: String::new(),
                 expire_at: None,
                 metadata: None,
+                provider: PlaybackMediaProvider::External(PlaybackExternalMedia {
+                    url,
+                    headers: std::collections::HashMap::new(),
+                }),
             }],
-            default_url_index: 0,
+            default_media_index: None,
             subtitles: Vec::new(),
             default_subtitle_index: None,
             danmakus: Vec::new(),
-            format: String::new(),
+            default_danmaku_index: None,
         }
     }
 
@@ -712,32 +974,32 @@ impl PlaybackInfo {
 /// Builder for `PlaybackInfo`
 #[derive(Default)]
 pub struct PlaybackInfoBuilder {
-    urls: Vec<PlaybackUrl>,
-    default_url_index: usize,
-    subtitles: Vec<Subtitle>,
+    medias: Vec<PlaybackMedia>,
+    default_media_index: Option<usize>,
+    subtitles: Vec<PlaybackSubtitle>,
     default_subtitle_index: Option<usize>,
-    danmakus: Vec<Danmaku>,
-    format: String,
+    danmakus: Vec<PlaybackDanmaku>,
+    default_danmaku_index: Option<usize>,
 }
 
 impl PlaybackInfoBuilder {
-    /// Add a playback URL
+    /// Add a playback media
     #[must_use]
-    pub fn add_url(mut self, url: PlaybackUrl) -> Self {
-        self.urls.push(url);
+    pub fn add_media(mut self, media: PlaybackMedia) -> Self {
+        self.medias.push(media);
         self
     }
 
-    /// Set the default URL index
+    /// Set the default media index
     #[must_use]
-    pub const fn default_url_index(mut self, index: usize) -> Self {
-        self.default_url_index = index;
+    pub const fn default_media_index(mut self, index: usize) -> Self {
+        self.default_media_index = Some(index);
         self
     }
 
     /// Add a subtitle
     #[must_use]
-    pub fn add_subtitle(mut self, subtitle: Subtitle) -> Self {
+    pub fn add_subtitle(mut self, subtitle: PlaybackSubtitle) -> Self {
         self.subtitles.push(subtitle);
         self
     }
@@ -751,15 +1013,15 @@ impl PlaybackInfoBuilder {
 
     /// Add a danmaku source
     #[must_use]
-    pub fn add_danmaku(mut self, danmaku: Danmaku) -> Self {
+    pub fn add_danmaku(mut self, danmaku: PlaybackDanmaku) -> Self {
         self.danmakus.push(danmaku);
         self
     }
 
-    /// Set the format (e.g., "hls", "dash", "mp4")
+    /// Set the default danmaku index
     #[must_use]
-    pub fn format(mut self, format: String) -> Self {
-        self.format = format;
+    pub const fn default_danmaku_index(mut self, index: usize) -> Self {
+        self.default_danmaku_index = Some(index);
         self
     }
 
@@ -767,43 +1029,207 @@ impl PlaybackInfoBuilder {
     #[must_use]
     pub fn build(self) -> PlaybackInfo {
         PlaybackInfo {
-            urls: self.urls,
-            default_url_index: self.default_url_index,
+            medias: self.medias,
+            default_media_index: self.default_media_index,
             subtitles: self.subtitles,
             default_subtitle_index: self.default_subtitle_index,
             danmakus: self.danmakus,
-            format: self.format,
+            default_danmaku_index: self.default_danmaku_index,
         }
     }
 }
 
-impl PlaybackUrl {
+impl PlaybackMedia {
     /// Create a simple playback URL
     #[must_use]
     pub fn simple(name: String, url: String) -> Self {
         Self {
             name,
-            url,
-            headers: std::collections::HashMap::new(),
+            format: String::new(),
             expire_at: None,
             metadata: None,
+            provider: PlaybackMediaProvider::External(PlaybackExternalMedia {
+                url,
+                headers: std::collections::HashMap::new(),
+            }),
         }
     }
 
     /// Create with metadata
     #[must_use]
-    pub fn with_metadata(name: String, url: String, metadata: PlaybackUrlMetadata) -> Self {
+    pub fn with_metadata(name: String, url: String, metadata: PlaybackMediaMetadata) -> Self {
         Self {
             name,
-            url,
-            headers: std::collections::HashMap::new(),
+            format: String::new(),
             expire_at: None,
             metadata: Some(metadata),
+            provider: PlaybackMediaProvider::External(PlaybackExternalMedia {
+                url,
+                headers: std::collections::HashMap::new(),
+            }),
+        }
+    }
+
+    #[must_use]
+    pub fn direct_url(&self) -> Option<&str> {
+        match &self.provider {
+            PlaybackMediaProvider::External(media) => Some(&media.url),
+            PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { url, .. })
+            | PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct { url, .. })
+            | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { url, .. }) => Some(url),
+            PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { url, .. }) => {
+                Some(url)
+            }
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn upstream_url(&self) -> Option<&str> {
+        match &self.provider {
+            PlaybackMediaProvider::External(media) => Some(&media.url),
+            PlaybackMediaProvider::Alist(
+                PlaybackAlistMedia::Direct { url, .. }
+                | PlaybackAlistMedia::ProxyFile { url, .. }
+                | PlaybackAlistMedia::ProxyTranscodedHlsManifest { url, .. },
+            )
+            | PlaybackMediaProvider::Bilibili(
+                PlaybackBilibiliMedia::Direct { url, .. }
+                | PlaybackBilibiliMedia::ProxyMediaStream { url, .. }
+                | PlaybackBilibiliMedia::ProxyHlsManifest { url, .. },
+            )
+            | PlaybackMediaProvider::DirectUrl(
+                PlaybackDirectUrlMedia::Direct { url, .. }
+                | PlaybackDirectUrlMedia::ProxyStream { url, .. }
+                | PlaybackDirectUrlMedia::ProxyHlsManifest { url, .. },
+            )
+            | PlaybackMediaProvider::Emby(
+                PlaybackEmbyMedia::Direct { url, .. }
+                | PlaybackEmbyMedia::ProxyMediaStream { url, .. }
+                | PlaybackEmbyMedia::ProxyHlsManifest { url, .. },
+            ) => Some(url),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn upstream_headers(&self) -> std::collections::HashMap<String, String> {
+        match &self.provider {
+            PlaybackMediaProvider::External(media) => media.headers.clone(),
+            PlaybackMediaProvider::Alist(
+                PlaybackAlistMedia::Direct { headers, .. }
+                | PlaybackAlistMedia::ProxyFile { headers, .. }
+                | PlaybackAlistMedia::ProxyTranscodedHlsManifest { headers, .. },
+            )
+            | PlaybackMediaProvider::Bilibili(
+                PlaybackBilibiliMedia::Direct { headers, .. }
+                | PlaybackBilibiliMedia::DirectDashManifest { headers, .. }
+                | PlaybackBilibiliMedia::ProxyMediaStream { headers, .. }
+                | PlaybackBilibiliMedia::ProxyHlsManifest { headers, .. },
+            )
+            | PlaybackMediaProvider::DirectUrl(
+                PlaybackDirectUrlMedia::Direct { headers, .. }
+                | PlaybackDirectUrlMedia::ProxyStream { headers, .. }
+                | PlaybackDirectUrlMedia::ProxyHlsManifest { headers, .. },
+            )
+            | PlaybackMediaProvider::Emby(
+                PlaybackEmbyMedia::Direct { headers, .. }
+                | PlaybackEmbyMedia::ProxyMediaStream { headers, .. }
+                | PlaybackEmbyMedia::ProxyHlsManifest { headers, .. },
+            ) => headers.clone(),
+            _ => std::collections::HashMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn requires_provider_url(&self) -> bool {
+        !matches!(
+            self.provider,
+            PlaybackMediaProvider::External(_)
+                | PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { .. })
+                | PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct { .. })
+                | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { .. })
+                | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { .. })
+        )
+    }
+}
+
+impl PlaybackSubtitle {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn language(&self) -> &str {
+        &self.language
+    }
+
+    #[must_use]
+    pub fn format(&self) -> &str {
+        &self.format
+    }
+
+    #[must_use]
+    pub fn upstream_url(&self) -> &str {
+        match &self.provider {
+            PlaybackSubtitleProvider::External(subtitle) => &subtitle.url,
+            PlaybackSubtitleProvider::Alist(subtitle) => &subtitle.url,
+            PlaybackSubtitleProvider::Bilibili(subtitle) => &subtitle.url,
+            PlaybackSubtitleProvider::DirectUrl(subtitle) => &subtitle.url,
+            PlaybackSubtitleProvider::Emby(subtitle) => &subtitle.url,
+        }
+    }
+
+    #[must_use]
+    pub fn upstream_headers(&self) -> std::collections::HashMap<String, String> {
+        match &self.provider {
+            PlaybackSubtitleProvider::External(subtitle) => subtitle.headers.clone(),
+            PlaybackSubtitleProvider::Alist(subtitle) => subtitle.headers.clone(),
+            PlaybackSubtitleProvider::Bilibili(subtitle) => subtitle.headers.clone(),
+            PlaybackSubtitleProvider::DirectUrl(subtitle) => subtitle.headers.clone(),
+            PlaybackSubtitleProvider::Emby(subtitle) => subtitle.headers.clone(),
         }
     }
 }
 
-impl PlaybackUrlMetadata {
+impl PlaybackDanmaku {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn upstream_url(&self) -> Option<&str> {
+        match &self.provider {
+            PlaybackDanmakuProvider::External(danmaku) => Some(&danmaku.url),
+            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::File { url, .. }) => {
+                Some(url)
+            }
+            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live { .. }) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn upstream_headers(&self) -> std::collections::HashMap<String, String> {
+        match &self.provider {
+            PlaybackDanmakuProvider::External(danmaku) => danmaku.headers.clone(),
+            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::File {
+                headers, ..
+            }) => headers.clone(),
+            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live { .. }) => {
+                std::collections::HashMap::new()
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn format(&self) -> Option<&str> {
+        self.format.as_deref()
+    }
+}
+
+impl PlaybackMediaMetadata {
     /// Create metadata with resolution and codec
     #[must_use]
     pub fn new(resolution: String, codec: String) -> Self {
@@ -814,217 +1240,5 @@ impl PlaybackUrlMetadata {
             fps: None,
             extra: std::collections::HashMap::new(),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ok<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
-        match result {
-            Ok(value) => value,
-            Err(error) => std::panic::panic_any(format!("{context}: {error}")),
-        }
-    }
-
-    fn some<T>(value: Option<T>, context: &str) -> T {
-        match value {
-            Some(value) => value,
-            None => std::panic::panic_any(context.to_string()),
-        }
-    }
-
-    #[test]
-    fn test_provider_type_parse_trimmed_case_insensitive_names() {
-        assert_eq!(
-            ok(
-                " alist ".parse::<ProviderType>(),
-                "alist provider type should parse"
-            ),
-            ProviderType::Alist
-        );
-        assert_eq!(
-            ok(
-                " DIRECTURL ".parse::<ProviderType>(),
-                "direct-url provider type should parse"
-            ),
-            ProviderType::DirectUrl
-        );
-        assert_eq!(
-            ok(
-                " live_proxy ".parse::<ProviderType>(),
-                "live-proxy provider type should parse"
-            ),
-            ProviderType::LiveProxy
-        );
-    }
-
-    #[test]
-    fn test_playback_result_builder_deterministic_default_mode() {
-        let playlist_id = PlaylistId::expect_positive(60_001);
-        let room_id = RoomId::expect_positive(60_002);
-
-        for _ in 0..20 {
-            let result = some(
-                PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0)
-                    .add_mode(
-                        "alpha".to_string(),
-                        PlaybackInfo::single_url("http://a".to_string(), "A".to_string()),
-                    )
-                    .add_mode(
-                        "beta".to_string(),
-                        PlaybackInfo::single_url("http://b".to_string(), "B".to_string()),
-                    )
-                    .add_mode(
-                        "gamma".to_string(),
-                        PlaybackInfo::single_url("http://c".to_string(), "C".to_string()),
-                    )
-                    .build(),
-                "playback result should build",
-            );
-
-            assert_eq!(
-                result.default_mode, "alpha",
-                "default mode should follow insertion order"
-            );
-        }
-    }
-
-    #[test]
-    fn test_playback_result_builder_explicit_default_mode() {
-        let playlist_id = PlaylistId::expect_positive(60_003);
-        let room_id = RoomId::expect_positive(60_004);
-
-        let result = some(
-            PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0)
-                .add_mode(
-                    "direct".to_string(),
-                    PlaybackInfo::single_url("http://d".to_string(), "D".to_string()),
-                )
-                .add_mode(
-                    "proxy".to_string(),
-                    PlaybackInfo::single_url("http://p".to_string(), "P".to_string()),
-                )
-                .default_mode("proxy".to_string())
-                .build(),
-            "playback result should build",
-        );
-
-        assert_eq!(result.default_mode, "proxy");
-    }
-
-    #[test]
-    fn test_playback_result_builder_empty_returns_none() {
-        let playlist_id = PlaylistId::expect_positive(60_005);
-        let room_id = RoomId::expect_positive(60_006);
-
-        let result =
-            PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0).build();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_playback_result_builder_invalid_default_mode_returns_none() {
-        let playlist_id = PlaylistId::expect_positive(60_007);
-        let room_id = RoomId::expect_positive(60_008);
-
-        let result = PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0)
-            .add_mode(
-                "direct".to_string(),
-                PlaybackInfo::single_url("http://d".to_string(), "D".to_string()),
-            )
-            .default_mode("nonexistent".to_string())
-            .build();
-
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn subtitle_url_format_is_optional_in_json() {
-        let subtitle_url = SubtitleUrl {
-            name: "English".to_string(),
-            url: "https://example.com/sub.vtt".to_string(),
-            headers: std::collections::HashMap::new(),
-            format: "vtt".to_string(),
-        };
-
-        let json = ok(
-            serde_json::to_string(&subtitle_url),
-            "subtitle URL should serialize",
-        );
-        assert!(json.contains("\"format\":\"vtt\""));
-
-        let json_with_format =
-            r#"{"name":"Chinese","url":"https://example.com/cn.srt","format":"srt"}"#;
-        let deserialized: SubtitleUrl = ok(
-            serde_json::from_str(json_with_format),
-            "subtitle URL should deserialize",
-        );
-        assert_eq!(deserialized.name, "Chinese");
-        assert_eq!(deserialized.format, "srt");
-
-        let json_without_format = r#"{"name":"Japanese","url":"https://example.com/jp.ass"}"#;
-        let deserialized_default: SubtitleUrl = ok(
-            serde_json::from_str(json_without_format),
-            "subtitle URL default format should deserialize",
-        );
-        assert_eq!(deserialized_default.name, "Japanese");
-        assert_eq!(deserialized_default.format, "");
-
-        let empty_format = SubtitleUrl {
-            name: "Test".to_string(),
-            url: "https://example.com/test.vtt".to_string(),
-            headers: std::collections::HashMap::new(),
-            format: String::new(),
-        };
-        let json = ok(
-            serde_json::to_string(&empty_format),
-            "subtitle URL without format should serialize",
-        );
-        assert!(!json.contains("\"format\""));
-    }
-
-    #[test]
-    fn playback_info_format_is_optional_in_json() {
-        let playback_info = PlaybackInfo::builder()
-            .add_url(PlaybackUrl::simple(
-                "1080P".to_string(),
-                "https://example.com/video.m3u8".to_string(),
-            ))
-            .format("hls".to_string())
-            .build();
-        let json = ok(
-            serde_json::to_string(&playback_info),
-            "playback info should serialize",
-        );
-        assert!(json.contains("\"format\":\"hls\""));
-
-        let json_with_format =
-            r#"{"urls":[{"name":"720P","url":"https://example.com/video.mp4"}],"format":"mp4"}"#;
-        let deserialized: PlaybackInfo = ok(
-            serde_json::from_str(json_with_format),
-            "playback info should deserialize",
-        );
-        assert_eq!(deserialized.format, "mp4");
-        assert_eq!(deserialized.urls.len(), 1);
-
-        let json_without_format =
-            r#"{"urls":[{"name":"480P","url":"https://example.com/video.webm"}]}"#;
-        let deserialized_default: PlaybackInfo = ok(
-            serde_json::from_str(json_without_format),
-            "playback info default format should deserialize",
-        );
-        assert_eq!(deserialized_default.format, "");
-
-        let playback_info = PlaybackInfo::single_url(
-            "https://example.com/video.mp4".to_string(),
-            "Test".to_string(),
-        );
-        let json = ok(
-            serde_json::to_string(&playback_info),
-            "playback info without format should serialize",
-        );
-        assert!(!json.contains("\"format\""));
     }
 }

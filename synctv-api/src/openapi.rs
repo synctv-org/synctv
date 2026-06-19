@@ -2,7 +2,15 @@ use axum::Router;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::http::providers::{alist, bilibili, common, emby, rtmp};
+use crate::http::providers::{
+    alist, bilibili, common, emby,
+    playback_provider::{
+        alist as playback_provider_alist, bilibili as playback_provider_bilibili,
+        direct_url as playback_provider_direct_url, emby as playback_provider_emby,
+        live_proxy as playback_provider_live_proxy, rtmp as playback_provider_rtmp,
+    },
+    rtmp,
+};
 use crate::http::{
     admin, auth, email, health, notifications, oauth2, public, room, room_extra, ticket, user,
     webrtc, websocket, AppState,
@@ -78,9 +86,6 @@ use synctv_proto::client;
         common::enable_provider_instance,
         common::disable_provider_instance,
         common::list_backends,
-        crate::http::providers::proxy_options_preflight,
-        crate::http::providers::unified_proxy_handler,
-        crate::http::providers::unified_proxy_head_handler,
         alist::login,
         alist::list,
         alist::search,
@@ -104,6 +109,46 @@ use synctv_proto::client;
         emby::thumbnail,
         rtmp::generate_publish_key,
         rtmp::handle_stream_info,
+        playback_provider_direct_url::get_direct_url_stream,
+        playback_provider_direct_url::head_direct_url_stream,
+        playback_provider_direct_url::get_direct_url_hls_manifest,
+        playback_provider_direct_url::get_direct_url_hls_segment,
+        playback_provider_direct_url::head_direct_url_hls_segment,
+        playback_provider_direct_url::get_direct_url_subtitle,
+        playback_provider_alist::get_alist_file_stream,
+        playback_provider_alist::head_alist_file_stream,
+        playback_provider_alist::get_alist_transcoded_hls_manifest,
+        playback_provider_alist::get_alist_transcoded_hls_segment,
+        playback_provider_alist::head_alist_transcoded_hls_segment,
+        playback_provider_alist::get_alist_subtitle,
+        playback_provider_alist::get_alist_thumbnail,
+        playback_provider_emby::get_emby_media_stream,
+        playback_provider_emby::head_emby_media_stream,
+        playback_provider_emby::get_emby_hls_manifest,
+        playback_provider_emby::get_emby_hls_segment,
+        playback_provider_emby::head_emby_hls_segment,
+        playback_provider_emby::get_emby_subtitle,
+        playback_provider_bilibili::get_bilibili_media_stream,
+        playback_provider_bilibili::head_bilibili_media_stream,
+        playback_provider_bilibili::get_bilibili_hls_manifest,
+        playback_provider_bilibili::get_bilibili_hls_segment,
+        playback_provider_bilibili::head_bilibili_hls_segment,
+        playback_provider_bilibili::get_bilibili_dash_manifest,
+        playback_provider_bilibili::get_bilibili_dash_segment,
+        playback_provider_bilibili::head_bilibili_dash_segment,
+        playback_provider_bilibili::get_bilibili_subtitle,
+        playback_provider_bilibili::get_bilibili_danmaku_file,
+        playback_provider_bilibili::watch_bilibili_live_danmaku,
+        playback_provider_rtmp::get_rtmp_flv_stream,
+        playback_provider_rtmp::head_rtmp_flv_stream,
+        playback_provider_rtmp::get_rtmp_hls_playlist,
+        playback_provider_rtmp::get_rtmp_hls_segment,
+        playback_provider_rtmp::head_rtmp_hls_segment,
+        playback_provider_live_proxy::get_live_proxy_flv_stream,
+        playback_provider_live_proxy::head_live_proxy_flv_stream,
+        playback_provider_live_proxy::get_live_proxy_hls_playlist,
+        playback_provider_live_proxy::get_live_proxy_hls_segment,
+        playback_provider_live_proxy::head_live_proxy_hls_segment,
         websocket::websocket_room_connect_doc,
         room::create_room,
         room::list_or_get_rooms,
@@ -555,6 +600,12 @@ use synctv_proto::client;
         (name = "Notification", description = "Authenticated user notification endpoints"),
         (name = "OAuth2", description = "OAuth2 login and account-link endpoints"),
         (name = "Provider", description = "Provider discovery and backend selection endpoints"),
+        (name = "DirectUrl Playback Provider", description = "DirectUrl playback transport endpoints"),
+        (name = "Alist Playback Provider", description = "Alist playback transport endpoints"),
+        (name = "Emby Playback Provider", description = "Emby playback transport endpoints"),
+        (name = "Bilibili Playback Provider", description = "Bilibili playback and danmaku transport endpoints"),
+        (name = "RTMP Playback Provider", description = "RTMP live playback transport endpoints"),
+        (name = "LiveProxy Playback Provider", description = "LiveProxy playback transport endpoints"),
         (name = "User", description = "Current-user profile and ownership endpoints"),
         (name = "Room", description = "Core room lifecycle, membership, media, playback and playlist endpoints"),
         (name = "Room Member", description = "Room-scoped member moderation and permission endpoints"),
@@ -711,26 +762,6 @@ mod tests {
         assert!(
             request_body.is_object(),
             "admin update-user-preferences should document its request body"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn openapi_documents_provider_proxy_routes() -> TestResult {
-        let doc = openapi_json()?;
-
-        let path = &doc["paths"]["/api/providers/proxy/{provider_name}/{sub_path}"];
-        assert!(
-            path["get"].is_object(),
-            "provider proxy GET route should be documented"
-        );
-        assert!(
-            path["head"].is_object(),
-            "provider proxy HEAD route should be documented"
-        );
-        assert!(
-            path["options"].is_object(),
-            "provider proxy OPTIONS route should be documented"
         );
         Ok(())
     }
@@ -932,7 +963,7 @@ mod tests {
             &doc,
             "/api/rooms/{room_id}/playback",
             "get",
-            "delivery_preference",
+            "stream_preference",
             "query",
         )?;
         Ok(())

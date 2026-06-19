@@ -153,7 +153,7 @@ fn test_watch_after_event_sequence_rejects_non_utf8_last_event_id() -> TestResul
 #[test]
 fn test_build_get_playback_request_parses_generic_profile_query() -> TestResult {
     let request = app_ok(build_get_playback_request(&GetPlaybackQuery {
-        delivery_preference: Some("transcode".to_string()),
+        stream_preference: Some("transcode".to_string()),
         max_streaming_bitrate: Some(8_000_000),
         max_audio_channels: Some(2),
         video_codecs: Some("h264,av1".to_string()),
@@ -166,8 +166,8 @@ fn test_build_get_playback_request_parses_generic_profile_query() -> TestResult 
         .playback_client_profile
         .ok_or_else(|| test_error("query should produce playback client profile"))?;
     assert_eq!(
-        profile.delivery_preference,
-        synctv_proto::client::PlaybackDeliveryPreference::Transcode as i32
+        profile.stream_preference,
+        synctv_proto::client::PlaybackStreamPreference::Transcode as i32
     );
     assert_eq!(profile.max_streaming_bitrate, Some(8_000_000));
     assert_eq!(profile.max_audio_channels, Some(2));
@@ -207,7 +207,7 @@ fn test_build_get_playback_request_omits_profile_when_query_is_empty() -> TestRe
 #[test]
 fn test_handwritten_room_queries_reject_unknown_fields() {
     assert!(serde_urlencoded::from_str::<GetPlaybackQuery>(
-        "delivery_preference=direct&extra=true"
+        "stream_preference=direct_play&extra=true"
     )
     .is_err());
     assert!(serde_urlencoded::from_str::<WatchQuery>(
@@ -235,7 +235,7 @@ fn test_handwritten_room_queries_reject_unknown_fields() {
 #[test]
 fn test_build_get_playback_request_rejects_invalid_video_codec() {
     let error = build_get_playback_request(&GetPlaybackQuery {
-        delivery_preference: None,
+        stream_preference: None,
         max_streaming_bitrate: None,
         max_audio_channels: None,
         video_codecs: Some("h264,divx".to_string()),
@@ -249,9 +249,9 @@ fn test_build_get_playback_request_rejects_invalid_video_codec() {
 }
 
 #[test]
-fn test_build_get_playback_request_rejects_invalid_delivery_preference() {
+fn test_build_get_playback_request_rejects_invalid_stream_preference() {
     let error = build_get_playback_request(&GetPlaybackQuery {
-        delivery_preference: Some("download".to_string()),
+        stream_preference: Some("download".to_string()),
         max_streaming_bitrate: None,
         max_audio_channels: None,
         video_codecs: None,
@@ -259,15 +259,15 @@ fn test_build_get_playback_request_rejects_invalid_delivery_preference() {
         audio_capability: None,
         subtitle_preference: None,
     })
-    .expect_err("unknown delivery preference must be rejected");
+    .expect_err("unknown stream preference must be rejected");
 
-    assert!(error.message.contains("delivery_preference"), "{error:?}");
+    assert!(error.message.contains("stream_preference"), "{error:?}");
 }
 
 #[test]
 fn test_build_get_playback_request_rejects_invalid_container() {
     let error = build_get_playback_request(&GetPlaybackQuery {
-        delivery_preference: None,
+        stream_preference: None,
         max_streaming_bitrate: None,
         max_audio_channels: None,
         video_codecs: None,
@@ -283,7 +283,7 @@ fn test_build_get_playback_request_rejects_invalid_container() {
 #[test]
 fn test_build_get_playback_request_rejects_invalid_audio_capability() {
     let error = build_get_playback_request(&GetPlaybackQuery {
-        delivery_preference: None,
+        stream_preference: None,
         max_streaming_bitrate: None,
         max_audio_channels: None,
         video_codecs: None,
@@ -299,7 +299,7 @@ fn test_build_get_playback_request_rejects_invalid_audio_capability() {
 #[test]
 fn test_build_get_playback_request_rejects_invalid_subtitle_preference() -> TestResult {
     let error = app_err(build_get_playback_request(&GetPlaybackQuery {
-        delivery_preference: None,
+        stream_preference: None,
         max_streaming_bitrate: None,
         max_audio_channels: None,
         video_codecs: None,

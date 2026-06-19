@@ -21,6 +21,7 @@ service Bilibili {
   rpc GetLiveStreams(GetLiveStreamsReq) returns (GetLiveStreamsResp);
   rpc ParseLivePage(ParseLivePageReq) returns (VideoPageInfo);
   rpc GetLiveDanmuInfo(GetLiveDanmuInfoReq) returns (GetLiveDanmuInfoResp);
+  rpc WatchBilibiliLiveDanmaku(WatchBilibiliLiveDanmakuReq) returns (stream BilibiliLiveDanmakuEvent);
 }
 
 message Empty {}
@@ -248,4 +249,33 @@ message GetLiveDanmuInfoResp {
   }
   string token = 1;
   repeated Host host_list = 2;
+}
+
+// Internal provider-worker request. SyncTV core resolves the Bilibili source
+// config and server-side credential cookies before calling this RPC; public
+// clients never provide cookies or the upstream Bilibili room id.
+message WatchBilibiliLiveDanmakuReq {
+  map<string, string> cookies = 1;
+  uint64 room_id = 2;
+}
+
+message BilibiliLiveDanmakuEvent {
+  string format = 1;
+  string event_type = 2;
+  string user = 3;
+  string message = 4;
+  uint64 timestamp = 5;
+  string gift_name = 6;
+  uint32 gift_count = 7;
+  uint32 online_count = 8;
+  BilibiliLiveDanmakuEventType type = 9;
+}
+
+enum BilibiliLiveDanmakuEventType {
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_UNSPECIFIED = 0;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_CHAT = 1;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_USER_ENTER = 2;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_GIFT = 3;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_HEARTBEAT = 4;
+  BILIBILI_LIVE_DANMAKU_EVENT_TYPE_UNKNOWN = 5;
 }

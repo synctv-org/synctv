@@ -1,4 +1,4 @@
-//! Emby/Jellyfin `MediaProvider` Adapter
+//! Emby `MediaProvider` Adapter
 //!
 //! Adapter that calls `EmbyClient` to implement `MediaProvider` trait
 
@@ -7,9 +7,12 @@ use super::{
     store::{ProviderStoreExt, VersionedPlayback},
     DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
     MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
-    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SubtitleTrack,
+    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig,
 };
-use crate::proxy_signature::ProxySigningKey;
+use crate::models::media::{
+    PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackMedia, PlaybackMediaProvider,
+    PlaybackSubtitle, PlaybackSubtitleProvider,
+};
 use crate::service::RemoteProviderManager;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -59,40 +62,102 @@ fn optional_i64_to_proto_absent_zero(value: Option<i64>) -> i64 {
     value.unwrap_or(0)
 }
 
-fn sign_emby_playback_urls(
-    result: &mut PlaybackResult,
-    version: &str,
-    signing_key: &ProxySigningKey,
-    room_id: &str,
-    user_id: &str,
-    expires_at: i64,
-) {
-    // Emby/Jellyfin exposes upstream modes and signed proxy siblings together.
-    // Upstream token headers remain visible by product policy; administrators
-    // are warned that direct playback can disclose those credentials. Keep
-    // transcode, direct stream, HLS, and subtitle proxy actions in sync with
-    // `resolve_proxy` whenever playback modes change.
-    let signing = super::PlaybackProxySigning::new(
-        EmbyProvider::NAME,
-        version,
-        signing_key,
-        room_id,
-        user_id,
-        expires_at,
-    );
-    super::append_signed_proxy_playback_modes(
-        result,
-        &signing,
-        true,
-        false,
-        super::signed_standard_proxy_urls,
-    );
+fn playback_media(
+    name: String,
+    format: String,
+    expires_at: Option<i64>,
+    provider: PlaybackMediaProvider,
+) -> PlaybackMedia {
+    PlaybackMedia {
+        name,
+        format,
+        expire_at: expires_at.and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0)),
+        metadata: None,
+        provider,
+    }
 }
 
-/// Build an absolute Emby/Jellyfin URL from a configured server URL and an API path.
+fn mark_emby_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+    // Emby exposes upstream modes and SyncTV proxy siblings together.
+    // Upstream token headers remain visible by product policy; administrators
+    // are warned that direct playback can disclose those credentials.
+    let original_modes = result
+        .playback_infos
+        .iter()
+        .map(|(mode_name, info)| (mode_name.clone(), info.clone()))
+        .collect::<Vec<_>>();
+
+    for (mode_name, original_info) in original_modes {
+        if original_info.medias.is_empty() || mode_name.starts_with("proxy_") {
+            continue;
+        }
+
+        let proxy_mode_name = format!("proxy_{mode_name}");
+        if result.playback_infos.contains_key(&proxy_mode_name) {
+            continue;
+        }
+
+        let mut proxy_info = original_info.clone();
+        let proxy_is_hls = super::playback_info_is_hls(&mode_name, &original_info);
+        proxy_info.medias = original_info
+            .medias
+            .iter()
+            .enumerate()
+            .filter_map(|(url_index, media)| {
+                let url = media.upstream_url()?.to_string();
+                Some(playback_media(
+                    media.name.clone(),
+                    media.format.clone(),
+                    media.expire_at.map(|dt| dt.timestamp()),
+                    PlaybackMediaProvider::Emby(if proxy_is_hls {
+                        PlaybackEmbyMedia::ProxyHlsManifest {
+                            version: version.to_string(),
+                            expires_at,
+                            mode_name: mode_name.clone(),
+                            url_index,
+                            url,
+                            headers: media.upstream_headers(),
+                        }
+                    } else {
+                        PlaybackEmbyMedia::ProxyMediaStream {
+                            version: version.to_string(),
+                            expires_at,
+                            mode_name: mode_name.clone(),
+                            url_index,
+                            url,
+                            headers: media.upstream_headers(),
+                        }
+                    }),
+                ))
+            })
+            .collect();
+        proxy_info.subtitles = original_info
+            .subtitles
+            .iter()
+            .enumerate()
+            .map(|(subtitle_index, subtitle)| PlaybackSubtitle {
+                name: subtitle.name().to_string(),
+                language: subtitle.language().to_string(),
+                format: subtitle.format().to_string(),
+                provider: PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle {
+                    version: version.to_string(),
+                    expires_at,
+                    mode_name: mode_name.clone(),
+                    subtitle_index,
+                    url: subtitle.upstream_url().to_string(),
+                    headers: subtitle.upstream_headers(),
+                }),
+            })
+            .collect();
+
+        result.playback_infos.insert(proxy_mode_name, proxy_info);
+    }
+}
+
+/// Build an absolute Emby URL from a configured server URL and an API path.
 ///
 /// `host` may point at either a root deployment (`https://media.example.com`) or
-/// a reverse-proxy base path (`https://media.example.com/jellyfin`). Provider
+/// a reverse-proxy base path (`https://media.example.com/emby`). Provider
 /// responses may include paths with or without that base path, so this helper
 /// preserves the configured base path without duplicating it.
 pub fn emby_server_url(host: &str, path_or_url: &str) -> Result<String, ProviderError> {
@@ -171,16 +236,16 @@ fn grpc_playback_request_hints(
             GrpcPlaybackRequestHints {
                 max_audio_channels: profile.max_audio_channels,
                 enable_direct_play: Some(!matches!(
-                    profile.delivery_preference,
-                    super::PlaybackDeliveryPreference::Transcode
+                    profile.stream_preference,
+                    super::PlaybackStreamPreference::Transcode
                 )),
                 enable_direct_stream: Some(!matches!(
-                    profile.delivery_preference,
-                    super::PlaybackDeliveryPreference::Transcode
+                    profile.stream_preference,
+                    super::PlaybackStreamPreference::Transcode
                 )),
                 enable_transcoding: Some(!matches!(
-                    profile.delivery_preference,
-                    super::PlaybackDeliveryPreference::DirectPlay
+                    profile.stream_preference,
+                    super::PlaybackStreamPreference::DirectPlay
                 )),
                 device_profile: Some(
                     synctv_media_providers::grpc::emby::PlaybackInfoDeviceProfile {
@@ -375,7 +440,7 @@ impl EmbyProvider {
         }
     }
 
-    /// Login to Emby/Jellyfin and return a validated provider credential payload.
+    /// Login to Emby and return a validated provider credential payload.
     pub async fn login(
         &self,
         req: synctv_media_providers::grpc::emby::LoginReq,
@@ -634,7 +699,7 @@ impl EmbyProvider {
         let mut playback_infos = HashMap::new();
 
         // Emby session-based URLs: default to 30 minutes
-        let emby_expires_at = Some(Utc::now().timestamp() + 30 * 60);
+        let emby_expires_at = Utc::now().timestamp() + 30 * 60;
 
         // Auth headers for Emby: use X-Emby-Token header instead of
         // embedding api_key in query strings to avoid credential exposure
@@ -661,11 +726,17 @@ impl EmbyProvider {
             // Extract subtitles -- do NOT include api_key in the URL to avoid
             // leaking the Emby token to clients. Direct clients and the server
             // proxy both use X-Emby-Token headers, same as video streams.
-            let subtitles: Vec<SubtitleTrack> = source
+            let subtitles: Vec<PlaybackSubtitle> = source
                 .media_stream_info
                 .iter()
                 .filter(|stream| stream.r#type == "Subtitle")
                 .map(|stream| {
+                    let subtitle_index = usize::try_from(stream.index).map_err(|_| {
+                        ProviderError::InvalidConfig(format!(
+                            "Invalid Emby subtitle stream index: {}",
+                            stream.index
+                        ))
+                    })?;
                     let subtitle_url = emby_server_url(
                         &config.host,
                         &format!(
@@ -677,12 +748,18 @@ impl EmbyProvider {
                         ),
                     )?;
 
-                    Ok(SubtitleTrack {
+                    Ok(PlaybackSubtitle {
                         language: stream.language.clone(),
                         name: stream.display_title.clone(),
-                        url: subtitle_url,
-                        headers: emby_auth_headers.clone(),
                         format: stream.codec.to_lowercase(),
+                        provider: PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle {
+                            version: String::new(),
+                            expires_at: emby_expires_at,
+                            mode_name: mode_name.clone(),
+                            subtitle_index,
+                            url: subtitle_url,
+                            headers: emby_auth_headers.clone(),
+                        }),
                     })
                 })
                 .collect::<Result<_, ProviderError>>()?;
@@ -705,12 +782,20 @@ impl EmbyProvider {
             playback_infos.insert(
                 mode_name.clone(),
                 PlaybackInfo {
-                    urls: vec![direct_url],
-                    format,
-                    headers: emby_auth_headers.clone(),
+                    medias: vec![playback_media(
+                        source.name.clone(),
+                        format,
+                        Some(emby_expires_at),
+                        PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct {
+                            url: direct_url,
+                            headers: emby_auth_headers.clone(),
+                        }),
+                    )],
+                    default_media_index: None,
                     subtitles,
-                    expires_at: emby_expires_at,
-                    cors_proxy_required: true,
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
                 },
             );
 
@@ -721,12 +806,20 @@ impl EmbyProvider {
                 playback_infos.insert(
                     format!("{mode_name}_transcode"),
                     PlaybackInfo {
-                        urls: vec![transcode_url],
-                        format: "hls".to_string(), // Emby transcodes to HLS
-                        headers: emby_auth_headers.clone(),
+                        medias: vec![playback_media(
+                            format!("{mode_name} Transcode"),
+                            "hls".to_string(),
+                            Some(emby_expires_at),
+                            PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct {
+                                url: transcode_url,
+                                headers: emby_auth_headers.clone(),
+                            }),
+                        )],
+                        default_media_index: None,
                         subtitles: Vec::new(), // Subtitles burned in for transcode
-                        expires_at: emby_expires_at,
-                        cors_proxy_required: true,
+                        default_subtitle_index: None,
+                        danmakus: Vec::new(),
+                        default_danmaku_index: None,
                     },
                 );
             }
@@ -748,6 +841,8 @@ impl EmbyProvider {
         Ok(PlaybackResult {
             playback_infos,
             default_mode,
+            provider: Self::NAME.to_string(),
+            provider_instance_name: config.provider_instance_name.clone(),
             duration_seconds: item
                 .duration_seconds
                 .filter(|duration| duration.is_finite() && *duration > 0.0),
@@ -906,7 +1001,7 @@ impl MediaProvider for EmbyProvider {
                         cached,
                         Self::NAME,
                         _ctx,
-                        sign_emby_playback_urls,
+                        mark_emby_playback_resources,
                     )
                     .await;
                 }
@@ -931,7 +1026,7 @@ impl MediaProvider for EmbyProvider {
                         cached,
                         Self::NAME,
                         _ctx,
-                        sign_emby_playback_urls,
+                        mark_emby_playback_resources,
                     )
                     .await;
                 }
@@ -950,16 +1045,12 @@ impl MediaProvider for EmbyProvider {
             &cache_key,
             cache_ttl,
             _ctx,
-            sign_emby_playback_urls,
+            mark_emby_playback_resources,
         )
         .await
     }
 
     fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
-        Some(self)
-    }
-
-    fn as_provider_proxy(&self) -> Option<&dyn super::proxy::ProviderProxy> {
         Some(self)
     }
 
@@ -1142,140 +1233,114 @@ impl MediaProvider for EmbyProvider {
     }
 }
 
-// ProviderProxy implementation for Emby
-// Supported sub_paths:
-// - `{version}/stream` — proxy the video stream
-// - `{version}/m3u8` — proxy M3U8 playlist with URL rewriting
-// - `{version}/subtitle/{mode}/{index}` — proxy a subtitle track for a mode
-#[async_trait]
-impl super::proxy::ProviderProxy for EmbyProvider {
-    async fn resolve_proxy(
+impl EmbyProvider {
+    pub async fn get_media_stream(
         &self,
-        ctx: &super::proxy::ProxyRequestContext<'_>,
-    ) -> Result<super::proxy::ProxyAction, ProviderError> {
-        let sub_path = ctx.sub_path;
-        let version = super::proxy::proxy_version_segment(sub_path)?;
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        url_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+        range_header: Option<&str>,
+    ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let playback_info = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .ok_or(ProviderError::NotFound)?;
+        let media = playback_info
+            .medias
+            .get(url_index)
+            .ok_or(ProviderError::NotFound)?;
+        let url = media.upstream_url().ok_or(ProviderError::NotFound)?;
+        Ok(
+            super::playback_transport::PlaybackTransportAction::FetchAndForward {
+                url: url.to_string(),
+                headers: media.upstream_headers(),
+                range_header: range_header.map(ToString::to_string),
+            },
+        )
+    }
 
-        {
-            let versioned =
-                super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
+    pub async fn get_hls_manifest(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        url_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let playback_info = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .ok_or(ProviderError::NotFound)?;
+        let media = playback_info
+            .medias
+            .get(url_index)
+            .ok_or(ProviderError::NotFound)?;
+        let url = media.upstream_url().ok_or(ProviderError::NotFound)?;
+        Ok(
+            super::playback_transport::PlaybackTransportAction::M3u8Rewrite {
+                url: url.to_string(),
+                headers: media.upstream_headers(),
+            },
+        )
+    }
 
-            if let Some(url) = super::proxy::signed_target_url(ctx) {
-                let headers = versioned
-                    .result
-                    .playback_infos
-                    .get(&versioned.result.default_mode)
-                    .map_or_else(HashMap::new, |info| info.headers.clone());
-                return super::proxy::action_for_signed_target_url(ctx, version, url, headers);
-            }
+    pub async fn get_hls_segment(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        target_url: String,
+        request_context: Option<&super::ExecutionControl>,
+        range_header: Option<&str>,
+    ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let headers = versioned
+            .result
+            .playback_infos
+            .get(&versioned.result.default_mode)
+            .and_then(|info| info.medias.first())
+            .map_or_else(HashMap::new, PlaybackMedia::upstream_headers);
+        super::playback_transport::transport_action_for_target_url(
+            target_url,
+            headers,
+            range_header,
+        )
+    }
 
-            let (_, rest) = super::proxy::split_versioned_proxy_path(sub_path)?;
-
-            if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
-                let (mode_name, index_str) = subtitle_path
-                    .split_once('/')
-                    .ok_or(ProviderError::NotFound)?;
-                let playback_info = versioned
-                    .result
-                    .playback_infos
-                    .get(mode_name)
-                    .ok_or(ProviderError::NotFound)?;
-                let index = super::proxy::parse_proxy_index(index_str)?;
-                let subtitle = playback_info
-                    .subtitles
-                    .get(index)
-                    .ok_or(ProviderError::NotFound)?;
-
-                return Ok(super::proxy::ProxyAction::FetchAndForward {
-                    url: subtitle.url.clone(),
-                    headers: super::subtitle_headers_for_proxy(&playback_info.headers, subtitle),
-                    range_header: None,
-                });
-            }
-
-            if let Some(stream_path) = rest.strip_prefix("stream/") {
-                let (playback_info, index_str) =
-                    if let Some((mode_name, index_str)) = stream_path.split_once('/') {
-                        (
-                            versioned
-                                .result
-                                .playback_infos
-                                .get(mode_name)
-                                .ok_or(ProviderError::NotFound)?,
-                            index_str,
-                        )
-                    } else {
-                        (
-                            versioned
-                                .result
-                                .playback_infos
-                                .get(&versioned.result.default_mode)
-                                .ok_or(ProviderError::NotFound)?,
-                            stream_path,
-                        )
-                    };
-                let index = super::proxy::parse_proxy_index(index_str)?;
-                let url = playback_info
-                    .urls
-                    .get(index)
-                    .ok_or(ProviderError::NotFound)?;
-
-                return Ok(super::proxy::ProxyAction::FetchAndForward {
-                    url: url.clone(),
-                    headers: playback_info.headers.clone(),
-                    range_header: super::proxy::selected_range_header(ctx)?,
-                });
-            }
-
-            if let Some(m3u8_path) = rest.strip_prefix("m3u8/") {
-                let (mode_name, index_str) =
-                    m3u8_path.split_once('/').ok_or(ProviderError::NotFound)?;
-                let playback_info = versioned
-                    .result
-                    .playback_infos
-                    .get(mode_name)
-                    .ok_or(ProviderError::NotFound)?;
-                let index = super::proxy::parse_proxy_index(index_str)?;
-                let url = playback_info
-                    .urls
-                    .get(index)
-                    .ok_or(ProviderError::NotFound)?;
-
-                return Ok(super::proxy::ProxyAction::M3u8Rewrite {
-                    url: url.clone(),
-                    headers: playback_info.headers.clone(),
-                    proxy_base: super::proxy::m3u8_segment_proxy_base(ctx, version),
-                    proxy_url_claims: ctx.verified_claims.cloned(),
-                });
-            }
-
-            let default_info = versioned
-                .result
-                .playback_infos
-                .get(&versioned.result.default_mode)
-                .ok_or(ProviderError::NotFound)?;
-            let url = default_info.urls.first().ok_or(ProviderError::NotFound)?;
-
-            match rest {
-                "stream" => {
-                    return Ok(super::proxy::ProxyAction::FetchAndForward {
-                        url: url.clone(),
-                        headers: default_info.headers.clone(),
-                        range_header: super::proxy::selected_range_header(ctx)?,
-                    });
-                }
-                "m3u8" => {
-                    return Ok(super::proxy::ProxyAction::M3u8Rewrite {
-                        url: url.clone(),
-                        headers: default_info.headers.clone(),
-                        proxy_base: super::proxy::m3u8_segment_proxy_base(ctx, version),
-                        proxy_url_claims: ctx.verified_claims.cloned(),
-                    });
-                }
-                _ => {}
-            }
-            Err(ProviderError::NotFound)
-        }
+    pub async fn get_subtitle(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        subtitle_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let playback_info = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .ok_or(ProviderError::NotFound)?;
+        let subtitle = playback_info
+            .subtitles
+            .get(subtitle_index)
+            .ok_or(ProviderError::NotFound)?;
+        Ok(
+            super::playback_transport::PlaybackTransportAction::FetchAndForward {
+                url: subtitle.upstream_url().to_string(),
+                headers: subtitle.upstream_headers(),
+                range_header: None,
+            },
+        )
     }
 }
 
@@ -1637,755 +1702,5 @@ impl DynamicFolder for EmbyProvider {
 
         segments.reverse();
         Ok(segments)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::models::UserId;
-    use crate::provider::ProviderClientManager;
-    use crate::test_helpers::{TestOptionExt, TestResultExt};
-    use async_trait::async_trait;
-    use std::sync::Arc;
-    use synctv_media_providers::emby::{EmbyError, EmbyInterface};
-    use synctv_media_providers::grpc::emby as proto;
-    /// Validate Emby source config: checks item_id and server_id fields.
-    /// Host/token/user_id are resolved from the media or playlist creator at runtime.
-    fn validate_emby(config: &Value) -> Result<(), ProviderError> {
-        let config = EmbySourceConfig::try_from(config)?;
-
-        if config.item_id.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Emby item_id must not be empty".to_string(),
-            ));
-        }
-        if config.server_id.trim().is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Emby server_id must not be empty".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    struct TestEmbyClient;
-
-    fn unconfigured_test_response() -> EmbyError {
-        EmbyError::InvalidConfig("test emby method is not configured".to_string())
-    }
-
-    fn test_proxy_signing_key() -> ProxySigningKey {
-        ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .checked("test proxy signing key should derive")
-    }
-
-    #[test]
-    fn test_signed_emby_subtitle_urls_include_mode_and_index() {
-        let mut result = PlaybackResult {
-            playback_infos: HashMap::from([
-                (
-                    "source_a".to_string(),
-                    PlaybackInfo {
-                        urls: vec!["https://emby.example.com/Videos/123/a.mp4".to_string()],
-                        format: "mp4".to_string(),
-                        headers: HashMap::from([(
-                            "X-Emby-Token".to_string(),
-                            "api-key-123".to_string(),
-                        )]),
-                        subtitles: vec![SubtitleTrack {
-                            language: "zh-CN".to_string(),
-                            name: "Chinese".to_string(),
-                            url: "https://emby.example.com/subtitles/a-zh.srt".to_string(),
-                            headers: HashMap::new(),
-                            format: "srt".to_string(),
-                        }],
-                        expires_at: None,
-                        cors_proxy_required: true,
-                    },
-                ),
-                (
-                    "source_b".to_string(),
-                    PlaybackInfo {
-                        urls: vec!["https://emby.example.com/Videos/123/b.mp4".to_string()],
-                        format: "mp4".to_string(),
-                        headers: HashMap::new(),
-                        subtitles: vec![SubtitleTrack {
-                            language: "en-US".to_string(),
-                            name: "English".to_string(),
-                            url: "https://emby.example.com/subtitles/b-en.srt".to_string(),
-                            headers: HashMap::new(),
-                            format: "srt".to_string(),
-                        }],
-                        expires_at: None,
-                        cors_proxy_required: true,
-                    },
-                ),
-            ]),
-            default_mode: "source_a".to_string(),
-            duration_seconds: None,
-            metadata: HashMap::new(),
-        };
-        let signing_key = test_proxy_signing_key();
-
-        sign_emby_playback_urls(
-            &mut result,
-            "emode",
-            &signing_key,
-            "room-1",
-            "user-1",
-            chrono::Utc::now().timestamp() + 3600,
-        );
-
-        assert_eq!(
-            result.playback_infos["source_a"].urls[0],
-            "https://emby.example.com/Videos/123/a.mp4"
-        );
-        assert_eq!(
-            result.playback_infos["source_a"]
-                .headers
-                .get("X-Emby-Token")
-                .map(String::as_str),
-            Some("api-key-123")
-        );
-        assert!(!result.playback_infos["source_a"].cors_proxy_required);
-        assert_eq!(
-            result.playback_infos["source_b"].subtitles[0].url,
-            "https://emby.example.com/subtitles/b-en.srt"
-        );
-        assert!(result.playback_infos["source_b"].subtitles[0]
-            .headers
-            .is_empty());
-
-        let proxy_source_a = &result.playback_infos["proxy_source_a"];
-        assert!(proxy_source_a.headers.is_empty());
-        assert!(!proxy_source_a.cors_proxy_required);
-        assert!(
-            proxy_source_a.urls[0].contains("/api/providers/proxy/emby/emode/stream/source_a/0?"),
-            "signed Emby proxy URL should include source mode and index: {}",
-            proxy_source_a.urls[0]
-        );
-
-        let subtitle_url = &result.playback_infos["proxy_source_b"].subtitles[0].url;
-        assert!(
-            subtitle_url.contains("/api/providers/proxy/emby/emode/subtitle/source_b/0?"),
-            "signed Emby subtitle URL should include source mode and index: {subtitle_url}"
-        );
-        assert!(result.playback_infos["proxy_source_b"].headers.is_empty());
-        assert_eq!(result.default_mode, "source_a");
-    }
-
-    #[async_trait]
-    impl EmbyInterface for TestEmbyClient {
-        async fn login(&self, _request: proto::LoginReq) -> Result<proto::LoginResp, EmbyError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn me(&self, _request: proto::MeReq) -> Result<proto::MeResp, EmbyError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn get_items(
-            &self,
-            _request: proto::GetItemsReq,
-        ) -> Result<proto::GetItemsResp, EmbyError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn get_item(&self, _request: proto::GetItemReq) -> Result<proto::Item, EmbyError> {
-            Ok(proto::Item {
-                name: "Test Movie".to_string(),
-                id: "item-1".to_string(),
-                r#type: "Movie".to_string(),
-                parent_id: String::new(),
-                series_name: String::new(),
-                series_id: String::new(),
-                season_name: String::new(),
-                season_id: String::new(),
-                is_folder: false,
-                media_source_info: Vec::new(),
-                collection_type: String::new(),
-                has_thumbnail: false,
-                description: String::new(),
-                duration_seconds: Some(72.0),
-            })
-        }
-
-        async fn fs_list(
-            &self,
-            _request: proto::FsListReq,
-        ) -> Result<proto::FsListResp, EmbyError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn get_system_info(
-            &self,
-            _request: proto::SystemInfoReq,
-        ) -> Result<proto::SystemInfoResp, EmbyError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn logout(&self, _request: proto::LogoutReq) -> Result<proto::Empty, EmbyError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn playback_info(
-            &self,
-            _request: proto::PlaybackInfoReq,
-        ) -> Result<proto::PlaybackInfoResp, EmbyError> {
-            Ok(proto::PlaybackInfoResp {
-                play_session_id: "play-session-1".to_string(),
-                media_source_info: vec![proto::MediaSourceInfo {
-                    id: "source-1".to_string(),
-                    name: "Main".to_string(),
-                    path: String::new(),
-                    container: "mp4".to_string(),
-                    protocol: "File".to_string(),
-                    default_subtitle_stream_index: 2,
-                    default_audio_stream_index: 1,
-                    media_stream_info: vec![proto::MediaStreamInfo {
-                        codec: "srt".to_string(),
-                        language: "eng".to_string(),
-                        r#type: "Subtitle".to_string(),
-                        title: "English".to_string(),
-                        display_title: "English".to_string(),
-                        display_language: "English".to_string(),
-                        is_default: true,
-                        index: 2,
-                        protocol: "File".to_string(),
-                    }],
-                    direct_play_url: "/Videos/item-1/stream.mp4".to_string(),
-                    transcoding_url: String::new(),
-                }],
-            })
-        }
-
-        async fn delete_active_encodings(
-            &self,
-            _request: proto::DeleteActiveEncodingsReq,
-        ) -> Result<proto::Empty, EmbyError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn report_playback_start(
-            &self,
-            _request: proto::ReportPlaybackStartReq,
-        ) -> Result<proto::Empty, EmbyError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn report_playback_stop(
-            &self,
-            _request: proto::ReportPlaybackStopReq,
-        ) -> Result<proto::Empty, EmbyError> {
-            Err(unconfigured_test_response())
-        }
-
-        async fn report_playback_progress(
-            &self,
-            _request: proto::ReportPlaybackProgressReq,
-        ) -> Result<proto::Empty, EmbyError> {
-            Err(unconfigured_test_response())
-        }
-    }
-
-    fn provider_with_test_emby_client() -> EmbyProvider {
-        let default_clients = ProviderClientManager::new_for_tests()
-            .checked("default provider HTTP client should build");
-        let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
-            default_clients.local_alist_client(),
-            default_clients.local_bilibili_client(),
-            Arc::new(TestEmbyClient),
-        ));
-        EmbyProvider::with_client_manager(
-            crate::service::remote_provider_manager::empty_provider_instance_manager(),
-            client_manager,
-        )
-    }
-
-    #[tokio::test]
-    async fn test_emby_direct_playback_returns_subtitle_auth_headers() {
-        let provider = provider_with_test_emby_client();
-        let result = provider
-            .resolve_from_api(
-                &ResolvedEmbyConfig {
-                    host: "https://emby.example.com".to_string(),
-                    token: "token-123".to_string(),
-                    user_id: "user-1".to_string(),
-                    item_id: "item-1".to_string(),
-                    credential_owner_id: "owner-1".to_string(),
-                    credential_revision: "credential-1:1".to_string(),
-                    provider_instance_name: None,
-                },
-                None,
-                None,
-            )
-            .await
-            .checked("mock Emby playback should resolve");
-
-        let playback = &result.playback_infos["Main"];
-        assert_eq!(
-            playback.headers.get("X-Emby-Token").map(String::as_str),
-            Some("token-123")
-        );
-        assert_eq!(playback.subtitles.len(), 1);
-        assert_eq!(
-            playback.subtitles[0]
-                .headers
-                .get("X-Emby-Token")
-                .map(String::as_str),
-            Some("token-123"),
-            "direct subtitle clients need the same Emby auth header as video streams"
-        );
-    }
-
-    #[test]
-    fn test_valid_emby_config() {
-        let config = json!({
-            "item_id": "item-456",
-            "server_id": "test-server"
-        });
-        assert!(validate_emby(&config).is_ok());
-    }
-
-    #[test]
-    fn test_emby_config_with_provider_instance_name() {
-        let config = json!({
-            "item_id": "item-456",
-            "provider_instance_name": "remote-emby-1",
-            "server_id": "test-server"
-        });
-        assert!(validate_emby(&config).is_err());
-    }
-
-    #[tokio::test]
-    async fn test_emby_credential_dependencies_use_creator_credential() {
-        let provider = EmbyProvider::new_local_only().checked("provider should build");
-        let ctx = ProviderContext::new("test")
-            .with_user_id(UserId::expect_positive(1))
-            .with_credential_owner_id(UserId::expect_positive(2));
-        let dependencies = provider
-            .credential_dependencies(
-                &ctx,
-                &json!({
-                    "item_id": "item-456",
-                    "server_id": "emby-main"
-                }),
-            )
-            .checked("Emby dependency extraction should succeed");
-
-        assert_eq!(
-            dependencies,
-            vec![ProviderCredentialDependency::new(
-                EmbyProvider::NAME,
-                "2",
-                "emby-main"
-            )]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_emby_credential_dependencies_require_explicit_creator_credential_owner() {
-        let provider = EmbyProvider::new_local_only().checked("provider should build");
-        let ctx = ProviderContext::new("test").with_user_id(UserId::expect_positive(1));
-        let err = provider
-            .credential_dependencies(
-                &ctx,
-                &json!({
-                    "item_id": "item-456",
-                    "server_id": "emby-main"
-                }),
-            )
-            .failed("Emby must not silently fall back to viewer credentials");
-
-        assert!(
-            err.to_string().contains("credential_owner_id"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_prepare_emby_config_rejects_provider_instance_name() {
-        let provider = EmbyProvider::new_local_only().checked("provider should build");
-        let config = json!({
-            "item_id": "item-456",
-            "provider_instance_name": "remote-emby-1",
-            "server_id": "test-server"
-        });
-
-        let result = provider
-            .prepare_source_config(&ProviderContext::new("test"), config)
-            .await;
-
-        assert!(matches!(result, Err(ProviderError::InvalidConfig(_))));
-    }
-
-    #[test]
-    fn test_emby_config_empty_item_id() {
-        let config = json!({
-            "item_id": "",
-            "server_id": "test-server"
-        });
-        assert!(validate_emby(&config).is_err());
-    }
-
-    #[test]
-    fn test_emby_config_missing_required_fields() {
-        // Missing server_id entirely
-        let config = json!({
-            "item_id": "item-456"
-        });
-        assert!(validate_emby(&config).is_err());
-    }
-
-    #[test]
-    fn test_emby_config_missing_item_id() {
-        // Missing item_id field
-        let config = json!({
-            "server_id": "test-server"
-        });
-        assert!(validate_emby(&config).is_err());
-    }
-
-    #[test]
-    fn test_emby_server_id_parsing() {
-        let config = json!({
-            "item_id": "item-456",
-            "server_id": "srv-xyz"
-        });
-        let parsed = EmbySourceConfig::try_from(&config).checked("operation should succeed");
-        assert_eq!(parsed.server_id, "srv-xyz");
-        assert_eq!(parsed.item_id, "item-456");
-    }
-
-    /// Test helper to verify cursor-based pagination bounds.
-    /// The sequential mode algorithm should:
-    /// 1. Process one page at a time (max `PAGE_SIZE` items in memory)
-    /// 2. Find current item and look for next within same or next page
-    /// 3. Not accumulate items across pages (bounded memory)
-    #[test]
-    fn test_sequential_pagination_memory_bounds() {
-        // Simulate the pagination behavior: max PAGE_SIZE items in memory at once
-        const PAGE_SIZE: usize = 50;
-
-        // Simulate finding item at position 75 (page 1, index 25)
-        let current_item_idx = 75;
-
-        // Old behavior would load: page 0 + page 1 = 100 items
-        // New behavior only processes one page at a time
-
-        let page_of_current = current_item_idx / PAGE_SIZE; // page 1
-        let idx_in_page = current_item_idx % PAGE_SIZE; // index 25
-
-        assert_eq!(page_of_current, 1);
-        assert_eq!(idx_in_page, 25);
-
-        // Next item is at position 76 (same page, index 26)
-        // So we only need to keep at most PAGE_SIZE items in memory
-        let next_idx_in_page = idx_in_page + 1;
-        assert!(next_idx_in_page < PAGE_SIZE, "Next item is in same page");
-
-        // If current is at end of page (index 49), next is in next page
-        // We discard current page and fetch next, still only PAGE_SIZE in memory
-    }
-
-    /// Test shuffle mode memory bounds (capped at `MAX_ITEMS`).
-    #[test]
-    fn test_shuffle_pagination_memory_bounds() {
-        const PAGE_SIZE: usize = 50;
-        const MAX_ITEMS: usize = 200;
-
-        // Simulate a folder with 500 items
-        let total_items = 500;
-
-        // Old behavior: would fetch 20 pages = 1000 items (or hit MAX_PAGES limit)
-        // New behavior: stops at MAX_ITEMS = 200 items (4 pages)
-
-        let pages_to_fetch = MAX_ITEMS.div_ceil(PAGE_SIZE); // 4 pages
-        let items_fetched = pages_to_fetch * PAGE_SIZE; // 200 items
-
-        assert_eq!(pages_to_fetch, 4);
-        assert!(items_fetched <= MAX_ITEMS);
-        assert!(items_fetched < total_items, "Should not fetch all items");
-
-        // Memory usage: max 200 items vs 1000 items (80% reduction)
-    }
-
-    #[test]
-    fn test_thumbnail_url_must_not_contain_raw_token() {
-        // The thumbnail URL format in list_playlist should never contain the raw
-        // Emby API token in the query string. Instead it should carry only the
-        // opaque server_id so the authenticated thumbnail handler can resolve
-        // credentials server-side.
-        let raw_token = "super-secret-api-key-12345";
-        let item_id = "item-789";
-        let server_id = "srv-123";
-        let credential_owner_id = "owner-456";
-
-        let thumbnail_url =
-            EmbyProvider::build_thumbnail_url(server_id, credential_owner_id, item_id);
-
-        assert!(
-            !thumbnail_url.contains(raw_token),
-            "Thumbnail URL must not contain the raw Emby API token"
-        );
-        assert!(
-            !thumbnail_url.contains("token="),
-            "Thumbnail URL must not include a 'token=' query parameter"
-        );
-        assert!(
-            thumbnail_url.contains("server_id=srv-123"),
-            "Thumbnail URL must include the opaque server_id for credential lookup"
-        );
-        assert!(
-            thumbnail_url.contains("credential_owner_id=owner-456"),
-            "Thumbnail URL must include the credential owner for shared Emby media"
-        );
-    }
-
-    #[test]
-    fn test_thumbnail_url_uses_public_credential_owner_id() {
-        let ctx = ProviderContext::new("test")
-            .with_credential_owner_id(UserId::expect_positive(2))
-            .with_public_credential_owner_id("usr_2");
-        let credential_owner_id = ctx.public_credential_owner_id().map_or_else(
-            || {
-                ctx.credential_owner_id()
-                    .expect("credential owner should be present")
-                    .to_string()
-            },
-            str::to_owned,
-        );
-
-        let thumbnail_url =
-            EmbyProvider::build_thumbnail_url("srv-123", &credential_owner_id, "item-789");
-
-        assert!(
-            thumbnail_url.contains("credential_owner_id=usr_2"),
-            "client-facing Emby thumbnail URLs must carry public user IDs: {thumbnail_url}"
-        );
-    }
-
-    #[test]
-    fn test_emby_playback_cache_key_includes_credential_owner() {
-        let revision = "credential-1:1000";
-        let owner_a =
-            EmbyProvider::playback_cache_key("server-1", "owner-a", revision, "item-1", "default");
-        let owner_b =
-            EmbyProvider::playback_cache_key("server-1", "owner-b", revision, "item-1", "default");
-
-        assert_ne!(
-            owner_a, owner_b,
-            "Emby playback cache must be isolated by credential owner"
-        );
-    }
-
-    #[test]
-    fn test_emby_playback_cache_key_includes_client_profile() {
-        let revision = "credential-1:1000";
-        let default_profile =
-            EmbyProvider::playback_cache_key("server-1", "owner-a", revision, "item-1", "default");
-        let mobile_profile =
-            EmbyProvider::playback_cache_key("server-1", "owner-a", revision, "item-1", "mobile");
-
-        assert_ne!(
-            default_profile, mobile_profile,
-            "Emby playback cache must remain isolated by playback client profile"
-        );
-    }
-
-    #[test]
-    fn test_emby_playback_cache_key_includes_credential_update_time() {
-        let first = EmbyProvider::playback_cache_key(
-            "server-1",
-            "owner-a",
-            "credential-1:1000",
-            "item-1",
-            "default",
-        );
-        let second = EmbyProvider::playback_cache_key(
-            "server-1",
-            "owner-a",
-            "credential-1:2000",
-            "item-1",
-            "default",
-        );
-
-        assert_ne!(
-            first, second,
-            "Credential changes must invalidate Emby playback cache entries"
-        );
-    }
-
-    #[test]
-    fn test_emby_server_url_supports_emby_and_jellyfin_root_deployments() {
-        assert_eq!(
-            emby_server_url("https://emby.example.com", "/Items/item-1/Download")
-                .checked("operation should succeed"),
-            "https://emby.example.com/Items/item-1/Download"
-        );
-        assert_eq!(
-            emby_server_url("https://jellyfin.example.com", "/Items/item-1/Download")
-                .checked("operation should succeed"),
-            "https://jellyfin.example.com/Items/item-1/Download"
-        );
-    }
-
-    #[test]
-    fn test_emby_server_url_preserves_configured_base_path_without_duplication() {
-        assert_eq!(
-            emby_server_url(
-                "https://media.example.com/jellyfin",
-                "/Items/item-1/Download"
-            )
-            .checked("operation should succeed"),
-            "https://media.example.com/jellyfin/Items/item-1/Download"
-        );
-        assert_eq!(
-            emby_server_url(
-                "https://media.example.com/jellyfin",
-                "/jellyfin/Videos/item/master.m3u8"
-            )
-            .checked("operation should succeed"),
-            "https://media.example.com/jellyfin/Videos/item/master.m3u8"
-        );
-    }
-
-    #[test]
-    fn test_emby_server_url_accepts_absolute_provider_urls() {
-        assert_eq!(
-            emby_server_url(
-                "https://media.example.com/jellyfin",
-                "https://cdn.example.com/video.m3u8"
-            )
-            .checked("operation should succeed"),
-            "https://cdn.example.com/video.m3u8"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_emby_playback_lifecycle_session_id_uses_provider_metadata() {
-        let provider = EmbyProvider::new_local_only().checked("provider should build");
-        let result = PlaybackResult {
-            playback_infos: HashMap::new(),
-            default_mode: "direct".to_string(),
-            duration_seconds: None,
-            metadata: HashMap::from([(
-                "emby_play_session_id".to_string(),
-                json!("play-session-123"),
-            )]),
-        };
-
-        assert_eq!(
-            provider.playback_lifecycle_session_id(&result).as_deref(),
-            Some("play-session-123")
-        );
-    }
-
-    #[test]
-    fn grpc_playback_request_hints_omit_provider_profile_when_client_profile_is_absent() {
-        let hints = grpc_playback_request_hints(None);
-
-        assert_eq!(hints.max_audio_channels, None);
-        assert_eq!(hints.enable_direct_play, None);
-        assert_eq!(hints.enable_direct_stream, None);
-        assert_eq!(hints.enable_transcoding, None);
-        assert!(hints.device_profile.is_none());
-    }
-
-    #[test]
-    fn grpc_playback_request_hints_map_transcode_profile_without_subtitles() {
-        let profile = crate::provider::PlaybackClientProfile {
-            delivery_preference: crate::provider::PlaybackDeliveryPreference::Transcode,
-            max_streaming_bitrate: Some(8_000_000),
-            max_audio_channels: Some(2),
-            supported_video_codecs: vec![
-                crate::provider::PlaybackVideoCodec::H264,
-                crate::provider::PlaybackVideoCodec::Vp9,
-            ],
-            supported_containers: vec![
-                crate::provider::PlaybackContainer::Mp4,
-                crate::provider::PlaybackContainer::Webm,
-            ],
-            audio_capability: crate::provider::PlaybackAudioCapability::Stereo,
-            subtitle_preference: crate::provider::PlaybackSubtitlePreference::None,
-        };
-
-        let hints = grpc_playback_request_hints(Some(&profile));
-        let device_profile = hints
-            .device_profile
-            .checked("client profile should produce an Emby device profile");
-
-        assert_eq!(hints.max_audio_channels, Some(2));
-        assert_eq!(hints.enable_direct_play, Some(false));
-        assert_eq!(hints.enable_direct_stream, Some(false));
-        assert_eq!(hints.enable_transcoding, Some(true));
-        assert_eq!(device_profile.transcoding_container, "ts");
-        assert_eq!(device_profile.transcoding_protocol, "hls");
-        assert_eq!(device_profile.transcoding_video_codec, "h264");
-        assert_eq!(device_profile.transcoding_audio_codec, "aac");
-        assert!(
-            device_profile.subtitle_profiles.is_empty(),
-            "subtitle preference none must become an explicit empty Emby subtitle profile"
-        );
-
-        assert_eq!(device_profile.direct_play_profiles.len(), 2);
-        let mp4 = device_profile
-            .direct_play_profiles
-            .iter()
-            .find(|profile| profile.container == "mp4,m4v")
-            .checked("mp4 direct-play profile should exist");
-        assert_eq!(mp4.video_codecs, vec!["h264", "vp9"]);
-        assert_eq!(mp4.audio_codecs, vec!["aac", "mp3"]);
-
-        let webm = device_profile
-            .direct_play_profiles
-            .iter()
-            .find(|profile| profile.container == "webm")
-            .checked("webm direct-play profile should exist");
-        assert_eq!(webm.video_codecs, vec!["vp9"]);
-        assert_eq!(webm.audio_codecs, vec!["vorbis", "opus"]);
-    }
-
-    #[test]
-    fn grpc_playback_request_hints_map_direct_play_profile_with_embedded_or_external_subtitles() {
-        let profile = crate::provider::PlaybackClientProfile {
-            delivery_preference: crate::provider::PlaybackDeliveryPreference::DirectPlay,
-            max_streaming_bitrate: None,
-            max_audio_channels: Some(6),
-            supported_video_codecs: vec![
-                crate::provider::PlaybackVideoCodec::Hevc,
-                crate::provider::PlaybackVideoCodec::Av1,
-            ],
-            supported_containers: vec![crate::provider::PlaybackContainer::Mkv],
-            audio_capability: crate::provider::PlaybackAudioCapability::Surround,
-            subtitle_preference: crate::provider::PlaybackSubtitlePreference::EmbeddedOrExternal,
-        };
-
-        let hints = grpc_playback_request_hints(Some(&profile));
-        let device_profile = hints
-            .device_profile
-            .checked("client profile should produce an Emby device profile");
-
-        assert_eq!(hints.enable_direct_play, Some(true));
-        assert_eq!(hints.enable_direct_stream, Some(true));
-        assert_eq!(hints.enable_transcoding, Some(false));
-        assert_eq!(device_profile.direct_play_profiles.len(), 1);
-
-        let mkv = &device_profile.direct_play_profiles[0];
-        assert_eq!(mkv.container, "mkv");
-        assert_eq!(mkv.video_codecs, vec!["hevc", "av1"]);
-        assert_eq!(mkv.audio_codecs, vec!["aac", "mp3", "ac3", "eac3", "dts"]);
-
-        let methods: Vec<i32> = device_profile
-            .subtitle_profiles
-            .iter()
-            .map(|profile| profile.method)
-            .collect();
-        assert!(methods.contains(
-            &(synctv_media_providers::grpc::emby::SubtitleDeliveryMethod::External as i32)
-        ));
-        assert!(methods
-            .contains(&(synctv_media_providers::grpc::emby::SubtitleDeliveryMethod::Embed as i32)));
-        assert_eq!(device_profile.subtitle_profiles.len(), 6);
     }
 }

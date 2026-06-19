@@ -160,6 +160,7 @@ impl RoomService {
                 credential_encryption: options.credential_encryption.clone(),
                 credential_repo: options.credential_repo.clone(),
                 provider_access_service: options.provider_access_service.clone(),
+                provider_stores: options.provider_stores.clone(),
                 realtime_outbox: options.realtime_outbox.clone(),
                 file_storage_service: options.media_file_storage_service.clone(),
             },

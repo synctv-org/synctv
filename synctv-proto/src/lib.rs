@@ -36,6 +36,18 @@ pub static PROVIDERS_DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::Descrip
             .expect("synctv-proto provider descriptor pool must decode")
     });
 
+/// Encoded file descriptor set for playback-provider proto definitions.
+pub const PLAYBACK_PROVIDER_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(
+    env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+    "/descriptor.bin"
+));
+
+pub static PLAYBACK_PROVIDER_DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::DescriptorPool> =
+    std::sync::LazyLock::new(|| {
+        prost_reflect::DescriptorPool::decode(PLAYBACK_PROVIDER_FILE_DESCRIPTOR_SET)
+            .expect("synctv-proto playback-provider descriptor pool must decode")
+    });
+
 pub fn validate<M: prost_reflect::ReflectMessage>(
     message: &M,
 ) -> Result<(), prost_protovalidate::Error> {
@@ -119,6 +131,74 @@ pub mod providers {
         include!(concat!(
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
             "/synctv.provider.emby.rs"
+        ));
+    }
+}
+
+// Playback provider playback resources
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[allow(clippy::pedantic)]
+pub mod playback_provider {
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod common {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.common.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod direct_url {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.direct_url.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod alist {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.alist.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod emby {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.emby.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod bilibili {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.bilibili.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod rtmp {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.rtmp.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
+    pub mod live_proxy {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.live_proxy.rs"
         ));
     }
 }

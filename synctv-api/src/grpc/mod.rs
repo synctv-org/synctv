@@ -8,6 +8,12 @@
 // Re-export cluster proto from synctv-cluster (internal)
 pub use synctv_cluster::grpc::synctv::cluster;
 use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
+use synctv_proto::playback_provider::alist::alist_playback_provider_service_server::AlistPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::bilibili::bilibili_playback_provider_service_server::BilibiliPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::direct_url::direct_url_playback_provider_service_server::DirectUrlPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::emby::emby_playback_provider_service_server::EmbyPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::live_proxy::live_proxy_playback_provider_service_server::LiveProxyPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::rtmp::rtmp_playback_provider_service_server::RtmpPlaybackProviderServiceServer;
 use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
 use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
 use synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer;
@@ -20,6 +26,7 @@ pub mod admin_service;
 pub mod client_service;
 pub mod notification_service;
 pub mod oauth2_service;
+pub mod playback_provider;
 
 // Provider gRPC services (local implementations)
 // Provider-specific gRPC services are registered from provider instances
@@ -114,6 +121,12 @@ impl_grpc_service_ext!(<T> synctv_proto::providers::bilibili::bilibili_provider_
 impl_grpc_service_ext!(<T> synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::direct_url::direct_url_playback_provider_service_server::DirectUrlPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::alist::alist_playback_provider_service_server::AlistPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::emby::emby_playback_provider_service_server::EmbyPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::bilibili::bilibili_playback_provider_service_server::BilibiliPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::rtmp::rtmp_playback_provider_service_server::RtmpPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::live_proxy::live_proxy_playback_provider_service_server::LiveProxyPlaybackProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_livestream::StreamRelayServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_cluster::grpc::ClusterServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_realtime::grpc::RealtimePresenceServiceServer<T>);
@@ -305,6 +318,36 @@ async fn set_registered_grpc_services_serving(
         health_reporter
             .set_serving::<RtmpProviderServiceServer<providers::rtmp::RtmpProviderGrpcService>>()
             .await;
+        health_reporter
+            .set_serving::<DirectUrlPlaybackProviderServiceServer<
+                playback_provider::direct_url::DirectUrlPlaybackProviderGrpcService,
+            >>()
+            .await;
+        health_reporter
+            .set_serving::<AlistPlaybackProviderServiceServer<
+                playback_provider::alist::AlistPlaybackProviderGrpcService,
+            >>()
+            .await;
+        health_reporter
+            .set_serving::<EmbyPlaybackProviderServiceServer<
+                playback_provider::emby::EmbyPlaybackProviderGrpcService,
+            >>()
+            .await;
+        health_reporter
+            .set_serving::<BilibiliPlaybackProviderServiceServer<
+                playback_provider::bilibili::BilibiliPlaybackProviderGrpcService,
+            >>()
+            .await;
+        health_reporter
+            .set_serving::<RtmpPlaybackProviderServiceServer<
+                playback_provider::rtmp::RtmpPlaybackProviderGrpcService,
+            >>()
+            .await;
+        health_reporter
+            .set_serving::<LiveProxyPlaybackProviderServiceServer<
+                playback_provider::live_proxy::LiveProxyPlaybackProviderGrpcService,
+            >>()
+            .await;
     }
     if state.cluster_service_registered {
         health_reporter
@@ -412,6 +455,36 @@ async fn set_registered_grpc_services_not_serving(
         health_reporter
             .set_not_serving::<RtmpProviderServiceServer<providers::rtmp::RtmpProviderGrpcService>>(
             )
+            .await;
+        health_reporter
+            .set_not_serving::<DirectUrlPlaybackProviderServiceServer<
+                playback_provider::direct_url::DirectUrlPlaybackProviderGrpcService,
+            >>()
+            .await;
+        health_reporter
+            .set_not_serving::<AlistPlaybackProviderServiceServer<
+                playback_provider::alist::AlistPlaybackProviderGrpcService,
+            >>()
+            .await;
+        health_reporter
+            .set_not_serving::<EmbyPlaybackProviderServiceServer<
+                playback_provider::emby::EmbyPlaybackProviderGrpcService,
+            >>()
+            .await;
+        health_reporter
+            .set_not_serving::<BilibiliPlaybackProviderServiceServer<
+                playback_provider::bilibili::BilibiliPlaybackProviderGrpcService,
+            >>()
+            .await;
+        health_reporter
+            .set_not_serving::<RtmpPlaybackProviderServiceServer<
+                playback_provider::rtmp::RtmpPlaybackProviderGrpcService,
+            >>()
+            .await;
+        health_reporter
+            .set_not_serving::<LiveProxyPlaybackProviderServiceServer<
+                playback_provider::live_proxy::LiveProxyPlaybackProviderGrpcService,
+            >>()
             .await;
     }
     if state.cluster_service_registered {
@@ -1075,6 +1148,60 @@ async fn build_axum_router_with_health(
             ))
             .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
+        routes.add_service(
+            DirectUrlPlaybackProviderServiceServer::new(
+                playback_provider::direct_url::DirectUrlPlaybackProviderGrpcService::new(
+                    shared_http_app_state.clone(),
+                    Arc::new(config.clone()),
+                ),
+            )
+            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+        );
+        routes.add_service(
+            AlistPlaybackProviderServiceServer::new(
+                playback_provider::alist::AlistPlaybackProviderGrpcService::new(
+                    shared_http_app_state.clone(),
+                    Arc::new(config.clone()),
+                ),
+            )
+            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+        );
+        routes.add_service(
+            EmbyPlaybackProviderServiceServer::new(
+                playback_provider::emby::EmbyPlaybackProviderGrpcService::new(
+                    shared_http_app_state.clone(),
+                    Arc::new(config.clone()),
+                ),
+            )
+            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+        );
+        routes.add_service(
+            BilibiliPlaybackProviderServiceServer::new(
+                playback_provider::bilibili::BilibiliPlaybackProviderGrpcService::new(
+                    shared_http_app_state.clone(),
+                    Arc::new(config.clone()),
+                ),
+            )
+            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+        );
+        routes.add_service(
+            RtmpPlaybackProviderServiceServer::new(
+                playback_provider::rtmp::RtmpPlaybackProviderGrpcService::new(
+                    shared_http_app_state.clone(),
+                    Arc::new(config.clone()),
+                ),
+            )
+            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+        );
+        routes.add_service(
+            LiveProxyPlaybackProviderServiceServer::new(
+                playback_provider::live_proxy::LiveProxyPlaybackProviderGrpcService::new(
+                    shared_http_app_state.clone(),
+                    Arc::new(config.clone()),
+                ),
+            )
+            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+        );
     }
 
     // Register cluster gRPC service only in distributed mode.
@@ -1183,6 +1310,9 @@ async fn build_axum_router_with_health(
         let reflection_service = tonic_reflection::server::Builder::configure()
             .register_encoded_file_descriptor_set(synctv_proto::FILE_DESCRIPTOR_SET)
             .register_encoded_file_descriptor_set(synctv_proto::PROVIDERS_FILE_DESCRIPTOR_SET)
+            .register_encoded_file_descriptor_set(
+                synctv_proto::PLAYBACK_PROVIDER_FILE_DESCRIPTOR_SET,
+            )
             .build_v1()
             .map_err(|e| anyhow::anyhow!("Failed to build gRPC reflection service: {e}"))?;
         routes.add_service(reflection_service);
@@ -1821,7 +1951,7 @@ mod tests {
                 &http_state.shared_api_runtime.provider_access_service,
                 &http_state
                     .shared_api_runtime
-                    .proxy_services
+                    .playback_transport_services
                     .provider_access_service
             ),
             "fallback HTTP state must share provider access cache with proxy services"

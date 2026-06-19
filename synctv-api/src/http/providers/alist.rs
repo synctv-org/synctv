@@ -1,7 +1,7 @@
 //! Alist Provider HTTP Routes
 //!
 //! Provider API endpoints for Alist login, directory listing, etc.
-//! Proxy routes are handled by the unified proxy handler in `providers/mod.rs`.
+//! Playback transport routes live under the Alist playback-provider module.
 
 use axum::{
     extract::State,

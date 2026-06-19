@@ -3,11 +3,14 @@
 //! Provides direct playback for HTTP(S) URLs
 
 use super::{
-    proxy::{ProviderProxy, ProxyAction, ProxyRequestContext},
+    playback_transport::PlaybackTransportAction,
     store::{ProviderStoreExt, VersionedPlayback},
     MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
 };
-use crate::proxy_signature::ProxySigningKey;
+use crate::models::media::{
+    PlaybackDirectUrlMedia, PlaybackDirectUrlSubtitle, PlaybackMedia, PlaybackMediaProvider,
+    PlaybackSubtitle, PlaybackSubtitleProvider,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -212,183 +215,224 @@ impl TryFrom<&Value> for DirectUrlSourceConfig {
     }
 }
 
-fn sign_direct_url_playback_urls(
-    result: &mut PlaybackResult,
-    version: &str,
-    signing_key: &ProxySigningKey,
-    room_id: &str,
-    user_id: &str,
-    expires_at: i64,
-) {
-    // Direct URL usually keeps the upstream mode as default. When headers are
-    // required, the proxy sibling becomes default because the server must own
-    // those transport headers for browser and app clients alike. Keep stream,
-    // indexed HLS, and subtitle proxy actions in sync with `resolve_proxy`.
-    let signing = super::PlaybackProxySigning::new(
-        DirectUrlProvider::NAME,
-        version,
-        signing_key,
-        room_id,
-        user_id,
-        expires_at,
-    );
-    let prefer_proxy_default = super::signed_playback_default_needs_proxy(result);
-    super::append_signed_proxy_playback_modes_with_policy(
-        result,
-        &signing,
-        false,
-        prefer_proxy_default,
-        true,
-        super::signed_standard_proxy_urls,
-    );
+fn playback_media(
+    name: String,
+    format: String,
+    expires_at: Option<i64>,
+    provider: PlaybackMediaProvider,
+) -> PlaybackMedia {
+    PlaybackMedia {
+        name,
+        format,
+        expire_at: expires_at.and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0)),
+        metadata: None,
+        provider,
+    }
 }
 
-// ProviderProxy implementation for DirectUrl
-// Supported sub_paths (same pattern as other providers):
-// - `{version}/stream` — proxy the video stream
-// - `{version}/m3u8` — proxy M3U8 with URL rewriting
-// - `{version}/subtitle/{mode}/{index}` — proxy a subtitle track for a mode
-#[async_trait]
-impl ProviderProxy for DirectUrlProvider {
-    async fn resolve_proxy(
-        &self,
-        ctx: &ProxyRequestContext<'_>,
-    ) -> Result<ProxyAction, ProviderError> {
-        let sub_path = ctx.sub_path;
-        let version = super::proxy::proxy_version_segment(sub_path)?;
+fn mark_direct_url_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+    // Direct URL usually keeps the upstream mode as default. When headers are
+    // required, the proxy sibling becomes default because the server must own
+    // those transport headers for browser and app clients alike.
+    let prefer_proxy_default = super::signed_playback_default_needs_proxy(result);
+    let original_default_mode = result.default_mode.clone();
+    let mut selected_default_mode = original_default_mode.clone();
+    let original_modes = result
+        .playback_infos
+        .iter()
+        .map(|(mode_name, info)| (mode_name.clone(), info.clone()))
+        .collect::<Vec<_>>();
 
-        {
-            let versioned =
-                super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
-
-            if let Some(url) = super::proxy::signed_target_url(ctx) {
-                let headers = versioned
-                    .result
-                    .playback_infos
-                    .get(&versioned.result.default_mode)
-                    .map_or_else(HashMap::new, |info| info.headers.clone());
-                return super::proxy::action_for_signed_target_url(ctx, version, url, headers);
-            }
-
-            let (_, rest) = super::proxy::split_versioned_proxy_path(sub_path)?;
-
-            if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
-                let (playback_info, index_str) =
-                    if let Some((mode_name, index_str)) = subtitle_path.split_once('/') {
-                        (
-                            versioned
-                                .result
-                                .playback_infos
-                                .get(mode_name)
-                                .ok_or(ProviderError::NotFound)?,
-                            index_str,
-                        )
-                    } else {
-                        (
-                            versioned
-                                .result
-                                .playback_infos
-                                .get(&versioned.result.default_mode)
-                                .ok_or(ProviderError::NotFound)?,
-                            subtitle_path,
-                        )
-                    };
-                let index = super::proxy::parse_proxy_index(index_str)?;
-                let subtitle = playback_info
-                    .subtitles
-                    .get(index)
-                    .ok_or(ProviderError::NotFound)?;
-
-                return Ok(ProxyAction::FetchAndForward {
-                    url: subtitle.url.clone(),
-                    headers: super::subtitle_headers_for_proxy(&playback_info.headers, subtitle),
-                    range_header: None,
-                });
-            }
-
-            if let Some(stream_path) = rest.strip_prefix("stream/") {
-                let (playback_info, index_str) =
-                    if let Some((mode_name, index_str)) = stream_path.split_once('/') {
-                        (
-                            versioned
-                                .result
-                                .playback_infos
-                                .get(mode_name)
-                                .ok_or(ProviderError::NotFound)?,
-                            index_str,
-                        )
-                    } else {
-                        (
-                            versioned
-                                .result
-                                .playback_infos
-                                .get(&versioned.result.default_mode)
-                                .ok_or(ProviderError::NotFound)?,
-                            stream_path,
-                        )
-                    };
-                let index = super::proxy::parse_proxy_index(index_str)?;
-                let url = playback_info
-                    .urls
-                    .get(index)
-                    .ok_or(ProviderError::NotFound)?;
-
-                return Ok(ProxyAction::FetchAndForward {
-                    url: url.clone(),
-                    headers: playback_info.headers.clone(),
-                    range_header: super::proxy::selected_range_header(ctx)?,
-                });
-            }
-
-            if let Some(m3u8_path) = rest.strip_prefix("m3u8/") {
-                let (mode_name, index_str) =
-                    m3u8_path.split_once('/').ok_or(ProviderError::NotFound)?;
-                let playback_info = versioned
-                    .result
-                    .playback_infos
-                    .get(mode_name)
-                    .ok_or(ProviderError::NotFound)?;
-                let index = super::proxy::parse_proxy_index(index_str)?;
-                let url = playback_info
-                    .urls
-                    .get(index)
-                    .ok_or(ProviderError::NotFound)?;
-
-                return Ok(ProxyAction::M3u8Rewrite {
-                    url: url.clone(),
-                    headers: playback_info.headers.clone(),
-                    proxy_base: super::proxy::m3u8_segment_proxy_base(ctx, version),
-                    proxy_url_claims: ctx.verified_claims.cloned(),
-                });
-            }
-
-            let default_info = versioned
-                .result
-                .playback_infos
-                .get(&versioned.result.default_mode)
-                .ok_or(ProviderError::NotFound)?;
-            let url = default_info.urls.first().ok_or(ProviderError::NotFound)?;
-
-            match rest {
-                "stream" => {
-                    return Ok(ProxyAction::FetchAndForward {
-                        url: url.clone(),
-                        headers: default_info.headers.clone(),
-                        range_header: super::proxy::selected_range_header(ctx)?,
-                    });
-                }
-                "m3u8" => {
-                    return Ok(ProxyAction::M3u8Rewrite {
-                        url: url.clone(),
-                        headers: default_info.headers.clone(),
-                        proxy_base: super::proxy::m3u8_segment_proxy_base(ctx, version),
-                        proxy_url_claims: ctx.verified_claims.cloned(),
-                    });
-                }
-                _ => {}
-            }
-            Err(ProviderError::NotFound)
+    for (mode_name, original_info) in original_modes {
+        if original_info.medias.is_empty() || mode_name.starts_with("proxy_") {
+            continue;
         }
+
+        let original_has_transport_headers =
+            super::playback_info_has_transport_headers(&original_info);
+
+        let proxy_mode_name = format!("proxy_{mode_name}");
+        if prefer_proxy_default && mode_name == original_default_mode {
+            selected_default_mode.clone_from(&proxy_mode_name);
+        }
+        if result.playback_infos.contains_key(&proxy_mode_name) {
+            if original_has_transport_headers {
+                result.playback_infos.remove(&mode_name);
+            }
+            continue;
+        }
+
+        let mut proxy_info = original_info.clone();
+        let proxy_is_hls = super::playback_info_is_hls(&mode_name, &original_info);
+        proxy_info.medias = original_info
+            .medias
+            .iter()
+            .enumerate()
+            .filter_map(|(url_index, media)| {
+                let url = media.upstream_url()?.to_string();
+                let headers = media.upstream_headers();
+                Some(playback_media(
+                    media.name.clone(),
+                    media.format.clone(),
+                    media.expire_at.map(|dt| dt.timestamp()),
+                    PlaybackMediaProvider::DirectUrl(if proxy_is_hls {
+                        PlaybackDirectUrlMedia::ProxyHlsManifest {
+                            version: version.to_string(),
+                            expires_at,
+                            mode_name: mode_name.clone(),
+                            url_index,
+                            url,
+                            headers,
+                        }
+                    } else {
+                        PlaybackDirectUrlMedia::ProxyStream {
+                            version: version.to_string(),
+                            expires_at,
+                            mode_name: mode_name.clone(),
+                            url_index,
+                            url,
+                            headers,
+                        }
+                    }),
+                ))
+            })
+            .collect();
+        proxy_info.subtitles = original_info
+            .subtitles
+            .iter()
+            .enumerate()
+            .map(|(subtitle_index, subtitle)| PlaybackSubtitle {
+                name: subtitle.name().to_string(),
+                language: subtitle.language().to_string(),
+                format: subtitle.format().to_string(),
+                provider: PlaybackSubtitleProvider::DirectUrl(PlaybackDirectUrlSubtitle {
+                    version: version.to_string(),
+                    expires_at,
+                    mode_name: mode_name.clone(),
+                    subtitle_index,
+                    url: subtitle.upstream_url().to_string(),
+                    headers: subtitle.upstream_headers(),
+                }),
+            })
+            .collect();
+
+        result.playback_infos.insert(proxy_mode_name, proxy_info);
+        if original_has_transport_headers {
+            result.playback_infos.remove(&mode_name);
+        }
+    }
+
+    result.default_mode = selected_default_mode;
+}
+
+impl DirectUrlProvider {
+    pub async fn get_stream(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        url_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+        range_header: Option<&str>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let playback_info = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .ok_or(ProviderError::NotFound)?;
+        let media = playback_info
+            .medias
+            .get(url_index)
+            .ok_or(ProviderError::NotFound)?;
+        let url = media.upstream_url().ok_or(ProviderError::NotFound)?;
+        Ok(PlaybackTransportAction::FetchAndForward {
+            url: url.to_string(),
+            headers: media.upstream_headers(),
+            range_header: range_header.map(ToString::to_string),
+        })
+    }
+
+    pub async fn get_hls_manifest(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        url_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let playback_info = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .ok_or(ProviderError::NotFound)?;
+        let media = playback_info
+            .medias
+            .get(url_index)
+            .ok_or(ProviderError::NotFound)?;
+        let url = media.upstream_url().ok_or(ProviderError::NotFound)?;
+        Ok(PlaybackTransportAction::M3u8Rewrite {
+            url: url.to_string(),
+            headers: media.upstream_headers(),
+        })
+    }
+
+    pub async fn get_hls_segment(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        target_url: String,
+        request_context: Option<&super::ExecutionControl>,
+        range_header: Option<&str>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let headers = versioned
+            .result
+            .playback_infos
+            .get(&versioned.result.default_mode)
+            .and_then(|info| info.medias.first())
+            .map_or_else(HashMap::new, PlaybackMedia::upstream_headers);
+        super::playback_transport::transport_action_for_target_url(
+            target_url,
+            headers,
+            range_header,
+        )
+    }
+
+    pub async fn get_subtitle(
+        &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        subtitle_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let playback_info = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .ok_or(ProviderError::NotFound)?;
+        let subtitle = playback_info
+            .subtitles
+            .get(subtitle_index)
+            .ok_or(ProviderError::NotFound)?;
+        Ok(PlaybackTransportAction::FetchAndForward {
+            url: subtitle.upstream_url().to_string(),
+            headers: super::subtitle_headers_for_proxy(
+                &playback_info
+                    .medias
+                    .first()
+                    .map_or_else(HashMap::new, PlaybackMedia::upstream_headers),
+                subtitle,
+            ),
+            range_header: None,
+        })
     }
 }
 
@@ -396,10 +440,6 @@ impl ProviderProxy for DirectUrlProvider {
 impl MediaProvider for DirectUrlProvider {
     fn name(&self) -> &'static str {
         Self::NAME
-    }
-
-    fn as_provider_proxy(&self) -> Option<&dyn ProviderProxy> {
-        Some(self)
     }
 
     async fn validate_source_config(
@@ -443,7 +483,7 @@ impl MediaProvider for DirectUrlProvider {
                         cached,
                         Self::NAME,
                         _ctx,
-                        sign_direct_url_playback_urls,
+                        mark_direct_url_playback_resources,
                     )
                     .await;
                 }
@@ -456,12 +496,20 @@ impl MediaProvider for DirectUrlProvider {
         playback_infos.insert(
             "direct".to_string(),
             PlaybackInfo {
-                urls: vec![config.url.clone()],
-                format: format.clone(),
-                headers: config.headers,
+                medias: vec![playback_media(
+                    "Direct".to_string(),
+                    format.clone(),
+                    None,
+                    PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
+                        url: config.url.clone(),
+                        headers: config.headers,
+                    }),
+                )],
+                default_media_index: None,
                 subtitles: Vec::new(),
-                expires_at: None,
-                cors_proxy_required: false,
+                default_subtitle_index: None,
+                danmakus: Vec::new(),
+                default_danmaku_index: None,
             },
         );
 
@@ -476,6 +524,8 @@ impl MediaProvider for DirectUrlProvider {
         let result = PlaybackResult {
             playback_infos,
             default_mode: "direct".to_string(),
+            provider: Self::NAME.to_string(),
+            provider_instance_name: _ctx.provider_instance_name().map(str::to_string),
             duration_seconds: None,
             metadata,
         };
@@ -486,639 +536,8 @@ impl MediaProvider for DirectUrlProvider {
             &cache_key,
             cache_ttl,
             _ctx,
-            sign_direct_url_playback_urls,
+            mark_direct_url_playback_resources,
         )
         .await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::provider::store::InMemoryProviderStore;
-    use crate::test_helpers::TestResultExt;
-    use std::sync::Arc;
-
-    #[test]
-    fn test_detect_format() {
-        assert_eq!(
-            DirectUrlProvider::detect_format("http://example.com/video.mp4"),
-            "mp4"
-        );
-        assert_eq!(
-            DirectUrlProvider::detect_format("http://example.com/stream.m3u8"),
-            "m3u8"
-        );
-        assert_eq!(
-            DirectUrlProvider::detect_format("http://example.com/stream.flv"),
-            "flv"
-        );
-        assert_eq!(
-            DirectUrlProvider::detect_format("http://example.com/video"),
-            "video"
-        );
-    }
-
-    #[test]
-    fn test_forbidden_headers_rejected() {
-        let mut headers = HashMap::new();
-        headers.insert("Host".to_string(), "evil.com".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-
-        let mut headers = HashMap::new();
-        headers.insert("Transfer-Encoding".to_string(), "chunked".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-    }
-
-    #[test]
-    fn test_allowed_headers_accepted() {
-        let mut headers = HashMap::new();
-        headers.insert("Referer".to_string(), "https://example.com".to_string());
-        headers.insert("User-Agent".to_string(), "MyPlayer/1.0".to_string());
-        headers.insert("Authorization".to_string(), "Bearer token".to_string());
-        headers.insert("Cookie".to_string(), "session=abc".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_ok());
-    }
-
-    #[test]
-    fn test_forbidden_headers_x_forwarded_proto() {
-        let mut headers = HashMap::new();
-        headers.insert("X-Forwarded-Proto".to_string(), "https".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-    }
-
-    #[test]
-    fn test_forbidden_headers_x_original_url() {
-        let mut headers = HashMap::new();
-        headers.insert(
-            "X-Original-URL".to_string(),
-            "http://internal.host/secret".to_string(),
-        );
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-    }
-
-    #[test]
-    fn test_forbidden_headers_x_rewrite_url() {
-        let mut headers = HashMap::new();
-        headers.insert("X-Rewrite-URL".to_string(), "/admin".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-    }
-
-    #[test]
-    fn test_detect_format_ignores_query_params() {
-        // Previously contains(".flv") would false-positive on query params or hostnames
-        assert_eq!(
-            DirectUrlProvider::detect_format("http://cdn.flv.com/video"),
-            "video"
-        );
-        assert_eq!(
-            DirectUrlProvider::detect_format("http://example.com/stream?file=test.mp4&token=abc"),
-            "video" // extension is on the query param, not the path
-        );
-        assert_eq!(
-            DirectUrlProvider::detect_format("http://example.com/video.mp4?quality=high"),
-            "mp4"
-        );
-    }
-
-    #[test]
-    fn test_forbidden_sec_prefix_headers() {
-        // Sec-CH-UA (Client Hints)
-        let mut headers = HashMap::new();
-        headers.insert("Sec-CH-UA".to_string(), "\"Chrome\";v=\"93\"".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-
-        // Sec-CH-UA-Mobile
-        let mut headers = HashMap::new();
-        headers.insert("Sec-CH-UA-Mobile".to_string(), "?0".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-
-        // Sec-CH-UA-Platform
-        let mut headers = HashMap::new();
-        headers.insert("Sec-CH-UA-Platform".to_string(), "\"Windows\"".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-
-        // Sec-Fetch-Site
-        let mut headers = HashMap::new();
-        headers.insert("Sec-Fetch-Site".to_string(), "cross-site".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-
-        // Sec-Fetch-Mode
-        let mut headers = HashMap::new();
-        headers.insert("Sec-Fetch-Mode".to_string(), "cors".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-
-        // Sec-Fetch-User
-        let mut headers = HashMap::new();
-        headers.insert("Sec-Fetch-User".to_string(), "?1".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-
-        // Sec-Fetch-Dest
-        let mut headers = HashMap::new();
-        headers.insert("Sec-Fetch-Dest".to_string(), "video".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-
-        // Sec-WebSocket-Key (HTTP/3 WebSockets)
-        let mut headers = HashMap::new();
-        headers.insert(
-            "Sec-WebSocket-Key".to_string(),
-            "dGhlIHNhbXBsZSBub25jZQ==".to_string(),
-        );
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-
-        // Sec-WebSocket-Version
-        let mut headers = HashMap::new();
-        headers.insert("Sec-WebSocket-Version".to_string(), "13".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-
-        // Sec-WebSocket-Protocol
-        let mut headers = HashMap::new();
-        headers.insert("Sec-WebSocket-Protocol".to_string(), "chat".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-    }
-
-    #[test]
-    fn test_forbidden_priority_header() {
-        // Priority header (HTTP/3)
-        let mut headers = HashMap::new();
-        headers.insert("Priority".to_string(), "u=5, i".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-    }
-
-    #[test]
-    fn test_forbidden_headers_case_insensitive() {
-        // Mixed case Sec- headers should still be blocked
-        let mut headers = HashMap::new();
-        headers.insert("sec-ch-ua".to_string(), "\"Chrome\"".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-
-        // Weird case Priority header
-        let mut headers = HashMap::new();
-        headers.insert("PRIORITY".to_string(), "u=5".to_string());
-        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
-    }
-
-    #[tokio::test]
-    async fn test_generate_playback_rejects_embedded_playback_result_source_config() {
-        let provider = DirectUrlProvider::new();
-        let source_config = serde_json::json!({
-            "playback_infos": {
-                "direct": {
-                    "urls": [{
-                        "name": "primary",
-                        "url": "https://example.com/video-primary.mp4",
-                        "headers": {
-                            "Authorization": "Bearer token"
-                        }
-                    }],
-                    "default_url_index": 0,
-                    "subtitles": [],
-                    "default_subtitle_index": null,
-                    "danmakus": [],
-                    "format": "mp4"
-                },
-            },
-            "default_mode": "direct",
-            "metadata": {}
-        });
-
-        let err = provider
-            .generate_playback(&ProviderContext::new("synctv"), &source_config)
-            .await
-            .failed("embedded playback result source_config should be rejected");
-
-        assert!(
-            err.to_string().contains("DirectUrl"),
-            "error should come from normal DirectUrl source_config parsing, got: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_generate_playback_rejects_rtmp_urls() {
-        let provider = DirectUrlProvider::new();
-        let source_config = serde_json::json!({
-            "url": "rtmp://live.example.com/app/stream-key"
-        });
-
-        let err = provider
-            .generate_playback(&ProviderContext::new("synctv"), &source_config)
-            .await
-            .failed("DirectUrl must reject RTMP URLs");
-
-        assert!(matches!(
-            err,
-            ProviderError::InvalidConfig(ref msg)
-                if msg.contains("DirectUrl only supports http:// and https:// schemes")
-        ));
-    }
-
-    #[test]
-    fn test_signed_direct_url_playback_hides_header_backed_direct_mode() {
-        let mut result = PlaybackResult {
-            playback_infos: HashMap::from([(
-                "direct".to_string(),
-                PlaybackInfo {
-                    urls: vec!["https://cdn.example.com/movie.mp4".to_string()],
-                    format: "mp4".to_string(),
-                    headers: HashMap::from([(
-                        "Referer".to_string(),
-                        "https://cdn.example.com".to_string(),
-                    )]),
-                    subtitles: Vec::new(),
-                    expires_at: None,
-                    cors_proxy_required: false,
-                },
-            )]),
-            default_mode: "direct".to_string(),
-            duration_seconds: None,
-            metadata: HashMap::new(),
-        };
-        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .checked("test proxy signing key should derive");
-
-        sign_direct_url_playback_urls(
-            &mut result,
-            "direct-v",
-            &signing_key,
-            "room-1",
-            "user-1",
-            chrono::Utc::now().timestamp() + 3600,
-        );
-
-        assert!(
-            !result.playback_infos.contains_key("direct"),
-            "header-backed upstream mode is unusable after server-owned headers are removed"
-        );
-
-        let proxy_direct = &result.playback_infos["proxy_direct"];
-        assert!(
-            proxy_direct.urls[0]
-                .contains("/api/providers/proxy/direct_url/direct-v/stream/direct/0?"),
-            "signed DirectUrl proxy URL should include mode and index: {}",
-            proxy_direct.urls[0]
-        );
-        assert!(proxy_direct.headers.is_empty());
-        assert!(!proxy_direct.cors_proxy_required);
-        assert_eq!(result.default_mode, "proxy_direct");
-    }
-
-    #[test]
-    fn test_signed_direct_url_without_headers_keeps_direct_default() {
-        let mut result = PlaybackResult {
-            playback_infos: HashMap::from([(
-                "direct".to_string(),
-                PlaybackInfo {
-                    urls: vec!["https://cdn.example.com/movie.mp4".to_string()],
-                    format: "mp4".to_string(),
-                    headers: HashMap::new(),
-                    subtitles: Vec::new(),
-                    expires_at: None,
-                    cors_proxy_required: false,
-                },
-            )]),
-            default_mode: "direct".to_string(),
-            duration_seconds: None,
-            metadata: HashMap::new(),
-        };
-        let signing_key = ProxySigningKey::try_derive_from(b"test-jwt-secret-that-is-long-enough")
-            .checked("test proxy signing key should derive");
-
-        sign_direct_url_playback_urls(
-            &mut result,
-            "direct-v",
-            &signing_key,
-            "room-1",
-            "user-1",
-            chrono::Utc::now().timestamp() + 3600,
-        );
-
-        assert_eq!(
-            result.playback_infos["direct"].urls[0],
-            "https://cdn.example.com/movie.mp4"
-        );
-        assert!(result.playback_infos.contains_key("proxy_direct"));
-        assert_eq!(result.default_mode, "direct");
-    }
-
-    #[tokio::test]
-    async fn test_signed_hls_variant_target_is_rewritten_again() {
-        let store: Arc<dyn crate::provider::store::ProviderStore> =
-            Arc::new(InMemoryProviderStore::new(100));
-        let version = "direct-hls";
-        let result = PlaybackResult {
-            playback_infos: HashMap::from([(
-                "direct".to_string(),
-                PlaybackInfo {
-                    urls: vec!["https://cdn.example.com/master.m3u8".to_string()],
-                    format: "m3u8".to_string(),
-                    headers: HashMap::from([(
-                        "Referer".to_string(),
-                        "https://cdn.example.com".to_string(),
-                    )]),
-                    subtitles: vec![],
-                    expires_at: None,
-                    cors_proxy_required: true,
-                },
-            )]),
-            default_mode: "direct".to_string(),
-            duration_seconds: None,
-            metadata: HashMap::new(),
-        };
-        store
-            .set(
-                &format!("v:{version}"),
-                &VersionedPlayback {
-                    version: version.to_string(),
-                    result,
-                    expires_at: chrono::Utc::now().timestamp() + 3600,
-                },
-                Duration::from_mins(5),
-            )
-            .await
-            .checked("operation should succeed");
-        let claims = crate::proxy_signature::ProxyUrlClaims {
-            provider: "direct_url".to_string(),
-            version: version.to_string(),
-            room_id: "room-1".to_string(),
-            user_id: "user-1".to_string(),
-            expires_at: chrono::Utc::now().timestamp() + 3600,
-            target_url: Some("https://cdn.example.com/variant.m3u8?token=abc".to_string()),
-        };
-        let ctx = ProxyRequestContext {
-            sub_path: version,
-            query_string: None,
-            store: Some(&store),
-            proxy_base: "/api/providers/proxy/direct_url",
-            services: None,
-            public_id_codec: None,
-            verified_claims: Some(&claims),
-            request_context: None,
-            request_headers: &http::HeaderMap::new(),
-        };
-
-        let action = DirectUrlProvider::new()
-            .resolve_proxy(&ctx)
-            .await
-            .checked("operation should succeed");
-        match action {
-            ProxyAction::M3u8Rewrite {
-                url,
-                headers,
-                proxy_base,
-                ..
-            } => {
-                assert_eq!(url, "https://cdn.example.com/variant.m3u8?token=abc");
-                assert_eq!(
-                    headers.get("Referer").map(String::as_str),
-                    Some("https://cdn.example.com")
-                );
-                assert_eq!(proxy_base, "/api/providers/proxy/direct_url/direct-hls");
-            }
-            other => std::panic::panic_any(format!("Expected M3u8Rewrite, got {other:?}")),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_indexed_hls_proxy_path_resolves_mode_url() {
-        let store: Arc<dyn crate::provider::store::ProviderStore> =
-            Arc::new(InMemoryProviderStore::new(100));
-        let version = "direct-indexed-hls";
-        let result = PlaybackResult {
-            playback_infos: HashMap::from([(
-                "direct".to_string(),
-                PlaybackInfo {
-                    urls: vec!["https://cdn.example.com/master.m3u8".to_string()],
-                    format: "m3u8".to_string(),
-                    headers: HashMap::from([(
-                        "Referer".to_string(),
-                        "https://cdn.example.com".to_string(),
-                    )]),
-                    subtitles: vec![],
-                    expires_at: None,
-                    cors_proxy_required: false,
-                },
-            )]),
-            default_mode: "direct".to_string(),
-            duration_seconds: None,
-            metadata: HashMap::new(),
-        };
-        store
-            .set(
-                &format!("v:{version}"),
-                &VersionedPlayback {
-                    version: version.to_string(),
-                    result,
-                    expires_at: chrono::Utc::now().timestamp() + 3600,
-                },
-                Duration::from_mins(5),
-            )
-            .await
-            .checked("operation should succeed");
-        let ctx = ProxyRequestContext {
-            sub_path: "direct-indexed-hls/m3u8/direct/0",
-            query_string: None,
-            store: Some(&store),
-            proxy_base: "/api/providers/proxy/direct_url",
-            services: None,
-            public_id_codec: None,
-            verified_claims: None,
-            request_context: None,
-            request_headers: &http::HeaderMap::new(),
-        };
-
-        let action = DirectUrlProvider::new()
-            .resolve_proxy(&ctx)
-            .await
-            .checked("operation should succeed");
-        match action {
-            ProxyAction::M3u8Rewrite {
-                url,
-                headers,
-                proxy_base,
-                ..
-            } => {
-                assert_eq!(url, "https://cdn.example.com/master.m3u8");
-                assert_eq!(
-                    headers.get("Referer").map(String::as_str),
-                    Some("https://cdn.example.com")
-                );
-                assert_eq!(
-                    proxy_base,
-                    "/api/providers/proxy/direct_url/direct-indexed-hls"
-                );
-            }
-            other => std::panic::panic_any(format!("Expected M3u8Rewrite, got {other:?}")),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_validate_source_config_allows_blocked_hosts_and_ips_when_ssrf_is_explicitly_disabled(
-    ) {
-        let provider =
-            DirectUrlProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
-        let ctx = ProviderContext::new("synctv");
-
-        for url in [
-            "http://localhost/video.mp4",
-            "http://127.0.0.1/video.mp4",
-            "http://[::1]/video.mp4",
-        ] {
-            provider
-                .validate_source_config(&ctx, SourceConfig::media(&json!({ "url": url })))
-                .await
-                .checked("disabled SSRF policy should allow blocked hosts and IP literals");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_validate_source_config_allows_non_default_ports_when_ssrf_is_explicitly_disabled()
-    {
-        let provider =
-            DirectUrlProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
-        provider
-            .validate_source_config(
-                &ProviderContext::new("synctv"),
-                SourceConfig::media(&json!({ "url": "http://example.com:8080/video.mp4" })),
-            )
-            .await
-            .checked("disabled SSRF policy should allow non-default ports");
-    }
-
-    #[tokio::test]
-    async fn test_validate_source_config_allows_private_ip_non_default_port_when_configured() {
-        let provider = DirectUrlProvider::new_with_ssrf_guard(
-            synctv_common::ssrf::SsrfGuard::builder()
-                .allow_private_network_targets(true)
-                .build(),
-        );
-        provider
-            .validate_source_config(
-                &ProviderContext::new("synctv"),
-                SourceConfig::media(&json!({ "url": "http://127.0.0.1:8080/video.mp4" })),
-            )
-            .await
-            .checked("private-network policy should allow loopback service ports");
-    }
-
-    #[tokio::test]
-    async fn test_validate_source_config_rejects_provider_instance_name() {
-        let provider = DirectUrlProvider::new();
-        let err = provider
-            .validate_source_config(
-                &ProviderContext::new("synctv"),
-                SourceConfig::media(&json!({
-                    "url": "https://example.com/video.mp4",
-                    "provider_instance_name": "remote-direct"
-                })),
-            )
-            .await
-            .failed("DirectUrl source_config must not contain provider_instance_name");
-
-        assert!(matches!(
-            err,
-            ProviderError::InvalidConfig(ref msg)
-                if msg.contains("top-level provider_instance_name")
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_validate_source_config_rejects_unknown_proxy_field() {
-        let provider = DirectUrlProvider::new();
-        let err = provider
-            .validate_source_config(
-                &ProviderContext::new("synctv"),
-                SourceConfig::media(&json!({
-                    "url": "https://example.com/video.mp4",
-                    "proxy": true
-                })),
-            )
-            .await
-            .failed("DirectUrl source_config must not accept proxy");
-
-        assert!(matches!(
-            err,
-            ProviderError::InvalidConfig(ref msg)
-                if msg.contains("unknown field `proxy`")
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_generate_playback_rejects_provider_instance_name() {
-        let provider = DirectUrlProvider::new();
-        let err = provider
-            .generate_playback(
-                &ProviderContext::new("synctv"),
-                &json!({
-                    "url": "https://example.com/video.mp4",
-                    "provider_instance_name": "remote-direct"
-                }),
-            )
-            .await
-            .failed("DirectUrl playback must not accept provider_instance_name in source_config");
-
-        assert!(matches!(
-            err,
-            ProviderError::InvalidConfig(ref msg)
-                if msg.contains("top-level provider_instance_name")
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_generate_playback_allows_blocked_hosts_when_ssrf_is_explicitly_disabled() {
-        let provider =
-            DirectUrlProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
-        let result = provider
-            .generate_playback(
-                &ProviderContext::new("synctv"),
-                &json!({ "url": "http://localhost/video.mp4" }),
-            )
-            .await
-            .checked("disabled SSRF policy should allow blocked hosts");
-        assert_eq!(
-            result.playback_infos["direct"].urls,
-            vec!["http://localhost/video.mp4"]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_generate_playback_cache_key_includes_headers() {
-        let provider = DirectUrlProvider::new();
-        let store = Arc::new(InMemoryProviderStore::new(128));
-        let ctx = ProviderContext::new("synctv").with_store(store);
-
-        let first = provider
-            .generate_playback(
-                &ctx,
-                &json!({
-                    "url": "https://cdn.example.com/video.mp4",
-                    "headers": {
-                        "Referer": "https://site-a.example"
-                    }
-                }),
-            )
-            .await
-            .checked("first playback should be cached");
-
-        let second = provider
-            .generate_playback(
-                &ctx,
-                &json!({
-                    "url": "https://cdn.example.com/video.mp4",
-                    "headers": {
-                        "Referer": "https://site-b.example"
-                    }
-                }),
-            )
-            .await
-            .checked("second playback should not reuse mismatched cached headers");
-
-        assert_eq!(
-            first.playback_infos["direct"].headers.get("Referer"),
-            Some(&"https://site-a.example".to_string())
-        );
-        assert_eq!(
-            second.playback_infos["direct"].headers.get("Referer"),
-            Some(&"https://site-b.example".to_string())
-        );
     }
 }

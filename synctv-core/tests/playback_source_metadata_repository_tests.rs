@@ -14,19 +14,19 @@ use synctv_core::{
     },
     service::{
         auth::{BruteForceProtection, JwtService},
-        ActivePlaybackRoomProvider, InMemoryTokenBlacklistStore, PlaybackDurationProbeService,
+        ActivePlaybackRoomSource, InMemoryTokenBlacklistStore, PlaybackDurationProbeService,
         RoomService, UserService,
     },
 };
 use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};
 
 #[derive(Clone)]
-struct StaticActiveRoomProvider {
+struct StaticActiveRoomSource {
     room_ids: Vec<RoomId>,
 }
 
 #[async_trait::async_trait]
-impl ActivePlaybackRoomProvider for StaticActiveRoomProvider {
+impl ActivePlaybackRoomSource for StaticActiveRoomSource {
     async fn active_room_ids(&self) -> synctv_core::Result<Vec<RoomId>> {
         Ok(self.room_ids.clone())
     }
@@ -691,7 +691,7 @@ async fn duration_probe_service_skips_initialization_without_active_rooms() {
         room_service.playback_service().clone(),
         synctv_common::ssrf::SsrfGuard::strict_policy(),
     )
-    .with_active_room_provider(Arc::new(StaticActiveRoomProvider {
+    .with_active_room_source(Arc::new(StaticActiveRoomSource {
         room_ids: Vec::new(),
     }));
 

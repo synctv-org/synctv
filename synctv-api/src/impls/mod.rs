@@ -17,6 +17,7 @@ pub mod messaging;
 pub(crate) mod notification;
 pub(crate) mod oauth2;
 mod playback;
+pub mod playback_provider;
 mod playlist_items_snapshot;
 pub mod providers;
 pub mod request_context;

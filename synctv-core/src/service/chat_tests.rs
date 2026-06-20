@@ -46,7 +46,7 @@ fn single_manifest_part(
 fn single_part_manifest_digest(size_bytes: i64, checksum_sha256: &str) -> String {
     file_part_manifest_digest(
         size_bytes,
-        upload_session_part_size(MAX_CHAT_ATTACHMENT_SIZE_BYTES),
+        upload_session_part_size(),
         [(1, size_bytes, checksum_sha256)],
     )
     .expect("manifest digest should build")
@@ -1309,7 +1309,7 @@ async fn s3_file_storage_creates_resumable_upload_session() {
         .is_some());
     let content_manifest_sha256 = file_part_manifest_digest(
         2048,
-        upload_session_part_size(MAX_CHAT_ATTACHMENT_SIZE_BYTES),
+        upload_session_part_size(),
         [(1, 2048, "a".repeat(64).as_str())],
     )
     .expect("manifest digest should build");
@@ -1324,10 +1324,7 @@ async fn s3_file_storage_creates_resumable_upload_session() {
         Some(expected_public_url.as_str())
     );
     assert!(session.resumable);
-    assert_eq!(
-        session.part_size_bytes,
-        upload_session_part_size(MAX_CHAT_ATTACHMENT_SIZE_BYTES)
-    );
+    assert_eq!(session.part_size_bytes, upload_session_part_size());
     assert_eq!(session.uploaded_size_bytes, 0);
     assert!(session.uploaded_parts.is_empty());
     assert_eq!(session.part_urls.len(), 1);

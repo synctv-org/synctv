@@ -150,6 +150,38 @@ assert_security_rendering() {
   ' "$file"
 }
 
+validate_rendered_synctv_config() {
+  local rendered_manifest="$1"
+  local rendered_config="$tmp_dir/$(basename "$rendered_manifest" .yaml).synctv.yaml"
+  ruby -ryaml -e '
+    file, output = ARGV
+    docs = YAML.load_stream(File.read(file)).compact
+    config = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "synctv-config" }
+    abort("synctv-config ConfigMap was not rendered in #{file}") unless config
+    synctv_yaml = config.dig("data", "synctv.yaml")
+    abort("synctv.yaml ConfigMap entry was not rendered in #{file}") unless synctv_yaml
+    File.write(output, synctv_yaml)
+  ' "$rendered_manifest" "$rendered_config"
+  local -a validation_env=(
+    "PATH=${PATH:-/usr/bin:/bin}"
+    "HOME=${HOME:-$tmp_dir}"
+    "TMPDIR=${TMPDIR:-/tmp}"
+    "SYNCTV_JWT_SECRET=helm-validation-jwt-secret-12345678901234567890"
+    "SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=helm-validation-opaque-secret-123456789012345"
+    "SYNCTV_CLUSTER_SECRET=helm-validation-cluster-secret-12345678901234567890"
+    "SYNCTV_SERVER_ADVERTISE_HOST=10.0.0.10"
+    "SYNCTV_REDIS_HOST=synctv-redis"
+    "SYNCTV_REDIS_PORT=6379"
+    "SYNCTV_REDIS_DATABASE=0"
+  )
+  [ -z "${USER:-}" ] || validation_env+=("USER=$USER")
+  [ -z "${CARGO_HOME:-}" ] || validation_env+=("CARGO_HOME=$CARGO_HOME")
+  [ -z "${RUSTUP_HOME:-}" ] || validation_env+=("RUSTUP_HOME=$RUSTUP_HOME")
+  [ -z "${CARGO_TARGET_DIR:-}" ] || validation_env+=("CARGO_TARGET_DIR=$CARGO_TARGET_DIR")
+  env -i "${validation_env[@]}" \
+    cargo run -q -p synctv --bin synctv -- --no-dotenv --config "$rendered_config" config validate --strict
+}
+
 chart_version="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("version")' "$chart_dir/Chart.yaml")"
 app_version="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("appVersion")' "$chart_dir/Chart.yaml")"
 cargo_version="$(cargo metadata --format-version 1 --no-deps | node -e 'const fs = require("fs"); const meta = JSON.parse(fs.readFileSync(0, "utf8")); process.stdout.write(meta.workspace_default_members.length ? meta.packages.find((pkg) => pkg.id === meta.workspace_default_members[0]).version : meta.packages[0].version);')"
@@ -288,6 +320,9 @@ helm template synctv "$chart_dir" \
 assert_service "$tmp_dir/loadbalancer-stun.yaml" synctv-stun LoadBalancer
 
 assert_security_rendering "$tmp_dir/security.yaml"
+validate_rendered_synctv_config "$tmp_dir/default.yaml"
+validate_rendered_synctv_config "$tmp_dir/security.yaml"
+validate_rendered_synctv_config "$tmp_dir/cluster-replicas.yaml"
 assert_env_secret_key_ref "$tmp_dir/secret-read-url.yaml" SYNCTV_DATABASE_READ_URL SYNCTV_DATABASE_READ_URL
 assert_secret_string_data_key "$tmp_dir/secret-read-url.yaml" SYNCTV_DATABASE_READ_URL
 assert_no_resource_named "$tmp_dir/kubeblocks-no-bootstrap.yaml" bootstrap-postgresql-app-db

@@ -84,8 +84,8 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `cache` | object | see below | [Business Cache](../../configuration/cache/) |
 | `proxy_slice_cache` | object | see below | [Proxy Slice Cache](../../configuration/proxy-slice-cache/) |
 | `messaging_rate_limits` | object | see below | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
-| `http_rate_limits` | object | see below | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
-| `grpc_rate_limits` | object | see below | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
+| `request_rate_limits` | object | see below | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
+| `request_rate_limits` | object | see below | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
 
 ## `server`
 
@@ -345,7 +345,7 @@ file_storage:
 | `bootstrap.root_password` | secret string | `""` | Initial root password |
 | `cluster.enabled` | boolean | `false` | Enable cluster mode |
 | `cluster.secret` | secret string | `""` | Authentication secret for internal cluster gRPC |
-| `cluster.secret_file` | file path or empty | `""` | File containing the internal cluster gRPC authentication secret |
+| `cluster.secret_file` | file path or empty | `""` | File containing the internal cluster request authentication secret |
 | `cluster.critical_channel_capacity` | integer | `10000` | High-priority cluster event queue capacity |
 | `cluster.publish_channel_capacity` | integer | `100000` | Normal cluster publish queue capacity |
 | `cluster.discovery_mode` | `redis`, `static`, or `k8s_dns` | `redis` | Node discovery mode |
@@ -393,40 +393,21 @@ file_storage:
 | `messaging_rate_limits.chat_per_second` | integer | `10` | Maximum chat messages per window |
 | `messaging_rate_limits.window_seconds` | seconds | `1` | Chat rate-limit window |
 
-## `http_rate_limits`
+## `request_rate_limits`
 
 | Field | Type / values | Default | Meaning |
 | --- | --- | --- | --- |
-| `http_rate_limits.auth_max_requests` | integer | `5` | Maximum HTTP auth requests per window |
-| `http_rate_limits.auth_window_seconds` | seconds | `60` | HTTP auth rate-limit window |
-| `http_rate_limits.write_max_requests` | integer | `30` | Maximum HTTP write requests per window |
-| `http_rate_limits.write_window_seconds` | seconds | `60` | HTTP write rate-limit window |
-| `http_rate_limits.read_max_requests` | integer | `100` | Maximum HTTP read requests per window |
-| `http_rate_limits.read_window_seconds` | seconds | `60` | HTTP read rate-limit window |
-| `http_rate_limits.media_max_requests` | integer | `20` | Maximum HTTP media requests per window |
-| `http_rate_limits.media_window_seconds` | seconds | `60` | HTTP media rate-limit window |
-| `http_rate_limits.admin_max_requests` | integer | `30` | Maximum HTTP admin requests per window |
-| `http_rate_limits.admin_window_seconds` | seconds | `60` | HTTP admin rate-limit window |
-| `http_rate_limits.streaming_max_requests` | integer | `200` | Maximum HTTP streaming requests per window |
-| `http_rate_limits.streaming_window_seconds` | seconds | `60` | HTTP streaming rate-limit window |
-| `http_rate_limits.websocket_max_requests` | integer | `10` | Maximum WebSocket connection attempts per window |
-| `http_rate_limits.websocket_window_seconds` | seconds | `60` | WebSocket connection rate-limit window |
-
-## `grpc_rate_limits`
-
-| Field | Type / values | Default | Meaning |
-| --- | --- | --- | --- |
-| `grpc_rate_limits.auth_max_requests` | integer | `5` | Maximum gRPC auth requests per window |
-| `grpc_rate_limits.auth_window_seconds` | seconds | `60` | gRPC auth rate-limit window |
-| `grpc_rate_limits.email_max_requests` | integer | `5` | Maximum gRPC email requests per window |
-| `grpc_rate_limits.email_window_seconds` | seconds | `60` | gRPC email rate-limit window |
-| `grpc_rate_limits.media_max_requests` | integer | `20` | Maximum gRPC media requests per window |
-| `grpc_rate_limits.media_window_seconds` | seconds | `60` | gRPC media rate-limit window |
-| `grpc_rate_limits.write_max_requests` | integer | `30` | Maximum gRPC write requests per window |
-| `grpc_rate_limits.write_window_seconds` | seconds | `60` | gRPC write rate-limit window |
-| `grpc_rate_limits.admin_max_requests` | integer | `30` | Maximum gRPC admin requests per window |
-| `grpc_rate_limits.admin_window_seconds` | seconds | `60` | gRPC admin rate-limit window |
-| `grpc_rate_limits.read_max_requests` | integer | `100` | Maximum gRPC read requests per window |
-| `grpc_rate_limits.read_window_seconds` | seconds | `60` | gRPC read rate-limit window |
-| `grpc_rate_limits.websocket_max_requests` | integer | `10` | Maximum gRPC MessageStream connection attempts per window |
-| `grpc_rate_limits.websocket_window_seconds` | seconds | `60` | gRPC MessageStream connection-attempt rate-limit window |
+| `request_rate_limits.auth_max_requests` | integer | `5` | Maximum authentication requests per window |
+| `request_rate_limits.auth_window_seconds` | seconds | `60` | Authentication request window |
+| `request_rate_limits.write_max_requests` | integer | `120` | Maximum write requests per window |
+| `request_rate_limits.write_window_seconds` | seconds | `60` | Write request window |
+| `request_rate_limits.read_max_requests` | integer | `600` | Maximum read requests per window |
+| `request_rate_limits.read_window_seconds` | seconds | `60` | Read request window |
+| `request_rate_limits.media_max_requests` | integer | `120` | Maximum media requests per window |
+| `request_rate_limits.media_window_seconds` | seconds | `60` | Media request window |
+| `request_rate_limits.admin_max_requests` | integer | `180` | Maximum admin requests per window |
+| `request_rate_limits.admin_window_seconds` | seconds | `60` | Admin request window |
+| `request_rate_limits.streaming_max_requests` | integer | `1200` | Maximum streaming requests per window |
+| `request_rate_limits.streaming_window_seconds` | seconds | `60` | Streaming request window |
+| `request_rate_limits.websocket_max_requests` | integer | `60` | Maximum WebSocket connection attempts per window |
+| `request_rate_limits.websocket_window_seconds` | seconds | `60` | WebSocket connection window |

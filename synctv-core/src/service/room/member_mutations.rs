@@ -107,7 +107,6 @@ impl RoomService {
         Ok((target_user_id, created))
     }
 
-    /// Helper: Validate that a user can join rooms (Finding 9)
     pub(super) fn validate_user_can_join(user: &crate::models::User) -> Result<()> {
         if user.is_banned {
             return Err(Error::Authorization(

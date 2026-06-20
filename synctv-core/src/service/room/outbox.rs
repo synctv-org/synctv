@@ -17,7 +17,6 @@ use crate::{
     Error, Result,
 };
 
-/// Helper: Log if a notification had no local subscribers (Finding 10)
 pub(super) fn log_if_no_local_subscribers(
     subscriber_count: usize,
     room_id: &RoomId,

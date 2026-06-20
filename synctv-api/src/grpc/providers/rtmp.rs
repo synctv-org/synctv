@@ -39,11 +39,7 @@ impl RtmpProviderService for RtmpProviderGrpcService {
         &self,
         request: Request<CreatePublishKeyRequest>,
     ) -> Result<Response<CreatePublishKeyResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
 
@@ -64,11 +60,7 @@ impl RtmpProviderService for RtmpProviderGrpcService {
         &self,
         request: Request<GetStreamInfoRequest>,
     ) -> Result<Response<GetStreamInfoResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
 

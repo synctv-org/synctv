@@ -160,7 +160,7 @@ pub(super) fn validate_file_upload_policy(policy: &FileUploadPolicy) -> Result<(
     Ok(())
 }
 
-pub(super) fn validate_file_mime_type(policy: &FileUploadPolicy, mime_type: &str) -> Result<()> {
+pub(crate) fn validate_file_mime_type(policy: &FileUploadPolicy, mime_type: &str) -> Result<()> {
     let normalized = mime_type.trim().to_ascii_lowercase();
     let allowed_exact = policy
         .allowed_mime_types

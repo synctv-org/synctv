@@ -29,9 +29,9 @@ pub use routing::{FileStorageBackendRegistry, RoutedFileStorageService};
 use s3::presigned_upload_headers;
 pub use s3::{S3CompatibleFileStorageService, S3FileStorageConfig};
 pub(crate) use validation::validate_create_file_upload_session;
+pub(super) use validation::validate_file_mime_type;
 use validation::{
-    strip_internal_file_metadata, validate_file_mime_type, validate_s3_file_storage_config,
-    validate_stored_files,
+    strip_internal_file_metadata, validate_s3_file_storage_config, validate_stored_files,
 };
 
 pub(super) const FILE_UPLOAD_EXPIRES_SECONDS: i64 = 900;
@@ -120,7 +120,7 @@ pub(super) async fn collect_file_object_download(
     Ok(blob)
 }
 
-pub(super) fn upload_session_part_size(_max_size_bytes: i64) -> i64 {
+pub(super) fn upload_session_part_size() -> i64 {
     // This is the server plan for new sessions. Existing sessions validate
     // against their stored part_size_bytes and manifest, so changing the
     // default must remain compatible with open sessions.
@@ -136,7 +136,7 @@ pub(super) fn create_file_upload_plan(
             "file size must be between 1 and {max_size_bytes} bytes"
         )));
     }
-    let part_size_bytes = upload_session_part_size(max_size_bytes);
+    let part_size_bytes = upload_session_part_size();
     let part_count = (size_bytes + part_size_bytes - 1) / part_size_bytes;
     let part_count = i32::try_from(part_count)
         .map_err(|_| Error::InvalidInput("file upload has too many parts".to_string()))?;

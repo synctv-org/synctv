@@ -55,11 +55,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<ParseRequest>,
     ) -> Result<Response<ParseResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili parse request: url={}", req.url);
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -89,11 +85,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<LoginQrRequest>,
     ) -> Result<Response<QrCodeResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili login QR request");
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -118,11 +110,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<CheckQrRequest>,
     ) -> Result<Response<QrStatusResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili check QR: key={}", redact_qr_key(&req.key));
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -152,11 +140,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<StartSmsLoginRequest>,
     ) -> Result<Response<StartSmsLoginResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili start SMS login request");
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -185,11 +169,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<SendSmsRequest>,
     ) -> Result<Response<SendSmsResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         let masked_phone = if req.phone.len() >= 4 {
             format!("****{}", &req.phone[req.phone.len() - 4..])
@@ -218,11 +198,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<LoginSmsRequest>,
     ) -> Result<Response<LoginSmsResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili login SMS");
         let api = self.api.clone();
@@ -251,11 +227,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<UserInfoRequest>,
     ) -> Result<Response<UserInfoResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili user info request");
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -285,11 +257,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili logout request");
         let api = self.api.clone();
@@ -313,11 +281,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<GetBindsRequest>,
     ) -> Result<Response<GetBindsResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.get_ref();
         let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();

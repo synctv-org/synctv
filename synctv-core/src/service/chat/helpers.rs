@@ -17,7 +17,8 @@ use crate::{
 
 use super::MAX_CHAT_ATTACHMENTS_PER_MESSAGE;
 use crate::service::file_storage::{
-    CreateFileReuseGrant, FileStorageService, FILE_OWNERSHIP_PROOF_KEY, FILE_UPLOAD_TOKEN_KEY,
+    validate_file_mime_type, CreateFileReuseGrant, FileStorageService, FILE_OWNERSHIP_PROOF_KEY,
+    FILE_UPLOAD_TOKEN_KEY,
 };
 use crate::service::file_upload_policies::chat_attachment_upload_policy;
 
@@ -225,21 +226,7 @@ pub(super) fn validate_chat_metadata(metadata: &serde_json::Value) -> Result<()>
 
 fn validate_chat_attachment_mime_type(mime_type: &str) -> Result<()> {
     let policy = chat_attachment_upload_policy();
-    let normalized = mime_type.trim().to_ascii_lowercase();
-    let allowed_exact = policy
-        .allowed_mime_types
-        .iter()
-        .any(|allowed| normalized == allowed.trim().to_ascii_lowercase());
-    let allowed_prefix = policy
-        .allowed_mime_prefixes
-        .iter()
-        .any(|prefix| normalized.starts_with(&prefix.trim().to_ascii_lowercase()));
-    if allowed_exact || allowed_prefix {
-        return Ok(());
-    }
-    Err(Error::InvalidInput(
-        "chat attachment mime_type is not allowed".to_string(),
-    ))
+    validate_file_mime_type(&policy, mime_type)
 }
 
 pub(super) fn validate_chat_attachments(attachments: &[NewStoredFile]) -> Result<()> {

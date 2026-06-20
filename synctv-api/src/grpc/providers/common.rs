@@ -51,11 +51,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<ListAvailableProviderInstancesRequest>,
     ) -> Result<Response<ProviderInstancesResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -75,11 +71,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<ListProviderBackendsRequest>,
     ) -> Result<Response<ProviderBackendsResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -99,11 +91,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<ListProviderInstancesRequest>,
     ) -> Result<Response<ListProviderInstancesResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -121,11 +109,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<AddProviderInstanceRequest>,
     ) -> Result<Response<AddProviderInstanceResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let ctx = Self::grpc_request_context(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
@@ -149,11 +133,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<UpdateProviderInstanceRequest>,
     ) -> Result<Response<UpdateProviderInstanceResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let ctx = Self::grpc_request_context(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
@@ -182,11 +162,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<DeleteProviderInstanceRequest>,
     ) -> Result<Response<DeleteProviderInstanceResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let ctx = Self::grpc_request_context(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
@@ -210,11 +186,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<ReconnectProviderInstanceRequest>,
     ) -> Result<Response<ReconnectProviderInstanceResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let ctx = Self::grpc_request_context(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
@@ -243,11 +215,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<EnableProviderInstanceRequest>,
     ) -> Result<Response<EnableProviderInstanceResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -269,11 +237,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<DisableProviderInstanceRequest>,
     ) -> Result<Response<DisableProviderInstanceResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();

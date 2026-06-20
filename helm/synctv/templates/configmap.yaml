@@ -7,8 +7,7 @@ metadata:
     {{- include "synctv.labels" . | nindent 4 }}
 {{- $connectionLimits := .Values.config.connectionLimits | default dict }}
 {{- $messagingRateLimits := .Values.config.messagingRateLimits | default dict }}
-{{- $httpRateLimits := .Values.config.httpRateLimits | default dict }}
-{{- $grpcRateLimits := .Values.config.grpcRateLimits | default dict }}
+{{- $requestRateLimits := .Values.config.requestRateLimits | default dict }}
 {{- $passwordComplexity := .Values.config.passwordComplexity | default dict }}
 {{- $bufferSizes := .Values.config.bufferSizes | default dict }}
 {{- $mediaProviders := .Values.config.mediaProviders | default dict }}
@@ -273,40 +272,23 @@ data:
 
     messaging_rate_limits:
       chat_per_second: {{ $messagingRateLimits.chatPerSecond | default 10 }}
-      danmaku_per_second: {{ $messagingRateLimits.danmakuPerSecond | default 3 }}
       window_seconds: {{ $messagingRateLimits.windowSeconds | default 1 }}
 
-    http_rate_limits:
-      auth_max_requests: {{ $httpRateLimits.authMaxRequests | default 5 }}
-      auth_window_seconds: {{ $httpRateLimits.authWindowSeconds | default 60 }}
-      write_max_requests: {{ $httpRateLimits.writeMaxRequests | default 30 }}
-      write_window_seconds: {{ $httpRateLimits.writeWindowSeconds | default 60 }}
-      read_max_requests: {{ $httpRateLimits.readMaxRequests | default 100 }}
-      read_window_seconds: {{ $httpRateLimits.readWindowSeconds | default 60 }}
-      media_max_requests: {{ $httpRateLimits.mediaMaxRequests | default 20 }}
-      media_window_seconds: {{ $httpRateLimits.mediaWindowSeconds | default 60 }}
-      admin_max_requests: {{ $httpRateLimits.adminMaxRequests | default 30 }}
-      admin_window_seconds: {{ $httpRateLimits.adminWindowSeconds | default 60 }}
-      streaming_max_requests: {{ $httpRateLimits.streamingMaxRequests | default 200 }}
-      streaming_window_seconds: {{ $httpRateLimits.streamingWindowSeconds | default 60 }}
-      websocket_max_requests: {{ $httpRateLimits.websocketMaxRequests | default 10 }}
-      websocket_window_seconds: {{ $httpRateLimits.websocketWindowSeconds | default 60 }}
-
-    grpc_rate_limits:
-      auth_max_requests: {{ $grpcRateLimits.authMaxRequests | default 5 }}
-      auth_window_seconds: {{ $grpcRateLimits.authWindowSeconds | default 60 }}
-      email_max_requests: {{ $grpcRateLimits.emailMaxRequests | default 5 }}
-      email_window_seconds: {{ $grpcRateLimits.emailWindowSeconds | default 60 }}
-      media_max_requests: {{ $grpcRateLimits.mediaMaxRequests | default 20 }}
-      media_window_seconds: {{ $grpcRateLimits.mediaWindowSeconds | default 60 }}
-      write_max_requests: {{ $grpcRateLimits.writeMaxRequests | default 30 }}
-      write_window_seconds: {{ $grpcRateLimits.writeWindowSeconds | default 60 }}
-      admin_max_requests: {{ $grpcRateLimits.adminMaxRequests | default 30 }}
-      admin_window_seconds: {{ $grpcRateLimits.adminWindowSeconds | default 60 }}
-      read_max_requests: {{ $grpcRateLimits.readMaxRequests | default 100 }}
-      read_window_seconds: {{ $grpcRateLimits.readWindowSeconds | default 60 }}
-      websocket_max_requests: {{ $grpcRateLimits.websocketMaxRequests | default 10 }}
-      websocket_window_seconds: {{ $grpcRateLimits.websocketWindowSeconds | default 60 }}
+    request_rate_limits:
+      auth_max_requests: {{ $requestRateLimits.authMaxRequests | default 5 }}
+      auth_window_seconds: {{ $requestRateLimits.authWindowSeconds | default 60 }}
+      write_max_requests: {{ $requestRateLimits.writeMaxRequests | default 120 }}
+      write_window_seconds: {{ $requestRateLimits.writeWindowSeconds | default 60 }}
+      read_max_requests: {{ $requestRateLimits.readMaxRequests | default 600 }}
+      read_window_seconds: {{ $requestRateLimits.readWindowSeconds | default 60 }}
+      media_max_requests: {{ $requestRateLimits.mediaMaxRequests | default 120 }}
+      media_window_seconds: {{ $requestRateLimits.mediaWindowSeconds | default 60 }}
+      admin_max_requests: {{ $requestRateLimits.adminMaxRequests | default 180 }}
+      admin_window_seconds: {{ $requestRateLimits.adminWindowSeconds | default 60 }}
+      streaming_max_requests: {{ $requestRateLimits.streamingMaxRequests | default 1200 }}
+      streaming_window_seconds: {{ $requestRateLimits.streamingWindowSeconds | default 60 }}
+      websocket_max_requests: {{ $requestRateLimits.websocketMaxRequests | default 60 }}
+      websocket_window_seconds: {{ $requestRateLimits.websocketWindowSeconds | default 60 }}
 
     password_complexity:
       min_length: {{ $passwordComplexity.minLength | default 8 }}

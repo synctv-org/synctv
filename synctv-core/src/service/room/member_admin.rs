@@ -1276,7 +1276,6 @@ impl RoomService {
         }
     }
 
-    /// Helper: Apply permission write with fence-aware branching (Finding 2)
     async fn apply_permission_write_with_fence(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -1346,7 +1345,6 @@ impl RoomService {
         }
     }
 
-    /// Helper: Commit phase for member update (Finding 1)
     async fn commit_member_update_with_outbox(
         &self,
         tx: Transaction<'_, Postgres>,
@@ -1382,7 +1380,6 @@ impl RoomService {
         Ok(())
     }
 
-    /// Helper: Snapshot + outbox insertion for member updates (Finding 1)
     #[allow(clippy::too_many_arguments)] // Inherently complex operation - alternative would be passing a struct
     async fn prepare_and_insert_member_update_outbox(
         &self,

@@ -15,6 +15,7 @@ logs/
 .e2e-data/
 .e2e-logs/
 .e2e-media/
+.e2e-tools/
 
 # Secrets and configuration
 *.pem

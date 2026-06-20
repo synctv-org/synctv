@@ -324,43 +324,25 @@ SYNCTV_FILE_STORAGE_BACKENDS='{"s3_public":{"type":"s3","s3":{"endpoint":"https:
 | `SYNCTV_CONNECTION_LIMITS_MAX_DURATION_SECONDS` | `connection_limits.max_duration_seconds` |
 | `SYNCTV_CONNECTION_LIMITS_WS_MESSAGE_RATE_LIMIT_PER_SECOND` | `connection_limits.ws_message_rate_limit_per_second` |
 
-## HTTP 限流
+## 请求限流
 
 | 环境变量 | 对应配置 |
 | --- | --- |
-| `SYNCTV_HTTP_RATE_LIMITS_AUTH_MAX_REQUESTS` | `http_rate_limits.auth_max_requests` |
-| `SYNCTV_HTTP_RATE_LIMITS_AUTH_WINDOW_SECONDS` | `http_rate_limits.auth_window_seconds` |
-| `SYNCTV_HTTP_RATE_LIMITS_WRITE_MAX_REQUESTS` | `http_rate_limits.write_max_requests` |
-| `SYNCTV_HTTP_RATE_LIMITS_WRITE_WINDOW_SECONDS` | `http_rate_limits.write_window_seconds` |
-| `SYNCTV_HTTP_RATE_LIMITS_READ_MAX_REQUESTS` | `http_rate_limits.read_max_requests` |
-| `SYNCTV_HTTP_RATE_LIMITS_READ_WINDOW_SECONDS` | `http_rate_limits.read_window_seconds` |
-| `SYNCTV_HTTP_RATE_LIMITS_MEDIA_MAX_REQUESTS` | `http_rate_limits.media_max_requests` |
-| `SYNCTV_HTTP_RATE_LIMITS_MEDIA_WINDOW_SECONDS` | `http_rate_limits.media_window_seconds` |
-| `SYNCTV_HTTP_RATE_LIMITS_ADMIN_MAX_REQUESTS` | `http_rate_limits.admin_max_requests` |
-| `SYNCTV_HTTP_RATE_LIMITS_ADMIN_WINDOW_SECONDS` | `http_rate_limits.admin_window_seconds` |
-| `SYNCTV_HTTP_RATE_LIMITS_STREAMING_MAX_REQUESTS` | `http_rate_limits.streaming_max_requests` |
-| `SYNCTV_HTTP_RATE_LIMITS_STREAMING_WINDOW_SECONDS` | `http_rate_limits.streaming_window_seconds` |
-| `SYNCTV_HTTP_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS` | `http_rate_limits.websocket_max_requests` |
-| `SYNCTV_HTTP_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS` | `http_rate_limits.websocket_window_seconds` |
-
-## gRPC 限流
-
-| 环境变量 | 对应配置 |
-| --- | --- |
-| `SYNCTV_GRPC_RATE_LIMITS_AUTH_MAX_REQUESTS` | `grpc_rate_limits.auth_max_requests` |
-| `SYNCTV_GRPC_RATE_LIMITS_AUTH_WINDOW_SECONDS` | `grpc_rate_limits.auth_window_seconds` |
-| `SYNCTV_GRPC_RATE_LIMITS_EMAIL_MAX_REQUESTS` | `grpc_rate_limits.email_max_requests` |
-| `SYNCTV_GRPC_RATE_LIMITS_EMAIL_WINDOW_SECONDS` | `grpc_rate_limits.email_window_seconds` |
-| `SYNCTV_GRPC_RATE_LIMITS_MEDIA_MAX_REQUESTS` | `grpc_rate_limits.media_max_requests` |
-| `SYNCTV_GRPC_RATE_LIMITS_MEDIA_WINDOW_SECONDS` | `grpc_rate_limits.media_window_seconds` |
-| `SYNCTV_GRPC_RATE_LIMITS_WRITE_MAX_REQUESTS` | `grpc_rate_limits.write_max_requests` |
-| `SYNCTV_GRPC_RATE_LIMITS_WRITE_WINDOW_SECONDS` | `grpc_rate_limits.write_window_seconds` |
-| `SYNCTV_GRPC_RATE_LIMITS_ADMIN_MAX_REQUESTS` | `grpc_rate_limits.admin_max_requests` |
-| `SYNCTV_GRPC_RATE_LIMITS_ADMIN_WINDOW_SECONDS` | `grpc_rate_limits.admin_window_seconds` |
-| `SYNCTV_GRPC_RATE_LIMITS_READ_MAX_REQUESTS` | `grpc_rate_limits.read_max_requests` |
-| `SYNCTV_GRPC_RATE_LIMITS_READ_WINDOW_SECONDS` | `grpc_rate_limits.read_window_seconds` |
-| `SYNCTV_GRPC_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS` | `grpc_rate_limits.websocket_max_requests` |
-| `SYNCTV_GRPC_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS` | `grpc_rate_limits.websocket_window_seconds` |
+| `SYNCTV_REQUEST_RATE_LIMITS_AUTH_MAX_REQUESTS` | `request_rate_limits.auth_max_requests` |
+| `SYNCTV_REQUEST_RATE_LIMITS_AUTH_WINDOW_SECONDS` | `request_rate_limits.auth_window_seconds` |
+| `SYNCTV_REQUEST_RATE_LIMITS_WRITE_MAX_REQUESTS` | `request_rate_limits.write_max_requests` |
+| `SYNCTV_REQUEST_RATE_LIMITS_WRITE_WINDOW_SECONDS` | `request_rate_limits.write_window_seconds` |
+| `SYNCTV_REQUEST_RATE_LIMITS_READ_MAX_REQUESTS` | `request_rate_limits.read_max_requests` |
+| `SYNCTV_REQUEST_RATE_LIMITS_READ_WINDOW_SECONDS` | `request_rate_limits.read_window_seconds` |
+| `SYNCTV_REQUEST_RATE_LIMITS_MEDIA_MAX_REQUESTS` | `request_rate_limits.media_max_requests` |
+| `SYNCTV_REQUEST_RATE_LIMITS_MEDIA_WINDOW_SECONDS` | `request_rate_limits.media_window_seconds` |
+| `SYNCTV_REQUEST_RATE_LIMITS_ADMIN_MAX_REQUESTS` | `request_rate_limits.admin_max_requests` |
+| `SYNCTV_REQUEST_RATE_LIMITS_ADMIN_WINDOW_SECONDS` | `request_rate_limits.admin_window_seconds` |
+| `SYNCTV_REQUEST_RATE_LIMITS_SCOPES` | `request_rate_limits.scopes` |
+| `SYNCTV_REQUEST_RATE_LIMITS_STREAMING_MAX_REQUESTS` | `request_rate_limits.streaming_max_requests` |
+| `SYNCTV_REQUEST_RATE_LIMITS_STREAMING_WINDOW_SECONDS` | `request_rate_limits.streaming_window_seconds` |
+| `SYNCTV_REQUEST_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS` | `request_rate_limits.websocket_max_requests` |
+| `SYNCTV_REQUEST_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS` | `request_rate_limits.websocket_window_seconds` |
 
 ## CLI 专用变量
 

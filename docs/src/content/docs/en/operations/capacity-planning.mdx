@@ -46,9 +46,9 @@ Do not add replicas before database, Redis, secrets, and HLS storage boundaries 
 | `database.max_connections` | Per-replica database pool limit |
 | `redis.*` | L2 cache, rate limits, short-lived state, cluster coordination |
 | `connection_limits.*` | WebSocket user, room, global, lifetime, and per-connection message limits |
-| `http_rate_limits.websocket_*` | WebSocket connection-attempt limits |
-| `http_rate_limits.*` | HTTP login, API, media, admin, and streaming limits |
-| `grpc_rate_limits.*` | gRPC API and verification limits |
+| `request_rate_limits.websocket_*` | WebSocket connection-attempt limits |
+| `request_rate_limits.*` | HTTP login, API, media, admin, and streaming limits |
+| `request_rate_limits.*` | gRPC API and verification limits |
 | `messaging_rate_limits.*` | Chat message limits |
 | `proxy_slice_cache.*` | Range slice cache and file backend |
 | `server.shutdown_drain_timeout_seconds` | Connection drain during rolling updates |

@@ -50,11 +50,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         &self,
         request: Request<LoginRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         tracing::info!("gRPC Emby login request: host={}", req.host);
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -81,11 +77,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
     }
 
     async fn list(&self, request: Request<ListRequest>) -> Result<Response<ListResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         tracing::info!(
             "gRPC Emby list request: server_id={}, path={}",
@@ -119,11 +111,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         &self,
         request: Request<GetMeRequest>,
     ) -> Result<Response<GetMeResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         tracing::info!("gRPC Emby me request: server_id={}", req.server_id);
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -153,11 +141,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         &self,
         request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.into_inner();
         tracing::info!("gRPC Emby logout request");
         let api = self.api.clone();
@@ -181,11 +165,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         &self,
         request: Request<GetBindsRequest>,
     ) -> Result<Response<GetBindsResponse>, Status> {
-        let metadata = crate::grpc::request_metadata(
-            &request,
-            &self.config,
-            Some(crate::grpc::grpc_unary_request_timeout()),
-        )?;
+        let metadata = super::provider_request_metadata(&request, &self.config)?;
         let req = request.get_ref();
         let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();

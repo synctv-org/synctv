@@ -31,23 +31,23 @@ messaging_rate_limits:
 | `chat_per_second` | 每窗口聊天消息上限 |
 | `window_seconds` | 统计窗口，单位秒 |
 
-## HTTP 限流
+## 请求限流
 
 ```yaml
-http_rate_limits:
+request_rate_limits:
   auth_max_requests: 5
   auth_window_seconds: 60
-  write_max_requests: 30
+  write_max_requests: 120
   write_window_seconds: 60
-  read_max_requests: 100
+  read_max_requests: 600
   read_window_seconds: 60
-  media_max_requests: 20
+  media_max_requests: 120
   media_window_seconds: 60
-  admin_max_requests: 30
+  admin_max_requests: 180
   admin_window_seconds: 60
-  streaming_max_requests: 200
+  streaming_max_requests: 1200
   streaming_window_seconds: 60
-  websocket_max_requests: 10
+  websocket_max_requests: 60
   websocket_window_seconds: 60
 ```
 
@@ -68,39 +68,9 @@ http_rate_limits:
 
 公网部署保持 `auth` 严格。HLS 播放会产生 playlist 和 segment 请求，所以 `streaming` 默认更高。
 
-## gRPC 限流
+## 传输说明
 
-gRPC 使用独立限流，因为 gRPC 客户端通常是 SDK 或自动化程序。
-
-```yaml
-grpc_rate_limits:
-  auth_max_requests: 5
-  auth_window_seconds: 60
-  email_max_requests: 5
-  email_window_seconds: 60
-  media_max_requests: 20
-  media_window_seconds: 60
-  write_max_requests: 30
-  write_window_seconds: 60
-  admin_max_requests: 30
-  admin_window_seconds: 60
-  read_max_requests: 100
-  read_window_seconds: 60
-  websocket_max_requests: 10
-  websocket_window_seconds: 60
-```
-
-| 类别 | 用途 |
-| --- | --- |
-| `auth` | Login、Register、RefreshToken |
-| `email` | 验证码、密码重置、邮箱 MFA |
-| `media` | AddMedia、RemoveMedia、BatchAdd |
-| `write` | CreateRoom、UpdateRoom、JoinRoom、SendChat |
-| `admin` | 管理 RPC |
-| `read` | GetRoom、ListRooms、GetUser、GetPlaylist |
-| `websocket` | MessageStream 建连尝试 |
-
-邮件类接口应保持严格限流，因为它容易被滥用，也可能产生成本。
+HTTP 和 gRPC 请求使用同一套分类额度。
 
 ## Redis 和多副本
 

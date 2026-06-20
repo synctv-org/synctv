@@ -1,7 +1,17 @@
 target/
+**/target/
 .git/
 .github/
 .claude/
+.tmp/
+logs/
+.data-dev/
+.dev-data/
+.local-data/
+.e2e-data/
+.e2e-logs/
+.e2e-media/
+.e2e-tools/
 docs/
 benches/
 *.md
@@ -14,3 +24,4 @@ helm/
 scripts/
 .env
 .env.*
+synctv.yaml

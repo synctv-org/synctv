@@ -402,36 +402,20 @@ messaging_rate_limits:
   chat_per_second: 10
   window_seconds: 1
 
-http_rate_limits:
+request_rate_limits:
   auth_max_requests: 5
   auth_window_seconds: 60
-  write_max_requests: 30
+  write_max_requests: 120
   write_window_seconds: 60
-  read_max_requests: 100
+  read_max_requests: 600
   read_window_seconds: 60
-  media_max_requests: 20
+  media_max_requests: 120
   media_window_seconds: 60
-  admin_max_requests: 30
+  admin_max_requests: 180
   admin_window_seconds: 60
-  streaming_max_requests: 200
+  streaming_max_requests: 1200
   streaming_window_seconds: 60
-  websocket_max_requests: 10
-  websocket_window_seconds: 60
-
-grpc_rate_limits:
-  auth_max_requests: 5
-  auth_window_seconds: 60
-  email_max_requests: 5
-  email_window_seconds: 60
-  media_max_requests: 20
-  media_window_seconds: 60
-  write_max_requests: 30
-  write_window_seconds: 60
-  admin_max_requests: 30
-  admin_window_seconds: 60
-  read_max_requests: 100
-  read_window_seconds: 60
-  websocket_max_requests: 10
+  websocket_max_requests: 60
   websocket_window_seconds: 60
 ```
 

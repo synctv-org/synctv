@@ -8,6 +8,17 @@ pub mod common;
 pub mod emby;
 pub mod rtmp;
 
+pub(crate) fn provider_request_metadata<T>(
+    request: &tonic::Request<T>,
+    config: &synctv_core::Config,
+) -> Result<crate::impls::RequestMetadata, tonic::Status> {
+    crate::grpc::request_metadata(
+        request,
+        config,
+        Some(crate::grpc::grpc_unary_request_timeout()),
+    )
+}
+
 pub(crate) fn provider_instance_name(instance_name: &str) -> Result<Option<String>, tonic::Status> {
     crate::impls::providers::common::provider_instance_name_from_query(
         &synctv_proto::providers::common::ProviderInstanceQuery {

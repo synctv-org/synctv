@@ -551,41 +551,23 @@ config:
   ## MessagingRateLimitConfig
   messagingRateLimits:
     chatPerSecond: 10
-    danmakuPerSecond: 3
     windowSeconds: 1
 
-  ## HttpRateLimitConfig
-  httpRateLimits:
+  ## RequestRateLimitConfig
+  requestRateLimits:
     authMaxRequests: 5
     authWindowSeconds: 60
-    writeMaxRequests: 30
+    writeMaxRequests: 120
     writeWindowSeconds: 60
-    readMaxRequests: 100
+    readMaxRequests: 600
     readWindowSeconds: 60
-    mediaMaxRequests: 20
+    mediaMaxRequests: 120
     mediaWindowSeconds: 60
-    adminMaxRequests: 30
+    adminMaxRequests: 180
     adminWindowSeconds: 60
-    streamingMaxRequests: 200
+    streamingMaxRequests: 1200
     streamingWindowSeconds: 60
-    websocketMaxRequests: 10
-    websocketWindowSeconds: 60
-
-  ## GrpcRateLimitConfig
-  grpcRateLimits:
-    authMaxRequests: 5
-    authWindowSeconds: 60
-    emailMaxRequests: 5
-    emailWindowSeconds: 60
-    mediaMaxRequests: 20
-    mediaWindowSeconds: 60
-    writeMaxRequests: 30
-    writeWindowSeconds: 60
-    adminMaxRequests: 30
-    adminWindowSeconds: 60
-    readMaxRequests: 100
-    readWindowSeconds: 60
-    websocketMaxRequests: 10
+    websocketMaxRequests: 60
     websocketWindowSeconds: 60
 
   ## BootstrapConfig

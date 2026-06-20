@@ -51,9 +51,9 @@ fn single_manifest_part(
     }]
 }
 
-fn manifest_parts_from_payload(payload: &[u8], max_size_bytes: i64) -> Vec<FileUploadManifestPart> {
+fn manifest_parts_from_payload(payload: &[u8]) -> Vec<FileUploadManifestPart> {
     let size_bytes = payload_size(payload);
-    let part_size_bytes = upload_session_part_size(max_size_bytes);
+    let part_size_bytes = upload_session_part_size();
     let part_count = (size_bytes + part_size_bytes - 1) / part_size_bytes;
     (1..=part_count)
         .map(|part_number| {
@@ -71,15 +71,11 @@ fn manifest_parts_from_payload(payload: &[u8], max_size_bytes: i64) -> Vec<FileU
         .collect()
 }
 
-fn content_manifest_sha256_from_parts(
-    size_bytes: i64,
-    max_size_bytes: i64,
-    parts: &[FileUploadManifestPart],
-) -> String {
+fn content_manifest_sha256_from_parts(size_bytes: i64, parts: &[FileUploadManifestPart]) -> String {
     ok(
         file_part_manifest_digest(
             size_bytes,
-            upload_session_part_size(max_size_bytes),
+            upload_session_part_size(),
             parts.iter().map(|part| {
                 (
                     part.part_number,
@@ -92,20 +88,14 @@ fn content_manifest_sha256_from_parts(
     )
 }
 
-fn manifest_for_payload(
-    payload: &[u8],
-    max_size_bytes: i64,
-) -> (Vec<FileUploadManifestPart>, String) {
-    let parts = manifest_parts_from_payload(payload, max_size_bytes);
-    let digest = content_manifest_sha256_from_parts(payload_size(payload), max_size_bytes, &parts);
+fn manifest_for_payload(payload: &[u8]) -> (Vec<FileUploadManifestPart>, String) {
+    let parts = manifest_parts_from_payload(payload);
+    let digest = content_manifest_sha256_from_parts(payload_size(payload), &parts);
     (parts, digest)
 }
 
-fn single_part_manifest_for_payload(
-    payload: &[u8],
-    max_size_bytes: i64,
-) -> (Vec<FileUploadManifestPart>, String) {
-    manifest_for_payload(payload, max_size_bytes)
+fn single_part_manifest_for_payload(payload: &[u8]) -> (Vec<FileUploadManifestPart>, String) {
+    manifest_for_payload(payload)
 }
 
 struct UploadRequestInput<'a> {
@@ -122,12 +112,9 @@ struct UploadRequestInput<'a> {
 }
 
 fn upload_request(input: UploadRequestInput<'_>) -> (CreateFileUploadSession, String) {
-    let parts = manifest_parts_from_payload(input.payload, input.policy.max_size_bytes);
-    let content_manifest_sha256 = content_manifest_sha256_from_parts(
-        payload_size(input.payload),
-        input.policy.max_size_bytes,
-        &parts,
-    );
+    let parts = manifest_parts_from_payload(input.payload);
+    let content_manifest_sha256 =
+        content_manifest_sha256_from_parts(payload_size(input.payload), &parts);
     (
         CreateFileUploadSession {
             user_id: input.user_id,
@@ -212,7 +199,6 @@ async fn upsert_uncompressed_blob(
 ) {
     let part_checksum_sha256 = hex::encode(Sha256::digest(payload));
     let content_manifest_sha256 = content_manifest_sha256_from_parts(
-        payload_size(payload),
         payload_size(payload),
         &single_manifest_part(payload_size(payload), part_checksum_sha256.clone()),
     );
@@ -485,8 +471,7 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
 
     let payload = b"avatar";
     let policy = user_avatar_upload_policy();
-    let (parts, content_manifest_sha256) =
-        single_part_manifest_for_payload(payload, policy.max_size_bytes);
+    let (parts, content_manifest_sha256) = single_part_manifest_for_payload(payload);
     let session = ok(
         routed
             .create_upload_session(CreateFileUploadSession {
@@ -558,8 +543,7 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
         DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
     let payload = vec![b'a'; 4096];
     let policy = user_avatar_upload_policy();
-    let (parts, content_manifest_sha256) =
-        single_part_manifest_for_payload(&payload, policy.max_size_bytes);
+    let (parts, content_manifest_sha256) = single_part_manifest_for_payload(&payload);
     let session = ok(
         storage
             .create_upload_session(CreateFileUploadSession {
@@ -654,7 +638,7 @@ async fn database_storage_rejects_parts_above_database_part_cap() {
         DatabaseFileStorageService::new("database", repository, "test-file-storage-secret");
     let payload = vec![b'x'; MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES + 1];
     let policy = oversized_test_upload_policy();
-    let (parts, _) = manifest_for_payload(&payload, policy.max_size_bytes);
+    let (parts, _) = manifest_for_payload(&payload);
 
     let session = ok(
         storage
@@ -717,8 +701,7 @@ async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
     );
     let payload = vec![b'b'; 4096];
     let policy = user_avatar_upload_policy();
-    let (parts, content_manifest_sha256) =
-        single_part_manifest_for_payload(&payload, policy.max_size_bytes);
+    let (parts, content_manifest_sha256) = single_part_manifest_for_payload(&payload);
     let session = ok(
         storage
             .create_upload_session(CreateFileUploadSession {
@@ -879,7 +862,7 @@ async fn database_storage_strips_upload_token_from_prepared_files() {
         DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
     let payload = b"avatar";
     let policy = user_avatar_upload_policy();
-    let (parts, _) = single_part_manifest_for_payload(payload, policy.max_size_bytes);
+    let (parts, _) = single_part_manifest_for_payload(payload);
     let session = ok(
         storage
             .create_upload_session(CreateFileUploadSession {
@@ -957,8 +940,7 @@ async fn database_storage_strips_ownership_proof_from_prepared_files() {
         DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
     let payload = b"avatar";
     let policy = user_avatar_upload_policy();
-    let (parts, content_manifest_sha256) =
-        single_part_manifest_for_payload(payload, policy.max_size_bytes);
+    let (parts, content_manifest_sha256) = single_part_manifest_for_payload(payload);
     upsert_uncompressed_blob(
         repository.as_ref(),
         "database",
@@ -1046,8 +1028,7 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
         DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
     let payload = b"avatar";
     let policy = user_avatar_upload_policy();
-    let (parts, content_manifest_sha256) =
-        single_part_manifest_for_payload(payload, policy.max_size_bytes);
+    let (parts, content_manifest_sha256) = single_part_manifest_for_payload(payload);
     upsert_uncompressed_blob(
         repository.as_ref(),
         "database",
@@ -1490,7 +1471,7 @@ async fn database_storage_skips_compression_below_threshold() {
     );
     let payload = vec![b'a'; 4096];
     let policy = user_avatar_upload_policy();
-    let (parts, _) = single_part_manifest_for_payload(&payload, policy.max_size_bytes);
+    let (parts, _) = single_part_manifest_for_payload(&payload);
     let session = ok(
         storage
             .create_upload_session(CreateFileUploadSession {
@@ -1571,7 +1552,7 @@ async fn database_storage_skips_low_savings_compression() {
     );
     let payload = vec![b'a'; 4096];
     let policy = user_avatar_upload_policy();
-    let (parts, _) = single_part_manifest_for_payload(&payload, policy.max_size_bytes);
+    let (parts, _) = single_part_manifest_for_payload(&payload);
     let session = ok(
         storage
             .create_upload_session(CreateFileUploadSession {

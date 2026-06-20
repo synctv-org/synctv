@@ -232,8 +232,7 @@ The application uses split database/Redis configuration so credentials can stay 
 | `config.mediaProviders` | Local built-in provider adapter request and connect timeouts |
 | `config.webauthn` | Passkey relying-party settings |
 | `config.webrtc` | Built-in STUN and WebRTC settings; external ICE servers are runtime settings |
-| `config.httpRateLimits` | HTTP API category rate limits |
-| `config.grpcRateLimits` | gRPC API category rate limits |
+| `config.requestRateLimits` | Shared HTTP and gRPC API category rate limits |
 | `config.passwordComplexity` | Password policy for account credentials |
 | `config.bufferSizes` | Internal queue sizes |
 

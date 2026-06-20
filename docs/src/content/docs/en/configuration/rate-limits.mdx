@@ -30,25 +30,25 @@ messaging_rate_limits:
   window_seconds: 1
 ```
 
-## HTTP Rate Limits
+## Request Rate Limits
 
-HTTP limits are grouped by endpoint class:
+Request limits are shared across HTTP and gRPC transports:
 
 ```yaml
-http_rate_limits:
+request_rate_limits:
   auth_max_requests: 5
   auth_window_seconds: 60
-  write_max_requests: 30
+  write_max_requests: 120
   write_window_seconds: 60
-  read_max_requests: 100
+  read_max_requests: 600
   read_window_seconds: 60
-  media_max_requests: 20
+  media_max_requests: 120
   media_window_seconds: 60
-  admin_max_requests: 30
+  admin_max_requests: 180
   admin_window_seconds: 60
-  streaming_max_requests: 200
+  streaming_max_requests: 1200
   streaming_window_seconds: 60
-  websocket_max_requests: 10
+  websocket_max_requests: 60
   websocket_window_seconds: 60
 ```
 
@@ -71,39 +71,9 @@ Categories:
 
 Auth limits should remain strict on public deployments. Streaming limits are higher because HLS playback can generate many playlist and segment requests.
 
-## gRPC Rate Limits
+## Transport Notes
 
-gRPC has separate limits because gRPC clients are often SDKs or automated clients.
-
-```yaml
-grpc_rate_limits:
-  auth_max_requests: 5
-  auth_window_seconds: 60
-  email_max_requests: 5
-  email_window_seconds: 60
-  media_max_requests: 20
-  media_window_seconds: 60
-  write_max_requests: 30
-  write_window_seconds: 60
-  admin_max_requests: 30
-  admin_window_seconds: 60
-  read_max_requests: 100
-  read_window_seconds: 60
-  websocket_max_requests: 10
-  websocket_window_seconds: 60
-```
-
-| Category | Purpose |
-| --- | --- |
-| `auth` | Login, Register, RefreshToken |
-| `email` | Verification codes, password reset, email MFA |
-| `media` | AddMedia, RemoveMedia, BatchAdd |
-| `write` | CreateRoom, UpdateRoom, JoinRoom, SendChat |
-| `admin` | Administrative RPCs |
-| `read` | GetRoom, ListRooms, GetUser, GetPlaylist |
-| `websocket` | MessageStream connection attempts |
-
-Email limits should stay strict because email endpoints can create real delivery cost and are easy to abuse.
+HTTP and gRPC requests use the same category budgets.
 
 ## Redis And Multi-Replica Behavior
 

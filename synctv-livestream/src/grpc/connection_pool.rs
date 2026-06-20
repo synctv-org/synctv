@@ -10,10 +10,11 @@ use std::time::{Duration, Instant};
 use tonic::transport::Channel;
 use tracing::debug;
 
-/// A pooled gRPC channel with creation timestamp for staleness checks.
+/// A pooled gRPC channel with creation and last-use timestamps.
 struct PooledChannel {
     channel: Channel,
     created_at: Instant,
+    last_used: Instant,
 }
 
 /// Default maximum number of connections in the pool.
@@ -76,12 +77,12 @@ impl GrpcConnectionPool {
     /// Connection attempts timeout after 5 seconds to prevent hanging indefinitely
     /// when the target node is unreachable.
     pub(crate) async fn get_channel(&self, address: &str) -> anyhow::Result<Channel> {
-        // Fast path: check for existing fresh connection
-        if let Some(entry) = self.connections.get(address) {
-            if entry.created_at.elapsed() < self.max_idle {
+        // Fast path: check for an existing connection that is still active.
+        if let Some(mut entry) = self.connections.get_mut(address) {
+            if entry.last_used.elapsed() < self.max_idle {
+                entry.last_used = Instant::now();
                 return Ok(entry.channel.clone());
             }
-            // Stale -- drop the read guard and remove below
             drop(entry);
             self.connections.remove(address);
             debug!(address = address, "Evicted stale gRPC connection from pool");
@@ -118,6 +119,7 @@ impl GrpcConnectionPool {
             PooledChannel {
                 channel: channel.clone(),
                 created_at: Instant::now(),
+                last_used: Instant::now(),
             },
         );
 
@@ -166,12 +168,13 @@ impl GrpcConnectionPool {
 
     #[cfg(test)]
     pub(crate) fn insert_test_channel_with_age(&self, address: &str, age: Duration) {
-        let created_at = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
+        let timestamp = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
         self.connections.insert(
             address.to_string(),
             PooledChannel {
                 channel: Self::test_channel(),
-                created_at,
+                created_at: timestamp,
+                last_used: timestamp,
             },
         );
     }
@@ -256,6 +259,7 @@ mod tests {
                 PooledChannel {
                     channel: channel.clone(),
                     created_at,
+                    last_used: created_at,
                 },
             );
         }
@@ -267,6 +271,36 @@ mod tests {
         assert!(pool.connections.get("node-0:50051").is_none());
         assert!(pool.connections.get("node-1:50051").is_some());
         assert!(pool.connections.get("node-2:50051").is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_pool_refreshes_idle_clock_on_hit() -> TestResult {
+        let pool = GrpcConnectionPool::new(Duration::from_mins(5), 3);
+        let stale_creation = Instant::now()
+            .checked_sub(Duration::from_mins(10))
+            .unwrap_or_else(Instant::now);
+        let previous_last_used = Instant::now()
+            .checked_sub(Duration::from_secs(10))
+            .unwrap_or_else(Instant::now);
+        pool.connections.insert(
+            "node-refresh:50051".to_string(),
+            PooledChannel {
+                channel: GrpcConnectionPool::test_channel(),
+                created_at: stale_creation,
+                last_used: previous_last_used,
+            },
+        );
+
+        let _channel = pool.get_channel("node-refresh:50051").await?;
+        let entry = pool
+            .connections
+            .get("node-refresh:50051")
+            .expect("test entry should exist");
+        assert!(
+            entry.last_used > previous_last_used,
+            "cache hit should refresh idle timestamp"
+        );
         Ok(())
     }
 }

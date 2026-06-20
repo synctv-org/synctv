@@ -9,12 +9,12 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use synctv_common::time as app_time;
 use synctv_core::bootstrap::{load_config_with_options, LoadConfigOptions};
 use synctv_core::config::absolute_display_path;
 #[cfg(test)]
 use synctv_core::config::default_management_unix_socket_path;
 use synctv_core::models::{RoomAdminPermissionBits, RoomMemberPermissionBits};
-use synctv_core::time as app_time;
 use synctv_management::proto as management_proto;
 
 use crate::admin_client::{AdminConnectionOptions, RemoteAdminSession};
@@ -9043,15 +9043,15 @@ mod tests {
 
     impl TimeZoneGuard {
         fn set(name: &str) -> Self {
-            let previous = synctv_core::time::default_timezone_name();
-            synctv_core::time::set_default_timezone_name(name).expect("timezone should be valid");
+            let previous = synctv_common::time::default_timezone_name();
+            synctv_common::time::set_default_timezone_name(name).expect("timezone should be valid");
             Self { previous }
         }
     }
 
     impl Drop for TimeZoneGuard {
         fn drop(&mut self) {
-            let _ = synctv_core::time::set_default_timezone_name(&self.previous);
+            let _ = synctv_common::time::set_default_timezone_name(&self.previous);
         }
     }
 

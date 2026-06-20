@@ -374,6 +374,78 @@ async fn test_broadcast_reliably_unsubscribes_connection_after_delivery_timeout(
     Ok(())
 }
 
+#[tokio::test(start_paused = true)]
+async fn test_broadcast_reliably_times_out_full_subscribers_concurrently() -> TestResult {
+    let hub = Arc::new(RoomMessageHub::new());
+    let room_id = RoomId::expect_positive(10_000_167);
+    let mut receivers = Vec::new();
+
+    for index in 0..3 {
+        let rx = hub
+            .subscribe(
+                room_id,
+                UserId::expect_positive(10_000_168 + index),
+                ConnectionId::new(format!("conn-reliable-timeout-{index}")),
+            )
+            .await?;
+        receivers.push(rx);
+    }
+
+    for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
+        let event = RealtimeEvent::ChatMessage {
+            event_id: synctv_common::snanoid!(16),
+            room_id,
+            user_id: UserId::expect_positive(10_000_171),
+            username: "filler".to_string(),
+            message: "fill".to_string(),
+            timestamp: Utc::now(),
+            display_position: None,
+            display_color: None,
+        };
+        let sent = hub.broadcast(&room_id, &event);
+        assert_eq!(
+            sent, 3,
+            "filler message should enqueue for every subscriber"
+        );
+    }
+
+    let hub_for_task = Arc::clone(&hub);
+    let room_for_task = room_id;
+    let broadcast_task = tokio::spawn(async move {
+        hub_for_task
+            .broadcast_reliably(
+                &room_for_task,
+                RealtimeEvent::RoomDeleted {
+                    event_id: synctv_common::snanoid!(16),
+                    room_id: room_for_task,
+                    deleted_by: UserId::expect_positive(10_000_172),
+                    timestamp: Utc::now(),
+                },
+            )
+            .await
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(CRITICAL_EVENT_SEND_TIMEOUT + Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+
+    assert!(
+        broadcast_task.is_finished(),
+        "all reliable delivery waits should share one timeout window"
+    );
+    let sent = broadcast_task.await?;
+    assert_eq!(
+        sent, 0,
+        "timed out reliable deliveries must not count as sent"
+    );
+    assert_eq!(
+        hub.subscriber_count(&room_id),
+        0,
+        "all timed out reliable deliveries must unsubscribe stuck connections"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_unsubscribe_cleans_up_local_state_even_without_redis() -> TestResult {
     let hub = RoomMessageHub::new();

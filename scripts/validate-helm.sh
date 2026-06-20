@@ -325,6 +325,7 @@ validate_rendered_synctv_config "$tmp_dir/security.yaml"
 validate_rendered_synctv_config "$tmp_dir/cluster-replicas.yaml"
 assert_env_secret_key_ref "$tmp_dir/secret-read-url.yaml" SYNCTV_DATABASE_READ_URL SYNCTV_DATABASE_READ_URL
 assert_secret_string_data_key "$tmp_dir/secret-read-url.yaml" SYNCTV_DATABASE_READ_URL
+assert_env_secret_key_ref "$tmp_dir/kubeblocks.yaml" SYNCTV_DATABASE_PASSWORD SYNCTV_DATABASE_PASSWORD
 assert_no_resource_named "$tmp_dir/kubeblocks-no-bootstrap.yaml" bootstrap-postgresql-app-db
 assert_max_service_name_len "$tmp_dir/long-release.yaml" 63
 assert_no_certificate_common_name "$tmp_dir/long-release.yaml"

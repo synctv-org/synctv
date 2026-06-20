@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT event_id AS \"event_id!\",\n                   sequence AS \"sequence!\",\n                   payload AS \"event_payload?: serde_json::Value\",\n                   occurred_at AS \"occurred_at!\"\n            FROM room_resource_events\n            WHERE room_id = $1\n              AND resource_type = 'chat_pins'\n              AND event_type = $2\n              AND resource_id = $3\n            ORDER BY sequence DESC\n            LIMIT 1\n            ",
+  "query": "\n            SELECT event_id AS \"event_id!\",\n                   sequence AS \"sequence!\",\n                   payload AS \"event_payload?: serde_json::Value\",\n                   occurred_at AS \"occurred_at!\"\n            FROM room_resource_events\n            WHERE room_id = $1\n              AND resource_type = $2\n              AND event_type = $3\n              AND resource_id = $4\n            ORDER BY sequence DESC\n            LIMIT 1\n            ",
   "describe": {
     "columns": [
       {
@@ -52,6 +52,7 @@
       "Left": [
         "Int8",
         "Text",
+        "Text",
         "Text"
       ]
     },
@@ -62,5 +63,5 @@
       false
     ]
   },
-  "hash": "082b1f9a9a6bcdae1da0b7c882e66f2d363c5c756e17a8cfcb1531b2d0c26d86"
+  "hash": "68b46bee7f8f35b8f32f0160107a39628414e7b4d3254dbfe31e8fc6fde2c8b1"
 }

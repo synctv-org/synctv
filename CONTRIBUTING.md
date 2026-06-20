@@ -7,7 +7,7 @@ SyncTV is a Rust workspace with PostgreSQL, optional Redis, protobuf APIs, deplo
 Typical local setup:
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d
+docker compose -f docker-compose.dev.yml up -d postgres redis
 cargo check --workspace --all-targets
 cargo nextest run --workspace --locked --run-ignored default --nff
 ```

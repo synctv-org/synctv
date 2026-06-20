@@ -20,6 +20,74 @@ pub enum ContentReportListScope {
     TargetChatMessage,
 }
 
+struct ContentReportScopeFilter {
+    matches_all_target_types: bool,
+    target_types: Vec<i16>,
+    matches_any_related_room: bool,
+    matches_target_room: bool,
+    matches_target_member: bool,
+    matches_chat_message: bool,
+}
+
+impl ContentReportListScope {
+    fn filter(self) -> ContentReportScopeFilter {
+        match self {
+            Self::AnyRelated => ContentReportScopeFilter {
+                matches_all_target_types: true,
+                target_types: Vec::new(),
+                matches_any_related_room: true,
+                matches_target_room: false,
+                matches_target_member: false,
+                matches_chat_message: false,
+            },
+            Self::RoomContext => ContentReportScopeFilter {
+                matches_all_target_types: false,
+                target_types: content_report_target_types([
+                    ContentReportTargetType::Room,
+                    ContentReportTargetType::RoomMember,
+                    ContentReportTargetType::ChatMessage,
+                ]),
+                matches_any_related_room: true,
+                matches_target_room: false,
+                matches_target_member: false,
+                matches_chat_message: false,
+            },
+            Self::TargetRoom => ContentReportScopeFilter {
+                matches_all_target_types: false,
+                target_types: content_report_target_types([ContentReportTargetType::Room]),
+                matches_any_related_room: false,
+                matches_target_room: true,
+                matches_target_member: false,
+                matches_chat_message: false,
+            },
+            Self::TargetUser => ContentReportScopeFilter {
+                matches_all_target_types: false,
+                target_types: content_report_target_types([ContentReportTargetType::User]),
+                matches_any_related_room: false,
+                matches_target_room: false,
+                matches_target_member: false,
+                matches_chat_message: false,
+            },
+            Self::TargetMember => ContentReportScopeFilter {
+                matches_all_target_types: false,
+                target_types: content_report_target_types([ContentReportTargetType::RoomMember]),
+                matches_any_related_room: false,
+                matches_target_room: false,
+                matches_target_member: true,
+                matches_chat_message: false,
+            },
+            Self::TargetChatMessage => ContentReportScopeFilter {
+                matches_all_target_types: false,
+                target_types: content_report_target_types([ContentReportTargetType::ChatMessage]),
+                matches_any_related_room: false,
+                matches_target_room: false,
+                matches_target_member: false,
+                matches_chat_message: true,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ContentReportListQuery {
     pub status: Option<ContentReportStatus>,
@@ -153,7 +221,7 @@ impl ContentReportRepository {
         let target_user_id = query.target_user_id.map(|id| id.as_i64());
         let target_member_room_id = query.target_member_room_id.map(|id| id.as_i64());
         let target_member_user_id = query.target_member_user_id.map(|id| id.as_i64());
-        let scope = i16::from(query.scope);
+        let scope_filter = query.scope.filter();
         let search = normalize_search(&query.search);
         let pool = self.pools.read();
 
@@ -173,22 +241,13 @@ impl ContentReportRepository {
             WHERE ($1::smallint IS NULL OR cr.status = $1)
               AND ($2::smallint IS NULL OR cr.target_type = $2)
               AND ($3::bigint IS NULL OR cr.reporter_user_id = $3)
-              AND (
-                $10::smallint = 1
-                OR ($10 = 2 AND cr.target_type <> 2)
-                OR ($10 = 3 AND cr.target_type = 1)
-                OR ($10 = 4 AND cr.target_type = 2)
-                OR ($10 = 5 AND cr.target_type = 3)
-                OR ($10 = 6 AND cr.target_type = 4)
-              )
+              AND ($10::boolean OR cr.target_type = ANY($11::smallint[]))
               AND (
                 $4::bigint IS NULL
-                OR ($10 = 1 AND (cr.room_id = $4 OR cr.target_room_id = $4 OR cr.target_member_room_id = $4))
-                OR ($10 = 2 AND cr.target_room_id = $4 AND cr.target_type = 1)
-                OR ($10 = 2 AND cr.room_id = $4 AND cr.target_type <> 1)
-                OR ($10 = 3 AND cr.target_room_id = $4)
-                OR ($10 = 5 AND cr.target_member_room_id = $4)
-                OR ($10 = 6 AND cr.room_id = $4)
+                OR ($12::boolean AND (cr.room_id = $4 OR cr.target_room_id = $4 OR cr.target_member_room_id = $4))
+                OR ($13::boolean AND cr.target_room_id = $4)
+                OR ($14::boolean AND cr.target_member_room_id = $4)
+                OR ($15::boolean AND cr.room_id = $4)
               )
               AND ($5::bigint IS NULL OR cr.target_room_id = $5)
               AND ($6::bigint IS NULL OR cr.target_user_id = $6)
@@ -196,17 +255,17 @@ impl ContentReportRepository {
               AND ($8::bigint IS NULL OR cr.target_member_user_id = $8)
               AND ($9::bigint IS NULL OR cr.target_chat_message_id = $9)
               AND (
-                $11::text IS NULL
-                OR lower(cr.reason_code) LIKE $11
-                OR lower(cr.reason) LIKE $11
-                OR lower(COALESCE(reporter.username, '')) LIKE $11
-                OR lower(COALESCE(room_ctx.name, '')) LIKE $11
-                OR lower(COALESCE(target_room.name, '')) LIKE $11
-                OR lower(COALESCE(target_user.username, '')) LIKE $11
-                OR lower(COALESCE(target_member_user.username, '')) LIKE $11
-                OR lower(COALESCE(chat.content, '')) LIKE $11
-                OR cr.id::text LIKE $11
-                OR cr.target_chat_message_id::text LIKE $11
+                $16::text IS NULL
+                OR lower(cr.reason_code) LIKE $16
+                OR lower(cr.reason) LIKE $16
+                OR lower(COALESCE(reporter.username, '')) LIKE $16
+                OR lower(COALESCE(room_ctx.name, '')) LIKE $16
+                OR lower(COALESCE(target_room.name, '')) LIKE $16
+                OR lower(COALESCE(target_user.username, '')) LIKE $16
+                OR lower(COALESCE(target_member_user.username, '')) LIKE $16
+                OR lower(COALESCE(chat.content, '')) LIKE $16
+                OR cr.id::text LIKE $16
+                OR cr.target_chat_message_id::text LIKE $16
               )
             "#,
             status,
@@ -218,7 +277,12 @@ impl ContentReportRepository {
             target_member_room_id,
             target_member_user_id,
             query.target_chat_message_id,
-            scope,
+            scope_filter.matches_all_target_types,
+            &scope_filter.target_types,
+            scope_filter.matches_any_related_room,
+            scope_filter.matches_target_room,
+            scope_filter.matches_target_member,
+            scope_filter.matches_chat_message,
             search.as_deref(),
         )
         .fetch_one(pool)
@@ -270,22 +334,13 @@ impl ContentReportRepository {
             WHERE ($1::smallint IS NULL OR cr.status = $1)
               AND ($2::smallint IS NULL OR cr.target_type = $2)
               AND ($3::bigint IS NULL OR cr.reporter_user_id = $3)
-              AND (
-                $10::smallint = 1
-                OR ($10 = 2 AND cr.target_type <> 2)
-                OR ($10 = 3 AND cr.target_type = 1)
-                OR ($10 = 4 AND cr.target_type = 2)
-                OR ($10 = 5 AND cr.target_type = 3)
-                OR ($10 = 6 AND cr.target_type = 4)
-              )
+              AND ($10::boolean OR cr.target_type = ANY($11::smallint[]))
               AND (
                 $4::bigint IS NULL
-                OR ($10 = 1 AND (cr.room_id = $4 OR cr.target_room_id = $4 OR cr.target_member_room_id = $4))
-                OR ($10 = 2 AND cr.target_room_id = $4 AND cr.target_type = 1)
-                OR ($10 = 2 AND cr.room_id = $4 AND cr.target_type <> 1)
-                OR ($10 = 3 AND cr.target_room_id = $4)
-                OR ($10 = 5 AND cr.target_member_room_id = $4)
-                OR ($10 = 6 AND cr.room_id = $4)
+                OR ($12::boolean AND (cr.room_id = $4 OR cr.target_room_id = $4 OR cr.target_member_room_id = $4))
+                OR ($13::boolean AND cr.target_room_id = $4)
+                OR ($14::boolean AND cr.target_member_room_id = $4)
+                OR ($15::boolean AND cr.room_id = $4)
               )
               AND ($5::bigint IS NULL OR cr.target_room_id = $5)
               AND ($6::bigint IS NULL OR cr.target_user_id = $6)
@@ -293,20 +348,20 @@ impl ContentReportRepository {
               AND ($8::bigint IS NULL OR cr.target_member_user_id = $8)
               AND ($9::bigint IS NULL OR cr.target_chat_message_id = $9)
               AND (
-                $11::text IS NULL
-                OR lower(cr.reason_code) LIKE $11
-                OR lower(cr.reason) LIKE $11
-                OR lower(COALESCE(reporter.username, '')) LIKE $11
-                OR lower(COALESCE(room_ctx.name, '')) LIKE $11
-                OR lower(COALESCE(target_room.name, '')) LIKE $11
-                OR lower(COALESCE(target_user.username, '')) LIKE $11
-                OR lower(COALESCE(target_member_user.username, '')) LIKE $11
-                OR lower(COALESCE(chat.content, '')) LIKE $11
-                OR cr.id::text LIKE $11
-                OR cr.target_chat_message_id::text LIKE $11
+                $16::text IS NULL
+                OR lower(cr.reason_code) LIKE $16
+                OR lower(cr.reason) LIKE $16
+                OR lower(COALESCE(reporter.username, '')) LIKE $16
+                OR lower(COALESCE(room_ctx.name, '')) LIKE $16
+                OR lower(COALESCE(target_room.name, '')) LIKE $16
+                OR lower(COALESCE(target_user.username, '')) LIKE $16
+                OR lower(COALESCE(target_member_user.username, '')) LIKE $16
+                OR lower(COALESCE(chat.content, '')) LIKE $16
+                OR cr.id::text LIKE $16
+                OR cr.target_chat_message_id::text LIKE $16
               )
             ORDER BY cr.created_at DESC, cr.id DESC
-            LIMIT $12 OFFSET $13
+            LIMIT $17 OFFSET $18
             "#,
             status,
             target_type,
@@ -317,7 +372,12 @@ impl ContentReportRepository {
             target_member_room_id,
             target_member_user_id,
             query.target_chat_message_id,
-            scope,
+            scope_filter.matches_all_target_types,
+            &scope_filter.target_types,
+            scope_filter.matches_any_related_room,
+            scope_filter.matches_target_room,
+            scope_filter.matches_target_member,
+            scope_filter.matches_chat_message,
             search.as_deref(),
             query.limit,
             query.offset,
@@ -463,15 +523,6 @@ fn normalize_search(search: &str) -> Option<String> {
     }
 }
 
-impl From<ContentReportListScope> for i16 {
-    fn from(value: ContentReportListScope) -> Self {
-        match value {
-            ContentReportListScope::AnyRelated => 1,
-            ContentReportListScope::RoomContext => 2,
-            ContentReportListScope::TargetRoom => 3,
-            ContentReportListScope::TargetUser => 4,
-            ContentReportListScope::TargetMember => 5,
-            ContentReportListScope::TargetChatMessage => 6,
-        }
-    }
+fn content_report_target_types<const N: usize>(values: [ContentReportTargetType; N]) -> Vec<i16> {
+    values.into_iter().map(i16::from).collect()
 }

@@ -227,19 +227,11 @@ spec:
             - name: HEADLESS_SERVICE_NAME
               value: {{ include "synctv.headlessServiceName" . }}
             {{- end }}
-            {{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" }}
             - name: SYNCTV_DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "synctv.secretName" . }}
                   key: SYNCTV_DATABASE_PASSWORD
-            {{- else }}
-            - name: SYNCTV_DATABASE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "synctv.secretName" . }}
-                  key: SYNCTV_DATABASE_PASSWORD
-            {{- end }}
             {{- if eq (include "synctv.redis.mode" .) "kubeblocks" }}
             - name: SYNCTV_REDIS_USER
               valueFrom:

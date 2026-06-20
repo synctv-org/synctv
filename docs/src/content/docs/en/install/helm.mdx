@@ -188,7 +188,7 @@ existingSecret: "my-external-synctv-secret"
 
 Required keys include:
 
-- `SYNCTV_DATABASE_PASSWORD`, unless PostgreSQL uses KubeBlocks mode.
+- `SYNCTV_DATABASE_PASSWORD` for PostgreSQL standard mode, external mode, and the KubeBlocks application role.
 - `SYNCTV_REDIS_PASSWORD`, required for Redis standard mode; provide it in external mode only when the external Redis requires password authentication; not needed for KubeBlocks mode.
 - `SYNCTV_JWT_SECRET`
 - `SYNCTV_CLUSTER_SECRET`

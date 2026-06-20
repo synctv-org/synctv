@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT event_id, sequence\n            FROM chat_message_events\n            WHERE room_id = $1\n              AND event_type IN (\n                  'chat_message_created',\n                  'chat_message_edited',\n                  'chat_message_deleted',\n                  'chat_message_reactions_changed'\n              )\n            ORDER BY sequence DESC\n            LIMIT 1\n            ",
+  "query": "\n            SELECT event_id, sequence\n            FROM chat_message_events\n            WHERE room_id = $1\n              AND event_type = ANY($2::text[])\n            ORDER BY sequence DESC\n            LIMIT 1\n            ",
   "describe": {
     "columns": [
       {
@@ -28,7 +28,8 @@
     ],
     "parameters": {
       "Left": [
-        "Int8"
+        "Int8",
+        "TextArray"
       ]
     },
     "nullable": [
@@ -36,5 +37,5 @@
       false
     ]
   },
-  "hash": "c690e4f59c088832a6c69b0975ebc6068ab38e1d60268ee5467ac1be3beca993"
+  "hash": "bed6b971e209615ee459611359d8dae45df5965e6ceddb86e52f20220de9a5c8"
 }

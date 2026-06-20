@@ -27,6 +27,25 @@ use crate::{
 
 type ChatMessageKey = (i64, DateTime<Utc>);
 
+const CHAT_MESSAGE_CREATED_EVENT_TYPE: &str = "chat_message_created";
+const CHAT_MESSAGE_EDITED_EVENT_TYPE: &str = "chat_message_edited";
+const CHAT_MESSAGE_DELETED_EVENT_TYPE: &str = "chat_message_deleted";
+const CHAT_MESSAGE_REACTIONS_CHANGED_EVENT_TYPE: &str = "chat_message_reactions_changed";
+const CHAT_MESSAGE_EVENT_TYPES: [&str; 4] = [
+    CHAT_MESSAGE_CREATED_EVENT_TYPE,
+    CHAT_MESSAGE_EDITED_EVENT_TYPE,
+    CHAT_MESSAGE_DELETED_EVENT_TYPE,
+    CHAT_MESSAGE_REACTIONS_CHANGED_EVENT_TYPE,
+];
+const CHAT_PINS_RESOURCE_TYPE: &str = "chat_pins";
+
+fn chat_message_event_types() -> Vec<String> {
+    CHAT_MESSAGE_EVENT_TYPES
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
 fn chat_message_key(message: &ChatMessage) -> ChatMessageKey {
     (message.id, message.created_at)
 }
@@ -1065,6 +1084,7 @@ impl ChatRepository {
                 None
             };
 
+        let event_types = chat_message_event_types();
         let rows = if let Some(sequence) = after_sequence {
             sqlx::query_as!(
                 ChatEventRow,
@@ -1078,17 +1098,13 @@ impl ChatRepository {
                 FROM chat_message_events
                 WHERE room_id = $1
                   AND sequence > $2
-                  AND event_type IN (
-                      'chat_message_created',
-                      'chat_message_edited',
-                      'chat_message_deleted',
-                      'chat_message_reactions_changed'
-                  )
+                  AND event_type = ANY($3::text[])
                 ORDER BY sequence ASC
-                LIMIT $3
+                LIMIT $4
                 "#,
                 room_id.as_i64(),
                 sequence,
+                &event_types,
                 i64::from(limit)
             )
             .fetch_all(self.pool())
@@ -1105,16 +1121,12 @@ impl ChatRepository {
                        occurred_at AS "occurred_at!"
                 FROM chat_message_events
                 WHERE room_id = $1
-                  AND event_type IN (
-                      'chat_message_created',
-                      'chat_message_edited',
-                      'chat_message_deleted',
-                      'chat_message_reactions_changed'
-                  )
+                  AND event_type = ANY($2::text[])
                 ORDER BY sequence ASC
-                LIMIT $2
+                LIMIT $3
                 "#,
                 room_id.as_i64(),
+                &event_types,
                 i64::from(limit)
             )
             .fetch_all(self.pool())
@@ -1132,6 +1144,7 @@ impl ChatRepository {
     ) -> Result<Vec<ChatMessageEventLog>> {
         let limit = limit.clamp(1, 500);
         let after_sequence = after_sequence.max(0);
+        let event_types = chat_message_event_types();
         let rows = sqlx::query_as!(
             ChatEventRow,
             r#"
@@ -1144,17 +1157,13 @@ impl ChatRepository {
             FROM chat_message_events
             WHERE room_id = $1
               AND sequence > $2
-              AND event_type IN (
-                  'chat_message_created',
-                  'chat_message_edited',
-                  'chat_message_deleted',
-                  'chat_message_reactions_changed'
-              )
+              AND event_type = ANY($3::text[])
             ORDER BY sequence ASC
-            LIMIT $3
+            LIMIT $4
             "#,
             room_id.as_i64(),
             after_sequence,
+            &event_types,
             i64::from(limit)
         )
         .fetch_all(self.pool())
@@ -1164,21 +1173,18 @@ impl ChatRepository {
     }
 
     pub async fn latest_event_cursor_for_room(&self, room_id: &RoomId) -> Result<EventCursor> {
+        let event_types = chat_message_event_types();
         let row = sqlx::query!(
             r"
             SELECT event_id, sequence
             FROM chat_message_events
             WHERE room_id = $1
-              AND event_type IN (
-                  'chat_message_created',
-                  'chat_message_edited',
-                  'chat_message_deleted',
-                  'chat_message_reactions_changed'
-              )
+              AND event_type = ANY($2::text[])
             ORDER BY sequence DESC
             LIMIT 1
             ",
-            room_id.as_i64()
+            room_id.as_i64(),
+            &event_types
         )
         .fetch_optional(self.pool())
         .await?;
@@ -1199,19 +1205,16 @@ impl ChatRepository {
         &self,
         room_id: &RoomId,
     ) -> Result<Option<(i64, i64)>> {
+        let event_types = chat_message_event_types();
         let row = sqlx::query!(
             r"
             SELECT MIN(sequence) AS min_sequence, MAX(sequence) AS max_sequence
             FROM chat_message_events
             WHERE room_id = $1
-              AND event_type IN (
-                  'chat_message_created',
-                  'chat_message_edited',
-                  'chat_message_deleted',
-                  'chat_message_reactions_changed'
-              )
+              AND event_type = ANY($2::text[])
             ",
-            room_id.as_i64()
+            room_id.as_i64(),
+            &event_types
         )
         .fetch_one(self.pool())
         .await?;
@@ -1225,6 +1228,7 @@ impl ChatRepository {
         message_id: i64,
         message_created_at: DateTime<Utc>,
     ) -> Result<Option<ChatMessageEventLog>> {
+        let event_types = chat_message_event_types();
         let row = sqlx::query_as!(
             ChatEventRow,
             r#"
@@ -1236,18 +1240,14 @@ impl ChatRepository {
                    occurred_at AS "occurred_at!"
             FROM chat_message_events
             WHERE room_id = $1
-              AND event_type IN (
-                  'chat_message_created',
-                  'chat_message_edited',
-                  'chat_message_deleted',
-                  'chat_message_reactions_changed'
-              )
-              AND message_id = $2
-              AND message_created_at = $3
+              AND event_type = ANY($2::text[])
+              AND message_id = $3
+              AND message_created_at = $4
             ORDER BY sequence DESC
             LIMIT 1
             "#,
             room_id.as_i64(),
+            &event_types,
             message_id,
             message_created_at
         )
@@ -1273,13 +1273,14 @@ impl ChatRepository {
                    payload AS "event_payload?: serde_json::Value",
                    occurred_at AS "occurred_at!"
             FROM chat_message_events
-            WHERE event_type = 'chat_message_created'
-              AND room_id = $1
-              AND message_id = $2
-              AND message_created_at = $3
+            WHERE event_type = $1
+              AND room_id = $2
+              AND message_id = $3
+              AND message_created_at = $4
             ORDER BY sequence ASC
             LIMIT 1
             "#,
+            CHAT_MESSAGE_CREATED_EVENT_TYPE,
             room_id.as_i64(),
             message_id,
             message_created_at
@@ -1702,12 +1703,13 @@ impl ChatRepository {
              AND m.created_at = e.message_created_at
             WHERE e.room_id = $1
               AND e.sequence > $2
-              AND e.event_type = 'chat_message_created'
-              AND m.status <> $3
-              AND (m.user_id IS NULL OR m.user_id <> $4)
+              AND e.event_type = $3
+              AND m.status <> $4
+              AND (m.user_id IS NULL OR m.user_id <> $5)
             "#,
             room_id.as_i64(),
             sequence,
+            CHAT_MESSAGE_CREATED_EVENT_TYPE,
             i16::from(ChatMessageStatus::Deleted),
             user_id.as_i64()
         )
@@ -3487,7 +3489,7 @@ impl ChatRepository {
                 user_id: None,
                 aggregate_type: "chat_message".to_string(),
                 aggregate_id: event.message.message.id.to_string(),
-                resource_type: "chat_pins".to_string(),
+                resource_type: CHAT_PINS_RESOURCE_TYPE.to_string(),
                 resource_id: chat_pin_resource_id(&event.message.message),
                 event_type: event.kind.as_str().to_string(),
                 event_version: 1,
@@ -3512,6 +3514,7 @@ impl ChatRepository {
         room_id: &RoomId,
         event_id: &str,
     ) -> Result<Option<ChatMessageEventLog>> {
+        let event_types = chat_message_event_types();
         let row = sqlx::query_as!(
             ChatEventRow,
             r#"
@@ -3524,15 +3527,11 @@ impl ChatRepository {
             FROM chat_message_events
             WHERE room_id = $1
               AND event_id = $2
-              AND event_type IN (
-                  'chat_message_created',
-                  'chat_message_edited',
-                  'chat_message_deleted',
-                  'chat_message_reactions_changed'
-              )
+              AND event_type = ANY($3::text[])
             "#,
             room_id.as_i64(),
-            event_id
+            event_id,
+            &event_types
         )
         .fetch_optional(&mut **tx)
         .await?;
@@ -3556,11 +3555,12 @@ impl ChatRepository {
             FROM room_resource_events
             WHERE room_id = $1
               AND event_id = $2
-              AND resource_type = 'chat_pins'
+              AND resource_type = $3
             LIMIT 1
             "#,
             room_id.as_i64(),
-            event_id
+            event_id,
+            CHAT_PINS_RESOURCE_TYPE
         )
         .fetch_optional(&mut **tx)
         .await?;
@@ -3585,13 +3585,14 @@ impl ChatRepository {
                    occurred_at AS "occurred_at!"
             FROM room_resource_events
             WHERE room_id = $1
-              AND resource_type = 'chat_pins'
-              AND event_type = $2
-              AND resource_id = $3
+              AND resource_type = $2
+              AND event_type = $3
+              AND resource_id = $4
             ORDER BY sequence DESC
             LIMIT 1
             "#,
             room_id.as_i64(),
+            CHAT_PINS_RESOURCE_TYPE,
             kind.as_str(),
             chat_pin_resource_id_parts(message_id, message_created_at)
         )
@@ -4285,10 +4286,10 @@ pub struct IdempotentChatPinEventInsert {
 
 fn chat_event_type(kind: ChatEventKind) -> &'static str {
     match kind {
-        ChatEventKind::Created => "chat_message_created",
-        ChatEventKind::Edited => "chat_message_edited",
-        ChatEventKind::Deleted => "chat_message_deleted",
-        ChatEventKind::ReactionsChanged => "chat_message_reactions_changed",
+        ChatEventKind::Created => CHAT_MESSAGE_CREATED_EVENT_TYPE,
+        ChatEventKind::Edited => CHAT_MESSAGE_EDITED_EVENT_TYPE,
+        ChatEventKind::Deleted => CHAT_MESSAGE_DELETED_EVENT_TYPE,
+        ChatEventKind::ReactionsChanged => CHAT_MESSAGE_REACTIONS_CHANGED_EVENT_TYPE,
     }
 }
 
@@ -4482,7 +4483,7 @@ mod tests {
         let mut event = valid_event();
         event.event_id = String::new();
         assert!(matches!(
-            validate_chat_event_for_insert(&event, "chat_message_created"),
+            validate_chat_event_for_insert(&event, CHAT_MESSAGE_CREATED_EVENT_TYPE),
             Err(Error::InvalidInput(error)) if error.contains("event_id")
         ));
 
@@ -4496,7 +4497,7 @@ mod tests {
         let mut event = valid_event();
         event.message.message.version = 0;
         assert!(matches!(
-            validate_chat_event_for_insert(&event, "chat_message_created"),
+            validate_chat_event_for_insert(&event, CHAT_MESSAGE_CREATED_EVENT_TYPE),
             Err(Error::InvalidInput(error)) if error.contains("message_version")
         ));
     }

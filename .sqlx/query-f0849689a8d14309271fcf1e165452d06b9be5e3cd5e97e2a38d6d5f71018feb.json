@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                SELECT sequence AS \"sequence!\",\n                       event_id AS \"event_id!\",\n                       room_id AS \"room_id?\",\n                       actor_user_id AS \"actor_user_id?\",\n                       payload AS \"event_payload?: serde_json::Value\",\n                       occurred_at AS \"occurred_at!\"\n                FROM chat_message_events\n                WHERE room_id = $1\n                  AND event_type IN (\n                      'chat_message_created',\n                      'chat_message_edited',\n                      'chat_message_deleted',\n                      'chat_message_reactions_changed'\n                  )\n                ORDER BY sequence ASC\n                LIMIT $2\n                ",
+  "query": "\n                SELECT sequence AS \"sequence!\",\n                       event_id AS \"event_id!\",\n                       room_id AS \"room_id?\",\n                       actor_user_id AS \"actor_user_id?\",\n                       payload AS \"event_payload?: serde_json::Value\",\n                       occurred_at AS \"occurred_at!\"\n                FROM chat_message_events\n                WHERE room_id = $1\n                  AND event_type = ANY($2::text[])\n                ORDER BY sequence ASC\n                LIMIT $3\n                ",
   "describe": {
     "columns": [
       {
@@ -73,6 +73,7 @@
     "parameters": {
       "Left": [
         "Int8",
+        "TextArray",
         "Int8"
       ]
     },
@@ -85,5 +86,5 @@
       false
     ]
   },
-  "hash": "523afa25951fdaf29930bf60001602823e466c246b7eff9f37543907747c6811"
+  "hash": "f0849689a8d14309271fcf1e165452d06b9be5e3cd5e97e2a38d6d5f71018feb"
 }

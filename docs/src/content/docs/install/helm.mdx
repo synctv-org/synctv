@@ -186,7 +186,7 @@ existingSecret: "my-external-synctv-secret"
 
 需要提供这些 key：
 
-- `SYNCTV_DATABASE_PASSWORD`，除非 PostgreSQL 使用 KubeBlocks 模式。
+- `SYNCTV_DATABASE_PASSWORD`，用于 PostgreSQL standard 模式、external 模式和 KubeBlocks 应用账号。
 - `SYNCTV_REDIS_PASSWORD`，Redis 使用 standard 模式时必需；external 模式只在外部 Redis 需要密码时提供；KubeBlocks 模式不需要提供。
 - `SYNCTV_JWT_SECRET`
 - `SYNCTV_CLUSTER_SECRET`

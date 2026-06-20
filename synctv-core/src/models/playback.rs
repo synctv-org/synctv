@@ -49,6 +49,17 @@ sqlx_i16_enum!(PlaybackDurationStatus, "invalid playback duration status", {
     Failed = 4,
 });
 
+impl PlaybackDurationStatus {
+    #[must_use]
+    pub fn claimable_initial_statuses() -> [i16; 3] {
+        [
+            Self::Unknown.into(),
+            Self::Failed.into(),
+            Self::Unavailable.into(),
+        ]
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PlaybackDurationSource {
     Provider,

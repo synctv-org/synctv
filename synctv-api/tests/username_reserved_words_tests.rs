@@ -1,28 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::validation::UsernameValidator;
-
-const RESERVED_USERNAMES: &[&str] = &[
-    "admin",
-    "administrator",
-    "system",
-    "root",
-    "moderator",
-    "mod",
-    "support",
-    "help",
-    "official",
-    "staff",
-    "owner",
-    "bot",
-    "service",
-    "sysop",
-    "operator",
-    "dev",
-    "developer",
-    "security",
-    "team",
-];
+use synctv_core::validation::{UsernameValidator, RESERVED_USERNAMES};
 
 #[test]
 fn test_reserved_usernames_are_rejected_case_insensitively() {

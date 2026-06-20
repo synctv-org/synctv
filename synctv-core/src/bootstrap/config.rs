@@ -6,9 +6,9 @@ use std::io::ErrorKind;
 
 use crate::{
     config::{absolute_display_path, default_config_search_paths},
-    time::set_default_timezone_name,
     Config,
 };
+use synctv_common::time::set_default_timezone_name;
 
 #[derive(Debug, Clone, Default)]
 pub struct LoadConfigOptions {
@@ -153,8 +153,8 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
 mod tests {
     use super::{load_config, load_config_with_options, LoadConfigOptions};
     use crate::test_helpers::TestResultExt;
-    use crate::time::{default_timezone_name, set_default_timezone_name};
     use std::sync::{Mutex, MutexGuard, OnceLock};
+    use synctv_common::time::{default_timezone_name, set_default_timezone_name};
     use tempfile::tempdir;
 
     static CONFIG_TEST_SERIAL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();

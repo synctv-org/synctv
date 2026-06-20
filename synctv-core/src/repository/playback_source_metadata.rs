@@ -307,6 +307,7 @@ impl PlaybackSourceMetadataRepository {
         }
 
         let room_ids = room_ids.iter().map(RoomId::as_i64).collect::<Vec<_>>();
+        let claimable_initial_statuses = PlaybackDurationStatus::claimable_initial_statuses();
         let rows = sqlx::query_as!(
             PlaybackSourceWithStateRow,
             r#"
@@ -323,11 +324,11 @@ impl PlaybackSourceMetadataRepository {
                 JOIN room_playback_progress progress
                   ON progress.id = state.current_progress_id
                  AND progress.target_hash = metadata.target_hash
-                WHERE state.room_id = ANY($7)
+                WHERE state.room_id = ANY($5)
                   AND (
-                      metadata.duration_status IN ($1, $2, $3)
+                      metadata.duration_status = ANY($1::smallint[])
                       OR (
-                          metadata.duration_status = $4
+                          metadata.duration_status = $2
                           AND metadata.next_retry_at <= NOW()
                       )
                 )
@@ -335,12 +336,12 @@ impl PlaybackSourceMetadataRepository {
                   AND metadata.duration_seconds IS NULL
                   AND (metadata.next_retry_at IS NULL OR metadata.next_retry_at <= NOW())
                 ORDER BY metadata.updated_at ASC
-                LIMIT $5
+                LIMIT $3
                 FOR UPDATE OF metadata SKIP LOCKED
             ),
             updated AS (
                 UPDATE playback_source_metadata metadata
-                   SET duration_status = $6,
+                   SET duration_status = $4,
                        duration_error = NULL,
                        next_retry_at = NOW() + INTERVAL '5 minutes',
                        version = metadata.version + 1
@@ -393,9 +394,7 @@ impl PlaybackSourceMetadataRepository {
               ON progress.id = state.current_progress_id
              AND progress.target_hash = updated.target_hash
             "#,
-            i16::from(PlaybackDurationStatus::Unknown),
-            i16::from(PlaybackDurationStatus::Failed),
-            i16::from(PlaybackDurationStatus::Unavailable),
+            &claimable_initial_statuses[..],
             i16::from(PlaybackDurationStatus::Pending),
             limit,
             i16::from(PlaybackDurationStatus::Pending),
@@ -419,6 +418,7 @@ impl PlaybackSourceMetadataRepository {
         &self,
         identity: &PlaybackSourceIdentity,
     ) -> Result<Option<ClaimedPlaybackDurationProbe>> {
+        let claimable_initial_statuses = PlaybackDurationStatus::claimable_initial_statuses();
         let row = sqlx::query_as!(
             PlaybackSourceWithStateRow,
             r#"
@@ -440,9 +440,9 @@ impl PlaybackSourceMetadataRepository {
                   AND metadata.playlist_id IS NOT DISTINCT FROM $3
                   AND metadata.target_hash = $4
                   AND (
-                      metadata.duration_status IN ($5, $6, $7)
+                      metadata.duration_status = ANY($5::smallint[])
                       OR (
-                          metadata.duration_status = $8
+                          metadata.duration_status = $6
                           AND metadata.next_retry_at <= NOW()
                       )
                   )
@@ -454,7 +454,7 @@ impl PlaybackSourceMetadataRepository {
             ),
             updated AS (
                 UPDATE playback_source_metadata metadata
-                   SET duration_status = $9,
+                   SET duration_status = $7,
                        duration_error = NULL,
                        next_retry_at = NOW() + INTERVAL '5 minutes',
                        version = metadata.version + 1
@@ -511,9 +511,7 @@ impl PlaybackSourceMetadataRepository {
             identity.media_id.map(i64::from),
             identity.playlist_id.map(i64::from),
             &identity.target_hash,
-            i16::from(PlaybackDurationStatus::Unknown),
-            i16::from(PlaybackDurationStatus::Failed),
-            i16::from(PlaybackDurationStatus::Unavailable),
+            &claimable_initial_statuses[..],
             i16::from(PlaybackDurationStatus::Pending),
             i16::from(PlaybackDurationStatus::Pending),
         )

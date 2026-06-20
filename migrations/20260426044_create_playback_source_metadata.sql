@@ -37,7 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_playback_source_metadata_room
 
 CREATE INDEX IF NOT EXISTS idx_playback_source_metadata_due_retry
     ON playback_source_metadata(duration_status, next_retry_at)
-    WHERE duration_status IN (0, 1, 4);
+    WHERE duration_seconds IS NULL;
 
 CREATE TRIGGER update_playback_source_metadata_updated_at
     BEFORE UPDATE ON playback_source_metadata

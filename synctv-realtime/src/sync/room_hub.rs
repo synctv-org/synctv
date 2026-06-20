@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use dashmap::DashMap;
+use futures::stream::{FuturesUnordered, StreamExt};
 use parking_lot::Mutex;
 use redis::AsyncCommands;
 use std::borrow::Borrow;
@@ -927,7 +928,7 @@ impl RoomMessageHub {
         let mut sent_count = 0;
         let mut failed_connections = Vec::new();
         let is_critical = event.is_critical();
-        let mut reliable_deliveries = Vec::new();
+        let mut reliable_deliveries = FuturesUnordered::new();
 
         {
             let subscribers_guard = self.rooms.get(room_id);
@@ -940,15 +941,20 @@ impl RoomMessageHub {
                         }
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             if is_critical {
-                                reliable_deliveries.push((
-                                    subscriber.connection_id.clone(),
-                                    deliver_reliable_event(
-                                        subscriber.sender.clone(),
-                                        event.clone(),
-                                        *room_id,
-                                        subscriber.connection_id.clone(),
-                                    ),
-                                ));
+                                let sender = subscriber.sender.clone();
+                                let event = event.clone();
+                                let room_id = *room_id;
+                                let connection_id = subscriber.connection_id.clone();
+                                reliable_deliveries.push(async move {
+                                    let outcome = deliver_reliable_event(
+                                        sender,
+                                        event,
+                                        room_id,
+                                        connection_id.clone(),
+                                    )
+                                    .await;
+                                    (connection_id, outcome)
+                                });
                             } else {
                                 let drops =
                                     subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed)
@@ -966,8 +972,8 @@ impl RoomMessageHub {
             }
         }
 
-        for (connection_id, delivery) in reliable_deliveries {
-            match delivery.await {
+        while let Some((connection_id, delivery)) = reliable_deliveries.next().await {
+            match delivery {
                 ReliableDeliveryOutcome::Delivered => {
                     sent_count += 1;
                 }

@@ -276,7 +276,7 @@ permissions.
 
 When using `existingSecret`, provide these keys with current names:
 
-- `SYNCTV_DATABASE_PASSWORD` unless PostgreSQL is in KubeBlocks mode
+- `SYNCTV_DATABASE_PASSWORD` for PostgreSQL standard mode, external mode, and the KubeBlocks application role
 - `SYNCTV_DATABASE_READ_URL` when `config.database.useSecretReadUrl=true`
 - `SYNCTV_REDIS_PASSWORD` when Redis uses standard mode; provide it in external mode only when the external Redis requires password authentication; do not provide it for KubeBlocks mode
 - `SYNCTV_JWT_SECRET`

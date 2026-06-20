@@ -190,26 +190,6 @@ async fn file_object_download_response_sets_streaming_headers() -> TestResult {
     Ok(())
 }
 
-#[allow(dead_code)]
-fn legacy_blob_fixture() -> synctv_core::models::FileBlob {
-    synctv_core::models::FileBlob {
-        storage_backend: "database".to_string(),
-        object_key: "object".to_string(),
-        mime_type: "text/plain".to_string(),
-        size_bytes: 4,
-        total_size_bytes: 10,
-        content_manifest_sha256: "a".repeat(64),
-        compression: synctv_core::models::FileBlobCompression::None,
-        range: Some(synctv_core::models::FileByteRange {
-            start: 2,
-            end_inclusive: 5,
-        }),
-        data: b"cdef".to_vec(),
-        metadata: serde_json::Value::Object(Default::default()),
-        created_at: chrono::Utc::now(),
-    }
-}
-
 fn http_test_database() -> synctv_core_testing::TestDatabase {
     let handle = std::thread::spawn(|| {
         let runtime = match tokio::runtime::Builder::new_current_thread()

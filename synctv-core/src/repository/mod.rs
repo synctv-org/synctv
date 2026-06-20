@@ -83,6 +83,14 @@ pub(crate) fn stable_scope_lock_key(primary_scope: i64, secondary_scope: Option<
     (i64::from(primary_bits) << 31) | i64::from(secondary_bits)
 }
 
+pub(crate) fn required_count(value: Option<i64>, query_description: &str) -> crate::Result<i64> {
+    value.ok_or_else(|| {
+        crate::Error::Internal(format!(
+            "{query_description} COUNT query returned no scalar value"
+        ))
+    })
+}
+
 #[must_use]
 fn stable_lock_bits(value: i64) -> u32 {
     let digest = Sha256::digest(value.to_be_bytes());

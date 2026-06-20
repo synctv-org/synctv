@@ -109,10 +109,6 @@ impl FileStorage {
     }
 
     async fn remove_dir_all_counting_files(dir: &std::path::Path) -> Result<usize> {
-        if !fs::try_exists(dir).await? {
-            return Ok(0);
-        }
-
         let deleted = match Self::count_files_under(dir).await {
             Ok(count) => count,
             Err(e) if e.kind() == ErrorKind::NotFound => 0,
@@ -131,12 +127,13 @@ impl FileStorage {
     /// entries and names with invalid UTF-8 are skipped.
     async fn collect_bucket_dirs(&self) -> Result<Vec<(String, PathBuf)>> {
         let segments_root = self.segments_root_path();
-        if !fs::try_exists(&segments_root).await? {
-            return Ok(Vec::new());
-        }
 
         let mut buckets = Vec::new();
-        let mut bucket_dirs = fs::read_dir(&segments_root).await?;
+        let mut bucket_dirs = match fs::read_dir(&segments_root).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err),
+        };
         while let Some(bucket_entry) = bucket_dirs.next_entry().await? {
             let Ok(file_type) = bucket_entry.file_type().await else {
                 continue;
@@ -268,9 +265,10 @@ impl HlsStorage for FileStorage {
         validate_storage_key(app, stream, name)?;
         let file_path = self.get_path(app, stream, name)?;
 
-        if fs::try_exists(&file_path).await? {
-            fs::remove_file(&file_path).await?;
-            tracing::trace!("Deleted: {:?} for {}/{}/{}", file_path, app, stream, name);
+        match fs::remove_file(&file_path).await {
+            Ok(()) => tracing::trace!("Deleted: {:?} for {}/{}/{}", file_path, app, stream, name),
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
         }
 
         Ok(())
@@ -393,11 +391,6 @@ impl HlsStorage for FileStorage {
 
     async fn cleanup(&self, older_than: Duration) -> Result<usize> {
         let segments_root = self.segments_root_path();
-        if !fs::try_exists(&segments_root).await? {
-            tracing::debug!("Cleanup segments root does not exist: {:?}", segments_root);
-            return Ok(0);
-        }
-
         let mut deleted = 0;
 
         for (bucket_name, bucket_path) in self.collect_bucket_dirs().await? {

@@ -1,3 +1,4 @@
+use crate::repository::required_count;
 use crate::{
     models::{
         id::UserId,
@@ -10,14 +11,6 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
-
-fn count_value(value: Option<i64>, query_description: &str) -> Result<i64> {
-    value.ok_or_else(|| {
-        Error::Internal(format!(
-            "{query_description} COUNT query returned no scalar value"
-        ))
-    })
-}
 
 /// Notification repository for database operations
 #[derive(Clone, Debug)]
@@ -343,7 +336,7 @@ impl NotificationRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        count_value(count, "unread notification")
+        required_count(count, "unread notification")
     }
 
     /// Mark notifications as read

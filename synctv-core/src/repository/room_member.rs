@@ -13,7 +13,10 @@ use crate::{
 pub const KICK_COOLDOWN_DENIED_MESSAGE: &str =
     "User was recently kicked from this room and cannot access it yet";
 
-use super::query_builder::{escape_ilike, WhereClauseBuilder};
+use super::{
+    query_builder::{escape_ilike, WhereClauseBuilder},
+    required_count,
+};
 
 pub struct KickCooldownInsert<'a> {
     pub room_id: &'a RoomId,
@@ -149,10 +152,6 @@ fn count_i64_to_u64(value: i64, field: &'static str) -> Result<u64> {
             "database returned negative count for {field}: {value}"
         ))
     })
-}
-
-fn required_count(value: Option<i64>, context: &'static str) -> Result<i64> {
-    value.ok_or_else(|| Error::Internal(format!("{context} query did not return a count")))
 }
 
 impl RoomMemberRepository {

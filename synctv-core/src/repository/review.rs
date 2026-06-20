@@ -7,15 +7,8 @@ use crate::models::{
 };
 use crate::repository::pools::RepoPools;
 use crate::repository::query_builder::escape_ilike;
-use crate::{Error, Result};
-
-fn count_value(value: Option<i64>, query_description: &str) -> Result<i64> {
-    value.ok_or_else(|| {
-        Error::Internal(format!(
-            "COUNT query returned NULL while loading {query_description}"
-        ))
-    })
-}
+use crate::repository::required_count;
+use crate::Result;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct UserRegistrationReviewRecord {
@@ -233,7 +226,7 @@ impl ReviewRepository {
         )
         .fetch_one(pool)
         .await?;
-        let total = count_value(total_count, "user registration review total")?;
+        let total = required_count(total_count, "user registration review total")?;
 
         let rows = sqlx::query_as!(
             UserRegistrationReviewRow,
@@ -449,7 +442,7 @@ impl ReviewRepository {
         )
         .fetch_one(pool)
         .await?;
-        let total = count_value(total_count, "room creation review total")?;
+        let total = required_count(total_count, "room creation review total")?;
 
         let rows = sqlx::query_as!(
             RoomCreationReviewRecord,
@@ -692,7 +685,7 @@ impl ReviewRepository {
         )
         .fetch_one(pool)
         .await?;
-        let total = count_value(total_count, "room join review total")?;
+        let total = required_count(total_count, "room join review total")?;
 
         let rows = sqlx::query_as!(
             RoomJoinReviewRecord,

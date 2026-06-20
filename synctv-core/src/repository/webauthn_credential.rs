@@ -2,15 +2,8 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use webauthn_rs::prelude::Passkey;
 
+use crate::repository::required_count;
 use crate::{models::UserId, Error, InternalExt, Result};
-
-fn count_value(value: Option<i64>, query_description: &str) -> Result<i64> {
-    value.ok_or_else(|| {
-        Error::Internal(format!(
-            "{query_description} COUNT query returned no scalar value"
-        ))
-    })
-}
 
 #[derive(Debug, Clone)]
 pub struct WebAuthnCredential {
@@ -236,7 +229,7 @@ impl WebAuthnCredentialRepository {
         )
         .fetch_one(executor)
         .await?;
-        count_value(count, "WebAuthn credential")
+        required_count(count, "WebAuthn credential")
     }
 
     pub async fn exists_for_user_with_executor<'e, E>(

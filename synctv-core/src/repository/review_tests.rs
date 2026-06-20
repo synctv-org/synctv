@@ -1,9 +1,13 @@
-use super::*;
+use super::required_count;
 use crate::test_helpers::{err, ok};
+use crate::Error;
 
 #[test]
-fn count_value_rejects_missing_count_result() {
-    let error = err(count_value(None, "review total"), "missing COUNT must fail");
+fn required_count_rejects_missing_count_result() {
+    let error = err(
+        required_count(None, "review total"),
+        "missing COUNT must fail",
+    );
 
     assert!(matches!(
         error,
@@ -12,6 +16,9 @@ fn count_value_rejects_missing_count_result() {
 }
 
 #[test]
-fn count_value_accepts_count_result() {
-    assert_eq!(ok(count_value(Some(7), "review total"), "review total"), 7);
+fn required_count_accepts_count_result() {
+    assert_eq!(
+        ok(required_count(Some(7), "review total"), "review total"),
+        7
+    );
 }

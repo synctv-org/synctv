@@ -1,6 +1,6 @@
 use sqlx::{PgConnection, PgPool, Postgres, QueryBuilder};
 
-use super::query_builder::escape_ilike;
+use super::{query_builder::escape_ilike, required_count};
 use crate::{
     models::{
         OpaquePasswordRecord, PageParams, Room, RoomId, RoomListQuery, RoomListSortBy,
@@ -132,10 +132,6 @@ fn count_i64_to_i32(count: i64) -> Result<i32> {
             "Count {count} exceeds i32::MAX; pagination contract violated"
         ))
     })
-}
-
-fn required_count(count: Option<i64>, context: &'static str) -> Result<i64> {
-    count.ok_or_else(|| Error::Internal(format!("{context} count query returned NULL")))
 }
 
 impl RoomRepository {

@@ -2,7 +2,7 @@
 //!
 //! Design reference: external design doc 04-database-design.md §2.4.1
 
-use super::query_builder::escape_ilike;
+use super::{query_builder::escape_ilike, required_count};
 use crate::{
     models::{
         normalize_provider_instance_name, provider_type_code_from_name,
@@ -12,14 +12,6 @@ use crate::{
     Result,
 };
 use sqlx::PgPool;
-
-fn count_value(value: Option<i64>, query_description: &str) -> Result<i64> {
-    value.ok_or_else(|| {
-        crate::Error::Internal(format!(
-            "{query_description} COUNT query returned no scalar value"
-        ))
-    })
-}
 
 #[derive(Debug, sqlx::FromRow)]
 struct PlaylistRow {
@@ -528,7 +520,7 @@ impl PlaylistRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        count_value(count, "top-level playlist")
+        required_count(count, "top-level playlist")
     }
 
     /// Get paginated top-level playlists in a room.
@@ -612,7 +604,7 @@ impl PlaylistRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        count_value(count, "child playlist")
+        required_count(count, "child playlist")
     }
 
     /// Get count of children playlists for a parent, scoped to a room.
@@ -715,7 +707,7 @@ impl PlaylistRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        count_value(count, "room playlist")
+        required_count(count, "room playlist")
     }
 
     /// Get paginated playlists in a room
